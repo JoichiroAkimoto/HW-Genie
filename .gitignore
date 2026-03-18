@@ -1,0 +1,21 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.envrc
+.direnv/
+.python-version
+.ruff_cache
+*.egg-info/
+
+# Python packaging (Security & Build)
+session.json
+session.*.json
+build/
+dist/
+
+# Bun/Node
+node_modules/
+bun.lockb

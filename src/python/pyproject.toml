@@ -1,0 +1,16 @@
+[project]
+name = "hw-genie"
+version = "0.1.0"
+description = "Hero Wars Genie CLI"
+authors = [{ name = "JoichiroAkimoto" }]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+hw-genie = "hw_genie.main:main"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 150
