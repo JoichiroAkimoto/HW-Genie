@@ -1,6 +1,16 @@
 name: Python Checks
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/python/**'
+      - '.github/workflows/python-tests.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/python/**'
+  workflow_dispatch:
 
 jobs:
   test:
