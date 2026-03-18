@@ -82,7 +82,8 @@ def cmd_shop(args):
         sys.exit(1)
 
     client = HWClient(headers)
-    run_hero_shopping(client, soul_only=args.soul_only)
+    from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
+    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
 
 
@@ -126,7 +127,6 @@ def main():
 
     # Shop
     p_shop = subparsers.add_parser("shop", help="Shop operations")
-    p_shop.add_argument("--soul-only", action="store_true", help="Buy soul stones only")
     p_shop.set_defaults(func=cmd_shop)
 
     # Daily

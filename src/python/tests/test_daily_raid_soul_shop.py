@@ -100,8 +100,8 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
 
     # 7番目: shopBuy Slot 2
     args_buy2 = mock_call.call_args_list[6][0][0]
-    assert args_buy2["calls"][0]["args"]["slot"] == 1
+    assert args_buy2["calls"][0]["args"]["slot"] == 2
 
     # 8番目: shopBuy Slot 3
     args_buy3 = mock_call.call_args_list[7][0][0]
-    assert args_buy3["calls"][0]["args"]["slot"] == 2
+    assert args_buy3["calls"][0]["args"]["slot"] == 3

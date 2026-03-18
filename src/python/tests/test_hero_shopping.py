@@ -3,7 +3,11 @@ from unittest.mock import MagicMock
 # スクリプトのディレクトリをパスに追加
 
 from . import dummy_responses as dummy
-from hw_genie.commands.hero_shopping import ResponseStatus, run_hero_shopping
+from hw_genie.commands.hero_shopping import (
+    ResponseStatus,
+    run_hero_shopping,
+    TARGET_SHOP_IDS,
+)
 
 
 def test_hero_shopping_extraction_and_skip_bought(mock_client, mock_sleep):
@@ -40,7 +44,7 @@ def test_hero_shopping_extraction_and_skip_bought(mock_client, mock_sleep):
 
     mock_call.side_effect = mock_responses
 
-    results, _ = run_hero_shopping(client)
+    results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
     ex_res = client.exchange_stones()
     ex_info = ex_res.exchange_info
 
@@ -92,7 +96,7 @@ def test_hero_shopping_insufficient_funds_skips_same_shop(mock_client, mock_slee
 
     mock_call.side_effect = mock_responses
 
-    results, _ = run_hero_shopping(client)
+    results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
 
     # 検証:

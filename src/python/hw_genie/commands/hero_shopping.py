@@ -1,5 +1,6 @@
 from typing import Any
 from dataclasses import dataclass
+from enum import Enum
 from hw_genie.core.client import (
     ApiAction,
     Emojis,
@@ -7,6 +8,12 @@ from hw_genie.core.client import (
     ResponseStatus,
 )
 
+class ShopId(Enum):
+    ARENA = "4"
+    GRAND_ARENA = "5"
+    TOWER = "6"
+    SOUL = "8"
+    FRIEND = "9"
 
 @dataclass
 class ShopResult:
@@ -14,21 +21,24 @@ class ShopResult:
     status: ResponseStatus
     error: str | None = None
 
-
 @dataclass
 class BuyItem:
-    shopId: int
+    shopId: ShopId
     shopName: str
     slot: int
     reward: dict[str, Any]
     cost: dict[str, Any]
     label: str
 
-
 # 購入対象とするショップ設定
-TARGET_SHOP_IDS = ["4", "5", "6", "8", "9"]
-SHOP_NAMES = {"4": "Arena", "5": "Grand Arena", "6": "Tower", "8": "Soul", "9": "Friend"}
-
+TARGET_SHOP_IDS = [ShopId.ARENA, ShopId.GRAND_ARENA, ShopId.TOWER, ShopId.SOUL, ShopId.FRIEND]
+SHOP_NAMES = {
+    ShopId.ARENA: "Arena",
+    ShopId.GRAND_ARENA: "Grand Arena",
+    ShopId.TOWER: "Tower",
+    ShopId.SOUL: "Soul",
+    ShopId.FRIEND: "Friend",
+}
 
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
     if not reward_dict:
@@ -42,8 +52,11 @@ def format_reward_desc(reward_dict: dict[str, Any]) -> str:
             descriptions.append(f"{item_type}:{item_data}")
     return ", ".join(descriptions)
 
-
-def run_hero_shopping(client_or_headers, soul_only: bool = False):
+def run_hero_shopping(
+    client_or_headers,
+    buy_soul_shop_items: bool = True,
+    hero_shop_ids: list[ShopId] | None = None,
+):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -71,14 +84,25 @@ def run_hero_shopping(client_or_headers, soul_only: bool = False):
     print(f"\n{Emojis.STEP}--- Step 2: Purchasing Target Items ---", flush=True)
 
     buy_queue: list[BuyItem] = []
+    # 調査対象とするショップを特定
+    shop_ids_to_check = set()
+    if hero_shop_ids:
+        shop_ids_to_check.update(hero_shop_ids)
+    if buy_soul_shop_items:
+        shop_ids_to_check.add(ShopId.SOUL)
 
-    for shop_id_str in TARGET_SHOP_IDS:
+    # ソートして順番を安定させる（ShopIdの定義順など）
+    # 元々の TARGET_SHOP_IDS の順序を尊重したい場合は工夫が必要だが、一旦セットからリスト化
+    sorted_shop_ids = sorted(list(shop_ids_to_check), key=lambda x: x.value)
+
+    for shop_id_enum in sorted_shop_ids:
+        shop_id_str = shop_id_enum.value
         if shop_id_str not in shops_data:
             continue
 
         shop = shops_data[shop_id_str]
         slots = shop.get("slots", {})
-        shop_name = SHOP_NAMES.get(shop_id_str, f"Shop {shop_id_str}")
+        shop_name = SHOP_NAMES.get(shop_id_enum, f"Shop {shop_id_str}")
 
         for slot_id, item in slots.items():
             if item.get("bought") in [True, 1, "1"]:
@@ -86,22 +110,23 @@ def run_hero_shopping(client_or_headers, soul_only: bool = False):
 
             reward = item.get("reward", {})
             cost = item.get("cost", {})
+            is_hero = "fragmentHero" in reward
 
             # 購入判定
             should_buy = False
-            if "fragmentHero" in reward:  # ソウルストーン
+            
+            # 1. ヒーロー購入判定
+            if is_hero and hero_shop_ids and shop_id_enum in hero_shop_ids:
                 should_buy = True
-            elif shop_id_str == "8":  # ソウルショップは全アイテム
+            
+            # 2. ソウルショップ非ヒーローアイテム判定
+            if not is_hero and shop_id_enum == ShopId.SOUL and buy_soul_shop_items:
                 should_buy = True
-
-            # --soul-only フラグがある場合はソウルストーン以外をスキップ
-            if soul_only and "fragmentHero" not in reward:
-                should_buy = False
 
             if should_buy:
                 buy_queue.append(
                     BuyItem(
-                        shopId=int(shop_id_str),
+                        shopId=shop_id_enum,
                         shopName=shop_name,
                         slot=int(slot_id),
                         reward=reward,
@@ -123,8 +148,8 @@ def run_hero_shopping(client_or_headers, soul_only: bool = False):
 
             buy_call = {
                 "name": ApiAction.SHOP_BUY,
-                "args": {"shopId": item.shopId, "slot": item.slot, "cost": item.cost, "reward": item.reward},
-                "ident": f"buy_{item.shopId}_{item.slot}",
+                "args": {"shopId": int(item.shopId.value), "slot": item.slot, "cost": item.cost, "reward": item.reward},
+                "ident": f"buy_{item.shopId.value}_{item.slot}",
             }
 
             res = client.call({"calls": [buy_call]})

@@ -7,7 +7,7 @@ from hw_genie.commands.item_raid import run_item_raid
 HERO_MISSION_IDS = [76, 116, 193, 198, 203, 204, 214]
 
 
-def run_daily_raid(client_or_headers, item_payload=None, soul_only=False):
+def run_daily_raid(client_or_headers, item_payload=None):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -17,7 +17,7 @@ def run_daily_raid(client_or_headers, item_payload=None, soul_only=False):
 
     print(f"\n{Emojis.START}Starting Daily Routine...", flush=True)
 
-    # 1. Hero Raids (デイリーでは自動回復を無効にするのが一般的)
+    # 1. Hero Raids (デイリーでは自動回復を無効にする)
     hero_res, recovery_count, ex_info = run_hero_raid(client, HERO_MISSION_IDS, times=3, allow_recovery=False)
 
     # ステータスチェック
@@ -32,9 +32,9 @@ def run_daily_raid(client_or_headers, item_payload=None, soul_only=False):
         client.sleep()
         run_item_raid(client, item_payload, max_iterations=10)
 
-    # 3. Soul Stone Shopping
+    # 3. Soul Shop Items (Non-Hero)
     client.sleep()
-    shop_res, shop_ex_info = run_hero_shopping(client, soul_only=soul_only)
+    shop_res, shop_ex_info = run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=None)
 
     print(f"\n{Emojis.FINISH}Daily Routine Completed.", flush=True)
     return (hero_res, recovery_count, ex_info), (shop_res, shop_ex_info)
