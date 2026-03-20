@@ -24,7 +24,14 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **デイリールーチン**: `hw-genie daily`
 *   **認証状態確認**: `hw-genie auth --info`
 
-### 3. 重要事項（エージェント向け）
+### 3. API 仕様とメソッドの理解
+Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、以下のドキュメントを参照してください。
+
+👉 **[docs/api/HERO_WARS_RPC_API.md](docs/api/HERO_WARS_RPC_API.md)**
+
+エージェントが新しいレイド対象を提案したり、特定の API レスポンスを解析したりする際に、このドキュメントが役立ちます。
+
+### 4. 重要事項（エージェント向け）
 *   **セッション依存**: すべての API 操作には有効な `session.json` が必要です。認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めてください。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
