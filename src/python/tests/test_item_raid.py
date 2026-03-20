@@ -44,3 +44,28 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
 
     # 検証: 2 回で止まっていること
     assert mock_call.call_count == 2
+
+
+def test_item_raid_auth_error_abort(mock_client, mock_sleep):
+    """実行中に認証エラーが発生した場合、直ちにループを抜けることを検証"""
+    client, mock_call = mock_client
+    mock_responses = []
+
+    # 1. 成功
+    res_success = MagicMock()
+    res_success.is_success = True
+    mock_responses.append(res_success)
+
+    # 2. 認証エラー
+    res_auth = MagicMock()
+    res_auth.status = "auth_error"
+    res_auth.is_success = False
+    mock_responses.append(res_auth)
+
+    mock_call.side_effect = mock_responses
+
+    run_item_raid({"x-request-id": "100"}, {"calls": []})
+
+    # 認証エラーで抜けるため2回で止まっていること
+    assert mock_call.call_count == 2
+

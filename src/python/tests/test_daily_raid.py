@@ -78,3 +78,25 @@ def test_daily_raid_full_success(mock_client, mock_sleep):
 
     # 検証: m1(1) + i1(1) + i2(1) + ex(1) = 4
     assert mock_call.call_count == 4
+
+
+@patch("hw_genie.commands.daily_raid.HERO_MISSION_IDS", [1, 2])
+def test_daily_raid_auth_error_abort(mock_client, mock_sleep):
+    """実行中に認証エラーが発生した場合、直ちに中断されることを検証"""
+    client, mock_call = mock_client
+    mock_responses = []
+
+    # Mission 1: 認証エラー
+    res_auth = MagicMock()
+    res_auth.status = "auth_error"
+    res_auth.is_success = False
+    mock_responses.append(res_auth)
+
+    # 万が一、換金や以降のフェーズが呼ばれた場合に備えてエラーを返すモック追加
+    mock_call.side_effect = mock_responses
+
+    run_daily_raid({"x-request-id": "100"}, {"calls": []})
+
+    # mock_call は最初の m1 でのみ呼ばれ、即座に中断するため call_count は 1 のはず
+    assert mock_call.call_count == 1
+

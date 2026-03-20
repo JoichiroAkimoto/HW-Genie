@@ -99,7 +99,6 @@ def test_hero_shopping_insufficient_funds_skips_same_shop(mock_client, mock_slee
     results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
 
-    # 検証:
     # 1. Shop 4 Slot 1: SUCCESS
     # 2. Shop 8 Slot 1: ERROR (NotEnough)
     # 3. Shop 9 Slot 1: SUCCESS
@@ -113,3 +112,47 @@ def test_hero_shopping_insufficient_funds_skips_same_shop(mock_client, mock_slee
 
     # getAll(1) + buy(3) + exchange(1) = 5
     assert mock_call.call_count == 5
+
+
+def test_hero_shopping_empty_slots(mock_client, mock_sleep):
+    """対象ショップが存在しない、または slots が空の場合にエラーなく処理が完了するか検証"""
+    client, mock_call = mock_client
+
+    # shopGetAll (ショップ情報が空)
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = {"response": {}}
+    
+    # 換金
+    res_ex = MagicMock()
+    res_ex.is_success = True
+    res_ex.exchange_info = None
+    
+    mock_responses = [res_all, res_ex]
+    mock_call.side_effect = mock_responses
+
+    results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
+
+    assert len(results) == 0
+    # getAll の1回だけ呼ばれる
+    assert mock_call.call_count == 1
+
+
+def test_hero_shopping_auth_error_abort(mock_client, mock_sleep):
+    """実行中に認証エラーが発生した場合、直ちに中断されることを検証"""
+    client, mock_call = mock_client
+
+    # shopGetAll (認証エラー)
+    res_all = MagicMock()
+    res_all.status = ResponseStatus.AUTH_ERROR
+    res_all.is_success = False
+    
+    mock_call.side_effect = [res_all]
+
+    results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
+
+    # 途中で中断されるが最初のエラー結果が記録されるため result は1件
+    assert len(results) == 1
+    assert results[0].status == ResponseStatus.ERROR
+    assert mock_call.call_count == 1
+
