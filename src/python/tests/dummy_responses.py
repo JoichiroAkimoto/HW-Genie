@@ -122,6 +122,15 @@ USER_INFO_SUCCESS = {
                     ],
                 }
             },
+        },
+        {
+            "ident": "arena",
+            "result": {
+                "response": {
+                    "arenaPlace": "42",
+                    "grandPlace": "15"
+                }
+            }
         }
     ]
 }

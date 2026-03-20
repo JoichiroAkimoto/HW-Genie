@@ -40,9 +40,12 @@ class ResponseStatus(str, Enum):
     LIMIT_REACHED = "limit_reached"
     STAMINA_ERROR = "stamina_error"
     AUTH_ERROR = "auth_error"
+    SKIPPED = "skipped"
 
 
 class ApiAction(str, Enum):
+    ARENA_GET_ALL = "arenaGetAll"
+    MISSION_GET_ALL = "missionGetAll"
     MISSION_RAID = "missionRaid"
     CONSUMABLE_USE_STAMINA = "consumableUseStamina"
     INVENTORY_EXCHANGE_STONES = "inventoryExchangeStones"
@@ -85,7 +88,10 @@ class Emojis:
     STEP = "🔹 "
     RECOVERY = "⚡️ "
     SOUL_STONE = "💎 "
-    AUTH_MSG = "Session expired. Please update your curl or run auth_manager."
+
+
+class Messages:
+    AUTH_ERROR = "Session expired. Please update your curl or run auth_manager."
 
 
 class HWClient:
@@ -162,6 +168,11 @@ class HWClient:
 
         except Exception as e:
             return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id)
+
+    def mission_get_all(self) -> HWResponse:
+        """キャンペーン（ストーリーモード）の各ステージクリア状況を取得"""
+        payload = {"calls": [{"name": ApiAction.MISSION_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:
         """ミッションレイド用ペイロードを生成"""

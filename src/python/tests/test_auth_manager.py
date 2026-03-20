@@ -69,6 +69,8 @@ def test_get_user_info_success(mock_post):
     assert info["player"]["level"] == 120
     assert info["player"]["energy"] == 150
     assert info["player"]["energy_max"] == 180  # 120 + 60
+    assert info["player"]["arena_rank"] == 42
+    assert info["player"]["grand_rank"] == 15
     assert "last_updated" in info
     # Check if last_updated is a valid ISO format
     try:

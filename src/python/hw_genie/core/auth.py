@@ -81,7 +81,12 @@ def get_user_info(headers):
     request_id = int(headers.get("x-request-id", 100)) + 1
     headers["x-request-id"] = str(request_id)
 
-    payload = {"calls": [{"name": "userGetInfo", "args": {}, "context": {"actionTs": int(time.time())}, "ident": "body"}]}
+    payload = {
+        "calls": [
+            {"name": "userGetInfo", "args": {}, "context": {"actionTs": int(time.time())}, "ident": "body"},
+            {"name": "arenaGetAll", "args": {}, "context": {"actionTs": int(time.time())}, "ident": "arena"},
+        ]
+    }
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -89,16 +94,28 @@ def get_user_info(headers):
         res_data = response.json()
 
         if "results" in res_data and len(res_data["results"]) > 0:
-            result = res_data["results"][0].get("result", {}).get("response", {})
-            name = result.get("name", "Unknown")
-            level = int(result.get("level", 1))
+            user_info = {}
+            arena_info = {}
+
+            for item in res_data["results"]:
+                if item.get("ident") == "body":
+                    user_info = item.get("result", {}).get("response", {})
+                elif item.get("ident") == "arena":
+                    arena_info = item.get("result", {}).get("response", {})
+
+            name = user_info.get("name", "Unknown")
+            level = int(user_info.get("level", 1))
 
             # スタミナ情報の抽出
             energy = 0
-            for item in result.get("refillable", []):
+            for item in user_info.get("refillable", []):
                 if item.get("id") == 1:
                     energy = item.get("amount", 0)
                     break
+
+            # アリーナ順位の抽出
+            arena_rank = int(arena_info.get("arenaPlace", 0)) if arena_info.get("arenaPlace") else 0
+            grand_rank = int(arena_info.get("grandPlace", 0)) if arena_info.get("grandPlace") else 0
 
             return {
                 "status": "success",
@@ -106,10 +123,12 @@ def get_user_info(headers):
                 "player": {
                     "name": name,
                     "level": level,
-                    "gold": result.get("gold", 0),
-                    "gems": result.get("starMoney", 0),
+                    "gold": user_info.get("gold", 0),
+                    "gems": user_info.get("starMoney", 0),
                     "energy": energy,
                     "energy_max": level + 60,
+                    "arena_rank": arena_rank,
+                    "grand_rank": grand_rank,
                 },
                 "headers": headers,
             }

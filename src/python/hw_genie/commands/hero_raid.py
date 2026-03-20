@@ -4,6 +4,7 @@ from typing import Any
 from hw_genie.core.client import (
     Emojis,
     ErrorName,
+    Messages,
     ResponseStatus,
 )
 
@@ -53,7 +54,27 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
 
     print(f"\n{Emojis.STEP}Executing Hero Raids", flush=True)
 
+    # 実行前に各ミッションのクリア状況を取得してスキップ判定
+    mission_status = {}
+    print(f"{Emojis.STEP}Checking mission status...", flush=True)
+    status_res = client.mission_get_all()
+    if status_res.is_success and status_res.detail:
+        try:
+            missions = status_res.detail.get("response", [])
+            if isinstance(missions, list):
+                for m in missions:
+                    if "id" in m and "triesSpent" in m:
+                        mission_status[m["id"]] = m["triesSpent"]
+        except Exception:
+            pass
+
     for m_id in mission_ids:
+        tries_spent = mission_status.get(m_id, 0)
+        if tries_spent > 0:
+            print(f"  {Emojis.INFO}Skipping Mission ID: {m_id} (Already completed today)", flush=True)
+            results.append(MissionResult(id=m_id, status=ResponseStatus.SKIPPED))
+            continue
+
         payload = client.build_mission_payload(m_id, times)
         stamina_recovered_for_this_mission = False
 
@@ -92,7 +113,7 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
                     results.append(MissionResult(id=m_id, status=ResponseStatus.LIMIT_REACHED))
                     break
                 elif res.status == ResponseStatus.AUTH_ERROR:
-                    print(f"  Result: {Emojis.ERROR}{Emojis.AUTH_MSG}", flush=True)
+                    print(f"  Result: {Emojis.ERROR}{Messages.AUTH_ERROR}", flush=True)
                     results.append(MissionResult(id=m_id, status=ResponseStatus.AUTH_ERROR))
                     return results, total_recovery_count, None
                 else:
@@ -111,11 +132,14 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
     # Summary
     success_ids = [r.id for r in results if r.status == ResponseStatus.SUCCESS]
     limit_ids = [r.id for r in results if r.status == ResponseStatus.LIMIT_REACHED]
-    error_ids = [r.id for r in results if r.status not in [ResponseStatus.SUCCESS, ResponseStatus.LIMIT_REACHED]]
+    skipped_ids = [r.id for r in results if r.status == ResponseStatus.SKIPPED]
+    error_ids = [r.id for r in results if r.status not in [ResponseStatus.SUCCESS, ResponseStatus.LIMIT_REACHED, ResponseStatus.SKIPPED]]
 
     print(f"\n{Emojis.FINISH}--- Final Results Summary ---", flush=True)
     print(f"  {Emojis.SUCCESS}Successfully Completed: {len(success_ids)} missions", flush=True)
     print(f"  {Emojis.WARNING}Daily Limit Reached: {len(limit_ids)} missions", flush=True)
+    if skipped_ids:
+        print(f"  {Emojis.INFO}Skipped (Already Completed): {len(skipped_ids)} missions", flush=True)
     if ex_res.exchange_info:
         print(f"  {Emojis.SOUL_STONE}Soul Stones Exchanged: {ex_res.exchange_info.stones} stones", flush=True)
     if error_ids:

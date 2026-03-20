@@ -97,3 +97,35 @@ def test_hero_raid_empty_mission_ids(mock_client, mock_sleep):
     # API呼び出しは換金の1回だけであること
     assert mock_call.call_count == 1
 
+
+def test_hero_raid_skips_already_done(mock_client, mock_sleep):
+    """すでに triesSpent > 0 のミッションはスキップされることを検証"""
+    client, mock_call = mock_client
+    
+    res_status = MagicMock()
+    res_status.is_success = True
+    res_status.detail = {"response": [{"id": 1, "triesSpent": 3}, {"id": 5, "triesSpent": 0}]}
+    client.mission_get_all.return_value = res_status
+
+    # レイド対象は 1 (スキップ), 5 (実行)
+    res_success = MagicMock()
+    res_success.status = "success"
+    res_success.is_success = True
+    mock_responses = [res_success]
+
+    res_exchange = MagicMock()
+    res_exchange.status = "success"
+    res_exchange.is_success = True
+    res_exchange.detail = dummy.INVENTORY_EXCHANGE_STONES_SINGLE["results"][0]["result"]
+    mock_responses.append(res_exchange)
+
+    mock_call.side_effect = mock_responses
+
+    results, recovery_count, ex_info = run_hero_raid(client, [1, 5], times=3)
+
+    assert len(results) == 2
+    assert results[0].id == 1
+    assert results[0].status == "skipped"
+    assert results[1].id == 5
+    assert results[1].status == "success"
+    assert mock_call.call_count == 2  # 1 raid + 1 exchange
