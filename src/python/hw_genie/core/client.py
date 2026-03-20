@@ -165,6 +165,8 @@ class HWClient:
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:
         """ミッションレイド用ペイロードを生成"""
+        if not (1 <= times <= 3):
+            raise ValueError(f"times must be between 1 and 3, but got {times}")
         return {"calls": [{"name": ApiAction.MISSION_RAID, "args": {"id": mission_id, "times": times}, "context": {"actionTs": 0}, "ident": "body"}]}
 
     def prepare_item_payload(self, payload_template: dict[str, Any]) -> dict[str, Any]:
