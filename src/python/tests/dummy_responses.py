@@ -14,7 +14,14 @@ MISSION_RAID_LIMIT_REACHED = {
     "date": 1773215224,
 }
 
-# --- Inventory Exchange (提供されたデータを基に作成) ---
+# --- Error & Malformed Responses ---
+AUTH_ERROR_RESPONSE = {"error": {"name": "auth"}}
+INVALID_SESSION_RESPONSE = {"error": {"name": "InvalidSession"}}
+EMPTY_RESULTS = {"results": []}
+MALFORMED_RESPONSE = {"results": [{"ident": "body"}]}
+INCOMPLETE_DATA_RESPONSE = {"results": [{"ident": "body", "result": {"response": {}}}]}
+
+# --- Inventory Exchange ---
 # 複数のヒーロー(ID 3, 12, 8)が換金されるケース
 INVENTORY_EXCHANGE_STONES_MULTI = {
     "results": [
@@ -80,10 +87,8 @@ SHOP_GET_ALL_VARIED = {
                         }
                     },
                     "8": {  # Soul Shop
-                        "slots": {
-                            "1": {"reward": {"fragmentHero": {"31": 3}}, "cost": {"coin": {"5": 1500}}, "bought": 0},
-                            "2": {"reward": {"item": {"101": 1}}, "cost": {"coin": {"5": 1500}}, "bought": 0},  # ソウルショップなので購入対象
-                        }
+                        "slots": {"1": {"reward": {"fragmentHero": {"31": 3}}, "cost": {"coin": {"5": 1500}}, "bought": 0},
+                                  "2": {"reward": {"item": {"101": 1}}, "cost": {"coin": {"5": 1500}}, "bought": 0}},  # ソウルショップなので購入対象
                     },
                     "9": {  # Friend Shop
                         "slots": {"1": {"reward": {"fragmentHero": {"44": 5}}, "cost": {"coin": {"9": 500}}, "bought": 0}}
