@@ -1,4 +1,4 @@
-from hw_genie.core.client import Emojis, ResponseStatus
+from hw_genie.core.client import Emojis, Messages, ResponseStatus
 
 
 def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
@@ -22,7 +22,7 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
             print(f"{Emojis.SUCCESS}Success", flush=True)
             success_count += 1
         elif res.status == ResponseStatus.AUTH_ERROR:
-            print(f"{Emojis.ERROR}{Emojis.AUTH_MSG}", flush=True)
+            print(f"{Emojis.ERROR}{Messages.AUTH_ERROR}", flush=True)
             break
         elif res.error_name in ["notEnoughStamina", "limitReached"]:
             print(f"{Emojis.WARNING}Stopping: {res.error_name}", flush=True)
