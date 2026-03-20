@@ -13,12 +13,17 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 ## クイックスタート
 
 ### Python CLI (hw-genie)
-Python 3.14 (3.10+) が必要です。
+Python 3.14 (3.10+) と [direnv](https://direnv.net/) の使用を推奨しています。
 
 ```bash
-# 環境構築
+# 1. 仮想環境を作成
 python -m venv .venv
-source .venv/bin/activate
+
+# 2. direnv の設定
+echo "source .venv/bin/activate" > .envrc
+direnv allow
+
+# 3. パッケージを開発モードでインストール
 pip install -e src/python
 
 # 実行
