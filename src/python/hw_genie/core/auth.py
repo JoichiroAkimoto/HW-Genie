@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from datetime import datetime
 import requests
@@ -7,6 +8,25 @@ import requests
 # パッケージのルートディレクトリ（session.jsonを置く場所）を取得
 # HW-Genie/src/python/hw_genie/core/auth.py -> HW-Genie/
 PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+
+
+def extract_headers_from_curl(curl_command):
+    """curlコマンドから x-auth-* ヘッダーを抽出する"""
+    headers = {}
+    # -H 'Key: Value' または -H "Key: Value" を抽出
+    matches = re.findall(r"-H\s+['\"]([^'\"]+)['\"]", curl_command)
+    for match in matches:
+        if ":" in match:
+            key, value = match.split(":", 1)
+            key = key.strip().lower()
+            if key.startswith("x-auth-"):
+                headers[key] = value.strip()
+        elif match.strip().lower().startswith("x-auth-"):
+            # x-auth-session-key; のようなケース
+            key = match.strip().rstrip(";").lower()
+            headers[key] = ""
+    
+    return headers
 
 
 def get_session_path(account="default"):

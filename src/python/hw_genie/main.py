@@ -2,7 +2,7 @@ import argparse
 import sys
 import json
 from hw_genie.core.client import HWClient, load_session_headers
-from hw_genie.core.auth import load_session, update_session_with_headers
+from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl
 from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
@@ -12,6 +12,22 @@ from hw_genie.commands.daily_raid import run_daily_raid
 def cmd_auth(args):
     """認証情報の更新・表示"""
     account_alias = args.account or "default"
+
+    # curlコマンドからヘッダーを抽出する場合
+    if args.curl:
+        headers = extract_headers_from_curl(args.curl)
+        if not headers:
+            print("Error: Could not extract x-auth-* headers from the provided curl command.")
+            sys.exit(1)
+        
+        info = update_session_with_headers(headers, account_alias)
+        if info["status"] == "success":
+            print(f"Successfully updated session for {info['player']['name']}")
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"Error updating session: {info.get('message')}")
+            sys.exit(1)
+        return
 
     # curl等からヘッダーJSONが渡された場合
     if args.update:
@@ -106,6 +122,7 @@ def main():
     p_auth = subparsers.add_parser("auth", help="Authentication management")
     p_auth.add_argument("--account", "-a", help="Account alias")
     p_auth.add_argument("--update", "-u", help="Update session with JSON headers")
+    p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.set_defaults(func=cmd_auth)
 
