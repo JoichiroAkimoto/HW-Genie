@@ -29,6 +29,45 @@ def extract_headers_from_curl(curl_command):
     return headers
 
 
+def extract_payload_from_curl(curl_command):
+    """curlコマンドから JSON ペイロードを抽出し、stashClient などの不要な命令のみを除去する"""
+    # --data-raw '...' または --data '...' または -d '...' を抽出
+    # 最短一致 (.*?) ではなく、引用符の間のすべてを取得するように修正
+    payload_str = None
+    
+    # シングルクォートで囲まれたケース
+    match = re.search(r"--data(?:-raw)?\s+'({.*})'", curl_command, re.DOTALL)
+    if not match:
+        # ダブルクォートで囲まれたケース
+        match = re.search(r"--data(?:-raw)?\s+\"({.*})\"", curl_command, re.DOTALL)
+    if not match:
+        # 引用符がないケース（または行末までのケース）
+        match = re.search(r"--data(?:-raw)?\s+({.*})", curl_command, re.DOTALL)
+
+    if match:
+        payload_str = match.group(1).strip()
+        # 末尾の引用符がグループ内に残ってしまう場合の修正
+        if payload_str.endswith("'") or payload_str.endswith('"'):
+            payload_str = payload_str[:-1].strip()
+
+    if payload_str:
+        try:
+            full_payload = json.loads(payload_str)
+            if "calls" in full_payload:
+                # 除外対象のノイズ（クライアント側のログ同期やトラッキングなど、ゲームロジックに不要なもの）
+                noise_names = ["stashClient", "trackEvent", "billingGetLast"]
+                
+                # ノイズ以外の有効な命令をすべて抽出
+                filtered_calls = [c for c in full_payload["calls"] if c.get("name") not in noise_names]
+
+                if filtered_calls:
+                    return {"calls": filtered_calls}
+            return full_payload
+        except Exception:
+            pass
+    return None
+
+
 def get_session_path(account="default"):
     if account == "default":
         return os.path.join(PKG_ROOT, "session.json")

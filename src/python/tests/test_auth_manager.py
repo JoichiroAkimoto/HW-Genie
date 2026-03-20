@@ -8,7 +8,49 @@ import json
 # スクリプトのディレクトリをパスに追加
 
 from . import dummy_responses as dummy
-from hw_genie.core.auth import get_user_info, load_session, save_session
+from hw_genie.core.auth import (
+    get_user_info,
+    load_session,
+    save_session,
+    extract_headers_from_curl,
+    extract_payload_from_curl,
+)
+
+
+def test_extract_headers_from_curl():
+    """curl コマンドから x-auth- ヘッダーを正しく抽出できることを検証"""
+    curl_cmd = (
+        "curl 'https://api.example.com/' "
+        "-H 'Accept: */*' "
+        "-H 'X-Auth-Token: ps-abc-123' "
+        "-H 'x-auth-player-id: 61405392' "
+        "-H 'X-Auth-Session-Key;'"
+    )
+    headers = extract_headers_from_curl(curl_cmd)
+
+    assert headers["x-auth-token"] == "ps-abc-123"
+    assert headers["x-auth-player-id"] == "61405392"
+    assert headers["x-auth-session-key"] == ""
+    assert "accept" not in headers
+
+
+def test_extract_payload_from_curl_multiple_valid():
+    """ノイズ(stashClient)は除去し、複数の有効な命令は維持することを検証"""
+    curl_cmd = (
+        "curl '...' --data-raw '{\"calls\":["
+        "{\"name\":\"stashClient\",\"args\":{}},"
+        "{\"name\":\"missionRaid\",\"args\":{\"id\":123}},"
+        "{\"name\":\"userGetInfo\",\"args\":{}}"
+        "]}'"
+    )
+    payload = extract_payload_from_curl(curl_cmd)
+
+    assert payload is not None
+    assert len(payload["calls"]) == 2
+    names = [c["name"] for c in payload["calls"]]
+    assert "missionRaid" in names
+    assert "userGetInfo" in names
+    assert "stashClient" not in names
 
 
 @patch("requests.post")
