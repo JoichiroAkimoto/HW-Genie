@@ -4,7 +4,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
-.envrc
+*.envrc
 .direnv/
 .python-version
 .ruff_cache
