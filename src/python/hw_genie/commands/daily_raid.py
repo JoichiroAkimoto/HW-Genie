@@ -29,8 +29,9 @@ def run_daily_raid(client_or_headers, item_payload=None):
 
     # 2. Item Raid
     if item_payload:
+        print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
         client.sleep()
-        run_item_raid(client, item_payload, max_iterations=10)
+        run_item_raid(client, item_payload)
 
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()

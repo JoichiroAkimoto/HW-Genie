@@ -1,32 +1,36 @@
 from hw_genie.core.client import Emojis, ResponseStatus
 
 
-def run_item_raid(client_or_headers, payload_template, max_iterations=10, times=None):
+def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
         client = HWClient(client_or_headers)
     else:
         client = client_or_headers
-    times = times or max_iterations
-    print(f"\n{Emojis.START}Starting Item Raid for {times} times...", flush=True)
 
-    for i in range(times):
-        print(f"{Emojis.STEP}Raid {i + 1}/{times}...", end=" ", flush=True)
+    print(f"\n{Emojis.START}Starting Item Raid (Max: {max_iterations})...", flush=True)
+
+    success_count = 0
+    for i in range(max_iterations):
+        print(f"{Emojis.STEP}Iteration {i + 1}: Executing Request...", end=" ", flush=True)
 
         payload = client.prepare_item_payload(payload_template)
         res = client.call(payload)
 
         if res.is_success:
             print(f"{Emojis.SUCCESS}Success", flush=True)
+            success_count += 1
         elif res.status == ResponseStatus.AUTH_ERROR:
             print(f"{Emojis.ERROR}{Emojis.AUTH_MSG}", flush=True)
-            return
+            break
+        elif res.error_name in ["notEnoughStamina", "limitReached"]:
+            print(f"{Emojis.WARNING}Stopping: {res.error_name}", flush=True)
+            break
         else:
             print(f"{Emojis.ERROR}Failed ({res.error_name})", flush=True)
             break
 
-        if i < times - 1:
-            client.sleep()
+        client.sleep()
 
-    print(f"\n{Emojis.FINISH}Item Raid Completed.", flush=True)
+    print(f"\n{Emojis.FINISH}Item Raid Completed. {success_count} successful raids.", flush=True)
