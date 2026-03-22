@@ -94,6 +94,11 @@ class Messages:
     AUTH_ERROR = "Session expired. Please update your curl or run auth_manager."
 
 
+class HWAuthError(Exception):
+    """認証エラー（セッション切れなど）を示す例外"""
+    pass
+
+
 class HWClient:
     """Hero Wars API の共通クライアント"""
 
@@ -119,6 +124,8 @@ class HWClient:
 
         Returns:
             HWResponse オブジェクト
+        Raises:
+            HWAuthError: 認証エラーが発生した場合
         """
         headers = self.get_headers()
         current_request_id = self.request_id
@@ -134,7 +141,7 @@ class HWClient:
 
             # 0. Auth error check (HTTP 401)
             if response.status_code == 401:
-                return HWResponse(status=ResponseStatus.AUTH_ERROR, error_name="auth", request_id=current_request_id)
+                raise HWAuthError(Messages.AUTH_ERROR)
 
             response.raise_for_status()
             res_data = response.json()
@@ -144,8 +151,10 @@ class HWClient:
                 error = res_data["error"]
                 error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                status = ResponseStatus.AUTH_ERROR if error_name in ["auth", "InvalidSession"] else ResponseStatus.ERROR
-                return HWResponse(status=status, error_name=error_name, detail=error, request_id=current_request_id)
+                if error_name in ["auth", "InvalidSession"]:
+                    raise HWAuthError(Messages.AUTH_ERROR)
+                
+                return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
 
             # 2. Call-level response check
             if "results" in res_data and len(res_data["results"]) > 0:
@@ -155,8 +164,10 @@ class HWClient:
                     error = call_result["error"]
                     error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                    status = ResponseStatus.AUTH_ERROR if error_name in ["auth", "InvalidSession"] else ResponseStatus.ERROR
-                    return HWResponse(status=status, error_name=error_name, detail=error, request_id=current_request_id)
+                    if error_name in ["auth", "InvalidSession"]:
+                        raise HWAuthError(Messages.AUTH_ERROR)
+
+                    return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
                 elif "result" in call_result:
                     return HWResponse(status=ResponseStatus.SUCCESS, detail=call_result["result"], request_id=current_request_id)
                 else:
@@ -166,6 +177,8 @@ class HWClient:
             else:
                 return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="empty_results", detail=res_data, request_id=current_request_id)
 
+        except HWAuthError:
+            raise
         except Exception as e:
             return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id)
 
@@ -222,6 +235,46 @@ class HWClient:
                 res.exchange_info = ExchangeInfo(stones=0)
 
         return res
+
+    def fetch_player_status(self) -> dict[str, Any]:
+        """
+        現在のプレイヤー情報（名前、レベル、リソース、アリーナ順位）を取得して辞書で返す。
+        失敗した項目は None または 0 が入る。
+        """
+        # 1. User Info
+        user_res = self.call({"calls": [{"name": ApiAction.USER_GET_INFO, "args": {}, "ident": "body"}]})
+        user_data = user_res.detail.get("response", {}) if user_res.is_success and user_res.detail else {}
+
+        # 2. Arena Info
+        arena_res = self.call({"calls": [{"name": ApiAction.ARENA_GET_ALL, "args": {}, "ident": "arena"}]})
+        arena_data = arena_res.detail.get("response", {}) if arena_res.is_success and arena_res.detail else {}
+
+        # データの抽出
+        name = user_data.get("name", "Unknown")
+        level = user_data.get("level", 0)
+        gold = user_data.get("gold", 0)
+        gems = user_data.get("starMoney", 0)
+
+        energy = 0
+        if "refillable" in user_data:
+            for item in user_data["refillable"]:
+                if item.get("id") == 1:
+                    energy = item.get("amount", 0)
+                    break
+
+        arena_rank = arena_data.get("arenaPlace", 0)
+        grand_rank = arena_data.get("grandPlace", 0)
+
+        return {
+            "name": name,
+            "level": level,
+            "gold": gold,
+            "gems": gems,
+            "energy": energy,
+            "max_energy": int(level) + 60,
+            "arena_rank": arena_rank,
+            "grand_rank": grand_rank,
+        }
 
     def sleep(self) -> None:
         """APIリクエスト間のインターバル（レートリミット回避）"""
