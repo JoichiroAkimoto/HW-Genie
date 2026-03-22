@@ -28,6 +28,13 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     res_h_ex.exchange_info = MagicMock(stones=0)
     mock_responses.append(res_h_ex)
 
+    # Status (Hero Raid 内)
+    res_status = MagicMock()
+    res_status.is_success = True
+    res_status.detail = {"response": {}}
+    mock_responses.append(res_status)
+    mock_responses.append(res_status)
+
     # --- Phase 2: Item Raid ---
     # 3. Item Raid iteration 1 (Success)
     res_i1 = MagicMock()
@@ -47,9 +54,13 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     res_i3 = MagicMock()
     res_i3.is_success = False
     res_i3.status = ResponseStatus.ERROR
-    res_i3.error_name = "NotEnough"  # IndexErrorが出ていた時はここで回数がずれていた可能性大
+    res_i3.error_name = "NotEnough"
     res_i3.detail = {"description": "Stopped"}
     mock_responses.append(res_i3)
+
+    # Status (Item Raid 内)
+    mock_responses.append(res_status)
+    mock_responses.append(res_status)
 
     # --- Phase 3: Soul Shop Purchase ---
     # 6. shopGetAll
@@ -84,24 +95,32 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     res_buy_s3.error_name = "NotEnough"
     mock_responses.append(res_buy_s3)
 
+    # 9. Status (User Info) - Daily Raid Final
+    mock_responses.append(res_status)
+
+    # 10. Status (Arena Info) - Daily Raid Final
+    mock_responses.append(res_status)
+
     mock_call.side_effect = mock_responses
 
     # 実行
     run_daily_raid({"x-auth-token": "test"}, {"calls": []})
 
     # 呼び出し回数の確認
-    # h1(1) + ex(1) + i1(1) + i2(1) + i3(1) + shop_all(1) + buy_s2(1) + buy_s3(1) = 8
-    assert mock_call.call_count == 8
+    # h1(1) + ex(1) + st(2) + i1(1) + i2(1) + i3(1) + st(2) + shop_all(1) + buy_s2(1) + buy_s3(1) + status(2) = 14
+    assert mock_call.call_count == 14
 
     # 各呼び出しの中身を確認
-    # 6番目: shop_soul_raid 内の shopGetAll
-    args_shop = mock_call.call_args_list[5][0][0]
+    # 10番目 (index 9): shop_soul_raid 内の shopGetAll
+    # calls: h1, ex, st1, st2, i1, i2, i3, st3, st4, shopGetAll...
+    # index: 0,  1,  2,   3,   4,  5,  6,  7,   8,   9
+    args_shop = mock_call.call_args_list[9][0][0]
     assert args_shop["calls"][0]["name"] == "shopGetAll"
 
-    # 7番目: shopBuy Slot 2
-    args_buy2 = mock_call.call_args_list[6][0][0]
+    # 11番目: shopBuy Slot 2
+    args_buy2 = mock_call.call_args_list[10][0][0]
     assert args_buy2["calls"][0]["args"]["slot"] == 2
 
-    # 8番目: shopBuy Slot 3
-    args_buy3 = mock_call.call_args_list[7][0][0]
+    # 12番目: shopBuy Slot 3
+    args_buy3 = mock_call.call_args_list[11][0][0]
     assert args_buy3["calls"][0]["args"]["slot"] == 3

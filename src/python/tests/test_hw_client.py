@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import MagicMock, patch
 
 # パス追加
@@ -61,10 +62,7 @@ def test_stamina_error_handling(mock_client, mock_sleep):
 
 def test_auth_error_handling_401(default_headers, mock_sleep):
     """HTTP 401 による認証エラー検知のテスト"""
-    # conftest.py の mock_client fixture を使わず、自分でインスタンス化する
-    # ただしクラス全体がパッチされている可能性を考慮し、patch.stopall() は避け
-    # 直接 HWClient をインポートして呼び出す
-    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.client import HWAuthError
 
     client = HWClient(default_headers)
 
@@ -75,15 +73,13 @@ def test_auth_error_handling_401(default_headers, mock_sleep):
 
         # HWClient.call のパッチを一時的に無効化して本来のメソッドを呼ぶ
         with patch("hw_genie.core.client.HWClient.call", side_effect=HWClient.call, autospec=True):
-            result = client.call({"calls": []})
-
-            assert result.status == ResponseStatus.AUTH_ERROR
-            assert result.error_name == "auth"
+            with pytest.raises(HWAuthError):
+                client.call({"calls": []})
 
 
 def test_auth_error_handling_json(default_headers, mock_sleep):
     """JSON 内の 'auth' エラー名による認証エラー検知のテスト"""
-    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.client import HWAuthError
 
     client = HWClient(default_headers)
 
@@ -94,15 +90,13 @@ def test_auth_error_handling_json(default_headers, mock_sleep):
         mock_post.return_value = mock_response
 
         with patch("hw_genie.core.client.HWClient.call", side_effect=HWClient.call, autospec=True):
-            result = client.call({"calls": []})
-
-            assert result.status == ResponseStatus.AUTH_ERROR
-            assert result.error_name == "auth"
+            with pytest.raises(HWAuthError):
+                client.call({"calls": []})
 
 
 def test_auth_error_handling_invalid_session(default_headers, mock_sleep):
     """InvalidSession による認証エラー検知のテスト"""
-    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.client import HWAuthError
 
     client = HWClient(default_headers)
 
@@ -113,7 +107,5 @@ def test_auth_error_handling_invalid_session(default_headers, mock_sleep):
         mock_post.return_value = mock_response
 
         with patch("hw_genie.core.client.HWClient.call", side_effect=HWClient.call, autospec=True):
-            result = client.call({"calls": []})
-
-            assert result.status == ResponseStatus.AUTH_ERROR
-            assert result.error_name == "InvalidSession"
+            with pytest.raises(HWAuthError):
+                client.call({"calls": []})
