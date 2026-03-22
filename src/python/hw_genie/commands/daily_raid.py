@@ -2,6 +2,7 @@ from hw_genie.core.client import Emojis
 from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.item_raid import run_item_raid
+from hw_genie.core.utils import print_player_status
 
 # デフォルトのミッションリスト
 HERO_MISSION_IDS = [76, 116, 193, 198, 203, 204, 214]
@@ -20,11 +21,11 @@ def run_daily_raid(client_or_headers, item_payload=None):
     # 1. Hero Raids (デイリーでは自動回復を無効にする)
     hero_res, recovery_count, ex_info = run_hero_raid(client, HERO_MISSION_IDS, times=3, allow_recovery=False)
 
-    # ステータスチェック
+    # ステータスチェック (認証エラーは例外で止まるのでスタミナのみチェック)
     from hw_genie.core.client import ResponseStatus
 
-    if any(r.status in [ResponseStatus.STAMINA_ERROR, ResponseStatus.AUTH_ERROR] for r in hero_res):
-        print(f"{Emojis.WARNING}Critical issue in Phase 1. Stopping Daily Routine.", flush=True)
+    if any(r.status == ResponseStatus.STAMINA_ERROR for r in hero_res):
+        print(f"{Emojis.WARNING}Stamina empty in Phase 1. Stopping Daily Routine.", flush=True)
         return (hero_res, recovery_count, ex_info), (None, None)
 
     # 2. Item Raid
@@ -36,6 +37,10 @@ def run_daily_raid(client_or_headers, item_payload=None):
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()
     shop_res, shop_ex_info = run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=None)
+
+    # Status
+    status = client.fetch_player_status()
+    print_player_status(status)
 
     print(f"\n{Emojis.FINISH}Daily Routine Completed.", flush=True)
     return (hero_res, recovery_count, ex_info), (shop_res, shop_ex_info)

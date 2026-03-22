@@ -64,7 +64,7 @@ def run_hero_shopping(
     else:
         client = client_or_headers
 
-    print(f"\n{Emojis.STEP}--- Step 1: Fetching current shop status ---", flush=True)
+    print(f"\n{Emojis.STEP}--- Fetching current shop status ---", flush=True)
     results: list[ShopResult] = []
 
     # 全ショップ情報を取得
@@ -81,7 +81,7 @@ def run_hero_shopping(
         print(f"{Emojis.ERROR}Error: Unexpected response format.", flush=True)
         return [ShopResult(action="Fetch Shop Status", status=ResponseStatus.ERROR, error="Invalid format")], None
 
-    print(f"\n{Emojis.STEP}--- Step 2: Purchasing Target Items ---", flush=True)
+    print(f"\n{Emojis.STEP}--- Purchasing Target Items ---", flush=True)
 
     buy_queue: list[BuyItem] = []
     # 調査対象とするショップを特定

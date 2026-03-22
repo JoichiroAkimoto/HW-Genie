@@ -4,9 +4,9 @@ from typing import Any
 from hw_genie.core.client import (
     Emojis,
     ErrorName,
-    Messages,
     ResponseStatus,
 )
+from hw_genie.core.utils import print_player_status
 
 
 @dataclass
@@ -112,10 +112,6 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
                     print(f"  Result: {Emojis.WARNING}Daily limit reached", flush=True)
                     results.append(MissionResult(id=m_id, status=ResponseStatus.LIMIT_REACHED))
                     break
-                elif res.status == ResponseStatus.AUTH_ERROR:
-                    print(f"  Result: {Emojis.ERROR}{Messages.AUTH_ERROR}", flush=True)
-                    results.append(MissionResult(id=m_id, status=ResponseStatus.AUTH_ERROR))
-                    return results, total_recovery_count, None
                 else:
                     print(f"  Result: {Emojis.ERROR}Error - {error_name}", flush=True)
                     results.append(MissionResult(id=m_id, status=ResponseStatus.ERROR, name=error_name))
@@ -135,7 +131,7 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
     skipped_ids = [r.id for r in results if r.status == ResponseStatus.SKIPPED]
     error_ids = [r.id for r in results if r.status not in [ResponseStatus.SUCCESS, ResponseStatus.LIMIT_REACHED, ResponseStatus.SKIPPED]]
 
-    print(f"\n{Emojis.FINISH}--- Final Results Summary ---", flush=True)
+    print(f"\n{Emojis.FINISH}--- Hero Raid Results Summary ---", flush=True)
     print(f"  {Emojis.SUCCESS}Successfully Completed: {len(success_ids)} missions", flush=True)
     print(f"  {Emojis.WARNING}Daily Limit Reached: {len(limit_ids)} missions", flush=True)
     if skipped_ids:
@@ -145,5 +141,9 @@ def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 
     if error_ids:
         print(f"  {Emojis.ERROR}Failed/Stopped: {len(error_ids)} missions", flush=True)
     print(f"  {Emojis.RECOVERY}Total Stamina Recoveries: {total_recovery_count} times", flush=True)
+
+    # Status
+    status = client.fetch_player_status()
+    print_player_status(status)
 
     return results, total_recovery_count, ex_res.exchange_info

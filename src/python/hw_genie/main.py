@@ -228,10 +228,20 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if hasattr(args, "func"):
-        args.func(args)
-    else:
-        print(f"Command {args.command} not implemented yet.")
+    from hw_genie.core.client import HWAuthError
+    try:
+        if hasattr(args, "func"):
+            args.func(args)
+        else:
+            print(f"Command {args.command} not implemented yet.")
+    except HWAuthError as e:
+        from hw_genie.core.client import Emojis
+        print(f"\n{Emojis.ERROR}Authentication Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        from hw_genie.core.client import Emojis
+        print(f"\n{Emojis.ERROR}Unexpected Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

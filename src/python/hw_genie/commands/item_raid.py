@@ -1,4 +1,5 @@
-from hw_genie.core.client import Emojis, Messages, ResponseStatus
+from hw_genie.core.client import Emojis
+from hw_genie.core.utils import print_player_status
 
 
 def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
@@ -21,9 +22,6 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         if res.is_success:
             print(f"{Emojis.SUCCESS}Success", flush=True)
             success_count += 1
-        elif res.status == ResponseStatus.AUTH_ERROR:
-            print(f"{Emojis.ERROR}{Messages.AUTH_ERROR}", flush=True)
-            break
         elif res.error_name in ["notEnoughStamina", "limitReached"]:
             print(f"{Emojis.WARNING}Stopping: {res.error_name}", flush=True)
             break
@@ -34,3 +32,7 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         client.sleep()
 
     print(f"\n{Emojis.FINISH}Item Raid Completed. {success_count} successful raids.", flush=True)
+
+    # Status
+    status = client.fetch_player_status()
+    print_player_status(status)
