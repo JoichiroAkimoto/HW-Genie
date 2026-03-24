@@ -138,6 +138,7 @@ def run_hero_shopping(
     if not buy_queue:
         print(f"{Emojis.INFO}No items to purchase at this time.", flush=True)
     else:
+        total_items_bought = 0
         skipped_shops_due_to_funds = set()
         for i, item in enumerate(buy_queue):
             if item.shopId in skipped_shops_due_to_funds:
@@ -157,6 +158,13 @@ def run_hero_shopping(
             if res.is_success:
                 print(f"  Result: {Emojis.SUCCESS}Success", flush=True)
                 results.append(ShopResult(action=item.label, status=ResponseStatus.SUCCESS))
+                # 報酬の個数を集計
+                for item_type, item_data in item.reward.items():
+                    if isinstance(item_data, dict):
+                        for item_id, amount in item_data.items():
+                            total_items_bought += int(amount)
+                    else:
+                        total_items_bought += int(item_data)
             else:
                 error_name = res.error_name or "unknown"
                 print(f"  Result: {Emojis.ERROR}Failed ({error_name})", flush=True)
@@ -166,5 +174,8 @@ def run_hero_shopping(
                     skipped_shops_due_to_funds.add(item.shopId)
 
             client.sleep()
+        
+        print(f"\n{Emojis.FINISH}--- Shopping Results Summary ---", flush=True)
+        print(f"  {Emojis.SUCCESS}Total Items Purchased: {total_items_bought}", flush=True)
 
     return results, None  # exchange_info は上位で処理
