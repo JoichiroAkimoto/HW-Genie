@@ -156,3 +156,34 @@ def test_hero_shopping_auth_error_abort(mock_client, mock_sleep):
     assert results[0].status == ResponseStatus.ERROR
     assert mock_call.call_count == 1
 
+
+def test_hero_shopping_count_souls_only(mock_client, mock_sleep, capsys):
+    """ヒーローソウルのみが集計対象になることを検証"""
+    client, mock_call = mock_client
+
+    mock_responses = []
+
+    # shopGetAll (SHOP_GET_ALL_VARIED)
+    # Shop 4, Slot 1: fragmentHero x 5
+    # Shop 8, Slot 1: fragmentHero x 3
+    # Shop 8, Slot 2: item x 1 (集計対象外)
+    # Shop 9, Slot 1: fragmentHero x 5
+    # 合計: 5 + 3 + 5 = 13
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = dummy.SHOP_GET_ALL_VARIED["results"][0]["result"]
+    mock_responses.append(res_all)
+
+    # 4 回の購入成功
+    for _ in range(4):
+        res_buy = MagicMock()
+        res_buy.is_success = True
+        mock_responses.append(res_buy)
+
+    mock_call.side_effect = mock_responses
+
+    run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
+
+    captured = capsys.readouterr()
+    assert "Total Hero Souls Purchased: 13" in captured.out
+    assert "Total Items Purchased" not in captured.out
