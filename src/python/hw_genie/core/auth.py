@@ -118,6 +118,7 @@ def get_user_info(headers):
             grand_rank = int(arena_info.get("grandPlace", 0)) if arena_info.get("grandPlace") else 0
 
             return {
+                "headers": headers,
                 "status": "success",
                 "last_updated": datetime.now().isoformat(),
                 "player": {
@@ -130,7 +131,6 @@ def get_user_info(headers):
                     "arena_rank": arena_rank,
                     "grand_rank": grand_rank,
                 },
-                "headers": headers,
             }
         return {"status": "error", "message": "Failed to parse API response"}
     except Exception as e:
