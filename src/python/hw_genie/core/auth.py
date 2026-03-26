@@ -3,7 +3,16 @@ import os
 import re
 import time
 from datetime import datetime
+from typing import TypedDict
 import requests
+from hw_genie.core.client import PlayerStatus
+
+class SessionData(TypedDict, total=False):
+    headers: dict[str, str]
+    status: str  # "success" or "error"
+    last_updated: str
+    player: PlayerStatus
+    message: str
 
 # パッケージのルートディレクトリ（session.jsonを置く場所）を取得
 # HW-Genie/src/python/hw_genie/core/auth.py -> HW-Genie/
@@ -74,7 +83,7 @@ def get_session_path(account="default"):
     return os.path.join(PKG_ROOT, f"session.{account}.json")
 
 
-def get_user_info(headers):
+def get_user_info(headers: dict[str, str]) -> SessionData:
     url = "https://heroes-wb.nextersglobal.com/api/"
 
     # リクエストIDのインクリメント
@@ -123,11 +132,11 @@ def get_user_info(headers):
                 "last_updated": datetime.now().isoformat(),
                 "player": {
                     "name": name,
-                    # "level": level,
+                    "level": level,
                     "gold": user_info.get("gold", 0),
                     "gems": user_info.get("starMoney", 0),
                     "energy": energy,
-                    # "energy_max": level + 60,
+                    "max_energy": level + 60,
                     "arena_rank": arena_rank,
                     "grand_rank": grand_rank,
                 },
@@ -137,7 +146,7 @@ def get_user_info(headers):
         return {"status": "error", "message": str(e)}
 
 
-def save_session(data, account="default"):
+def save_session(data: SessionData, account: str = "default") -> None:
     path = get_session_path(account)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -145,7 +154,7 @@ def save_session(data, account="default"):
     print(f"Saved session to: {os.path.basename(path)}")
 
 
-def load_session(account="default"):
+def load_session(account: str = "default") -> SessionData | None:
     path = get_session_path(account)
     if os.path.exists(path):
         with open(path, "r") as f:
@@ -153,7 +162,7 @@ def load_session(account="default"):
     return None
 
 
-def update_session_with_headers(headers, account_alias="default"):
+def update_session_with_headers(headers: dict[str, str], account_alias: str = "default") -> SessionData:
     """ヘッダー情報を元にユーザー情報を取得し、session.json と個別のセッションファイルを更新する"""
     info = get_user_info(headers)
     if info["status"] == "success":

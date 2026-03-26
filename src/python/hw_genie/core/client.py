@@ -4,7 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
 
 import requests
 
@@ -41,6 +41,17 @@ class ResponseStatus(str, Enum):
     STAMINA_ERROR = "stamina_error"
     AUTH_ERROR = "auth_error"
     SKIPPED = "skipped"
+
+
+class PlayerStatus(TypedDict, total=False):
+    name: str
+    level: int
+    gold: int
+    gems: int
+    energy: int
+    max_energy: int
+    arena_rank: int
+    grand_rank: int
 
 
 class ApiAction(str, Enum):
@@ -236,7 +247,7 @@ class HWClient:
 
         return res
 
-    def fetch_player_status(self) -> dict[str, Any]:
+    def fetch_player_status(self) -> PlayerStatus:
         """
         現在のプレイヤー情報（名前、レベル、リソース、アリーナ順位）を取得して辞書で返す。
         失敗した項目は None または 0 が入る。
