@@ -123,11 +123,11 @@ def get_user_info(headers):
                 "last_updated": datetime.now().isoformat(),
                 "player": {
                     "name": name,
-                    "level": level,
+                    # "level": level,
                     "gold": user_info.get("gold", 0),
                     "gems": user_info.get("starMoney", 0),
                     "energy": energy,
-                    "energy_max": level + 60,
+                    # "energy_max": level + 60,
                     "arena_rank": arena_rank,
                     "grand_rank": grand_rank,
                 },
