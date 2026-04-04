@@ -1,3 +1,16 @@
 theme: jekyll-theme-hacker
-title: HW-Genie | Support & Legal
-description: Support and Legal information for HW-Genie.
+title: HW-Genie
+description: Hero Wars Automation Toolkit.
+baseurl: ""
+url: "https://joichiroakimoto.github.io"
+
+# Site Settings
+lang: ja
+author: Akimoto Joichiro
+email: b1013066@gmail.com
+github_username: JoichiroAkimoto
+
+# Plugins
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
