@@ -33,7 +33,7 @@ hw-genie --help
 ```
 
 ### Gemini CLI 連携
-本リポジトリの `.gemini/skills/` を読み込ませることで、Gemini CLI から自然言語でレイド等を指示できます。
+本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI等のツールから自然言語でレイド等を指示できます。
 
 ## 開発環境
 - **Backend**: Python 3.14 (Ruff, pytest)
