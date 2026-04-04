@@ -9,6 +9,15 @@ from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 
 
+def _prepare_info_for_json(info: dict) -> dict:
+    """JSON出力用に PlayerStatus オブジェクトを辞書に変換する"""
+    if "player" in info and hasattr(info["player"], "to_dict"):
+        output = info.copy()
+        output["player"] = info["player"].to_dict()
+        return output
+    return info
+
+
 def cmd_auth(args):
     """認証情報の更新・表示"""
     account_alias = args.account or "default"
@@ -22,8 +31,8 @@ def cmd_auth(args):
         
         info = update_session_with_headers(headers, account_alias)
         if info["status"] == "success":
-            print(f"Successfully updated session for {info['player']['name']}")
-            print(json.dumps(info, indent=2))
+            print(f"Successfully updated session for {info['player'].name}")
+            print(json.dumps(_prepare_info_for_json(info), indent=2))
         else:
             print(f"Error updating session: {info.get('message')}")
             sys.exit(1)
@@ -35,8 +44,8 @@ def cmd_auth(args):
             headers = json.loads(args.update)
             info = update_session_with_headers(headers, account_alias)
             if info["status"] == "success":
-                print(f"Successfully updated session for {info['player']['name']}")
-                print(json.dumps(info, indent=2))
+                print(f"Successfully updated session for {info['player'].name}")
+                print(json.dumps(_prepare_info_for_json(info), indent=2))
             else:
                 print(f"Error updating session: {info.get('message')}")
                 sys.exit(1)
@@ -54,7 +63,7 @@ def cmd_auth(args):
     if args.info:
         # 現在のヘッダーを使って最新情報を取得し直す
         info = update_session_with_headers(session_data["headers"], account_alias)
-        print(json.dumps(info, indent=2))
+        print(json.dumps(_prepare_info_for_json(info), indent=2))
     else:
         print(json.dumps(session_data.get("headers"), indent=2))
 
@@ -71,7 +80,7 @@ def cmd_raid_hero(args):
             info = update_session_with_headers(auth_headers, account_alias)
             if info["status"] == "success":
                 headers = info["headers"]
-                print(f"Successfully updated session for {info['player']['name']} from curl.")
+                print(f"Successfully updated session for {info['player'].name} from curl.")
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
@@ -99,7 +108,7 @@ def cmd_raid_item(args):
             info = update_session_with_headers(auth_headers, account_alias)
             if info["status"] == "success":
                 headers = info["headers"]
-                print(f"Successfully updated session for {info['player']['name']} from curl.")
+                print(f"Successfully updated session for {info['player'].name} from curl.")
         
         # 2. ペイロードを抽出
         payload = extract_payload_from_curl(args.curl)
@@ -159,7 +168,7 @@ def cmd_daily(args):
             info = update_session_with_headers(auth_headers, args.account or "default")
             if info["status"] == "success":
                 headers = info["headers"]
-                print(f"Successfully updated session for {info['player']['name']} from curl.")
+                print(f"Successfully updated session for {info['player'].name} from curl.")
             else:
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
         

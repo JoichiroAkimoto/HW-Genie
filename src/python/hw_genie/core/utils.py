@@ -14,19 +14,19 @@ def format_number_with_suffix(num: int) -> str:
         
     return f"{num_float:.1f}{suffixes[magnitude]}"
 
-def print_player_status(status: dict):
+def print_player_status(status):
     """
     プレイヤー情報を標準出力に表示する。
     Args:
-        status (dict): fetch_player_status() で取得した辞書
+        status (PlayerStatus): PlayerStatus インスタンス
     """
-    gold_str = format_number_with_suffix(status['gold'])
-    gems_str = format_number_with_suffix(status['gems'])
+    gold_str = format_number_with_suffix(status.gold)
+    gems_str = format_number_with_suffix(status.gems)
 
     print("\n📊 --- Account Status ---")
-    print(f"  👤 Name: {status['name']} (Lv.{status['level']})")
-    print(f"  🏆 Arena Rank: {status['arena_rank']}")
-    print(f"  👑 Grand Rank: {status['grand_rank']}")
-    print(f"  ⚡️ Energy: {status['energy']} / {status['max_energy']}")
+    print(f"  👤 Name: {status.name} (Lv.{status.level})")
+    print(f"  🏆 Arena Rank: {status.arena_rank}")
+    print(f"  👑 Grand Rank: {status.grand_rank}")
+    print(f"  ⚡️ Energy: {status.energy_text}")
     print(f"  💰 Gold: {gold_str}")
     print(f"  💎 Emeralds: {gems_str}")

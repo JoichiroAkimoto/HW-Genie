@@ -2,9 +2,9 @@ import copy
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any
 
 import requests
 
@@ -43,15 +43,43 @@ class ResponseStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class PlayerStatus(TypedDict, total=False):
-    name: str
-    level: int
-    gold: int
-    gems: int
-    energy: int
-    max_energy: int
-    arena_rank: int
-    grand_rank: int
+@dataclass
+class PlayerStatus:
+    name: str = "Unknown"
+    level: int = 0
+    gold: int = 0
+    gems: int = 0
+    energy: int = 0
+    arena_rank: int = 0
+    grand_rank: int = 0
+
+    @property
+    def max_energy(self) -> int:
+        """レベルから上限を自動計算"""
+        return int(self.level) + 60
+
+    @property
+    def energy_text(self) -> str:
+        """表示用のエナジー文字列を生成"""
+        return f"{self.energy} / {self.max_energy}"
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """辞書データからインスタンスを生成"""
+        # 既存データのキーに合わせてマッピング
+        return cls(
+            name=data.get("name", "Unknown"),
+            level=int(data.get("level", 0)),
+            gold=int(data.get("gold", 0)),
+            gems=data.get("gems", data.get("starMoney", 0)),  # core.auth では gems ではなく starMoney
+            energy=int(data.get("energy", 0)),
+            arena_rank=int(data.get("arena_rank", data.get("arenaPlace", 0))),
+            grand_rank=int(data.get("grand_rank", data.get("grandPlace", 0)))
+        )
+
+    def to_dict(self) -> dict:
+        """JSON保存用に辞書形式へ変換"""
+        return asdict(self)
 
 
 class ApiAction(str, Enum):
@@ -276,16 +304,15 @@ class HWClient:
         arena_rank = arena_data.get("arenaPlace", 0)
         grand_rank = arena_data.get("grandPlace", 0)
 
-        return {
-            "name": name,
-            "level": level,
-            "gold": gold,
-            "gems": gems,
-            "energy": energy,
-            "max_energy": int(level) + 60,
-            "arena_rank": arena_rank,
-            "grand_rank": grand_rank,
-        }
+        return PlayerStatus(
+            name=name,
+            level=level,
+            gold=gold,
+            gems=gems,
+            energy=energy,
+            arena_rank=arena_rank,
+            grand_rank=grand_rank,
+        )
 
     def sleep(self) -> None:
         """APIリクエスト間のインターバル（レートリミット回避）"""

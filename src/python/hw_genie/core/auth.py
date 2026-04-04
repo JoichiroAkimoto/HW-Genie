@@ -126,20 +126,21 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
             arena_rank = int(arena_info.get("arenaPlace", 0)) if arena_info.get("arenaPlace") else 0
             grand_rank = int(arena_info.get("grandPlace", 0)) if arena_info.get("grandPlace") else 0
 
+            player = PlayerStatus(
+                name=name,
+                level=level,
+                gold=user_info.get("gold", 0),
+                gems=user_info.get("starMoney", 0),
+                energy=energy,
+                arena_rank=arena_rank,
+                grand_rank=grand_rank,
+            )
+
             return {
                 "headers": headers,
                 "status": "success",
                 "last_updated": datetime.now().isoformat(),
-                "player": {
-                    "name": name,
-                    "level": level,
-                    "gold": user_info.get("gold", 0),
-                    "gems": user_info.get("starMoney", 0),
-                    "energy": energy,
-                    "max_energy": level + 60,
-                    "arena_rank": arena_rank,
-                    "grand_rank": grand_rank,
-                },
+                "player": player,
             }
         return {"status": "error", "message": "Failed to parse API response"}
     except Exception as e:
@@ -149,8 +150,14 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
 def save_session(data: SessionData, account: str = "default") -> None:
     path = get_session_path(account)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    
+    # PlayerStatus オブジェクトが含まれる場合は辞書に変換
+    save_data = data.copy()
+    if "player" in save_data and hasattr(save_data["player"], "to_dict"):
+        save_data["player"] = save_data["player"].to_dict()
+        
     with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(save_data, f, indent=2)
     print(f"Saved session to: {os.path.basename(path)}")
 
 
@@ -158,7 +165,11 @@ def load_session(account: str = "default") -> SessionData | None:
     path = get_session_path(account)
     if os.path.exists(path):
         with open(path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            # player 辞書を PlayerStatus インスタンスに復元
+            if "player" in data and isinstance(data["player"], dict):
+                data["player"] = PlayerStatus.from_dict(data["player"])
+            return data
     return None
 
 
@@ -170,7 +181,7 @@ def update_session_with_headers(headers: dict[str, str], account_alias: str = "d
         save_session(info, "default")
 
         # 2. プレイヤー名でのセッションファイルを保存
-        player_name = info["player"]["name"]
+        player_name = info["player"].name
         save_session(info, player_name)
 
         # 3. エイリアス指定があればそれも保存

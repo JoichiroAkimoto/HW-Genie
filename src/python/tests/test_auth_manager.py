@@ -15,6 +15,7 @@ from hw_genie.core.auth import (
     extract_headers_from_curl,
     extract_payload_from_curl,
 )
+from hw_genie.core.client import PlayerStatus
 
 
 def test_extract_headers_from_curl():
@@ -65,12 +66,12 @@ def test_get_user_info_success(mock_post):
     info = get_user_info(headers)
 
     assert info["status"] == "success"
-    assert info["player"]["name"] == "TestPlayer"
-    assert info["player"]["level"] == 120
-    assert info["player"]["energy"] == 150
-    assert info["player"]["max_energy"] == 180
-    assert info["player"]["arena_rank"] == 42
-    assert info["player"]["grand_rank"] == 15
+    assert info["player"].name == "TestPlayer"
+    assert info["player"].level == 120
+    assert info["player"].energy == 150
+    assert info["player"].max_energy == 180
+    assert info["player"].arena_rank == 42
+    assert info["player"].grand_rank == 15
     assert "last_updated" in info
     # Check if last_updated is a valid ISO format
     try:
@@ -99,8 +100,10 @@ def test_session_save_load(mock_open, mock_exists):
     # MagicMock for file content
     mock_file = MagicMock()
     mock_file.__enter__.return_value = mock_file
-    mock_file.read.return_value = json.dumps(test_data)
+    mock_file.read.return_value = json.dumps({"headers": {"token": "test"}, "player": {"name": "test"}})
     mock_open.return_value = mock_file
 
     loaded = load_session(account="test_acc")
-    assert loaded == test_data
+    expected_player = PlayerStatus(name="test")
+    assert loaded["headers"] == {"token": "test"}
+    assert loaded["player"] == expected_player

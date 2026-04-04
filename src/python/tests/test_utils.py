@@ -1,5 +1,6 @@
 import pytest
 from hw_genie.core.utils import format_number_with_suffix, print_player_status
+from hw_genie.core.client import PlayerStatus
 
 @pytest.mark.parametrize("num, expected", [
     (0, "0"),
@@ -17,16 +18,16 @@ def test_format_number_with_suffix(num, expected):
     assert format_number_with_suffix(num) == expected
 
 def test_print_player_status(capsys):
-    status = {
-        "name": "TestPlayer",
-        "level": 120,
-        "arena_rank": 5,
-        "grand_rank": 10,
-        "energy": 100,
-        "max_energy": 180,
-        "gold": 1234567,
-        "gems": 9876,
-    }
+    status = PlayerStatus(
+        name="TestPlayer",
+        level=120,
+        arena_rank=5,
+        grand_rank=10,
+        energy=100,
+        gold=1234567,
+        gems=0,  # gems と starMoney のマッピングを確認
+    )
+    status.gems = 9876
     
     print_player_status(status)
     captured = capsys.readouterr()
