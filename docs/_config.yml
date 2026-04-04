@@ -1,7 +1,7 @@
 theme: jekyll-theme-hacker
 title: HW-Genie
 description: Hero Wars Automation Toolkit.
-baseurl: ""
+baseurl: "/HW-Genie"
 url: "https://joichiroakimoto.github.io"
 
 # Site Settings
