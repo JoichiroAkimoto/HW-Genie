@@ -1,14 +1,17 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>HW-Genie | Support & Legal</title>
-  
+
   <meta name="description" content="Support and Legal information for HW-Genie.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+    rel="stylesheet">
 
   <style>
     :root {
@@ -20,7 +23,9 @@
       --border: #2a2a32;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       background: var(--bg);
@@ -139,11 +144,17 @@
     }
 
     @media (max-width: 600px) {
-      h1 { font-size: 2.2rem; }
-      .card { padding: 24px; }
+      h1 {
+        font-size: 2.2rem;
+      }
+
+      .card {
+        padding: 24px;
+      }
     }
   </style>
 </head>
+
 <body>
 
   <div class="container">
@@ -156,14 +167,18 @@
       <h2>SUPPORT THE PROJECT</h2>
       <p style="margin-bottom: 24px;">Your contribution helps maintain the tools and keeps the project alive.</p>
       <a class="button" href="https://www.buymeacoffee.com/joichiroakimoto" target="_blank">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M20.232 6.232C21.752 6.232 23 7.48 23 9s-1.248 2.768-2.768 2.768H19v2.232c0 3.314-2.686 6-6 6H9c-3.314 0-6-2.686-6-6V3h14v3.232h3.232zM17 5H5v10.232C5 17.448 6.552 19 8.686 19h4.628c2.134 0 3.686-1.552 3.686-3.768V5zm3.232 4.768c.414 0 .768-.354.768-.768s-.354-.768-.768-.768H19v1.536h1.232z"></path></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M20.232 6.232C21.752 6.232 23 7.48 23 9s-1.248 2.768-2.768 2.768H19v2.232c0 3.314-2.686 6-6 6H9c-3.314 0-6-2.686-6-6V3h14v3.232h3.232zM17 5H5v10.232C5 17.448 6.552 19 8.686 19h4.628c2.134 0 3.686-1.552 3.686-3.768V5zm3.232 4.768c.414 0 .768-.354.768-.768s-.354-.768-.768-.768H19v1.536h1.232z">
+          </path>
+        </svg>
         Buy Me a Coffee
       </a>
     </div>
 
     <div class="legal-section">
       <h2 style="text-align: center; margin-bottom: 24px;">特定商取引法に基づく表記</h2>
-      
+
       <div class="legal-grid">
         <div class="legal-item">
           <span class="legal-label">販売事業者</span>
@@ -215,4 +230,5 @@
   </div>
 
 </body>
+
 </html>
