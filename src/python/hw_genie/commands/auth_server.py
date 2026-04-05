@@ -36,7 +36,6 @@ ALLOWED_ORIGINS = _get_allowed_origins()
 REQUIRED_HEADERS = [
     "x-auth-application-id",
     "x-auth-network-ident",
-    "x-auth-player-id",
     "x-auth-session-id",
     "x-auth-signature",
     "x-auth-token",

@@ -9,9 +9,7 @@ from hw_genie.commands.auth_server import create_app, AuthServer, validate_auth_
 VALID_HEADERS = {
     "x-auth-application-id": "3",
     "x-auth-network-ident": "web",
-    "x-auth-player-id": "12345",
     "x-auth-session-id": "abc",
-    "x-auth-session-key": "",
     "x-auth-signature": "sig",
     "x-auth-token": "token",
     "x-auth-user-id": "67890",
@@ -65,7 +63,7 @@ class TestAuthServerEndpoints:
         data = response.json()
         assert "nonce" in data
         assert "allowed_origins" in data
-        assert "https://heroes-wb.nextersglobal.com" in data["allowed_origins"]
+        assert "https://www.hero-wars.com" in data["allowed_origins"]
 
     def test_get_health_returns_ok(self, client):
         response = client.get("/health")
@@ -122,7 +120,6 @@ class TestAuthServerEndpoints:
         nonce_resp = client.get("/nonce")
         nonce = nonce_resp.json()["nonce"]
 
-        # Must pass header validation to reach the API error path
         response = client.post("/auth", json={
             "nonce": nonce,
             "headers": VALID_HEADERS
@@ -145,3 +142,15 @@ class TestValidateHeaders:
 
     def test_empty_header_fails(self):
         assert validate_auth_headers({}) is False
+
+    def test_headers_without_player_id_pass(self):
+        """x-auth-player-id is optional and should not cause validation failure."""
+        headers = {
+            "x-auth-application-id": "3",
+            "x-auth-network-ident": "web",
+            "x-auth-session-id": "abc",
+            "x-auth-signature": "sig",
+            "x-auth-token": "token",
+            "x-auth-user-id": "67890",
+        }
+        assert validate_auth_headers(headers) is True
