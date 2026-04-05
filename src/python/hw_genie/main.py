@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import json
 from hw_genie.core.client import HWClient, load_session_headers
@@ -7,6 +8,7 @@ from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
+from hw_genie.commands.auth_server import run_server
 
 
 def _prepare_info_for_json(info: dict) -> dict:
@@ -66,6 +68,12 @@ def cmd_auth(args):
         print(json.dumps(_prepare_info_for_json(info), indent=2))
     else:
         print(json.dumps(session_data.get("headers"), indent=2))
+
+
+def cmd_auth_server(args):
+    """認証キャプチャサーバーを起動"""
+    port = args.port or int(os.environ.get("HW_GENIE_AUTH_PORT", 8765))
+    run_server(port=port, once=args.once)
 
 
 def cmd_raid_hero(args):
@@ -201,6 +209,12 @@ def main():
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.set_defaults(func=cmd_auth)
+
+    # Auth Server
+    p_auth_server = subparsers.add_parser("auth-server", help="Start auth capture server")
+    p_auth_server.add_argument("--port", "-p", type=int, help="Port to listen on (default: 8765, env: HW_GENIE_AUTH_PORT)")
+    p_auth_server.add_argument("--once", action="store_true", help="Exit after first successful auth capture")
+    p_auth_server.set_defaults(func=cmd_auth_server)
 
     # Raid
     p_raid = subparsers.add_parser("raid", help="Raid operations")
