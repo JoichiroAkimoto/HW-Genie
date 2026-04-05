@@ -10,7 +10,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
-- **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能も開発中。
+- **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
 
@@ -30,6 +30,28 @@ pip install -e src/python
 
 # 実行
 hw-genie --help
+```
+
+### 認証方法
+
+#### 方法1: 手動 (curl コピー)
+1. ブラウザの DevTools → Network タブから `api/` へのリクエストを右クリック → `Copy as cURL`
+2. ターミナルで実行:
+```bash
+hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
+```
+
+#### 方法2: 自動キャプチャ (推奨)
+1. 認証サーバーを起動:
+```bash
+hw-genie auth-server
+```
+2. ブラウザに Userscript (`src/userscripts/index.ts`) を Tampermonkey 等にインストール
+3. Hero Wars を開くと自動的に認証情報がキャプチャされ、セッションが更新されます
+
+**ポート変更**: 環境変数 `HW_GENIE_AUTH_PORT` で変更可能（デフォルト: 8765）
+```bash
+HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
 ### Gemini CLI 連携
