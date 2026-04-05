@@ -1,4 +1,5 @@
 """Auth server module for automatic authentication header capture."""
+import os
 import secrets
 from typing import Optional
 
@@ -15,12 +16,23 @@ from hw_genie.core.auth import update_session_with_headers
 #    - Generate a persistent API key that userscript includes in every request
 #    - Token passed via environment variable or config file
 # 3. Make CORS origins configurable via config file / environment variable
-#    - Current: hardcoded to heroes-wb.nextersglobal.com
+#    - Current: hardcoded origins below
 #    - Future: HW_GENIE_AUTH_ALLOWED_ORIGINS env var or config file
 # 4. Consider HTTPS/TLS option for non-localhost deployments
 
 
-ALLOWED_ORIGINS = ["https://heroes-wb.nextersglobal.com"]
+def _get_allowed_origins() -> list[str]:
+    """Get allowed CORS origins from env var or defaults."""
+    env_origins = os.environ.get("HW_GENIE_AUTH_ALLOWED_ORIGINS", "")
+    if env_origins:
+        return [o.strip() for o in env_origins.split(",") if o.strip()]
+    return [
+        "https://www.hero-wars.com",
+        "https://heroes-wb.nextersglobal.com",
+    ]
+
+
+ALLOWED_ORIGINS = _get_allowed_origins()
 REQUIRED_HEADERS = [
     "x-auth-application-id",
     "x-auth-network-ident",
@@ -84,7 +96,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="HW-Genie Auth Server")
 
-    # CORS middleware - restrict to Hero Wars origin only
+    # CORS middleware - restrict to Hero Wars origins only
     app.add_middleware(
         CORSMiddleware,
         allow_origins=ALLOWED_ORIGINS,

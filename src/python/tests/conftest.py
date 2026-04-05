@@ -1,6 +1,11 @@
+import warnings
 from unittest.mock import patch
 
 import pytest
+
+# Suppress DeprecationWarnings from starlette/fastapi (Python 3.16 compatibility)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="fastapi.*")
 
 
 @pytest.fixture
@@ -21,7 +26,7 @@ def mock_client(default_headers):
     """HWClient.call と mission_get_all をモック化する fixture"""
     # インスタンスではなくクラスのメソッドをパッチする
     with patch("hw_genie.core.client.HWClient.call") as mock_call, \
-         patch("hw_genie.core.client.HWClient.mission_get_all") as mock_mission_get_all:
+          patch("hw_genie.core.client.HWClient.mission_get_all") as mock_mission_get_all:
         from hw_genie.core.client import HWClient
         from unittest.mock import MagicMock
 

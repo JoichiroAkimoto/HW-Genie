@@ -14,3 +14,8 @@ hw-genie = "hw_genie.main:main"
 [tool.ruff]
 target-version = "py313"
 line-length = 150
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

@@ -1,11 +1,16 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/HW-Genie
-// @version      1.0.0
+// @version      1.0.1
 // @description  Automatically capture auth headers and send to HW-Genie auth server
+// @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
 // ==/UserScript==
+
+/**
+ * Build: Run `bun build index.ts --outfile dist/hw-genie-auth-capture.user.js` to produce a Tampermonkey-compatible script.
+ */
 
 (() => {
   "use strict";
@@ -18,13 +23,12 @@
     console.log(`[HW-Genie] ${msg}`, ...args);
   }
 
-  /**
-   * Fetch a nonce from the auth server.
-   */
   async function fetchNonce(): Promise<string | null> {
     try {
       const res = await fetch(`${AUTH_SERVER_URL}/nonce`);
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return null;
+      }
       const data = await res.json();
       return data.nonce;
     } catch {
@@ -32,9 +36,6 @@
     }
   }
 
-  /**
-   * Send captured headers to the auth server.
-   */
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {
     const nonce = await fetchNonce();
     if (!nonce) {
@@ -64,9 +65,6 @@
     }
   }
 
-  /**
-   * Intercept XMLHttpRequest to capture x-auth-* headers.
-   */
   function interceptXHR() {
     const originalOpen = XMLHttpRequest.prototype.open;
 
@@ -79,9 +77,8 @@
     ) {
       const urlString = url.toString();
 
-      // Only intercept requests to the Hero Wars API
       if (!urlString.includes("heroes-wb.nextersglobal.com/api/")) {
-        return originalOpen.call(this, method, url, async as boolean, username, password);
+        return originalOpen.call(this, method, url, async ?? false, username, password);
       }
 
       const originalSetRequestHeader = this.setRequestHeader.bind(this);
@@ -96,18 +93,14 @@
         originalSetRequestHeader(name, value);
       };
 
-      return originalOpen.call(this, method, url, async as boolean, username, password);
+      return originalOpen.call(this, method, url, async ?? false, username, password);
     };
   }
 
-  /**
-   * Main: start interception and send headers once captured.
-   */
   async function main() {
     log("Starting auth capture...");
     interceptXHR();
 
-    // Poll for captured headers
     const pollInterval = setInterval(() => {
       if (captured) {
         clearInterval(pollInterval);
@@ -121,14 +114,13 @@
           if (success) {
             log("Auth capture complete.");
           } else {
-            captured = false; // Allow retry on failure
+            captured = false;
           }
         });
       }
     }, 500);
   }
 
-  // Start when DOM is ready
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", main);
   } else {
