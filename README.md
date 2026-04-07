@@ -26,8 +26,7 @@ echo "source .venv/bin/activate" > .envrc
 direnv allow
 
 # 3. 依存関係とパッケージをインストール
-pip install -r requirements.txt
-pip install -e src/python
+pip install -e "src/python[dev]"
 
 # 実行
 hw-genie --help

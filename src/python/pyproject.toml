@@ -5,10 +5,17 @@ description = "Hero Wars Genie CLI"
 authors = [{ name = "JoichiroAkimoto" }]
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.31.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.34.0",
-    "httpx>=0.28.0",
+    "requests~=2.33.0",
+    "fastapi~=0.115.6",
+    "uvicorn~=0.34.0",
+    "httpx~=0.28.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=9.0.2",
+    "pytest-mock~=3.15.1",
+    "ruff~=0.9.9",
 ]
 
 [project.scripts]
