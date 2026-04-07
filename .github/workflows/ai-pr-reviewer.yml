@@ -66,7 +66,7 @@ jobs:
                   exit(0)
 
               # Handle large diffs
-              limit = 25000
+              limit = 100000
               is_truncated = False
               if len(diff) > limit:
                   diff = diff[:limit]
@@ -87,32 +87,49 @@ jobs:
           """
 
               try:
-                  response = model.generate_content(prompt)
-                  review_text = f"### 🤖 AI Code Review ({model_name})\n\n"
+                  # Generate review with high reasoning configuration
+                  response = model.generate_content(
+                      prompt,
+                      generation_config=genai.types.GenerationConfig(
+                          temperature=0.2, # 再現性を高めるために低く
+                          max_output_tokens=2048,
+                      )
+                  )
+                  
+                  # Create review content
+                  body = response.text
+                  
+                  # Metadata footer (tokens)
+                  usage = response.usage_metadata
+                  metadata = f"\n\n---\n<details><summary>📊 Review Metadata</summary>\n\n"
+                  metadata += f"- **Model**: `{model_name}`\n"
+                  metadata += f"- **Tokens**: In={usage.prompt_token_count}, Out={usage.candidates_token_count}\n"
                   if is_truncated:
-                      review_text += "> [!WARNING]\n> 差分が大きいため、一部のみレビューしています。\n\n"
-                  review_text += response.text
-                  review_text += "\n\n<!-- ai-pr-reviewer-comment -->" # 識別用タグ
+                      metadata += "- **Status**: ⚠️ Diff was truncated due to size limits.\n"
+                  metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
 
-                  # Find existing comment to update
+                  review_text = f"### 🤖 AI Code Review\n\n{body}{metadata}"
+
+                  # Post/Update comment with Error Handling
                   repo = os.environ['GITHUB_REPOSITORY']
-                  comments_json = subprocess.check_output(['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments']).decode('utf-8')
-                  comments = json.loads(comments_json)
-                  existing_comment = next((c for c in comments if "<!-- ai-pr-reviewer-comment -->" in c['body']), None)
-
                   with open('review.md', 'w') as f:
                       f.write(review_text)
 
-                  if existing_comment:
-                      # Update existing comment
-                      subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{repo}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'])
-                      print(f"Updated comment {existing_comment['id']}")
-                  else:
-                      # Create new comment
-                      subprocess.run(['gh', 'pr', 'comment', pr_number, '--body-file', 'review.md'])
-                      print("Created new comment")
+                  try:
+                      # Find existing comment
+                      comments_json = subprocess.check_output(['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments']).decode('utf-8')
+                      comments = json.loads(comments_json)
+                      existing_comment = next((c for c in comments if "<!-- ai-pr-reviewer-comment -->" in c['body']), None)
+
+                      if existing_comment:
+                          subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{repo}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'], check=True)
+                      else:
+                          subprocess.run(['gh', 'pr', 'comment', pr_number, '--body-file', 'review.md'], check=True)
+                  except Exception as api_e:
+                      print(f"GitHub API Error (Non-fatal): {api_e}")
+                      # Fallback: Just print to stdout if comment update fails
               except Exception as e:
-                  print(f"Review Error: {e}")
+                  print(f"Gemini Review Error: {e}")
                   
           if __name__ == "__main__":
               main()
