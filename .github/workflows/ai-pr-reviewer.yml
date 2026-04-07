@@ -14,7 +14,7 @@ jobs:
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     env:
-      GEMINI_MODEL: gemini-3-flash-preview
+      GEMINI_MODEL: gemini-3-flash-preview # モデル名をここで一括管理
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -95,7 +95,8 @@ jobs:
                   review_text += "\n\n<!-- ai-pr-reviewer-comment -->" # 識別用タグ
 
                   # Find existing comment to update
-                  comments_json = subprocess.check_output(['gh', 'api', f'repos/{{{{ .repository.full_name }}}}/issues/{pr_number}/comments']).decode('utf-8')
+                  repo = os.environ['GITHUB_REPOSITORY']
+                  comments_json = subprocess.check_output(['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments']).decode('utf-8')
                   comments = json.loads(comments_json)
                   existing_comment = next((c for c in comments if "<!-- ai-pr-reviewer-comment -->" in c['body']), None)
 
@@ -104,7 +105,7 @@ jobs:
 
                   if existing_comment:
                       # Update existing comment
-                      subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{{{{ .repository.full_name }}}}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'])
+                      subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{repo}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'])
                       print(f"Updated comment {existing_comment['id']}")
                   else:
                       # Create new comment
