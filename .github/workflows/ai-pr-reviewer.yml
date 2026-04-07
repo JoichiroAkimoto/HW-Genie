@@ -74,7 +74,7 @@ jobs:
 
               # Prepare prompt
               prompt = f"""
-          以下のPull Requestの差分（diff）を分析し、簡潔にレビューしてください。
+          以下のPull Requestの差分（diff）を深く考察し（思考レベル: High）、簡潔にレビューしてください。
           
           フォーマット：
           - **要約**: 変更点（箇条書き）
@@ -87,14 +87,8 @@ jobs:
           """
 
               try:
-                  # Generate review with high reasoning configuration
-                  response = model.generate_content(
-                      prompt,
-                      generation_config=genai.types.GenerationConfig(
-                          temperature=0.2, # 再現性を高めるために低く
-                          max_output_tokens=2048,
-                      )
-                  )
+                  # Generate review
+                  response = model.generate_content(prompt)
                   
                   # Create review content
                   body = response.text
