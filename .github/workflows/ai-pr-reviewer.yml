@@ -43,8 +43,8 @@ jobs:
 
           # Gemini Setup
           genai.configure(api_key=os.environ['GEMINI_API_KEY'])
-          # 3.0系が NotFound になるため、一旦 1.5 で動作を確定させます
-          model = genai.GenerativeModel('gemini-1.5-flash')
+          # ユーザー指定の最新プレビューモデルを使用
+          model = genai.GenerativeModel('gemini-3-flash-preview')
 
           # Get PR diff
           try:
