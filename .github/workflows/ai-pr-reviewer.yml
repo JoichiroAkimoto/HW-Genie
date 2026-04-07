@@ -26,10 +26,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip' # キャッシュを有効化
+          cache-dependency-path: '.github/scripts/requirements-ai.txt'
 
       - name: Install dependencies
         run: |
-          pip install google-generativeai
+          pip install -r .github/scripts/requirements-ai.txt
+
 
       - name: Run AI Review
         env:

@@ -25,13 +25,34 @@ def main():
 
     # PRの差分を取得
     try:
-        diff = subprocess.check_output(['gh', 'pr', 'diff', pr_number]).decode('utf-8')
+        raw_diff = subprocess.check_output(['gh', 'pr', 'diff', pr_number]).decode('utf-8')
     except Exception as e:
         print(f"Error getting diff: {e}")
+        sys.exit(1) # CIを正しく失敗させる
+
+    if not raw_diff:
+        print("No diff found.")
         sys.exit(0)
 
-    if not diff:
-        print("No diff found.")
+    # ロックファイルや画像の差分をパースして除外する
+    import re
+    filtered_lines = []
+    ignore_current = False
+    for line in raw_diff.splitlines():
+        if line.startswith("diff --git"):
+            # 不要なファイルを正規表現で除外
+            if re.search(r'(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$', line, re.IGNORECASE):
+                ignore_current = True
+            else:
+                ignore_current = False
+        
+        if not ignore_current:
+            filtered_lines.append(line)
+
+    diff = "\n".join(filtered_lines)
+
+    if not diff.strip():
+        print("Diff contains only ignored files.")
         sys.exit(0)
 
     # 長すぎる差分を切り詰め (50万)
