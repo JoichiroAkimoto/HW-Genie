@@ -34,22 +34,25 @@ def main():
         print("No diff found.")
         sys.exit(0)
 
-    # ロックファイルや画像の差分をパースして除外する
+    # ロックファイルや画像の差分を堅牢に除外する
     import re
-    filtered_lines = []
-    ignore_current = False
-    for line in raw_diff.splitlines():
-        if line.startswith("diff --git"):
+    from unidiff import PatchSet
+    import io
+    
+    try:
+        patch = PatchSet(io.StringIO(raw_diff))
+        filtered_diff = ""
+        for file in patch:
+            path = file.path if hasattr(file, 'path') and file.path else ""
             # 不要なファイルを正規表現で除外
-            if re.search(r'(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$', line, re.IGNORECASE):
-                ignore_current = True
-            else:
-                ignore_current = False
-        
-        if not ignore_current:
-            filtered_lines.append(line)
-
-    diff = "\n".join(filtered_lines)
+            if re.search(r'(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$', path, re.IGNORECASE):
+                continue
+            filtered_diff += str(file) + "\n"
+        diff = filtered_diff
+    except Exception as e:
+        print(f"Failed to parse diff with unidiff: {e}")
+        # パース失敗時は元の差分をフォールバック
+        diff = raw_diff
 
     if not diff.strip():
         print("Diff contains only ignored files.")
@@ -79,7 +82,14 @@ def main():
     try:
         # レビュー生成
         response = model.generate_content(prompt)
-        body = response.text
+        
+        try:
+            body = response.text
+        except ValueError:
+            # Safety Settings によるブロック等を検知
+            reason = response.candidates[0].finish_reason.name if response.candidates else "UNKNOWN"
+            body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n> 差分に機密情報やセーフティフィルターに抵触する内容が含まれている可能性があります。\n"
+
         
         # 実行結果メタデータの作成 (Review Metadata -> Execution Info に変更)
         metadata = "\n\n---\n<details><summary>⚡ Execution Info</summary>\n\n"
