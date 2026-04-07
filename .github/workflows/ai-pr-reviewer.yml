@@ -14,7 +14,7 @@ jobs:
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     env:
-      GEMINI_MODEL: gemini-3-flash-preview # モデル名をここで一括管理
+      GEMINI_MODEL: gemini-3-flash-preview
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,6 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip' # キャッシュを有効化
 
       - name: Install dependencies
         run: |
@@ -40,48 +41,78 @@ jobs:
           import os
           import google.generativeai as genai
           import subprocess
+          import json
 
-          # Setup
-          genai.configure(api_key=os.environ['GEMINI_API_KEY'])
-          model_name = os.environ['GEMINI_MODEL']
-          model = genai.GenerativeModel(model_name)
+          def main():
+              api_key = os.environ.get('GEMINI_API_KEY')
+              if not api_key:
+                  print("Error: GEMINI_API_KEY is not set.")
+                  exit(1)
 
-          # Get PR diff
-          try:
-              diff = subprocess.check_output(['gh', 'pr', 'diff', os.environ['PR_NUMBER']]).decode('utf-8')
-          except Exception as e:
-              print(f"Error getting diff: {e}")
-              exit(0)
+              genai.configure(api_key=api_key)
+              model_name = os.environ['GEMINI_MODEL']
+              model = genai.GenerativeModel(model_name)
+              pr_number = os.environ['PR_NUMBER']
 
-          if not diff:
-              print("No diff found.")
-              exit(0)
+              # Get PR diff
+              try:
+                  diff = subprocess.check_output(['gh', 'pr', 'diff', pr_number]).decode('utf-8')
+              except Exception as e:
+                  print(f"Error getting diff: {e}")
+                  exit(0)
 
-          # Prepare prompt
-          prompt = f"""
-          以下のPull Requestの差分を、簡潔かつ建設的にレビューしてください。
+              if not diff:
+                  print("No diff found.")
+                  exit(0)
+
+              # Handle large diffs
+              limit = 25000
+              is_truncated = False
+              if len(diff) > limit:
+                  diff = diff[:limit]
+                  is_truncated = True
+
+              # Prepare prompt
+              prompt = f"""
+          以下のPull Requestの差分（diff）を分析し、簡潔にレビューしてください。
           
-          内容：
-          1. 変更の要約（箇条書き）
-          2. 重大な懸念点（バグ、パフォーマンス、セキュリティ）があれば指摘
-          3. 改善の提案
-          4. 良い実装への称賛
+          フォーマット：
+          - **要約**: 変更点（箇条書き）
+          - **懸念点**: 重大なバグ、パフォーマンス、セキュリティ
+          - **改善案**: コード品質向上
+          - **称賛**: 良い実装
 
           ---
-          {diff[:20000]}
+          {diff}
           """
 
-          # Generate review
-          try:
-              response = model.generate_content(prompt)
-              review_header = f"### 🤖 AI Code Review ({model_name})"
-              review_text = f"{review_header}\n\n{response.text}\n\n---\n*このレビューは自動生成されました。*"
-          except Exception as e:
-              review_text = f"### 🤖 AI Code Review Error\n\nレビュー生成中にエラーが発生しました: {e}"
+              try:
+                  response = model.generate_content(prompt)
+                  review_text = f"### 🤖 AI Code Review ({model_name})\n\n"
+                  if is_truncated:
+                      review_text += "> [!WARNING]\n> 差分が大きいため、一部のみレビューしています。\n\n"
+                  review_text += response.text
+                  review_text += "\n\n<!-- ai-pr-reviewer-comment -->" # 識別用タグ
 
-          # Post comment
-          with open('review.md', 'w') as f:
-              f.write(review_text)
+                  # Find existing comment to update
+                  comments_json = subprocess.check_output(['gh', 'api', f'repos/{{{{ .repository.full_name }}}}/issues/{pr_number}/comments']).decode('utf-8')
+                  comments = json.loads(comments_json)
+                  existing_comment = next((c for c in comments if "<!-- ai-pr-reviewer-comment -->" in c['body']), None)
 
-          subprocess.run(['gh', 'pr', 'comment', os.environ['PR_NUMBER'], '--body-file', 'review.md'])
+                  with open('review.md', 'w') as f:
+                      f.write(review_text)
+
+                  if existing_comment:
+                      # Update existing comment
+                      subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{{{{ .repository.full_name }}}}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'])
+                      print(f"Updated comment {existing_comment['id']}")
+                  else:
+                      # Create new comment
+                      subprocess.run(['gh', 'pr', 'comment', pr_number, '--body-file', 'review.md'])
+                      print("Created new comment")
+              except Exception as e:
+                  print(f"Review Error: {e}")
+                  
+          if __name__ == "__main__":
+              main()
           EOF
