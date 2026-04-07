@@ -12,27 +12,68 @@ permissions:
 
 jobs:
   review:
-    # Dependabot の PR はノイズになるためスキップ
+    # Dependabot の PR はスキップ
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: PR Reviewer
-        uses: anc95/ai-pr-reviewer@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          debug: false
-          review_simple_changes: false
-          review_comment_languge: ja-JP
-          openai_base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-          openai_model: gemini-3.0-flash
-          # カスタムプロンプト（日本語での要約とレビューを指示）
-          system_message: |
-            あなたはシニアソフトウェアエンジニアとして、Pull Requestのコードレビューを行います。
-            以下の指示に従ってください：
-            - 日本語で回答してください。
-            - 最初に要約（何をしようとしているか）を簡潔に述べてください。
-            - 重大なバグ、パフォーマンスの問題、保守性の懸念がある場合にのみコメントしてください。
-            - 些細な指摘やスタイルの好みは避けてください。
-            - 良い実装があれば褒めてください。
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install google-generativeai
+
+      - name: Run AI Review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<EOF
+          import os
+          import google.generativeai as genai
+          import subprocess
+
+          # Gemini Setup
+          genai.configure(api_key=os.environ['GEMINI_API_KEY'])
+          model = genai.GenerativeModel('gemini-3.0-flash')
+
+          # Get PR diff
+          diff = subprocess.check_output(['gh', 'pr', 'diff', os.environ['PR_NUMBER']]).decode('utf-8')
+
+          if not diff:
+              print("No diff found.")
+              exit(0)
+
+          # Prepare prompt
+          prompt = f"""
+          あなたはシニアソフトウェアエンジニアとして、Pull Requestのコードレビューを行います。
+          以下の差分（diff）を分析し、日本語で回答してください。
+
+          【指示】
+          1. 最初に変更の要約（何をしようとしているか）を簡潔に述べてください。
+          2. 重大なバグ、パフォーマンスの問題、セキュリティの懸念がある場合にのみ指摘してください。
+          3. 些細な指摘やスタイルの好みは避けてください。
+          4. 良い実装があれば褒めてください。
+
+          【差分】
+          {diff[:30000]} # 送信制限を考慮
+          """
+
+          # Generate review
+          response = model.generate_content(prompt)
+          review_text = f"### 🤖 AI Code Review (Gemini 3.0 Flash)\n\n{response.text}"
+
+          # Post comment to PR
+          with open('review.md', 'w') as f:
+              f.write(review_text)
+
+          subprocess.run(['gh', 'pr', 'comment', os.environ['PR_NUMBER'], '--body-file', 'review.md'])
+          EOF
