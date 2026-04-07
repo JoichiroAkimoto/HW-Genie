@@ -26,7 +26,7 @@ jobs:
           review_simple_changes: false
           review_comment_languge: ja-JP
           openai_base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-          openai_model: gemini-1.5-flash
+          openai_model: gemini-3.0-flash
           # カスタムプロンプト（日本語での要約とレビューを指示）
           system_message: |
             あなたはシニアソフトウェアエンジニアとして、Pull Requestのコードレビューを行います。
