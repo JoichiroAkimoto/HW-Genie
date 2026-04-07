@@ -19,3 +19,6 @@ dist/
 # Bun/Node
 node_modules/
 bun.lockb
+
+# IDE Settings
+.vscode/
