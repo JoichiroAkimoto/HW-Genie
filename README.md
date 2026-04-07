@@ -25,7 +25,8 @@ python -m venv .venv
 echo "source .venv/bin/activate" > .envrc
 direnv allow
 
-# 3. パッケージを開発モードでインストール
+# 3. 依存関係とパッケージをインストール
+pip install -r requirements.txt
 pip install -e src/python
 
 # 実行
