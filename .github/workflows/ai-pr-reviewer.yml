@@ -3,8 +3,6 @@ name: AI PR Reviewer
 on:
   pull_request:
     types: [opened, synchronize]
-  pull_request_review_comment:
-    types: [created]
 
 permissions:
   contents: read
@@ -15,6 +13,8 @@ jobs:
     # Dependabot の PR はスキップ
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    env:
+      GEMINI_MODEL: gemini-3-flash-preview # モデル名をここで一括管理
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,10 +41,10 @@ jobs:
           import google.generativeai as genai
           import subprocess
 
-          # Gemini Setup
+          # Setup
           genai.configure(api_key=os.environ['GEMINI_API_KEY'])
-          # ユーザー指定の最新プレビューモデルを使用
-          model = genai.GenerativeModel('gemini-3-flash-preview')
+          model_name = os.environ['GEMINI_MODEL']
+          model = genai.GenerativeModel(model_name)
 
           # Get PR diff
           try:
@@ -59,27 +59,27 @@ jobs:
 
           # Prepare prompt
           prompt = f"""
-          あなたはシニアソフトウェアエンジニアとして、Pull Requestのコードレビューを行います。
-          以下の差分（diff）を分析し、日本語で回答してください。
+          以下のPull Requestの差分を、簡潔かつ建設的にレビューしてください。
+          
+          内容：
+          1. 変更の要約（箇条書き）
+          2. 重大な懸念点（バグ、パフォーマンス、セキュリティ）があれば指摘
+          3. 改善の提案
+          4. 良い実装への称賛
 
-          【指示】
-          1. 最初に変更の要約（何をしようとしているか）を簡潔に述べてください。
-          2. 重大なバグ、パフォーマンスの問題、セキュリティの懸念がある場合にのみ指摘してください。
-          3. 些細な指摘やスタイルの好みは避けてください。
-          4. 良い実装があれば褒めてください。
-
-          【差分】
-          {diff[:15000]} # 安全のため文字数を制限
+          ---
+          {diff[:20000]}
           """
 
           # Generate review
           try:
               response = model.generate_content(prompt)
-              review_text = f"### 🤖 AI Code Review (Gemini 1.5 Flash)\n\n{response.text}"
+              review_header = f"### 🤖 AI Code Review ({model_name})"
+              review_text = f"{review_header}\n\n{response.text}\n\n---\n*このレビューは自動生成されました。*"
           except Exception as e:
-              review_text = f"### 🤖 AI Code Review Error\n\nGeminiでのレビュー生成中にエラーが発生しました: {e}"
+              review_text = f"### 🤖 AI Code Review Error\n\nレビュー生成中にエラーが発生しました: {e}"
 
-          # Post comment to PR
+          # Post comment
           with open('review.md', 'w') as f:
               f.write(review_text)
 
