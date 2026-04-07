@@ -22,12 +22,12 @@ jobs:
       with:
         python-version: '3.13'
         cache: 'pip'
-        cache-dependency-path: 'src/python/pyproject.toml'
+        cache-dependency-path: 'requirements.txt'
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install -r requirements.txt
         pip install -e src/python
-        pip install ruff pytest pytest-mock
     - name: Lint with ruff
       run: ruff check src/python
     - name: Test with pytest
