@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # 1. Python dependency check (src/python/pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/src/python"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    # Enable grouped updates to avoid notification clutter
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+
+  # 2. GitHub Actions dependency check
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
