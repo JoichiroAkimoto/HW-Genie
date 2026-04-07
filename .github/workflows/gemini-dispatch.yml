@@ -97,6 +97,10 @@ jobs:
               core.setOutput('command', 'review');
             } else if (['issues.opened', 'issues.reopened'].includes(eventType)) {
               core.setOutput('command', 'triage');
+            } else if (request.startsWith("@gemini-cli /quick-review")) {
+              core.setOutput('command', 'quick-review');
+              const additionalContext = request.replace(/^@gemini-cli \/quick-review/, '').trim();
+              core.setOutput('additional_context', additionalContext);
             } else if (request.startsWith("@gemini-cli /review")) {
               core.setOutput('command', 'review');
               const additionalContext = request.replace(/^@gemini-cli \/review/, '').trim();
@@ -124,6 +128,18 @@ jobs:
           gh issue comment "${ISSUE_NUMBER}" \
             --body "${MESSAGE}" \
             --repo "${REPOSITORY}"
+
+  quick-review:
+    needs: 'dispatch'
+    if: |-
+      ${{ needs.dispatch.outputs.command == 'quick-review' }}
+    uses: './.github/workflows/ai-pr-reviewer.yml'
+    permissions:
+      contents: 'read'
+      pull-requests: 'write'
+    with:
+      additional_context: '${{ needs.dispatch.outputs.additional_context }}'
+    secrets: 'inherit'
 
   review:
     needs: 'dispatch'
@@ -184,6 +200,7 @@ jobs:
   fallthrough:
     needs:
       - 'dispatch'
+      - 'quick-review'
       - 'review'
       - 'triage'
       - 'invoke'
