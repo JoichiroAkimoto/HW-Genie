@@ -34,7 +34,7 @@ def main():
         print("No diff found.")
         sys.exit(0)
 
-    # 長すぎる差分を切り詰め (10万 -> 50万へ大幅拡張)
+    # 長すぎる差分を切り詰め (50万)
     limit = 500000
     is_truncated = False
     if len(diff) > limit:
