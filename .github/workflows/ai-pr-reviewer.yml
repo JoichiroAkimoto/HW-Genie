@@ -43,10 +43,15 @@ jobs:
 
           # Gemini Setup
           genai.configure(api_key=os.environ['GEMINI_API_KEY'])
-          model = genai.GenerativeModel('gemini-3.0-flash')
+          # 3.0系が NotFound になるため、一旦 1.5 で動作を確定させます
+          model = genai.GenerativeModel('gemini-1.5-flash')
 
           # Get PR diff
-          diff = subprocess.check_output(['gh', 'pr', 'diff', os.environ['PR_NUMBER']]).decode('utf-8')
+          try:
+              diff = subprocess.check_output(['gh', 'pr', 'diff', os.environ['PR_NUMBER']]).decode('utf-8')
+          except Exception as e:
+              print(f"Error getting diff: {e}")
+              exit(0)
 
           if not diff:
               print("No diff found.")
@@ -64,12 +69,15 @@ jobs:
           4. 良い実装があれば褒めてください。
 
           【差分】
-          {diff[:30000]} # 送信制限を考慮
+          {diff[:15000]} # 安全のため文字数を制限
           """
 
           # Generate review
-          response = model.generate_content(prompt)
-          review_text = f"### 🤖 AI Code Review (Gemini 3.0 Flash)\n\n{response.text}"
+          try:
+              response = model.generate_content(prompt)
+              review_text = f"### 🤖 AI Code Review (Gemini 1.5 Flash)\n\n{response.text}"
+          except Exception as e:
+              review_text = f"### 🤖 AI Code Review Error\n\nGeminiでのレビュー生成中にエラーが発生しました: {e}"
 
           # Post comment to PR
           with open('review.md', 'w') as f:
