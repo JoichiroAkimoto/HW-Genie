@@ -1,0 +1,38 @@
+name: AI PR Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Dependabot の PR はノイズになるためスキップ
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR Reviewer
+        uses: anc95/ai-pr-reviewer@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          debug: false
+          review_simple_changes: false
+          review_comment_languge: ja-JP
+          openai_base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+          openai_model: gemini-1.5-flash
+          # カスタムプロンプト（日本語での要約とレビューを指示）
+          system_message: |
+            あなたはシニアソフトウェアエンジニアとして、Pull Requestのコードレビューを行います。
+            以下の指示に従ってください：
+            - 日本語で回答してください。
+            - 最初に要約（何をしようとしているか）を簡潔に述べてください。
+            - 重大なバグ、パフォーマンスの問題、保守性の懸念がある場合にのみコメントしてください。
+            - 些細な指摘やスタイルの好みは避けてください。
+            - 良い実装があれば褒めてください。
