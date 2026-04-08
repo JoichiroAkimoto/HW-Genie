@@ -39,11 +39,11 @@ rm -f "$DIST_DIR/bundle.tmp.js"
 # Inject URL if provided
 if [[ -n "$INJECT_URL" ]]; then
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
-    sed -i '' "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
+    sed -i '' "s@__DOWNLOAD_URL__@$INJECT_URL@g" "$OUTPUT"
+    sed -i '' "s@__UPDATE_URL__@$INJECT_URL@g" "$OUTPUT"
   else
-    sed -i "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
-    sed -i "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
+    sed -i "s@__DOWNLOAD_URL__@$INJECT_URL@g" "$OUTPUT"
+    sed -i "s@__UPDATE_URL__@$INJECT_URL@g" "$OUTPUT"
   fi
 fi
 
