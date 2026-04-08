@@ -17,7 +17,9 @@ def main():
 
     client = genai.Client(api_key=api_key)
     
-    # 軽量・高速モデルをデフォルトとして設定
+    # 日本時間のタイムゾーン設定
+    JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
+    
     model_name = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
     
     pr_number = os.environ.get('PR_NUMBER')
@@ -27,7 +29,6 @@ def main():
         print("Error: PR_NUMBER or GITHUB_REPOSITORY is missing.")
         sys.exit(1)
 
-    # PRの差分を取得
     try:
         raw_diff = subprocess.check_output(['gh', 'pr', 'diff', pr_number]).decode('utf-8')
     except Exception as e:
@@ -38,7 +39,6 @@ def main():
         print("No diff found.")
         sys.exit(0)
 
-    # ロックファイルや画像の差分を堅牢に除外する
     try:
         patch = PatchSet(io.StringIO(raw_diff))
         filtered_diff = ""
@@ -59,14 +59,12 @@ def main():
         print("Diff contains only ignored files.")
         sys.exit(0)
 
-    # 長すぎる差分を切り詰め (50万)
     limit = 500000
     is_truncated = False
     if len(diff) > limit:
         diff = diff[:limit]
         is_truncated = True
 
-    # プロンプトの準備
     prompt = f"""
 以下のPull Requestの差分（diff）を深く考察し（思考レベル: High）、簡潔にレビューしてください。
 
@@ -81,8 +79,7 @@ def main():
 """
 
     try:
-        # レビュー生成
-        start_time = datetime.datetime.now(datetime.timezone.utc)
+        start_time = datetime.datetime.now(JST)
         config = types.GenerateContentConfig(
             thinking_config=types.ThinkingConfig(
                 thinking_level=os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
@@ -94,7 +91,7 @@ def main():
             contents=prompt,
             config=config
         )
-        end_time = datetime.datetime.now(datetime.timezone.utc)
+        end_time = datetime.datetime.now(JST)
         duration = (end_time - start_time).total_seconds()
         
         try:
@@ -103,10 +100,9 @@ def main():
             reason = str(response.candidates[0].finish_reason) if response.candidates else "UNKNOWN"
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
-        # Execution Info の生成
         metadata = "\n\n---\n<details><summary>⚡ Execution Info</summary>\n\n"
         metadata += f"- **Model**: `{model_name}`\n"
-        metadata += f"- **Completed at**: `{end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}`\n"
+        metadata += f"- **Completed at**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}`\n"
         metadata += f"- **Duration**: `{duration:.2f} seconds`\n"
         metadata += f"- **Files modified**: `{files_modified_count}`\n"
         
@@ -125,7 +121,6 @@ def main():
         with open('review.md', 'w') as f:
             f.write(review_text)
 
-        # 既存のコメントを探す
         try:
             comments_json = subprocess.check_output(
                 ['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments?per_page=100']
