@@ -12,8 +12,8 @@ def main():
 
     genai.configure(api_key=api_key)
     
-    # モデルの取得（環境変数がなければデフォルト値を設定）
-    model_name = os.environ.get('GEMINI_MODEL', 'gemini-3-flash-preview')
+    # 軽量・高速モデルをデフォルトとして設定
+    model_name = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
     model = genai.GenerativeModel(model_name)
     
     pr_number = os.environ.get('PR_NUMBER')
