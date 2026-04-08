@@ -4,6 +4,10 @@ from google.genai import types
 import subprocess
 import json
 import sys
+import datetime
+import re
+import io
+from unidiff import PatchSet
 
 def main():
     api_key = os.environ.get('GEMINI_API_KEY')
@@ -28,31 +32,28 @@ def main():
         raw_diff = subprocess.check_output(['gh', 'pr', 'diff', pr_number]).decode('utf-8')
     except Exception as e:
         print(f"Error getting diff: {e}")
-        sys.exit(1) # CIを正しく失敗させる
+        sys.exit(1)
 
     if not raw_diff:
         print("No diff found.")
         sys.exit(0)
 
     # ロックファイルや画像の差分を堅牢に除外する
-    import re
-    from unidiff import PatchSet
-    import io
-    
     try:
         patch = PatchSet(io.StringIO(raw_diff))
         filtered_diff = ""
+        files_modified_count = 0
         for file in patch:
             path = file.path if hasattr(file, 'path') and file.path else ""
-            # 不要なファイルを正規表現で除外
             if re.search(r'(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$', path, re.IGNORECASE):
                 continue
             filtered_diff += str(file) + "\n"
+            files_modified_count += 1
         diff = filtered_diff
     except Exception as e:
         print(f"Failed to parse diff with unidiff: {e}")
-        # パース失敗時は元の差分をフォールバック
         diff = raw_diff
+        files_modified_count = "N/A"
 
     if not diff.strip():
         print("Diff contains only ignored files.")
@@ -81,8 +82,7 @@ def main():
 
     try:
         # レビュー生成
-        # 思考(Thinking)機能の出力レベルを最大化するため、デフォルトで HIGH を指定
-        # 推論時間を長めに取ってでも高いクオリティのコードレビューを行うことを期待しています
+        start_time = datetime.datetime.now(datetime.timezone.utc)
         config = types.GenerateContentConfig(
             thinking_config=types.ThinkingConfig(
                 thinking_level=os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
@@ -94,18 +94,21 @@ def main():
             contents=prompt,
             config=config
         )
+        end_time = datetime.datetime.now(datetime.timezone.utc)
+        duration = (end_time - start_time).total_seconds()
         
         try:
             body = response.text
         except ValueError:
-            # Safety Settings によるブロック等を検知
             reason = str(response.candidates[0].finish_reason) if response.candidates else "UNKNOWN"
-            body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n> 差分に機密情報やセーフティフィルターに抵触する内容が含まれている可能性があります。\n"
+            body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
-        
-        # 実行結果メタデータの作成 (Review Metadata -> Execution Info に変更)
+        # Execution Info の生成
         metadata = "\n\n---\n<details><summary>⚡ Execution Info</summary>\n\n"
         metadata += f"- **Model**: `{model_name}`\n"
+        metadata += f"- **Completed at**: `{end_time.strftime('%Y-%m-%d %H:%M:%S UTC')}`\n"
+        metadata += f"- **Duration**: `{duration:.2f} seconds`\n"
+        metadata += f"- **Files modified**: `{files_modified_count}`\n"
         
         try:
             usage = response.usage_metadata
@@ -114,7 +117,7 @@ def main():
             metadata += "- **Tokens**: (Usage metadata not available)\n"
             
         if is_truncated:
-            metadata += "- **Status**: ⚠️ Diff was truncated to 500,000 characters due to limits.\n"
+            metadata += "- **Status**: ⚠️ Diff was truncated.\n"
         metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
 
         review_text = f"### 🤖 AI Code Review\n\n{body}{metadata}"
@@ -122,7 +125,7 @@ def main():
         with open('review.md', 'w') as f:
             f.write(review_text)
 
-        # 既存のコメントを探す (per_page=100で確実性を高める)
+        # 既存のコメントを探す
         try:
             comments_json = subprocess.check_output(
                 ['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments?per_page=100']
@@ -132,13 +135,11 @@ def main():
 
             if existing_comment:
                 subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{repo}/issues/comments/{existing_comment["id"]}', '-F', 'body=@review.md'], check=True)
-                print(f"Updated comment {existing_comment['id']}")
             else:
                 subprocess.run(['gh', 'pr', 'comment', pr_number, '--body-file', 'review.md'], check=True)
-                print("Created new comment")
                 
         except Exception as api_e:
-            print(f"GitHub API Error (Non-fatal): {api_e}")
+            print(f"GitHub API Error: {api_e}")
 
     except Exception as e:
         print(f"Gemini Review Error: {e}")
