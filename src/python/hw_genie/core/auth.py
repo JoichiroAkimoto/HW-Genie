@@ -67,6 +67,16 @@ def save_session(data: SessionData, account: str = "default") -> None:
     with open(path, "w") as f:
         json.dump(save_data, f, indent=2)
 
+def load_session(account: str = "default") -> Optional[SessionData]:
+    path = get_session_path(account)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            data = json.load(f)
+            if "player" in data and isinstance(data["player"], dict):
+                data["player"] = PlayerStatus.from_dict(data["player"])
+            return data
+    return None
+
 def update_session_with_headers(headers: dict[str, str], account_alias: str = "default") -> SessionData:
     info = get_user_info(headers)
     if info["status"] == "success":
