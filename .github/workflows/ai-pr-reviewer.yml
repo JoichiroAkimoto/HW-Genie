@@ -22,7 +22,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     env:
-      GEMINI_MODEL: gemini-3-flash-preview # 軽量・高速モデル
+      GEMINI_MODEL: gemini-3.1-flash-lite-preview # 軽量・高速モデル
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
