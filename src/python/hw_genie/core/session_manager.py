@@ -32,13 +32,20 @@ class SessionManager:
             return cls._cached_data
             
         with open(cls._loaded_path, "r") as f:
-            cls._cached_data = json.load(f)
+            try:
+                cls._cached_data = json.load(f)
+            except json.JSONDecodeError:
+                cls._cached_data = {}
         return cls._cached_data
 
     @classmethod
     def save(cls):
-        if cls._cached_data is None or cls._loaded_path is None:
-            return
+        if cls._cached_data is None:
+            # キャッシュがない場合は現在のセッションをロードしてから保存を試みる
+            cls.load()
+            
+        if cls._loaded_path is None:
+            cls._loaded_path = cls._get_session_path()
             
         with open(cls._loaded_path, "w") as f:
             json.dump(cls._cached_data, f, indent=2)
