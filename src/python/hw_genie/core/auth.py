@@ -168,13 +168,16 @@ def save_session(data: SessionData, account: str = "default") -> None:
     if "player" in save_data and hasattr(save_data["player"], "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
 
-    # マージ元のミッションIDを取得 (accountを指定して取得する)
+    # マージ元のミッションIDを取得 (accountを指定)
     mission_id = SessionManager.get_last_mission_id(account=account)
+    
+    # ★追加: もし指定したaccountのIDがNoneなら、defaultのIDも確認する（同期のため）
+    if mission_id is None:
+        mission_id = SessionManager.get_last_mission_id(account="default")
     
     if mission_id is not None:
         save_data["last_item_raid_mission_id"] = mission_id
     elif "last_item_raid_mission_id" in existing_data:
-        # ファイルに既にある場合はそれを維持
         save_data["last_item_raid_mission_id"] = existing_data["last_item_raid_mission_id"]
         
     with open(path, "w") as f:
