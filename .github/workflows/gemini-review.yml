@@ -106,4 +106,11 @@ jobs:
                 ]
               }
             }
-          prompt: '/gemini-review'
+          prompt: |-
+            /gemini-review
+            
+            [IMPORTANT: Formatting Instructions]
+            - Output raw Markdown directly.
+            - DO NOT escape markdown characters (e.g. NEVER use \## or \**).
+            - Headings must start exactly with # (without any leading spaces) followed by a space.
+            - Ensure there is at least one blank line before each heading.
