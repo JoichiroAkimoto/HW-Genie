@@ -168,11 +168,13 @@ def save_session(data: SessionData, account: str = "default") -> None:
     if "player" in save_data and hasattr(save_data["player"], "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
 
-    # SessionManager から永続化データを取得してマージ
-    mission_id = SessionManager.get_last_mission_id()
+    # マージ元のミッションIDを取得 (accountを指定して取得する)
+    mission_id = SessionManager.get_last_mission_id(account=account)
+    
     if mission_id is not None:
         save_data["last_item_raid_mission_id"] = mission_id
     elif "last_item_raid_mission_id" in existing_data:
+        # ファイルに既にある場合はそれを維持
         save_data["last_item_raid_mission_id"] = existing_data["last_item_raid_mission_id"]
         
     with open(path, "w") as f:
@@ -196,11 +198,13 @@ def update_session_with_headers(headers: dict[str, str], account_alias: str = "d
     """ヘッダー情報を元にユーザー情報を取得し、session.json と個別のセッションファイルを更新する"""
     info = get_user_info(headers)
     if info["status"] == "success":
+        # プレイヤー名を取得
+        player_name = info["player"].name
+        
         # 1. session.json (default) を保存
         save_session(info, "default")
 
         # 2. プレイヤー名でのセッションファイルを保存
-        player_name = info["player"].name
         save_session(info, player_name)
 
         # 3. エイリアス指定があればそれも保存
