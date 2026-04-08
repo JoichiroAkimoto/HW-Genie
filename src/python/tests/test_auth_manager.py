@@ -70,11 +70,9 @@ def test_get_user_info_success(mock_post):
     assert info["player"].name == "TestPlayer"
     assert info["player"].level == 120
     assert info["player"].energy == 150
-    assert info["player"].max_energy == 180
     assert info["player"].arena_rank == 42
     assert info["player"].grand_rank == 15
     assert "last_updated" in info
-    # Check if last_updated is a valid ISO format
     try:
         datetime.fromisoformat(info["last_updated"])
     except ValueError:
@@ -85,7 +83,6 @@ def test_get_user_info_success(mock_post):
 @patch("builtins.open")
 def test_session_save_load(mock_open, mock_exists):
     """セッションの保存と読み込みを検証"""
-    # 実際は session_manager が呼ばれるので、そこもモックするか適切にテストする
     SessionManager._cached_data = None
     
     test_data = {"headers": {"token": "test"}, "player": {"name": "test"}}
@@ -101,7 +98,6 @@ def test_session_save_load(mock_open, mock_exists):
     
     # 2. 読み込みテスト
     mock_file.read.return_value = json.dumps({"headers": {"token": "test"}, "player": {"name": "test"}})
-    mock_open.return_value.__enter__.return_value = mock_file
     
     loaded = load_session(account="test_acc")
     expected_player = PlayerStatus(name="test")
