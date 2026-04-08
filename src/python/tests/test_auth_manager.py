@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 import pytest
 from datetime import datetime
-import os
 import json
 from hw_genie.core.session_manager import SessionManager
 
