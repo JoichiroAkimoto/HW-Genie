@@ -151,10 +151,25 @@ def save_session(data: SessionData, account: str = "default") -> None:
     path = get_session_path(account)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     
+    # 既存のデータを読み込んで mission_id を保持する
+    existing_data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+                if content:
+                    existing_data = json.loads(content)
+        except (json.JSONDecodeError, IOError, TypeError):
+            pass
+
     # PlayerStatus オブジェクトが含まれる場合は辞書に変換
     save_data = data.copy()
     if "player" in save_data and hasattr(save_data["player"], "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
+
+    # mission_id が存在すればマージ
+    if "last_item_raid_mission_id" in existing_data:
+        save_data["last_item_raid_mission_id"] = existing_data["last_item_raid_mission_id"]
         
     with open(path, "w") as f:
         json.dump(save_data, f, indent=2)
