@@ -52,7 +52,8 @@ def extract_payload_from_curl(curl_command):
                 if filtered_calls:
                     return {"calls": filtered_calls}
             return full_payload
-        except Exception: pass
+        except Exception:
+            pass
     return None
 
 def get_session_path(account="default"):
@@ -72,8 +73,10 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
             user_info = {}
             arena_info = {}
             for item in res_data["results"]:
-                if item["ident"] == "body": user_info = item["result"]["response"]
-                elif item["ident"] == "arena": arena_info = item["result"]["response"]
+                if item["ident"] == "body":
+                    user_info = item["result"]["response"]
+                elif item["ident"] == "arena":
+                    arena_info = item["result"]["response"]
             player = PlayerStatus(
                 name=user_info.get("name", "Unknown"),
                 level=user_info.get("level", 0),
@@ -96,7 +99,8 @@ def save_session(data: SessionData, account: str = "default") -> None:
         try:
             with open(path, "r") as f:
                 existing_data = json.load(f)
-        except Exception: pass
+        except Exception:
+            pass
 
     save_data = data.copy()
     if hasattr(save_data.get("player"), "to_dict"):
