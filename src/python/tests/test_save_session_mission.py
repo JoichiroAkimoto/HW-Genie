@@ -1,7 +1,7 @@
 import pytest
 import os
 import json
-from hw_genie.core.auth import save_session, load_session, SessionData
+from hw_genie.core.auth import save_session
 
 TEST_SESSION_FILE = "session.json"
 
