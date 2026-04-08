@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TypedDict
 import requests
 from hw_genie.core.client import PlayerStatus
+from hw_genie.core.session_manager import SessionManager
 
 class SessionData(TypedDict, total=False):
     headers: dict[str, str]
@@ -151,7 +152,7 @@ def save_session(data: SessionData, account: str = "default") -> None:
     path = get_session_path(account)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     
-    # 既存のデータを読み込んで mission_id を保持する
+    # 既存のデータを読み込む
     existing_data = {}
     if os.path.exists(path):
         try:
@@ -167,8 +168,12 @@ def save_session(data: SessionData, account: str = "default") -> None:
     if "player" in save_data and hasattr(save_data["player"], "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
 
-    # mission_id が存在すればマージ
-    if "last_item_raid_mission_id" in existing_data:
+    # SessionManager から永続化データを取得してマージ
+    mission_id = SessionManager.get_last_mission_id()
+    if mission_id is not None:
+        save_data["last_item_raid_mission_id"] = mission_id
+    elif "last_item_raid_mission_id" in existing_data:
+        # もし SessionManager にないがファイルにはあるなら、同期してあげる
         save_data["last_item_raid_mission_id"] = existing_data["last_item_raid_mission_id"]
         
     with open(path, "w") as f:
