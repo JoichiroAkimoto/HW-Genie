@@ -26,9 +26,8 @@ jobs:
           echo "Extracted version: $VERSION"
 
       - name: Install dependencies
-        run: |
-          cd src/userscripts
-          bun install --frozen-lockfile
+        run: bun install --frozen-lockfile
+        working-directory: src/userscripts
 
       - name: Build userscript
         run: bash ./build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
@@ -51,8 +50,10 @@ jobs:
               "src/userscripts/dist/hw-genie-auth-capture.user.js"
           fi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
 
       - name: Verify Release
         run: |
           gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" --json name,url,assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
