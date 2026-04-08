@@ -21,13 +21,12 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    env:
-      GEMINI_MODEL: gemini-3-flash-preview # 軽量・高速モデル
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
