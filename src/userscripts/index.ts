@@ -1,11 +1,16 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/HW-Genie
-// @version      1.0.1
+// @version      1.0.2
 // @description  Automatically capture auth headers and send to HW-Genie auth server
+// @author       JoichiroAkimoto
+// @license      MIT
+// @supportURL   https://github.com/HW-Genie/HW-Genie/issues
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
+// @downloadURL  __DOWNLOAD_URL__
+// @updateURL    __UPDATE_URL__
 // ==/UserScript==
 
 /**

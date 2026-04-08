@@ -1,0 +1,59 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '@version' src/userscripts/index.ts | sed 's/.* //')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        working-directory: src/userscripts
+
+      - name: Build userscript
+        run: bash ./build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+        working-directory: src/userscripts
+
+      - name: Create or Update Release
+        id: release
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          
+          # Check if release exists
+          if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
+            echo "Release exists, uploading asset..."
+            gh release upload "v${{ steps.version.outputs.version }}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
+          else
+            echo "Creating new release..."
+            gh release create "v${{ steps.version.outputs.version }}" \
+              --title "v${{ steps.version.outputs.version }}" \
+              --notes "Userscript release v${{ steps.version.outputs.version }}" \
+              "src/userscripts/dist/hw-genie-auth-capture.user.js"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verify Release
+        run: |
+          gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" --json name,url,assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
