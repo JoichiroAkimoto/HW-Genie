@@ -2,7 +2,7 @@ import json
 import os
 from typing import Optional, Dict, Any
 
-# セッションファイルの検索順序（client.pyと整合性をとる）
+# セッションファイルの検索順序
 SEARCH_PATHS = [
     "session.json",
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "session.json")),
@@ -22,40 +22,32 @@ class SessionManager:
         return "session.json"  # デフォルト
 
     @classmethod
-    def load(cls) -> Dict[str, Any]:
-        if cls._cached_data is not None:
-            return cls._cached_data
+    def load(cls, path: Optional[str] = None) -> Dict[str, Any]:
+        """指定されたパスまたはデフォルトのパスからセッションをロードする"""
+        target_path = path or cls._get_session_path()
+        if not os.path.exists(target_path):
+            return {}
             
-        cls._loaded_path = cls._get_session_path()
-        if not os.path.exists(cls._loaded_path):
-            cls._cached_data = {}
-            return cls._cached_data
-            
-        with open(cls._loaded_path, "r") as f:
+        with open(target_path, "r") as f:
             try:
-                cls._cached_data = json.load(f)
+                return json.load(f)
             except json.JSONDecodeError:
-                cls._cached_data = {}
-        return cls._cached_data
+                return {}
 
     @classmethod
-    def save(cls):
-        if cls._cached_data is None:
-            # キャッシュがない場合は現在のセッションをロードしてから保存を試みる
-            cls.load()
-            
-        if cls._loaded_path is None:
-            cls._loaded_path = cls._get_session_path()
-            
-        with open(cls._loaded_path, "w") as f:
-            json.dump(cls._cached_data, f, indent=2)
+    def get_last_mission_id(cls, account: str = "default") -> Optional[int]:
+        """指定されたアカウントのセッションファイルからミッションIDを取得する"""
+        from hw_genie.core.auth import get_session_path
+        path = get_session_path(account)
+        return cls.load(path).get("last_item_raid_mission_id")
 
     @classmethod
-    def get_last_mission_id(cls) -> Optional[int]:
-        return cls.load().get("last_item_raid_mission_id")
-
-    @classmethod
-    def set_last_mission_id(cls, mission_id: int):
-        data = cls.load()
+    def set_last_mission_id(cls, mission_id: int, account: str = "default"):
+        """指定されたアカウントのセッションファイルにミッションIDを保存する"""
+        from hw_genie.core.auth import get_session_path
+        path = get_session_path(account)
+        data = cls.load(path)
         data["last_item_raid_mission_id"] = mission_id
-        cls.save()
+        
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)

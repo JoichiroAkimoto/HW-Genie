@@ -8,15 +8,18 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         from hw_genie.core.client import HWClient
 
         client = HWClient(client_or_headers)
+        # ヘッダーからアカウント名を推測する（x-auth-user-id などを使うのが確実だが、ここでは簡易的に）
+        account = client.headers.get("x-auth-user-id", "default")
     else:
         client = client_or_headers
+        account = "default"
 
     # ミッションIDの決定: payload_template > SessionManager
     mission_id = payload_template.get("mission_id")
     if mission_id:
-        SessionManager.set_last_mission_id(mission_id)
+        SessionManager.set_last_mission_id(mission_id, account=account)
     else:
-        mission_id = SessionManager.get_last_mission_id()
+        mission_id = SessionManager.get_last_mission_id(account=account)
         # payload_template にも反映しておく
         payload_template["mission_id"] = mission_id
 
@@ -29,7 +32,6 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         payload = client.prepare_item_payload(payload_template)
         
         # mission_id がある場合はペイロードの適切な場所に埋め込む必要がある
-        # 本来は payload_template に含まれているべきだが、念のため補完
         for call in payload.get("calls", []):
             if call.get("name") == "missionRaid":
                 call["args"]["id"] = mission_id
