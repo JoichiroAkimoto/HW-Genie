@@ -1,7 +1,7 @@
 import json
 import os
 import re
-import time
+
 from datetime import datetime
 from typing import TypedDict, Optional
 import requests
@@ -53,7 +53,8 @@ def extract_payload_from_curl(curl_command):
                 if filtered_calls:
                     return {"calls": filtered_calls}
             return full_payload
-        except Exception: pass
+        except Exception:
+            pass
     return None
 
 def get_session_path(account="default"):
@@ -100,7 +101,8 @@ def save_session(data: SessionData, account: str = "default") -> None:
         try:
             with open(path, "r") as f:
                 existing_data = json.load(f)
-        except Exception: pass
+        except Exception:
+            pass
 
     save_data = data.copy()
     if hasattr(save_data.get("player"), "to_dict"):
