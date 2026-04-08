@@ -31,9 +31,8 @@ jobs:
           bun install --frozen-lockfile
 
       - name: Build userscript
-        run: |
-          cd src/userscripts
-          bun run build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+        run: ./build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+        working-directory: src/userscripts
 
       - name: Create or Update Release
         id: release
