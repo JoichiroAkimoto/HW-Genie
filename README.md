@@ -54,6 +54,14 @@ hw-genie auth-server
 HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
+### ユーザースクリプトの更新
+`git tag` をプッシュすると GitHub Release に自動公開されます:
+```bash
+git tag v1.0.2
+git push --tags
+```
+Tampermonkey が自動的に更新を検知します。
+
 ### Gemini CLI 連携
 本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI等のツールから自然言語でレイド等を指示できます。
 
