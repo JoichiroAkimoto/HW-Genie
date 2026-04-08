@@ -82,13 +82,11 @@ def main():
     try:
         # レビュー生成
         config_kwargs = {}
-        # Gemini 3 Pro 等の推論能力を最大限に引き出すため Thinking Level を設定
-        thinking_level = os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
-        if 'pro' in model_name.lower() or 'thinking' in model_name.lower() or os.environ.get('GEMINI_THINKING_LEVEL'):
-             config_kwargs['thinking_config'] = types.ThinkingConfig(
-                 thinking_level=thinking_level
-                 # include_thoughts=True # 必要に応じて思考プロセスの出力も可能
-             )
+        # 推論(Thinking)モデル使用時、思考能力を最大化するためデフォルトで HIGH に設定
+        if 'thinking' in model_name.lower() or os.environ.get('GEMINI_THINKING_LEVEL'):
+            config_kwargs['thinking_config'] = types.ThinkingConfig(
+                thinking_level=os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
+            )
         
         response = client.models.generate_content(
             model=model_name,
