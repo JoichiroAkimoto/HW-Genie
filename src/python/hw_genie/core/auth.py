@@ -1,7 +1,5 @@
 import json
 import os
-import re
-
 from datetime import datetime
 from typing import TypedDict, Optional
 import requests
@@ -17,50 +15,8 @@ class SessionData(TypedDict, total=False):
 
 PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
-def extract_headers_from_curl(curl_command):
-    """curlコマンドから x-auth-* ヘッダーを抽出する"""
-    headers = {}
-    matches = re.findall(r"-H\s+['\"]([^'\"]+)['\"]", curl_command)
-    for match in matches:
-        if ":" in match:
-            key, value = match.split(":", 1)
-            key = key.strip().lower()
-            if key.startswith("x-auth-"):
-                headers[key] = value.strip()
-        elif match.strip().lower().startswith("x-auth-"):
-            key = match.strip().rstrip(";").lower()
-            headers[key] = ""
-    return headers
-
-def extract_payload_from_curl(curl_command):
-    """curlコマンドから JSON ペイロードを抽出し、stashClient などの不要な命令のみを除去する"""
-    payload_str = None
-    match = re.search(r"--data(?:-raw)?\s+'({.*})'", curl_command, re.DOTALL)
-    if not match:
-        match = re.search(r"--data(?:-raw)?\s+\"({.*})\"", curl_command, re.DOTALL)
-    if not match:
-        match = re.search(r"--data(?:-raw)?\s+({.*})", curl_command, re.DOTALL)
-    if match:
-        payload_str = match.group(1).strip()
-        if payload_str.endswith("'") or payload_str.endswith('"'):
-            payload_str = payload_str[:-1].strip()
-    if payload_str:
-        try:
-            full_payload = json.loads(payload_str)
-            if "calls" in full_payload:
-                noise_names = ["stashClient", "trackEvent", "billingGetLast"]
-                filtered_calls = [c for c in full_payload["calls"] if c.get("name") not in noise_names]
-                if filtered_calls:
-                    return {"calls": filtered_calls}
-            return full_payload
-        except Exception:
-            pass
-    return None
-
 def get_session_path(account="default"):
-    if account == "default":
-        return os.path.join(PKG_ROOT, "session.json")
-    return os.path.join(PKG_ROOT, f"session.{account}.json")
+    return os.path.join(PKG_ROOT, "session.json" if account == "default" else f"session.{account}.json")
 
 def get_user_info(headers: dict[str, str]) -> SessionData:
     url = "https://heroes-wb.nextersglobal.com/api/"
@@ -74,11 +30,8 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
             user_info = {}
             arena_info = {}
             for item in res_data["results"]:
-                if item["ident"] == "body":
-                    user_info = item["result"]["response"]
-                elif item["ident"] == "arena":
-                    arena_info = item["result"]["response"]
-
+                if item["ident"] == "body": user_info = item["result"]["response"]
+                elif item["ident"] == "arena": arena_info = item["result"]["response"]
             player = PlayerStatus(
                 name=user_info.get("name", "Unknown"),
                 level=user_info.get("level", 0),
@@ -101,30 +54,18 @@ def save_session(data: SessionData, account: str = "default") -> None:
         try:
             with open(path, "r") as f:
                 existing_data = json.load(f)
-        except Exception:
-            pass
+        except Exception: pass
 
     save_data = data.copy()
     if hasattr(save_data.get("player"), "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
 
-    mission_id = SessionManager.get_last_mission_id(account=account)
     mission_id = SessionManager.get_last_mission_id(account=account) or existing_data.get("last_item_raid_mission_id")
     if mission_id is not None:
         save_data["last_item_raid_mission_id"] = mission_id
         
     with open(path, "w") as f:
         json.dump(save_data, f, indent=2)
-
-def load_session(account: str = "default") -> Optional[SessionData]:
-    path = get_session_path(account)
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            data = json.load(f)
-            if "player" in data and isinstance(data["player"], dict):
-                data["player"] = PlayerStatus.from_dict(data["player"])
-            return data
-    return None
 
 def update_session_with_headers(headers: dict[str, str], account_alias: str = "default") -> SessionData:
     info = get_user_info(headers)

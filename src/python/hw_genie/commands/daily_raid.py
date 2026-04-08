@@ -3,6 +3,7 @@ from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.core.utils import print_player_status
+from hw_genie.core.session_manager import SessionManager
 
 # デフォルトのミッションリスト
 HERO_MISSION_IDS = [76, 116, 193, 198, 203, 204, 214]
@@ -13,8 +14,10 @@ def run_daily_raid(client_or_headers, item_payload=None):
         from hw_genie.core.client import HWClient
 
         client = HWClient(client_or_headers)
+        account = client.headers.get("x-auth-user-id", "default")
     else:
         client = client_or_headers
+        account = "default"
 
     print(f"\n{Emojis.START}Starting Daily Routine...", flush=True)
 
@@ -29,7 +32,13 @@ def run_daily_raid(client_or_headers, item_payload=None):
         return (hero_res, recovery_count, ex_info), (None, None)
 
     # 2. Item Raid
-    if item_payload:
+    if item_payload is not None:
+        # mission_id がない場合は SessionManager から補完する
+        if item_payload.get("mission_id") is None:
+            mission_id = SessionManager.get_last_mission_id(account=account)
+            if mission_id:
+                item_payload["mission_id"] = mission_id
+        
         print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
         client.sleep()
         run_item_raid(client, item_payload)
