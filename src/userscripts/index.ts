@@ -6,6 +6,8 @@
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
+// @downloadURL  __DOWNLOAD_URL__
+// @updateURL    __UPDATE_URL__
 // ==/UserScript==
 
 /**
