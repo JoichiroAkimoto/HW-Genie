@@ -110,7 +110,8 @@ jobs:
             /gemini-review
             
             [IMPORTANT: Formatting Instructions]
-            - Output raw Markdown directly.
+            - Output ONLY valid, raw Markdown.
+            - DO NOT output any XML or HTML-like tags (e.g. NEVER use <SUMMARY>, <review>, etc.).
             - DO NOT escape markdown characters (e.g. NEVER use \## or \**).
             - Headings must start exactly with # (without any leading spaces) followed by a space.
             - Ensure there is at least one blank line before each heading.
