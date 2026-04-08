@@ -108,9 +108,7 @@ def save_session(data: SessionData, account: str = "default") -> None:
     if hasattr(save_data.get("player"), "to_dict"):
         save_data["player"] = save_data["player"].to_dict()
 
-    print(f"DEBUG: Getting ID for {account}")
     mission_id = SessionManager.get_last_mission_id(account=account)
-    print(f"DEBUG: Got {mission_id}")
     mission_id = SessionManager.get_last_mission_id(account=account) or existing_data.get("last_item_raid_mission_id")
     if mission_id is not None:
         save_data["last_item_raid_mission_id"] = mission_id
