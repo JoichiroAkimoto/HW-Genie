@@ -2,6 +2,9 @@
   "name": "userscripts",
   "module": "index.ts",
   "type": "module",
+  "scripts": {
+    "build": "./build.sh"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
