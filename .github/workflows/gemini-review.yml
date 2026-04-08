@@ -110,6 +110,7 @@ jobs:
             /gemini-review
             
             [IMPORTANT: Formatting Instructions]
+            - ALL Output must be written strictly in Japanese. (出力は必ず日本語で行ってください)
             - Output ONLY valid, raw Markdown.
             - DO NOT output any XML or HTML-like tags (e.g. NEVER use <SUMMARY>, <review>, etc.).
             - DO NOT escape markdown characters (e.g. NEVER use \## or \**).
