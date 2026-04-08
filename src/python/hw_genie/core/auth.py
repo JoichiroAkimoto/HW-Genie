@@ -173,7 +173,6 @@ def save_session(data: SessionData, account: str = "default") -> None:
     if mission_id is not None:
         save_data["last_item_raid_mission_id"] = mission_id
     elif "last_item_raid_mission_id" in existing_data:
-        # もし SessionManager にないがファイルにはあるなら、同期してあげる
         save_data["last_item_raid_mission_id"] = existing_data["last_item_raid_mission_id"]
         
     with open(path, "w") as f:
