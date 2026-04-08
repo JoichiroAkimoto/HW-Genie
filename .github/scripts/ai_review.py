@@ -1,5 +1,6 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import subprocess
 import json
 import sys
@@ -10,11 +11,10 @@ def main():
         print("Error: GEMINI_API_KEY is not set.")
         sys.exit(1)
 
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     
     # 軽量・高速モデルをデフォルトとして設定
     model_name = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
-    model = genai.GenerativeModel(model_name)
     
     pr_number = os.environ.get('PR_NUMBER')
     repo = os.environ.get('GITHUB_REPOSITORY')
@@ -81,13 +81,26 @@ def main():
 
     try:
         # レビュー生成
-        response = model.generate_content(prompt)
+        config_kwargs = {}
+        # Gemini 3 Pro 等の推論能力を最大限に引き出すため Thinking Level を設定
+        thinking_level = os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
+        if 'pro' in model_name.lower() or 'thinking' in model_name.lower() or os.environ.get('GEMINI_THINKING_LEVEL'):
+             config_kwargs['thinking_config'] = types.ThinkingConfig(
+                 thinking_level=thinking_level
+                 # include_thoughts=True # 必要に応じて思考プロセスの出力も可能
+             )
+        
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        )
         
         try:
             body = response.text
         except ValueError:
             # Safety Settings によるブロック等を検知
-            reason = response.candidates[0].finish_reason.name if response.candidates else "UNKNOWN"
+            reason = str(response.candidates[0].finish_reason) if response.candidates else "UNKNOWN"
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n> 差分に機密情報やセーフティフィルターに抵触する内容が含まれている可能性があります。\n"
 
         
