@@ -81,17 +81,18 @@ def main():
 
     try:
         # レビュー生成
-        config_kwargs = {}
-        # 推論(Thinking)モデル使用時、思考能力を最大化するためデフォルトで HIGH に設定
-        if 'thinking' in model_name.lower() or os.environ.get('GEMINI_THINKING_LEVEL'):
-            config_kwargs['thinking_config'] = types.ThinkingConfig(
+        # 思考(Thinking)機能の出力レベルを最大化するため、デフォルトで HIGH を指定
+        # 推論時間を長めに取ってでも高いクオリティのコードレビューを行うことを期待しています
+        config = types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(
                 thinking_level=os.environ.get('GEMINI_THINKING_LEVEL', 'HIGH')
             )
+        )
         
         response = client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+            config=config
         )
         
         try:
