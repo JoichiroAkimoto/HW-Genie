@@ -17,6 +17,45 @@ class SessionData(TypedDict, total=False):
 
 PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
+def extract_headers_from_curl(curl_command):
+    """curlコマンドから x-auth-* ヘッダーを抽出する"""
+    headers = {}
+    matches = re.findall(r"-H\s+['\"]([^'\"]+)['\"]", curl_command)
+    for match in matches:
+        if ":" in match:
+            key, value = match.split(":", 1)
+            key = key.strip().lower()
+            if key.startswith("x-auth-"):
+                headers[key] = value.strip()
+        elif match.strip().lower().startswith("x-auth-"):
+            key = match.strip().rstrip(";").lower()
+            headers[key] = ""
+    return headers
+
+def extract_payload_from_curl(curl_command):
+    """curlコマンドから JSON ペイロードを抽出し、stashClient などの不要な命令のみを除去する"""
+    payload_str = None
+    match = re.search(r"--data(?:-raw)?\s+'({.*})'", curl_command, re.DOTALL)
+    if not match:
+        match = re.search(r"--data(?:-raw)?\s+\"({.*})\"", curl_command, re.DOTALL)
+    if not match:
+        match = re.search(r"--data(?:-raw)?\s+({.*})", curl_command, re.DOTALL)
+    if match:
+        payload_str = match.group(1).strip()
+        if payload_str.endswith("'") or payload_str.endswith('"'):
+            payload_str = payload_str[:-1].strip()
+    if payload_str:
+        try:
+            full_payload = json.loads(payload_str)
+            if "calls" in full_payload:
+                noise_names = ["stashClient", "trackEvent", "billingGetLast"]
+                filtered_calls = [c for c in full_payload["calls"] if c.get("name") not in noise_names]
+                if filtered_calls:
+                    return {"calls": filtered_calls}
+            return full_payload
+        except: pass
+    return None
+
 def get_session_path(account="default"):
     if account == "default":
         return os.path.join(PKG_ROOT, "session.json")
@@ -46,7 +85,7 @@ def save_session(data: SessionData, account: str = "default") -> None:
         try:
             with open(path, "r") as f:
                 existing_data = json.load(f)
-        except: pass
+        except Exception: pass
 
     save_data = data.copy()
     if hasattr(save_data.get("player"), "to_dict"):
