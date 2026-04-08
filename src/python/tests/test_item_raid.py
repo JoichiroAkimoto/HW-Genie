@@ -12,18 +12,22 @@ def test_item_raid_max_iterations(mock_client, mock_sleep):
     res_success = MagicMock()
     res_success.is_success = True
     
-    # Status
-    res_status = MagicMock()
-    res_status.is_success = True
-    res_status.detail = {"response": {"level": 130, "gold": 1000, "starMoney": 100}}
+    # Status (fetch_player_status で呼ばれる)
+    res_user = MagicMock()
+    res_user.is_success = True
+    res_user.detail = {"response": {"name": "TestUser", "level": 130, "gold": 1000, "starMoney": 100}}
+
+    res_arena = MagicMock()
+    res_arena.is_success = True
+    res_arena.detail = {"response": {"arenaPlace": 1, "grandPlace": 1}}
     
-    # 3回成功 + Status(2)
-    mock_call.side_effect = [res_success, res_success, res_success, res_status, res_status]
+    # 3回成功 + 1回User + 1回Arena
+    mock_call.side_effect = [res_success, res_success, res_success, res_user, res_arena]
 
     # 最大 3 回で実行
-    run_item_raid({"x-request-id": "100"}, {"calls": []}, max_iterations=3)
+    run_item_raid(client, {"calls": []}, max_iterations=3)
 
-    # 検証: 3 回実行されていること + Status(2) = 5
+    # 検証: 3 回 + 2 (status calls) = 5
     assert mock_call.call_count == 5
 
 
@@ -31,31 +35,29 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
     """スタミナ不足時にループを抜けることを検証"""
     client, mock_call = mock_client
 
-    mock_responses = []
-
     # 1. 成功
     res_success = MagicMock()
     res_success.is_success = True
-    mock_responses.append(res_success)
 
     # 2. スタミナ不足
     res_error = MagicMock()
     res_error.is_success = False
     res_error.error_name = "notEnoughStamina"
-    mock_responses.append(res_error)
     
     # Status
-    res_status = MagicMock()
-    res_status.is_success = True
-    res_status.detail = {"response": {"level": 130, "gold": 1000, "starMoney": 100}}
-    mock_responses.append(res_status)
-    mock_responses.append(res_status)
+    res_user = MagicMock()
+    res_user.is_success = True
+    res_user.detail = {"response": {"name": "TestUser", "level": 130, "gold": 1000, "starMoney": 100}}
 
-    mock_call.side_effect = mock_responses
+    res_arena = MagicMock()
+    res_arena.is_success = True
+    res_arena.detail = {"response": {"arenaPlace": 1, "grandPlace": 1}}
 
-    run_item_raid({"x-request-id": "100"}, {"calls": []})
+    mock_call.side_effect = [res_success, res_error, res_user, res_arena]
 
-    # 検証: 2 回で止まっていること + Status(2) = 4
+    run_item_raid(client, {"calls": []})
+
+    # 検証: 2 回 + 2 (status calls) = 4
     assert mock_call.call_count == 4
 
 
@@ -71,8 +73,7 @@ def test_item_raid_auth_error_abort(mock_client, mock_sleep):
     mock_call.side_effect = [res_success, HWAuthError("Session expired")]
 
     with pytest.raises(HWAuthError):
-        run_item_raid({"x-request-id": "100"}, {"calls": []})
+        run_item_raid(client, {"calls": []})
 
     # 認証エラーで抜けるため2回で止まる
     assert mock_call.call_count == 2
-
