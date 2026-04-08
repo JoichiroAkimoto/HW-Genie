@@ -1,5 +1,6 @@
 from hw_genie.core.client import Emojis
 from hw_genie.core.utils import print_player_status
+from hw_genie.core.session_manager import SessionManager
 
 
 def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
@@ -9,6 +10,10 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         client = HWClient(client_or_headers)
     else:
         client = client_or_headers
+
+    mission_id = payload_template.get("mission_id")
+    if mission_id:
+        SessionManager.set_last_mission_id(mission_id)
 
     print(f"\n{Emojis.START}Starting Item Raid (Max: {max_iterations})...", flush=True)
 
