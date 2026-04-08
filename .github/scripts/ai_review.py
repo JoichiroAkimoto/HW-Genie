@@ -108,9 +108,18 @@ def main():
         
         try:
             usage = response.usage_metadata
-            metadata += f"- **Tokens**: In={usage.prompt_token_count}, Out={usage.candidates_token_count}\n"
+            in_tokens = usage.prompt_token_count
+            out_tokens = usage.candidates_token_count
+            
+            # コスト計算 (1M tokens あたりの単価)
+            in_cost = (in_tokens / 1_000_000) * 0.25
+            out_cost = (out_tokens / 1_000_000) * 1.50
+            total_cost = in_cost + out_cost
+            
+            metadata += f"- **Tokens**: In={in_tokens}, Out={out_tokens}\n"
+            metadata += f"- **Estimated Cost**: `${total_cost:.6f}`\n"
         except Exception:
-            metadata += "- **Tokens**: (Usage metadata not available)\n"
+            metadata += "- **Tokens/Cost**: (Usage metadata not available)\n"
             
         if is_truncated:
             metadata += "- **Status**: ⚠️ Diff was truncated.\n"
