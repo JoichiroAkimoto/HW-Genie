@@ -1,10 +1,31 @@
-# Hero Wars (Web/Facebook) RPC API Summary
+# Hero Wars RPC API Index (Start Here)
+
+このドキュメントは、Hero Wars API に関する情報の入り口です。
+APIの全体像と、機能ごとの詳細ドキュメントへのリンクをまとめています。
+
+---
 
 Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` や `xxxGetInfo`) を用意し、それらを1つのHTTPリクエストに配列として束ねて送信する」**というRPC（リモートプロシージャコール）スタイルを採用しています。
 
 1つのHTTPリクエスト（`POST /api/`）の中に、`calls`という配列で多数のRPCメソッド呼び出し（APIコール）を詰め込み、サーバーからプレイヤーの全データを一括で取得したり、必要なデータだけをピンポイントで取得したりすることができます。
 
-## 主なRPCメソッド一覧
+## 今後の課題 (TODO)
+- [ ] **Library ID (アイテムID) のマスタデータ取得**: `libGet` 相当のデータ（アイテム名、ヒーロー名、スキル定義等）を自動取得し、ローカルに保存・参照する仕組みの構築。現状は ID のみの表示となっている箇所が多い。
+- [ ] **各 API の詳細な Request Payload 仕様の追記**: 現在は主要なもののみ。
+
+## カテゴリ別API詳細ドキュメント
+
+詳細仕様は以下のファイルを参照してください:
+
+- [CHAT_API.md](./CHAT_API.md) (チャット機能)
+- [USER_API.md](./USER_API.md) (ユーザー・アカウント関連)
+- [UNIT_API.md](./UNIT_API.md) (ヒーロー・タイタン・ペット)
+- [GUILD_API.md](./GUILD_API.md) (ギルド・PvP関連)
+- [QUEST_API.md](./QUEST_API.md) (クエスト・ミッション・報酬)
+- [SHOP_API.md](./SHOP_API.md) (ショップ・資産関連)
+- [ADVENTURE_API.md](./ADVENTURE_API.md) (PVE・アドベンチャー)
+
+## 主なRPCメソッド一覧（概要）
 
 ### 1. ユーザー基本情報・設定
 プレイヤーの基礎データや設定を取得します。
@@ -45,7 +66,9 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 *   **`clanGetInfo`**: 所属ギルドの情報、メンバーリスト。
 *   **`clanWarGetBriefInfo`**: ギルド戦（ゴールドリーグ等）の概要・対戦相手。
 *   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗。
-*   **`chatsGetAll` / `chatGetTalks`**: ギルドチャット、サーバーチャットの履歴取得。
+*   **`chatGetAll`**: チャット履歴取得（chatType指定）。
+*   **`chatServerSubscribe`**: リアルタイムチャット購読。
+*   **`userGetAvailableStickers`**: 利用可能なスタンプ一覧。
 *   **`friendsGetInfo`**: フレンドリストとギフト交換状況。
 
 ### 6. ゲームモード（PvP / PvE）
