@@ -32,8 +32,8 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
     "ident": "user",
     "result": {
       "response": {
-        "id": "61405392",
-        "name": "VitaminD",
+        "id": "61405391",
+        "name": "xxx",
         "level": "130",
         "gold": 332083406,
         "starMoney": 384649,
