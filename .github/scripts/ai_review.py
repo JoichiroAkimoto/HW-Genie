@@ -15,7 +15,7 @@ MODEL_CONFIG = {
         "input_cost_per_1m": 0.25,
         "output_cost_per_1m": 1.50,
     },
-    "gemma4-31b": {
+    "gemma": {
         "name": "gemma-4-31b-it",
         "input_cost_per_1m": 0.0,
         "output_cost_per_1m": 0.0,

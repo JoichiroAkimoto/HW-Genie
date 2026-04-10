@@ -18,7 +18,7 @@ on:
         type: choice
         options:
           - flash-lite
-          - gemma4-31b
+          - gemma
         default: 'flash-lite'
 
 permissions:
