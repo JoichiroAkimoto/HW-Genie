@@ -9,6 +9,20 @@ import re
 import io
 from unidiff import PatchSet
 
+MODEL_CONFIG = {
+    "flash-lite": {
+        "name": "gemini-3.1-flash-lite-preview",
+        "input_cost_per_1m": 0.25,
+        "output_cost_per_1m": 1.50,
+    },
+    "gemma4-31b": {
+        "name": "gemma-4-31b-it",
+        "input_cost_per_1m": 0.0,
+        "output_cost_per_1m": 0.0,
+    },
+}
+DEFAULT_MODEL_KEY = "flash-lite"
+
 def main():
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -20,7 +34,21 @@ def main():
     # 日本時間のタイムゾーン設定
     JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
     
-    model_name = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
+    additional_context = os.environ.get('ADDITIONAL_CONTEXT', '')
+    env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
+    
+    model_key = env_model_key
+    # Parse --model from additional_context
+    model_match = re.search(r'--model\s+([\w-]+)', additional_context)
+    if model_match:
+        model_key = model_match.group(1)
+    
+    # Fallback to default if the key is not in config
+    if model_key not in MODEL_CONFIG:
+        model_key = DEFAULT_MODEL_KEY
+        
+    model_info = MODEL_CONFIG[model_key]
+    model_name = model_info["name"]
     
     pr_number = os.environ.get('PR_NUMBER')
     repo = os.environ.get('GITHUB_REPOSITORY')
@@ -112,8 +140,8 @@ def main():
             out_tokens = usage.candidates_token_count
             
             # コスト計算 (1M tokens あたりの単価)
-            in_cost = (in_tokens / 1_000_000) * 0.25
-            out_cost = (out_tokens / 1_000_000) * 1.50
+            in_cost = (in_tokens / 1_000_000) * model_info["input_cost_per_1m"]
+            out_cost = (out_tokens / 1_000_000) * model_info["output_cost_per_1m"]
             total_cost = in_cost + out_cost
             
             metadata += f"- **Tokens**: In={in_tokens}, Out={out_tokens}\n"

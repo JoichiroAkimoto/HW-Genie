@@ -13,6 +13,13 @@ on:
         description: 'PR number to review'
         required: true
         type: string
+      model:
+        description: 'Select AI Model'
+        type: choice
+        options:
+          - flash-lite
+          - gemma4-31b
+        default: 'flash-lite'
 
 permissions:
   contents: read
@@ -46,5 +53,7 @@ jobs:
           # workflow_call: dispatch 経由 (issue_comment/pull_request イベント)
           # workflow_dispatch: Actions UI から手動実行
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
+          ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
+          MODEL_KEY: ${{ inputs.model || 'flash-lite' }}
         run: |
           python .github/scripts/ai_review.py
