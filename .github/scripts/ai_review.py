@@ -9,20 +9,23 @@ import re
 import io
 from unidiff import PatchSet
 
-MODEL_CONFIG = {
-    "flash-lite": {
-        "name": "gemini-3.1-flash-lite-preview",
-        "input_cost_per_1m": 0.25,
-        "output_cost_per_1m": 1.50,
-        "max_diff_chars": 2000000,
-    },
-    "gemma": {
-        "name": "gemma-4-31b-it",
-        "input_cost_per_1m": 0.0,
-        "output_cost_per_1m": 0.0,
-        "max_diff_chars": 500000,
-    },
-}
+def load_model_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'models.json')
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading models.json: {e}")
+        # Fallback basic config
+        return {
+            "flash-lite": {
+                "name": "gemini-3.1-flash-lite-preview",
+                "input_cost_per_1m": 0.25,
+                "output_cost_per_1m": 1.50,
+                "max_diff_chars": 2000000,
+            }
+        }
+
 DEFAULT_MODEL_KEY = "flash-lite"
 
 def main():
@@ -36,21 +39,24 @@ def main():
     # 日本時間のタイムゾーン設定
     JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
     
+    model_config = load_model_config()
     additional_context = os.environ.get('ADDITIONAL_CONTEXT', '')
     env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
     
     model_key = env_model_key
-    # Parse --model from additional_context
-    model_match = re.search(r'--model\s+([\w-]+)', additional_context)
+    # Parse --model from additional_context (must be at the start of a line)
+    model_match = re.search(r'(?m)^--model\s+([\w-]+)', additional_context)
     if model_match:
         model_key = model_match.group(1)
     
     # Fallback to default if the key is not in config
-    if model_key not in MODEL_CONFIG:
+    if model_key not in model_config:
         model_key = DEFAULT_MODEL_KEY
         
-    model_info = MODEL_CONFIG[model_key]
+    model_info = model_config[model_key]
     model_name = model_info["name"]
+    
+    print(f"Using model: {model_key} ({model_name})")
     
     pr_number = os.environ.get('PR_NUMBER')
     repo = os.environ.get('GITHUB_REPOSITORY')
