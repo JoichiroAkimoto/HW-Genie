@@ -14,11 +14,13 @@ MODEL_CONFIG = {
         "name": "gemini-3.1-flash-lite-preview",
         "input_cost_per_1m": 0.25,
         "output_cost_per_1m": 1.50,
+        "max_diff_chars": 2000000,
     },
     "gemma": {
         "name": "gemma-4-31b-it",
         "input_cost_per_1m": 0.0,
         "output_cost_per_1m": 0.0,
+        "max_diff_chars": 500000,
     },
 }
 DEFAULT_MODEL_KEY = "flash-lite"
@@ -86,12 +88,13 @@ def main():
     if not diff.strip():
         print("Diff contains only ignored files.")
         sys.exit(0)
-
-    limit = 500000
+    
+    limit = model_info.get("max_diff_chars", 500000)
     is_truncated = False
     if len(diff) > limit:
         diff = diff[:limit]
         is_truncated = True
+
 
     prompt = f"""
 以下のPull Requestの差分（diff）を深く考察し（思考レベル: High）、簡潔にレビューしてください。
