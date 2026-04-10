@@ -20,6 +20,16 @@ def _prepare_info_for_json(info: dict) -> dict:
     return info
 
 
+def _ensure_session(args) -> dict[str, str]:
+    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+    headers = load_session_headers(args.account)
+    if not headers:
+        account_name = args.account or "default"
+        print(f"Error: Session not found for account '{account_name}'. Please provide a valid curl with --curl.")
+        sys.exit(1)
+    return headers
+
+
 def cmd_auth(args):
     """認証情報の更新・表示"""
     account_alias = args.account or "default"
@@ -92,11 +102,7 @@ def cmd_raid_hero(args):
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
-        headers = load_session_headers()
-
-    if not headers:
-        print("Error: No session found. Please provide a valid curl with --curl.")
-        sys.exit(1)
+        headers = _ensure_session(args)
 
     client = HWClient(headers)
     run_hero_raid(client, args.mission_ids, args.times)
@@ -136,11 +142,7 @@ def cmd_raid_item(args):
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
-        headers = load_session_headers()
-
-    if not headers:
-        print("Error: No session found. Please provide a valid curl with --curl.")
-        sys.exit(1)
+        headers = _ensure_session(args)
 
     if not payload:
         print("Error: No payload provided. Use --curl or provide a JSON payload.")
@@ -152,10 +154,7 @@ def cmd_raid_item(args):
 
 def cmd_shop(args):
     """ショップ購入"""
-    headers = load_session_headers()
-    if not headers:
-        print("Error: No session found.")
-        sys.exit(1)
+    headers = _ensure_session(args)
 
     client = HWClient(headers)
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
@@ -188,11 +187,7 @@ def cmd_daily(args):
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
-        headers = load_session_headers()
-
-    if not headers:
-        print("Error: No session found. Please provide a valid curl with --curl.")
-        sys.exit(1)
+        headers = _ensure_session(args)
 
     client = HWClient(headers)
     run_daily_raid(client, item_payload=item_payload)
@@ -200,11 +195,15 @@ def cmd_daily(args):
 
 def main():
     parser = argparse.ArgumentParser(prog="hw-genie", description="Hero Wars Genie CLI")
+    
+    # Parent parser for common arguments
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument("--account", "-a", help="Account alias")
+    
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
     # Auth
-    p_auth = subparsers.add_parser("auth", help="Authentication management")
-    p_auth.add_argument("--account", "-a", help="Account alias")
+    p_auth = subparsers.add_parser("auth", parents=[parent_parser], help="Authentication management")
     p_auth.add_argument("--update", "-u", help="Update session with JSON headers")
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
@@ -221,28 +220,25 @@ def main():
     raid_sub = p_raid.add_subparsers(dest="raid_type", help="Raid type")
 
     # Raid Hero
-    p_raid_hero = raid_sub.add_parser("hero", help="Hero mission raid")
-    p_raid_hero.add_argument("--account", "-a", help="Account alias")
+    p_raid_hero = raid_sub.add_parser("hero", parents=[parent_parser], help="Hero mission raid")
     p_raid_hero.add_argument("mission_ids", type=int, nargs="*", help="Mission IDs (space separated)")
     p_raid_hero.add_argument("--curl", "-c", help="Curl command to extract auth headers")
     p_raid_hero.add_argument("--times", "-t", type=int, default=3, help="Number of raids")
     p_raid_hero.set_defaults(func=cmd_raid_hero)
 
     # Raid Item
-    p_raid_item = raid_sub.add_parser("item", help="Item raid using payload")
-    p_raid_item.add_argument("--account", "-a", help="Account alias")
+    p_raid_item = raid_sub.add_parser("item", parents=[parent_parser], help="Item raid using payload")
     p_raid_item.add_argument("payload", nargs="?", help="JSON payload string or path to JSON file")
     p_raid_item.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_raid_item.add_argument("--times", "-t", type=int, default=9999, help="Number of raids")
     p_raid_item.set_defaults(func=cmd_raid_item)
 
     # Shop
-    p_shop = subparsers.add_parser("shop", help="Shop operations")
+    p_shop = subparsers.add_parser("shop", parents=[parent_parser], help="Shop operations")
     p_shop.set_defaults(func=cmd_shop)
 
     # Daily
-    p_daily = subparsers.add_parser("daily", help="Daily routine")
-    p_daily.add_argument("--account", "-a", help="Account alias")
+    p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
 
