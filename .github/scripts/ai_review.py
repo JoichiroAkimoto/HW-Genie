@@ -9,6 +9,25 @@ import re
 import io
 from unidiff import PatchSet
 
+def load_model_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'models.json')
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading models.json: {e}")
+        # Fallback basic config
+        return {
+            "flash-lite": {
+                "name": "gemini-3.1-flash-lite-preview",
+                "input_cost_per_1m": 0.25,
+                "output_cost_per_1m": 1.50,
+                "max_diff_chars": 2000000,
+            }
+        }
+
+DEFAULT_MODEL_KEY = "flash-lite"
+
 def main():
     api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
@@ -20,7 +39,24 @@ def main():
     # 日本時間のタイムゾーン設定
     JST = datetime.timezone(datetime.timedelta(hours=9), 'JST')
     
-    model_name = os.environ.get('GEMINI_MODEL', 'gemini-3.1-flash-lite-preview')
+    model_config = load_model_config()
+    additional_context = os.environ.get('ADDITIONAL_CONTEXT', '')
+    env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
+    
+    model_key = env_model_key
+    # Parse --model from additional_context (must be at the start of a line)
+    model_match = re.search(r'(?m)^--model\s+([\w-]+)', additional_context)
+    if model_match:
+        model_key = model_match.group(1)
+    
+    # Fallback to default if the key is not in config
+    if model_key not in model_config:
+        model_key = DEFAULT_MODEL_KEY
+        
+    model_info = model_config[model_key]
+    model_name = model_info["name"]
+    
+    print(f"Using model: {model_key} ({model_name})")
     
     pr_number = os.environ.get('PR_NUMBER')
     repo = os.environ.get('GITHUB_REPOSITORY')
@@ -58,12 +94,13 @@ def main():
     if not diff.strip():
         print("Diff contains only ignored files.")
         sys.exit(0)
-
-    limit = 500000
+    
+    limit = model_info.get("max_diff_chars", 500000)
     is_truncated = False
     if len(diff) > limit:
         diff = diff[:limit]
         is_truncated = True
+
 
     prompt = f"""
 以下のPull Requestの差分（diff）を深く考察し（思考レベル: High）、簡潔にレビューしてください。
@@ -112,8 +149,8 @@ def main():
             out_tokens = usage.candidates_token_count
             
             # コスト計算 (1M tokens あたりの単価)
-            in_cost = (in_tokens / 1_000_000) * 0.25
-            out_cost = (out_tokens / 1_000_000) * 1.50
+            in_cost = (in_tokens / 1_000_000) * model_info["input_cost_per_1m"]
+            out_cost = (out_tokens / 1_000_000) * model_info["output_cost_per_1m"]
             total_cost = in_cost + out_cost
             
             metadata += f"- **Tokens**: In={in_tokens}, Out={out_tokens}\n"
