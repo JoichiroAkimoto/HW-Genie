@@ -1,5 +1,4 @@
 import pytest
-import os
 import json
 from hw_genie.core.client import load_session_headers
 
