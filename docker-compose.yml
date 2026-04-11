@@ -3,6 +3,8 @@ services:
     build: .
     ports:
       - "8765:8765"
+    environment:
+      - DATABASE_URL=sqlite:///app/hw_genie.db
     volumes:
       - ./hw_genie.db:/app/hw_genie.db
     environment:
