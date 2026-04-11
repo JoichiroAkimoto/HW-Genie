@@ -1,5 +1,6 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 from hw_genie.commands.hero_raid import run_hero_raid
+from hw_genie.core.client import ApiAction
 from . import dummy_responses as dummy
 
 def test_raid_stops_on_limit_and_exchanges(mock_client, mock_sleep):
@@ -35,13 +36,6 @@ def test_raid_stops_on_limit_and_exchanges(mock_client, mock_sleep):
     res_exchange.detail = dummy.INVENTORY_EXCHANGE_STONES_MULTI["results"][0]["result"]
     mock_responses.append(res_exchange)
     
-    # 4. Status calls (fetch_player_status は 2 回 call を呼ぶ)
-    res_status = MagicMock()
-    res_status.is_success = True
-    res_status.detail = {"response": {}}
-    mock_responses.append(res_status)
-    mock_responses.append(res_status)
-    
     mock_call.side_effect = mock_responses
     
     # 実行 (ミッションID 1, 5 を対象)
@@ -52,5 +46,13 @@ def test_raid_stops_on_limit_and_exchanges(mock_client, mock_sleep):
     assert results[0].status == "success"
     assert results[1].status == "limit_reached"
     assert ex_info is not None
-    # dummy.INVENTORY_EXCHANGE_STONES_MULTI の合計は 15
     assert ex_info.stones == 15
+    
+    # 呼び出しシーケンスの検証
+    assert mock_call.call_count == 4
+    mock_call.assert_has_calls([
+        call({'calls': [{'name': ApiAction.MISSION_GET_ALL, 'args': {}, 'ident': 'body'}]}),
+        call({'calls': [{'name': ApiAction.MISSION_RAID, 'args': {'id': 1, 'times': 3}, 'context': {'actionTs': 0}, 'ident': 'body'}]}),
+        call({'calls': [{'name': ApiAction.MISSION_RAID, 'args': {'id': 5, 'times': 3}, 'context': {'actionTs': 0}, 'ident': 'body'}]}),
+        call({'calls': [{'name': ApiAction.INVENTORY_EXCHANGE_STONES, 'args': {}, 'ident': 'exchange_stones'}]})
+    ], any_order=False)

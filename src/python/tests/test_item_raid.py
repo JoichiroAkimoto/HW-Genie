@@ -12,23 +12,14 @@ def test_item_raid_max_iterations(mock_client, mock_sleep):
     res_success = MagicMock()
     res_success.is_success = True
     
-    # Status (fetch_player_status で呼ばれる)
-    res_user = MagicMock()
-    res_user.is_success = True
-    res_user.detail = {"response": {"name": "TestUser", "level": 130, "gold": 1000, "starMoney": 100}}
-
-    res_arena = MagicMock()
-    res_arena.is_success = True
-    res_arena.detail = {"response": {"arenaPlace": 1, "grandPlace": 1}}
-    
-    # 3回成功 + 1回User + 1回Arena
-    mock_call.side_effect = [res_success, res_success, res_success, res_user, res_arena]
+    # 3回分
+    mock_call.side_effect = [res_success, res_success, res_success]
 
     # 最大 3 回で実行
     run_item_raid(client, {"calls": []}, max_iterations=3)
 
-    # 検証: 3 回 + 2 (status calls) = 5
-    assert True # skip call_count check
+    # 検証: 3 回呼ばれるはず
+    assert mock_call.call_count == 3
 
 
 def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
@@ -44,21 +35,12 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
     res_error.is_success = False
     res_error.error_name = "notEnoughStamina"
     
-    # Status
-    res_user = MagicMock()
-    res_user.is_success = True
-    res_user.detail = {"response": {"name": "TestUser", "level": 130, "gold": 1000, "starMoney": 100}}
-
-    res_arena = MagicMock()
-    res_arena.is_success = True
-    res_arena.detail = {"response": {"arenaPlace": 1, "grandPlace": 1}}
-
-    mock_call.side_effect = [res_success, res_error, res_user, res_arena]
+    mock_call.side_effect = [res_success, res_error]
 
     run_item_raid(client, {"calls": []})
 
-    # 検証: 2 回 + 2 (status calls) = 4
-    assert True # skip call_count check
+    # 検証: 2 回で止まる
+    assert mock_call.call_count == 2
 
 
 def test_item_raid_auth_error_abort(mock_client, mock_sleep):
@@ -76,4 +58,4 @@ def test_item_raid_auth_error_abort(mock_client, mock_sleep):
         run_item_raid(client, {"calls": []})
 
     # 認証エラーで抜けるため2回で止まる
-    assert True # skip call_count check
+    assert mock_call.call_count == 2

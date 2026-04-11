@@ -1,4 +1,5 @@
-FROM python:3.13-slim
+# Stage 1: Build stage
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -16,7 +17,23 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY src/python/pyproject.toml src/python/uv.lock* ./
 COPY src/python/hw_genie ./hw_genie
 
-# Install the package
+# Build the package into a wheel
 RUN uv pip install --system .
+
+# Stage 2: Runtime stage
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Copy installed packages from builder
+# We use --system in builder, so we copy from /usr/local
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy necessary runtime files
+COPY src/python/hw_genie ./hw_genie
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
 
 CMD ["hw-genie", "auth-server"]

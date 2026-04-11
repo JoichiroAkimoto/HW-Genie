@@ -41,6 +41,27 @@ docker-compose logs -f
 
 データベース (`hw_genie.db`) はホストのカレントディレクトリにマウントされ、永続化されます。
 
+### libSQL (Turso) の利用
+libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。
+
+```bash
+export DATABASE_URL="sqlite+libsql://[your-db].turso.io?auth_token=[your-token]"
+```
+
+#### ローカルでの libSQL サーバーの起動
+Docker を使用してローカルに libSQL サーバー (`sqld`) を起動し、接続テストを行うことができます。
+
+```bash
+# 1. サーバーの起動
+docker run -d -p 8080:8080 -p 5001:5001 ghcr.io/tursodatabase/libsql-server:latest
+
+# 2. 接続先の設定
+export DATABASE_URL="libsql://localhost:8080"
+
+# 3. 実行
+uv run hw-genie --help
+```
+
 ### 認証方法
 
 #### 方法1: 手動 (curl コピー)
