@@ -1,4 +1,3 @@
-import pytest
 from hw_genie.core.session_manager import SessionManager
 
 def test_load_nonexistent_account():

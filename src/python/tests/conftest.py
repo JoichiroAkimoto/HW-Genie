@@ -1,5 +1,4 @@
 import pytest
-import os
 from hw_genie.core.database import init_db, Base, engine
 
 @pytest.fixture(autouse=True)
