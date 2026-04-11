@@ -26,12 +26,13 @@ jobs:
     - name: Set up Python
       run: uv python install 3.13
 
-    - name: Lint with ruff
+    - name: Install build dependencies
       run: |
-        cd src/python
-        uv run --extra dev ruff check .
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake pkg-config
+
+    - name: Lint with ruff
+      run: uv run --project src/python --extra dev ruff check src/python
 
     - name: Test with pytest
-      run: |
-        cd src/python
-        uv run --extra dev pytest tests/
+      run: uv run --project src/python --extra dev pytest src/python/tests/
