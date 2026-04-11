@@ -44,12 +44,16 @@ def main():
     env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
     
     model_key = env_model_key
-    # Parse --model from additional_context (case-insensitive, anywhere in text)
-    model_match = re.search(r'--model\s+([\w-]+)', additional_context, re.IGNORECASE)
+    # Parse --model from additional_context (must be start of line or preceded by whitespace)
+    model_match = re.search(r'(?m)(?:^|\s+)--model\s+([\w-]+)', additional_context, re.IGNORECASE)
     if model_match:
-        model_key = model_match.group(1)
+        potential_key = model_match.group(1)
+        if potential_key in model_config:
+            model_key = potential_key
+        else:
+            print(f"Warning: Model '{potential_key}' not found in models.json, using default: {model_key}")
     
-    # Fallback to default if the key is not in config
+    # Fallback to default if the key is not in config (extra safety)
     if model_key not in model_config:
         model_key = DEFAULT_MODEL_KEY
         
