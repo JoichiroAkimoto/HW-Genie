@@ -22,22 +22,12 @@ jobs:
       uses: astral-sh/setup-uv@v5
       with:
         enable-cache: true
-        cache-dependency-path: 'src/python/pyproject.toml'
 
     - name: Set up Python
       run: uv python install 3.13
 
-    - name: Install dependencies
-      run: |
-        cd src/python
-        uv pip install -e ".[dev]"
-
     - name: Lint with ruff
-      run: |
-        cd src/python
-        uv run ruff check .
+      run: uv run --project src/python ruff check .
 
     - name: Test with pytest
-      run: |
-        cd src/python
-        uv run pytest tests/
+      run: uv run --project src/python pytest tests/
