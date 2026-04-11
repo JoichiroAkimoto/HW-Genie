@@ -1,0 +1,9 @@
+services:
+  auth-server:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./hw_genie.db:/app/hw_genie.db
+    environment:
+      - HW_GENIE_AUTH_PORT=8765
