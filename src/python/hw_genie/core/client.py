@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import time
+from pathlib import Path
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Any
@@ -9,18 +10,25 @@ from typing import Any
 import requests
 
 
-def load_session_headers() -> dict[str, str] | None:
+def load_session_headers(account_alias: str | None = None) -> dict[str, str] | None:
     """session.jsonからヘッダー情報を読み込む"""
     # 探索順序:
-    # 1. カレントディレクトリの session.json
-    # 2. パッケージインストール先 (HW-Genie/src/python/hw_genie/core/../../../session.json)
-    # 3. ユーザーホームの .hw-genie/session.json (将来用)
+    # 1. アカウント指定があり、かつ "default" でない場合 session.{account}.json
+    # 2. カレントディレクトリの session.json
+    # 3. パッケージインストール先 (HW-Genie/src/python/hw_genie/core/../../../session.json)
+    # 4. ユーザーホームの .hw-genie/session.json (将来用)
 
-    search_paths = [
+    search_paths = []
+    if account_alias and account_alias != "default":
+        # Use basename to prevent path traversal
+        safe_alias = os.path.basename(account_alias)
+        search_paths.append(f"session.{safe_alias}.json")
+
+    search_paths.extend([
         "session.json",
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "session.json")),
+        str(Path(__file__).resolve().parents[4] / "session.json"),
         os.path.expanduser("~/.hw-genie/session.json"),
-    ]
+    ])
 
     for session_path in search_paths:
         if os.path.exists(session_path):
