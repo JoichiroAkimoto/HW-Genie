@@ -29,3 +29,14 @@ bun.lockb
 
 # GitHub App credentials
 gha-creds-*.json
+# Databases
+*.db
+
+# Virtual environments
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+
+# Plan documents
+docs/superpowers/plans/
