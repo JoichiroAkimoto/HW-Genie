@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from hw_genie.core.database import init_db, Base, engine
 from hw_genie.core.client import HWClient, PlayerStatus
 

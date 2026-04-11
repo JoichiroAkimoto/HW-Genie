@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock, patch
 from hw_genie.core.client import ResponseStatus
 from hw_genie.commands.daily_raid import run_daily_raid

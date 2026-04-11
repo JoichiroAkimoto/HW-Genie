@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock
 from hw_genie.commands.hero_raid import run_hero_raid
 from . import dummy_responses as dummy
