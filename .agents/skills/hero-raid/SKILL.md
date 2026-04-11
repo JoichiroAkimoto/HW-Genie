@@ -9,11 +9,11 @@ description: HW-Genie を使用して指定されたミッションのヒーロ�
 2. 実行コマンド:
    - 通常実行（保存済みのセッションを使用）:
      ```bash
-     .venv/bin/hw-genie raid hero 1 5 10 ... 214 --times 3
+     uv run hw-genie raid hero 1 5 10 ... 214 --times 3
      ```
    - 認証情報を同時に更新する場合（ブラウザからコピーした curl を使用）:
      ```bash
-     .venv/bin/hw-genie raid hero 1 5 10 ... 214 --curl 'PASTE_CURL_COMMAND_HERE' --times 3
+     uv run hw-genie raid hero 1 5 10 ... 214 --curl 'PASTE_CURL_COMMAND_HERE' --times 3
      ```
 
 ## オプション

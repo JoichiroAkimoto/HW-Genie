@@ -8,11 +8,11 @@ description: HW-Genie を使用して指定されたルーチン（レイド＋�
 2. 実行コマンド:
    - 基本ルーチンのみ:
      ```bash
-     .venv/bin/hw-genie daily
+     uv run hw-genie daily
      ```
    - アイテムレイドをエナジー限界まで実行する場合:
      ```bash
-     .venv/bin/hw-genie daily --curl 'PASTE_CURL_COMMAND_HERE'
+     uv run hw-genie daily --curl 'PASTE_CURL_COMMAND_HERE'
      ```
 
 ## 実行される内容

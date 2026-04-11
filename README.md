@@ -28,6 +28,19 @@ uv pip install -e ".[dev]"
 hw-genie --help
 ```
 
+### Docker での実行 (推奨)
+環境構築なしでコンテナを使用して認証サーバーを起動できます。
+
+```bash
+# 1. ビルドと起動
+docker-compose up --build -d
+
+# 2. ログの確認
+docker-compose logs -f
+```
+
+データベース (`hw_genie.db`) はホストのカレントディレクトリにマウントされ、永続化されます。
+
 ### 認証方法
 
 #### 方法1: 手動 (curl コピー)

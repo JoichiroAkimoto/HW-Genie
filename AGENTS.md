@@ -17,24 +17,25 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **item-raid**: HW-Genie を使用して特定のアイテムを収集します。失敗する（スタミナ不足等）か指定回数に達するまで繰り返し実行します。
 
 ### 2. コマンドラインツールの使用法
-すべての操作は `.venv/bin/hw-genie` を通じて行われます。
+すべての操作は `uv run hw-genie` または `uv run src/python/hw_genie/main.py` を通じて行われます。
 
-*   **ミッションレイド**: `hw-genie raid hero <id1> <id2> --times 3`
-*   **ショップ購入**: `hw-genie shop`
-*   **デイリールーチン**: `hw-genie daily`
-*   **認証状態確認**: `hw-genie auth --info`
-*   **認証サーバー起動**: `hw-genie auth-server` (自動認証キャプチャ用)
-*   **認証サーバー (1回限り)**: `hw-genie auth-server --once`
+*   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
+*   **ショップ購入**: `uv run hw-genie shop`
+*   **デイリールーチン**: `uv run hw-genie daily`
+*   **認証状態確認**: `uv run hw-genie auth --info`
+*   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
+*   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
 
 ### 3. API 仕様とメソッドの理解
 Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、以下のドキュメントを参照してください。
 
-👉 **[docs/api/HERO_WARS_RPC_API.md](docs/api/HERO_WARS_RPC_API.md)**
+👉 **[docs/api/INDEX.md](docs/api/INDEX.md)**
 
 エージェントが新しいレイド対象を提案したり、特定の API レスポンスを解析したりする際に、このドキュメントが役立ちます。
 
 ### 4. 重要事項（エージェント向け）
-*   **セッション依存**: すべての API 操作には有効な `session.json` が必要です。認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めてください。
+*   **セッション管理**: 認証情報は `hw_genie.db` (SQLite) で一元管理されています。環境変数 `DATABASE_URL` で接続先を切り替えることも可能です（Turso 等）。
+*   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
 
@@ -45,8 +46,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 ### テストとリンターの実行（必須）
 `src/python/hw_genie` 以下のコードを変更した場合は、必ず以下のコマンドを実行し、エラーがないことを確認してください。
 
-*   **リンター**: `ruff check --fix`
-*   **テスト**: `pytest -v`
+*   **リンター**: `cd src/python && uv run ruff check . --fix`
+*   **テスト**: `cd src/python && uv run pytest`
 
 新機能の追加やバグ修正の際は、`src/python/tests` に適切なテストケースを追加・更新し、既存のテストを壊していないことを確認してください。
 

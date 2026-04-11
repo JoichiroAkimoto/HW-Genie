@@ -10,7 +10,7 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
 1. ブラウザのネットワークタブから `api/` へのリクエストを `Copy as cURL` でコピーします。
 2. 実行コマンド（コピーした curl コマンドを引数に渡します）:
    ```bash
-   .venv/bin/hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
+   uv run hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
    ```
 
 ### 便利なオプション
@@ -23,7 +23,7 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
 ### ワークフロー
 1. 認証サーバーを起動:
    ```bash
-   .venv/bin/hw-genie auth-server
+   uv run hw-genie auth-server
    ```
 2. ブラウザに Userscript (`src/userscripts/index.ts`) を Tampermonkey 等にインストール
 3. Hero Wars を開くと自動的に認証情報がキャプチャされ、セッションが更新されます

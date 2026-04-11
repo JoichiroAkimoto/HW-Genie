@@ -12,7 +12,7 @@ description: HW-Genie を使用して特定のアイテムを収集します。�
 3. **実行**:
    - ユーザーの承認（または `times=10` の確認）が得られたら、以下のコマンドを実行します。
    ```bash
-   .venv/bin/hw-genie raid item --curl 'PASTE_CURL_COMMAND_HERE'
+   uv run hw-genie raid item --curl 'PASTE_CURL_COMMAND_HERE'
    ```
    - 特定の回数（例：「5回やって」）が指定されている場合は、`--times` オプションを追加します。
 
@@ -31,4 +31,4 @@ description: HW-Genie を使用して特定のアイテムを収集します。�
 **AI の動作**:
 1. `curl` からペイロードを抽出し、`times` が 10 かチェック。
 2. 10 でなければ `ask_user` で確認。
-3. 確認後、`.venv/bin/hw-genie raid item --curl '...'` を実行。
+3. 確認後、`uv run hw-genie raid item --curl '...'` を実行。
