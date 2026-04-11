@@ -15,20 +15,16 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 ## クイックスタート
 
 ### Python CLI (hw-genie)
-Python 3.14 (3.10+) と [direnv](https://direnv.net/) の使用を推奨しています。
+Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
 
 ```bash
-# 1. 仮想環境を作成
-python -m venv .venv
+# 1. 依存関係とパッケージをインストール
+cd src/python
+uv venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
 
-# 2. direnv の設定
-echo "source .venv/bin/activate" > .envrc
-direnv allow
-
-# 3. 依存関係とパッケージをインストール
-pip install -e "src/python[dev]"
-
-# 実行
+# 2. 実行
 hw-genie --help
 ```
 

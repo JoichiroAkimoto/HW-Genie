@@ -9,6 +9,8 @@ dependencies = [
     "fastapi~=0.135.3",
     "uvicorn~=0.44.0",
     "httpx~=0.28.1",
+    "sqlalchemy~=2.0.49",
+    "sqlalchemy-libsql~=0.2.0",
 ]
 
 [project.optional-dependencies]
