@@ -44,8 +44,8 @@ def main():
     env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
     
     model_key = env_model_key
-    # Parse --model from additional_context (must be at the start of a line)
-    model_match = re.search(r'(?m)^--model\s+([\w-]+)', additional_context)
+    # Parse --model from additional_context (case-insensitive, anywhere in text)
+    model_match = re.search(r'--model\s+([\w-]+)', additional_context, re.IGNORECASE)
     if model_match:
         model_key = model_match.group(1)
     
