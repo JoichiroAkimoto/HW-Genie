@@ -44,12 +44,16 @@ def main():
     env_model_key = os.environ.get('MODEL_KEY', DEFAULT_MODEL_KEY)
     
     model_key = env_model_key
-    # Parse --model from additional_context (must be at the start of a line)
-    model_match = re.search(r'(?m)^--model\s+([\w-]+)', additional_context)
+    # Parse --model from additional_context (must be start of line or preceded by whitespace)
+    model_match = re.search(r'(?m)(?:^|\s+)--model\s+([\w-]+)', additional_context, re.IGNORECASE)
     if model_match:
-        model_key = model_match.group(1)
+        potential_key = model_match.group(1)
+        if potential_key in model_config:
+            model_key = potential_key
+        else:
+            print(f"Warning: Model '{potential_key}' not found in models.json, using default: {model_key}")
     
-    # Fallback to default if the key is not in config
+    # Fallback to default if the key is not in config (extra safety)
     if model_key not in model_config:
         model_key = DEFAULT_MODEL_KEY
         
@@ -105,7 +109,7 @@ def main():
     prompt = f"""
 以下のPull Requestの差分（diff）を深く考察し（思考レベル: High）、簡潔にレビューしてください。
 
-フォーマット：
+フォーマット（必ず日本語で出力すること）：
 - **要約**: 変更点（箇条書き）
 - **懸念点**: 重大なバグ、パフォーマンス、セキュリティ
 - **改善案**: コード品質向上
@@ -137,11 +141,11 @@ def main():
             reason = str(response.candidates[0].finish_reason) if response.candidates else "UNKNOWN"
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
-        metadata = "\n\n---\n<details><summary>⚡ Execution Info</summary>\n\n"
-        metadata += f"- **Model**: `{model_name}`\n"
-        metadata += f"- **Completed at**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}`\n"
-        metadata += f"- **Duration**: `{duration:.2f} seconds`\n"
-        metadata += f"- **Files modified**: `{files_modified_count}`\n"
+        metadata = "\n\n---\n<details><summary>⚡ 実行情報</summary>\n\n"
+        metadata += f"- **モデル**: `{model_name}`\n"
+        metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}`\n"
+        metadata += f"- **所要時間**: `{duration:.2f} 秒`\n"
+        metadata += f"- **変更ファイル数**: `{files_modified_count}`\n"
         
         try:
             usage = response.usage_metadata
@@ -153,16 +157,16 @@ def main():
             out_cost = (out_tokens / 1_000_000) * model_info["output_cost_per_1m"]
             total_cost = in_cost + out_cost
             
-            metadata += f"- **Tokens**: In={in_tokens}, Out={out_tokens}\n"
-            metadata += f"- **Estimated Cost**: `${total_cost:.6f}`\n"
+            metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
+            metadata += f"- **推定コスト**: `${total_cost:.6f}`\n"
         except Exception:
-            metadata += "- **Tokens/Cost**: (Usage metadata not available)\n"
+            metadata += "- **トークン/コスト**: (取得できませんでした)\n"
             
         if is_truncated:
-            metadata += "- **Status**: ⚠️ Diff was truncated.\n"
+            metadata += "- **ステータス**: ⚠️ 差分が長すぎるため切り詰められました。\n"
         metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
 
-        review_text = f"### 🤖 AI Code Review\n\n{body}{metadata}"
+        review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"
 
         with open('review.md', 'w') as f:
             f.write(review_text)
