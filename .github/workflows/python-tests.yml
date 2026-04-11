@@ -27,7 +27,11 @@ jobs:
       run: uv python install 3.13
 
     - name: Lint with ruff
-      run: uv run --project src/python ruff check .
+      run: |
+        cd src/python
+        uv run --extra dev ruff check .
 
     - name: Test with pytest
-      run: uv run --project src/python pytest tests/
+      run: |
+        cd src/python
+        uv run --extra dev pytest tests/
