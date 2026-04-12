@@ -1,4 +1,5 @@
 """Auth server module for automatic authentication header capture."""
+
 import os
 import secrets
 from typing import Optional
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from hw_genie.core.auth import update_session_with_headers
+from hw_genie.core.database import init_db
 
 
 # TODO(security): Future enhancements
@@ -121,10 +123,7 @@ def create_app() -> FastAPI:
 
         # Validate headers
         if not validate_auth_headers(request.headers):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Missing required headers. Required: {REQUIRED_HEADERS}"
-            )
+            raise HTTPException(status_code=400, detail=f"Missing required headers. Required: {REQUIRED_HEADERS}")
 
         # Update session
         account = request.account or "default"
@@ -136,22 +135,22 @@ def create_app() -> FastAPI:
                 player_data = player_data.to_dict()
             return AuthSuccessResponse(status="success", player=player_data)
         else:
-            raise HTTPException(
-                status_code=500,
-                detail=result.get("message", "Failed to update session")
-            )
+            raise HTTPException(status_code=500, detail=result.get("message", "Failed to update session"))
 
     return app
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8765, once: bool = False) -> None:
+def run_server(host: str = "0.0.0.0", port: int = 8765, once: bool = False) -> None:
     """Run the auth server.
 
     Args:
-        host: Host to bind to (default: 127.0.0.1)
-        port: Port to listen on (default: 8765)
+        host: Host to bind to (default: 0.0.0.0)
+        port: Port to bind to (default: 8765)
         once: If True, exit after first successful auth capture
     """
+    # Ensure DB tables are created before starting the server
+    init_db()
+
     import uvicorn
 
     if once:

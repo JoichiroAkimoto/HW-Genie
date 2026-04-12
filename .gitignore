@@ -31,6 +31,9 @@ bun.lockb
 gha-creds-*.json
 # Databases
 *.db
+*.db-shm
+*.db-wal
+data/
 
 # Virtual environments
 .venv/

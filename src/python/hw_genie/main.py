@@ -40,7 +40,7 @@ def cmd_auth(args):
         if not headers:
             print("Error: Could not extract x-auth-* headers from the provided curl command.")
             sys.exit(1)
-        
+
         info = update_session_with_headers(headers, account_alias)
         if info["status"] == "success":
             print(f"Successfully updated session for {info['player'].name}")
@@ -123,7 +123,7 @@ def cmd_raid_item(args):
             if info["status"] == "success":
                 headers = info["headers"]
                 print(f"Successfully updated session for {info['player'].name} from curl.")
-        
+
         # 2. ペイロードを抽出
         payload = extract_payload_from_curl(args.curl)
         if not payload:
@@ -158,6 +158,7 @@ def cmd_shop(args):
 
     client = HWClient(headers)
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
+
     run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
 
@@ -178,7 +179,7 @@ def cmd_daily(args):
                 print(f"Successfully updated session for {info['player'].name} from curl.")
             else:
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
-        
+
         # 2. アイテムレイド用ペイロードを抽出
         item_payload = extract_payload_from_curl(args.curl)
         if not item_payload:
@@ -195,11 +196,11 @@ def cmd_daily(args):
 
 def main():
     parser = argparse.ArgumentParser(prog="hw-genie", description="Hero Wars Genie CLI")
-    
+
     # Parent parser for common arguments
     parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("--account", "-a", help="Account alias")
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
     # Auth
@@ -248,6 +249,7 @@ def main():
         sys.exit(0)
 
     from hw_genie.core.client import HWAuthError
+
     try:
         if hasattr(args, "func"):
             args.func(args)
@@ -255,10 +257,12 @@ def main():
             print(f"Command {args.command} not implemented yet.")
     except HWAuthError as e:
         from hw_genie.core.client import Emojis
+
         print(f"\n{Emojis.ERROR}Authentication Error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         from hw_genie.core.client import Emojis
+
         print(f"\n{Emojis.ERROR}Unexpected Error: {e}", file=sys.stderr)
         sys.exit(1)
 

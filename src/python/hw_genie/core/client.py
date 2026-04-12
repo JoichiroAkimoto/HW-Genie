@@ -1,44 +1,18 @@
 import copy
-import json
-import os
 import time
-from pathlib import Path
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Any
 
 import requests
+from hw_genie.core.session_manager import SessionManager
 
 
 def load_session_headers(account_alias: str | None = None) -> dict[str, str] | None:
-    """session.jsonからヘッダー情報を読み込む"""
-    # 探索順序:
-    # 1. アカウント指定があり、かつ "default" でない場合 session.{account}.json
-    # 2. カレントディレクトリの session.json
-    # 3. パッケージインストール先 (HW-Genie/src/python/hw_genie/core/../../../session.json)
-    # 4. ユーザーホームの .hw-genie/session.json (将来用)
-
-    search_paths = []
-    if account_alias and account_alias != "default":
-        # Use basename to prevent path traversal
-        safe_alias = os.path.basename(account_alias)
-        search_paths.append(f"session.{safe_alias}.json")
-
-    search_paths.extend([
-        "session.json",
-        str(Path(__file__).resolve().parents[4] / "session.json"),
-        os.path.expanduser("~/.hw-genie/session.json"),
-    ])
-
-    for session_path in search_paths:
-        if os.path.exists(session_path):
-            try:
-                with open(session_path, "r") as f:
-                    data = json.load(f)
-                    return data.get("headers")
-            except Exception:
-                pass
-    return None
+    """SessionManager を使用して DB からヘッダー情報を読み込む"""
+    account = account_alias or "default"
+    data = SessionManager.load(account)
+    return data.get("headers") if data else None
 
 
 class ResponseStatus(str, Enum):
@@ -82,7 +56,7 @@ class PlayerStatus:
             gems=data.get("gems", data.get("starMoney", 0)),  # core.auth では gems ではなく starMoney
             energy=int(data.get("energy", 0)),
             arena_rank=int(data.get("arena_rank", data.get("arenaPlace", 0))),
-            grand_rank=int(data.get("grand_rank", data.get("grandPlace", 0)))
+            grand_rank=int(data.get("grand_rank", data.get("grandPlace", 0))),
         )
 
     def to_dict(self) -> dict:
@@ -143,6 +117,7 @@ class Messages:
 
 class HWAuthError(Exception):
     """認証エラー（セッション切れなど）を示す例外"""
+
     pass
 
 
@@ -200,7 +175,7 @@ class HWClient:
 
                 if error_name in ["auth", "InvalidSession"]:
                     raise HWAuthError(Messages.AUTH_ERROR)
-                
+
                 return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
 
             # 2. Call-level response check
