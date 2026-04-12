@@ -1,5 +1,5 @@
-from unittest.mock import MagicMock, patch
-from hw_genie.core.client import ResponseStatus
+from unittest.mock import MagicMock, patch, call
+from hw_genie.core.client import ResponseStatus, ApiAction
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.core.session_manager import SessionManager
 
@@ -33,34 +33,11 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     res_h_ex.exchange_info = MagicMock(stones=0)
     mock_responses.append(res_h_ex)
 
-    # Status (Hero Raid 内)
-    res_status = MagicMock()
-    res_status.is_success = True
-    res_status.detail = {"response": {}}
-    mock_responses.append(res_status)
-    mock_responses.append(res_status)
-
-    # --- Phase 2: Item Raid ---
-    # 3. Item Raid iteration 1
-    res_i1 = MagicMock()
-    res_i1.is_success = True
-    res_i1.status = ResponseStatus.SUCCESS
-    mock_responses.append(res_i1)
-
-    # 4. Item Raid Stop
-    res_i2 = MagicMock()
-    res_i2.is_success = False
-    res_i2.error_name = "NotEnough"
-    mock_responses.append(res_i2)
-
-    # Status (Item Raid 内)
-    mock_responses.append(res_status)
-    mock_responses.append(res_status)
-
     # --- Phase 3: Soul Shop ---
+    # shopGetAll
     res_shop_all = MagicMock()
     res_shop_all.is_success = True
-    res_shop_all.detail = {"response": {"8": {"slots": {"1": {"reward": {"item": {"1": 1}}, "bought": 0}}}}}
+    res_shop_all.detail = {"response": {"8": {"slots": {"1": {"reward": {"item": {"1": 1}}, "bought": 0, "cost": {}}}}}}
     mock_responses.append(res_shop_all)
     
     # shopBuy
@@ -68,10 +45,15 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     res_buy.is_success = True
     mock_responses.append(res_buy)
 
-    # Final Status
-    mock_responses.append(res_status)
-    mock_responses.append(res_status)
-
     mock_call.side_effect = mock_responses
-    run_daily_raid(client, {"calls": []})
-    assert True
+    run_daily_raid(client)
+
+    # 呼び出しシーケンスの検証
+    assert mock_call.call_count == 5
+    mock_call.assert_has_calls([
+        call({'calls': [{'name': ApiAction.MISSION_GET_ALL, 'args': {}, 'ident': 'body'}]}),
+        call({'calls': [{'name': ApiAction.MISSION_RAID, 'args': {'id': 1, 'times': 3}, 'context': {'actionTs': 0}, 'ident': 'body'}]}),
+        call({'calls': [{'name': ApiAction.INVENTORY_EXCHANGE_STONES, 'args': {}, 'ident': 'exchange_stones'}]}),
+        call({'calls': [{'name': ApiAction.SHOP_GET_ALL, 'args': {}, 'ident': 'shopGetAll'}]}),
+        call({'calls': [{'name': ApiAction.SHOP_BUY, 'args': {'shopId': 8, 'slot': 1, 'cost': {}, 'reward': {'item': {'1': 1}}}, 'ident': 'buy_8_1'}]})
+    ])

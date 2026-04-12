@@ -4,9 +4,10 @@ services:
     ports:
       - "8765:8765"
     environment:
-      # SQLite (default): sqlite:///app/hw_genie.db
+      # SQLite (default): sqlite:///app/data/hw_genie.db
       # libSQL (Turso): sqlite+libsql://[your-db].turso.io?auth_token=[your-token]
-      - DATABASE_URL=sqlite:///app/hw_genie.db
+      - DATABASE_URL=sqlite:////app/data/hw_genie.db
       - HW_GENIE_AUTH_PORT=8765
     volumes:
-      - ./hw_genie.db:/app/hw_genie.db
+      # マウント先をディレクトリにすることで、SQLite のジャーナルファイル作成等でのトラブルを防ぐ
+      - ./data:/app/data

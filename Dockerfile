@@ -13,11 +13,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy project files
+# 1. Copy only dependency files first to leverage Docker cache
 COPY src/python/pyproject.toml src/python/uv.lock* ./
+
+# 2. Install dependencies using a temporary requirements file to avoid shell issues with process substitution
+RUN uv export --format requirements-txt > requirements.txt && \
+    uv pip install --system -r requirements.txt
+
+# 3. Now copy the source code
 COPY src/python/hw_genie ./hw_genie
 
-# Build the package into a wheel
+# 4. Install the project (this will be fast since deps are already installed)
 RUN uv pip install --system .
 
 # Stage 2: Runtime stage
@@ -26,7 +32,6 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # Copy installed packages from builder
-# We use --system in builder, so we copy from /usr/local
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 

@@ -44,7 +44,7 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
 
 
 def test_item_raid_auth_error_abort(mock_client, mock_sleep):
-    """実行中に認証エラーが発生した場合、例外が投げられることを検証"""
+    """実行中に認証エラーが発生した場合、直ちに中断されることを検証"""
     client, mock_call = mock_client
     
     # 1. 成功
