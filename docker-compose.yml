@@ -9,7 +9,8 @@ services:
       - DATABASE_URL=sqlite:///app/data/hw_genie.db
       - HW_GENIE_AUTH_PORT=8765
       - HW_GENIE_AUTH_HOST=0.0.0.0
-
     volumes:
       # マウント先をディレクトリにすることで、SQLite のジャーナルファイル作成等でのトラブルを防ぐ
       - ./data:/app/data
+      # 開発時にソースコードの変更をビルドなしで反映させる（ホットリロード的な挙動）
+      - ./src/python/hw_genie:/app/hw_genie
