@@ -82,8 +82,9 @@ def cmd_auth(args):
 
 def cmd_auth_server(args):
     """認証キャプチャサーバーを起動"""
+    host = os.environ.get("HW_GENIE_AUTH_HOST", "127.0.0.1")
     port = args.port or int(os.environ.get("HW_GENIE_AUTH_PORT", 8765))
-    run_server(port=port, once=args.once)
+    run_server(host=host, port=port, once=args.once)
 
 
 def cmd_raid_hero(args):
@@ -249,8 +250,12 @@ def main():
         sys.exit(0)
 
     from hw_genie.core.client import HWAuthError
+    from hw_genie.core.database import init_db
 
     try:
+        # Ensure DB tables exist
+        init_db()
+
         if hasattr(args, "func"):
             args.func(args)
         else:

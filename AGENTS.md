@@ -17,7 +17,9 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **item-raid**: HW-Genie を使用して特定のアイテムを収集します。失敗する（スタミナ不足等）か指定回数に達するまで繰り返し実行します。
 
 ### 2. コマンドラインツールの使用法
-すべての操作は `uv run hw-genie` または `uv run src/python/hw_genie/main.py` を通じて行われます。
+すべての操作はルートディレクトリから `uv run hw-genie` を通じて行われます。
+
+> **AI エージェントへのヒント**: 実行前にルートディレクトリにいることを確認し、必要に応じて `uv sync` を実行して環境を整えてください。
 
 *   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
 *   **ショップ購入**: `uv run hw-genie shop`

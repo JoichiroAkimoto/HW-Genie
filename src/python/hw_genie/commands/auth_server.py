@@ -140,11 +140,11 @@ def create_app() -> FastAPI:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8765, once: bool = False) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8765, once: bool = False) -> None:
     """Run the auth server.
 
     Args:
-        host: Host to bind to (default: 0.0.0.0)
+        host: Host to bind to (default: 127.0.0.1)
         port: Port to bind to (default: 8765)
         once: If True, exit after first successful auth capture
     """

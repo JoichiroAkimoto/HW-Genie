@@ -18,14 +18,11 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
 
 ```bash
-# 1. 依存関係とパッケージをインストール
-cd src/python
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+# 1. 依存関係のインストール (初回のみ)
+uv sync
 
-# 2. 実行
-hw-genie --help
+# 2. 実行 (ルートディレクトリから直接可能)
+uv run hw-genie --help
 ```
 
 ### Docker での実行 (推奨)
@@ -39,7 +36,9 @@ docker-compose up --build -d
 docker-compose logs -f
 ```
 
-データベース (`hw_genie.db`) はホストのカレントディレクトリにマウントされ、永続化されます。
+> **Security Note**: 認証サーバーを Docker 経由で起動する場合、コンテナ外部からのアクセスを許可するために `0.0.0.0` にバインドされます。公開サーバーで実行する場合は、ファイアウォール等で適切にアクセス制限を行ってください。
+
+データベース (`hw_genie.db`) は `./data` ディレクトリに保存・永続化されます。
 
 ### libSQL (Turso) の利用
 libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。

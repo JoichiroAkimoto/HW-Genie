@@ -1,0 +1,13 @@
+[project]
+name = "hw-genie-workspace"
+version = "0.1.0"
+description = "Hero Wars Genie Workspace"
+authors = [{ name = "JoichiroAkimoto" }]
+requires-python = ">=3.10"
+
+[tool.uv]
+managed = true
+package = false
+
+[tool.uv.workspace]
+members = ["src/python"]
