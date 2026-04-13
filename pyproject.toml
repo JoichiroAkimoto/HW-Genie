@@ -4,10 +4,16 @@ version = "0.1.0"
 description = "Hero Wars Genie Workspace"
 authors = [{ name = "JoichiroAkimoto" }]
 requires-python = ">=3.10"
+python-version = "3.13"
+dependencies = ["hw-genie"]
 
 [tool.uv]
 managed = true
 package = false
+python-preference = "only-managed"
 
 [tool.uv.workspace]
 members = ["src/python"]
+
+[tool.uv.sources]
+hw-genie = { workspace = true }

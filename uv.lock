@@ -309,7 +309,7 @@ wheels = [
 [[package]]
 name = "hw-genie"
 version = "0.1.0"
-source = { virtual = "src/python" }
+source = { editable = "src/python" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
@@ -344,6 +344,12 @@ provides-extras = ["dev"]
 name = "hw-genie-workspace"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "hw-genie" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "hw-genie", editable = "src/python" }]
 
 [[package]]
 name = "idna"
