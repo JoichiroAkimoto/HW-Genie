@@ -35,7 +35,6 @@ def cmd_auth(args):
     # 一覧表示
     if args.list:
         from hw_genie.core.session_manager import SessionManager
-        from hw_genie.core.utils import format_number_with_suffix
         accounts = SessionManager.list_accounts()
         if not accounts:
             print("No accounts found in database.")
