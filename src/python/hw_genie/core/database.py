@@ -11,9 +11,9 @@ class Session(Base):
     data = Column(JSON)
 
 # デフォルトのデータベースパス（実行ディレクトリに依存しないように絶対パスを生成）
-# 開発時はカレントディレクトリの data/hw_genie.db、
+# 開発時はプロジェクトルートの data/hw_genie.db、
 # 指定がある場合はそれを使用する
-DEFAULT_DB_URL = "sqlite:///hw_genie.db"
+DEFAULT_DB_URL = "sqlite:///data/hw_genie.db"
 
 # 環境変数 DATABASE_URL で接続先を切り替え可能に
 db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)

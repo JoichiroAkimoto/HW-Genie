@@ -23,6 +23,9 @@ dev = [
 [project.scripts]
 hw-genie = "hw_genie.main:main"
 
+[tool.uv]
+package = true
+
 [tool.ruff]
 target-version = "py313"
 line-length = 150

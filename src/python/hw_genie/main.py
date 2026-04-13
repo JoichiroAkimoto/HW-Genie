@@ -32,6 +32,31 @@ def _ensure_session(args) -> dict[str, str]:
 
 def cmd_auth(args):
     """認証情報の更新・表示"""
+    # 一覧表示
+    if args.list:
+        from hw_genie.core.session_manager import SessionManager
+        from hw_genie.core.utils import format_number_with_suffix
+        accounts = SessionManager.list_accounts()
+        if not accounts:
+            print("No accounts found in database.")
+            return
+        
+        print(f"\n{'Account Alias':<20} | {'Player Name':<20} | {'Level':<5} | {'Energy':<8} | {'Last Updated'}")
+        print("-" * 80)
+        for alias in sorted(accounts):
+            data = SessionManager.load(alias)
+            player = data.get("player", {})
+            p_name = player.get("name", "Unknown")
+            p_level = player.get("level", "-")
+            p_energy = player.get("energy", "-")
+            updated = data.get("last_updated", "Never")
+            # ISO形式の時間を少し読みやすく
+            updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
+            
+            print(f"{alias:<20} | {p_name:<20} | {p_level:<5} | {p_energy:<8} | {updated_short}")
+        print()
+        return
+
     account_alias = args.account or "default"
 
     # curlコマンドからヘッダーを抽出する場合
@@ -209,6 +234,7 @@ def main():
     p_auth.add_argument("--update", "-u", help="Update session with JSON headers")
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
+    p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
     p_auth.set_defaults(func=cmd_auth)
 
     # Auth Server

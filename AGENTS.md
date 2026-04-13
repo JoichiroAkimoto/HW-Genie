@@ -24,6 +24,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **デイリールーチン**: `uv run hw-genie daily`
+*   **登録済みアカウント一覧**: `uv run hw-genie auth --list`
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`

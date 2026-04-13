@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from .repository import SessionRepository
 
 
@@ -18,8 +18,21 @@ class SessionManager:
         cls.repo.save_data(account, save_data)
 
     @classmethod
+    def list_accounts(cls) -> List[str]:
+        return cls.repo.list_accounts()
+
+    @classmethod
     def load(cls, account: str = "default") -> Dict[str, Any]:
         data = cls.repo.get_data(account)
+        
+        # もし見つからず、かつ大文字小文字の違いがある可能性を考慮して再検索
+        if not data and account != "default":
+            accounts = cls.list_accounts()
+            # 大文字小文字を区別せずに一致するものを探す
+            match = next((a for a in accounts if a.lower() == account.lower()), None)
+            if match:
+                data = cls.repo.get_data(match)
+
         if not data:
             # 自動移行ロジック: DBにデータがない場合、既存のjsonファイルからの移行を試みる
             from hw_genie.core.auth import get_session_path
