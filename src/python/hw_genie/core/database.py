@@ -10,10 +10,12 @@ class Session(Base):
     account = Column(String, primary_key=True)
     data = Column(JSON)
 
-# デフォルトのデータベースパス（実行ディレクトリに依存しないように絶対パスを生成）
-# 開発時はプロジェクトルートの data/hw_genie.db、
-# 指定がある場合はそれを使用する
-DEFAULT_DB_URL = "sqlite:///data/hw_genie.db"
+# プロジェクトルートの絶対パスを基点に DB パスを確定させる
+# 現在: src/python/hw_genie/core/database.py
+# 1: core, 2: hw_genie, 3: python, 4: src, 5: プロジェクトルート
+PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+DEFAULT_DB_PATH = os.path.join(PKG_ROOT, "data", "hw_genie.db")
+DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 
 # 環境変数 DATABASE_URL で接続先を切り替え可能に
 db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
@@ -31,9 +33,8 @@ def init_db():
     # データベースファイルのディレクトリが存在することを確認
     if db_url.startswith("sqlite:///"):
         db_path = db_url.replace("sqlite:///", "")
-        if db_path and not db_path.startswith(":memory:"):
+        if not db_path.startswith(":memory:"):
             db_dir = os.path.dirname(os.path.abspath(db_path))
-            if db_dir and not os.path.exists(db_dir):
+            if not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
-                
     Base.metadata.create_all(engine)

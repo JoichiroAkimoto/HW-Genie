@@ -95,6 +95,7 @@ _auth_server = AuthServer()
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    init_db()  # Ensure tables exist before handling requests
     app = FastAPI(title="HW-Genie Auth Server")
 
     # CORS middleware - restrict to Hero Wars origins only
