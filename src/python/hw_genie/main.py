@@ -32,6 +32,30 @@ def _ensure_session(args) -> dict[str, str]:
 
 def cmd_auth(args):
     """認証情報の更新・表示"""
+    # 一覧表示
+    if args.list:
+        from hw_genie.core.session_manager import SessionManager
+        accounts = SessionManager.list_accounts()
+        if not accounts:
+            print("No accounts found in database.")
+            return
+        
+        print(f"\n{'Account Alias':<20} | {'Player Name':<20} | {'Level':<5} | {'Energy':<8} | {'Last Updated'}")
+        print("-" * 80)
+        for alias in sorted(accounts):
+            data = SessionManager.load(alias)
+            player = data.get("player", {})
+            p_name = player.get("name", "Unknown")
+            p_level = player.get("level", "-")
+            p_energy = player.get("energy", "-")
+            updated = data.get("last_updated", "Never")
+            # ISO形式の時間を少し読みやすく
+            updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
+            
+            print(f"{alias:<20} | {p_name:<20} | {p_level:<5} | {p_energy:<8} | {updated_short}")
+        print()
+        return
+
     account_alias = args.account or "default"
 
     # curlコマンドからヘッダーを抽出する場合
@@ -40,7 +64,7 @@ def cmd_auth(args):
         if not headers:
             print("Error: Could not extract x-auth-* headers from the provided curl command.")
             sys.exit(1)
-        
+
         info = update_session_with_headers(headers, account_alias)
         if info["status"] == "success":
             print(f"Successfully updated session for {info['player'].name}")
@@ -82,8 +106,9 @@ def cmd_auth(args):
 
 def cmd_auth_server(args):
     """認証キャプチャサーバーを起動"""
+    host = os.environ.get("HW_GENIE_AUTH_HOST", "127.0.0.1")
     port = args.port or int(os.environ.get("HW_GENIE_AUTH_PORT", 8765))
-    run_server(port=port, once=args.once)
+    run_server(host=host, port=port, once=args.once)
 
 
 def cmd_raid_hero(args):
@@ -123,7 +148,7 @@ def cmd_raid_item(args):
             if info["status"] == "success":
                 headers = info["headers"]
                 print(f"Successfully updated session for {info['player'].name} from curl.")
-        
+
         # 2. ペイロードを抽出
         payload = extract_payload_from_curl(args.curl)
         if not payload:
@@ -158,6 +183,7 @@ def cmd_shop(args):
 
     client = HWClient(headers)
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
+
     run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
 
@@ -178,7 +204,7 @@ def cmd_daily(args):
                 print(f"Successfully updated session for {info['player'].name} from curl.")
             else:
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
-        
+
         # 2. アイテムレイド用ペイロードを抽出
         item_payload = extract_payload_from_curl(args.curl)
         if not item_payload:
@@ -195,11 +221,11 @@ def cmd_daily(args):
 
 def main():
     parser = argparse.ArgumentParser(prog="hw-genie", description="Hero Wars Genie CLI")
-    
+
     # Parent parser for common arguments
     parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("--account", "-a", help="Account alias")
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
     # Auth
@@ -207,6 +233,7 @@ def main():
     p_auth.add_argument("--update", "-u", help="Update session with JSON headers")
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
+    p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
     p_auth.set_defaults(func=cmd_auth)
 
     # Auth Server
@@ -248,17 +275,24 @@ def main():
         sys.exit(0)
 
     from hw_genie.core.client import HWAuthError
+    from hw_genie.core.database import init_db
+
     try:
+        # Ensure DB tables exist
+        init_db()
+
         if hasattr(args, "func"):
             args.func(args)
         else:
             print(f"Command {args.command} not implemented yet.")
     except HWAuthError as e:
         from hw_genie.core.client import Emojis
+
         print(f"\n{Emojis.ERROR}Authentication Error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         from hw_genie.core.client import Emojis
+
         print(f"\n{Emojis.ERROR}Unexpected Error: {e}", file=sys.stderr)
         sys.exit(1)
 

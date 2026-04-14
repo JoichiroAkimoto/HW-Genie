@@ -1,53 +1,64 @@
 import json
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from .repository import SessionRepository
 
-# セッションファイルの検索順序
-SEARCH_PATHS = [
-    "session.json",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "session.json")),
-    os.path.expanduser("~/.hw-genie/session.json"),
-]
 
 class SessionManager:
-    _cached_data: Optional[Dict[str, Any]] = None
-    _loaded_path: Optional[str] = None
+    repo = SessionRepository()
 
     @classmethod
-    def _get_session_path(cls) -> str:
-        """読み込み可能なセッションファイルのパスを特定する"""
-        for path in SEARCH_PATHS:
+    def save(cls, account: str, data: Dict[str, Any]):
+        # PlayerStatus などのオブジェクトを辞書に変換して JSON シリアライズ可能にする
+        save_data = data.copy()
+        player = save_data.get("player")
+        if player and hasattr(player, "to_dict"):
+            save_data["player"] = player.to_dict()
+
+        cls.repo.save_data(account, save_data)
+
+    @classmethod
+    def list_accounts(cls) -> List[str]:
+        return cls.repo.list_accounts()
+
+    @classmethod
+    def load(cls, account: str = "default") -> Dict[str, Any]:
+        data = cls.repo.get_data(account)
+        
+        # もし見つからず、かつ大文字小文字の違いがある可能性を考慮して再検索
+        if not data and account != "default":
+            accounts = cls.list_accounts()
+            # 大文字小文字を区別せずに一致するものを探す
+            match = next((a for a in accounts if a.lower() == account.lower()), None)
+            if match:
+                data = cls.repo.get_data(match)
+
+        if not data:
+            # 自動移行ロジック: DBにデータがない場合、既存のjsonファイルからの移行を試みる
+            from hw_genie.core.auth import get_session_path
+
+            path = get_session_path(account)
             if os.path.exists(path):
-                return path
-        return "session.json"  # デフォルト
+                try:
+                    with open(path, "r") as f:
+                        old_data = json.load(f)
+                    if old_data:
+                        cls.repo.save_data(account, old_data)
+                        # 移行成功時は標準エラーに出力（ログ用途）
+                        import sys
 
-    @classmethod
-    def load(cls, path: Optional[str] = None) -> Dict[str, Any]:
-        """指定されたパスまたはデフォルトのパスからセッションをロードする"""
-        target_path = path or cls._get_session_path()
-        if not os.path.exists(target_path):
-            return {}
-            
-        with open(target_path, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+                        print(f"INFO: Migrated session for '{account}' from {path} to database.", file=sys.stderr)
+                        return old_data
+                except (json.JSONDecodeError, IOError):
+                    pass
+        return data
 
     @classmethod
     def get_last_mission_id(cls, account: str = "default") -> Optional[int]:
-        """指定されたアカウントのセッションファイルからミッションIDを取得する"""
-        from hw_genie.core.auth import get_session_path
-        path = get_session_path(account)
-        return cls.load(path).get("last_item_raid_mission_id")
+        return cls.load(account).get("last_item_raid_mission_id")
 
     @classmethod
     def set_last_mission_id(cls, mission_id: int, account: str = "default"):
-        """指定されたアカウントのセッションファイルにミッションIDを保存する"""
-        from hw_genie.core.auth import get_session_path
-        path = get_session_path(account)
-        data = cls.load(path)
+        data = cls.load(account)
         data["last_item_raid_mission_id"] = mission_id
-        
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        cls.repo.save_data(account, data)

@@ -3,12 +3,14 @@ name = "hw-genie"
 version = "0.1.0"
 description = "Hero Wars Genie CLI"
 authors = [{ name = "JoichiroAkimoto" }]
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.14"
 dependencies = [
     "requests~=2.33.0",
     "fastapi~=0.135.3",
     "uvicorn~=0.44.0",
     "httpx~=0.28.1",
+    "sqlalchemy~=2.0.49",
+    "sqlalchemy-libsql~=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,9 @@ dev = [
 
 [project.scripts]
 hw-genie = "hw_genie.main:main"
+
+[tool.uv]
+package = true
 
 [tool.ruff]
 target-version = "py313"

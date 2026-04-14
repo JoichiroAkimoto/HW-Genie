@@ -10,7 +10,7 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
 1. ブラウザのネットワークタブから `api/` へのリクエストを `Copy as cURL` でコピーします。
 2. 実行コマンド（コピーした curl コマンドを引数に渡します）:
    ```bash
-   .venv/bin/hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
+   uv run hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
    ```
 
 ### 便利なオプション
@@ -18,12 +18,23 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
 - `--account`, `-a`: アカウントに別名を付けて保存します（例: `--account sub1`）。
 - `--update`, `-u`: JSON 形式のヘッダーを直接渡して更新します。
 
+## 保存済みアカウントの一覧表示
+
+現在 DB に保存されているアカウント（別名）の一覧と、それぞれのステータスを確認できます。
+
+### ワークフロー
+1. 実行コマンド:
+   ```bash
+   uv run hw-genie auth --list
+   ```
+2. 出力結果から、対象とするアカウント名（Account Alias）を特定します。
+
 ## 方法2: 自動認証キャプチャ (推奨)
 
 ### ワークフロー
 1. 認証サーバーを起動:
    ```bash
-   .venv/bin/hw-genie auth-server
+   uv run hw-genie auth-server
    ```
 2. ブラウザに Userscript (`src/userscripts/index.ts`) を Tampermonkey 等にインストール
 3. Hero Wars を開くと自動的に認証情報がキャプチャされ、セッションが更新されます

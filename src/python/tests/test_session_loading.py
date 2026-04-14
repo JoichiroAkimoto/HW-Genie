@@ -1,51 +1,44 @@
 import pytest
 import json
 from hw_genie.core.client import load_session_headers
+from hw_genie.core.session_manager import SessionManager
 
 @pytest.fixture
-def temp_session_files(tmp_path):
-    """一時ディレクトリにテスト用セッションファイルを配置する"""
-    # カレントディレクトリをシミュレートするため tmp_path を使用
-    # load_session_headers は相対パス "session.json" を見るため、
-    # テスト実行時に os.chdir で移動するか、モックしてパスを差し替える必要がある。
-    # ここでは、load_session_headers が参照する相対パスを mock するか、
-    # 単純にファイルを配置して os.chdir する。
-    
-    default_file = tmp_path / "session.json"
-    default_file.write_text(json.dumps({"headers": {"x-auth-token": "default-token"}}))
-    
-    joe_file = tmp_path / "session.Joe.json"
-    joe_file.write_text(json.dumps({"headers": {"x-auth-token": "joe-token"}}))
-    
+def temp_session_files(tmp_path, monkeypatch):
+    """
+    テスト用のセッションファイル環境を構築する。
+    SessionManager.load が migration ロジックで使う get_session_path を tmp_path に向ける。
+    """
+    monkeypatch.setattr("hw_genie.core.auth.get_session_path", lambda acc: str(tmp_path / ("session.json" if acc == "default" else f"session.{acc}.json")))
     return tmp_path
 
-def test_load_session_headers_default(temp_session_files, monkeypatch):
-    """アカウント指定なし（または 'default'）の場合に session.json が読み込まれること"""
-    monkeypatch.chdir(temp_session_files)
+def test_load_session_headers_default(temp_session_files):
+    """アカウント指定なしの場合に、自動移行経由で session.json が読み込まれること"""
+    data = {"headers": {"x-auth-token": "default-token"}}
+    with open(temp_session_files / "session.json", "w") as f:
+        json.dump(data, f)
     
-    # 指定なし
-    assert load_session_headers()["x-auth-token"] == "default-token"
-    # 'default' 指定
-    assert load_session_headers("default")["x-auth-token"] == "default-token"
-    # None 指定
-    assert load_session_headers(None)["x-auth-token"] == "default-token"
+    headers = load_session_headers()
+    assert headers["x-auth-token"] == "default-token"
 
-def test_load_session_headers_account(temp_session_files, monkeypatch):
-    """アカウント指定がある場合に session.{account}.json が優先的に読み込まれること"""
-    monkeypatch.chdir(temp_session_files)
+def test_load_session_headers_account(temp_session_files):
+    """アカウント指定がある場合に、自動移行経由で session.{account}.json が読み込まれること"""
+    data = {"headers": {"x-auth-token": "joe-token"}}
+    with open(temp_session_files / "session.Joe.json", "w") as f:
+        json.dump(data, f)
     
-    assert load_session_headers("Joe")["x-auth-token"] == "joe-token"
+    headers = load_session_headers("Joe")
+    assert headers["x-auth-token"] == "joe-token"
 
-def test_load_session_headers_fallback(temp_session_files, monkeypatch):
-    """指定したアカウントファイルがない場合に session.json にフォールバックすること"""
-    monkeypatch.chdir(temp_session_files)
-    
-    assert load_session_headers("Unknown")["x-auth-token"] == "default-token"
+def test_load_session_headers_fallback(temp_session_files):
+    """指定したアカウントファイルがなく、DBにもない場合に None を返すこと (以前のフォールバック動作は現在サポート外)"""
+    headers = load_session_headers("Unknown")
+    assert headers is None
 
-def test_load_session_headers_path_traversal(temp_session_files, monkeypatch):
-    """パス・トラバーサル攻撃が防止され、安全なファイル名として処理されること"""
-    monkeypatch.chdir(temp_session_files)
+def test_load_session_headers_from_db(temp_session_files):
+    """DBにデータがある場合、ファイルがなくても読み込めること"""
+    data = {"headers": {"x-auth-token": "db-token"}}
+    SessionManager.repo.save_data("dbuser", data)
     
-    # ../.. と指定しても、os.path.basename により "passwd" となり、
-    # session.passwd.json を探しに行くはず（存在しないのでフォールバックして session.json になる）
-    assert load_session_headers("../../etc/passwd")["x-auth-token"] == "default-token"
+    headers = load_session_headers("dbuser")
+    assert headers["x-auth-token"] == "db-token"

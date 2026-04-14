@@ -15,21 +15,61 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 ## クイックスタート
 
 ### Python CLI (hw-genie)
-Python 3.14 (3.10+) と [direnv](https://direnv.net/) の使用を推奨しています。
+Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
 
 ```bash
-# 1. 仮想環境を作成
-python -m venv .venv
+# 1. 依存関係のインストール (初回のみ)
+uv sync
 
-# 2. direnv の設定
+# 2. 実行 (ルートディレクトリから直接可能)
+uv run hw-genie --help
+```
+
+### Tips: direnv による自動有効化
+[direnv](https://direnv.net/) を使用すると、ディレクトリに移動するだけで自動的に仮想環境を有効化できます。
+
+```bash
+# プロジェクトルートで実行
 echo "source .venv/bin/activate" > .envrc
 direnv allow
+```
 
-# 3. 依存関係とパッケージをインストール
-pip install -e "src/python[dev]"
+有効化後は `uv run` を付けずに直接 `hw-genie` や `ruff` を実行可能です。
 
-# 実行
-hw-genie --help
+### Docker での実行 (推奨)
+環境構築なしでコンテナを使用して認証サーバーを起動できます。
+
+```bash
+# 1. ビルドと起動
+docker-compose up --build -d
+
+# 2. ログの確認
+docker-compose logs -f
+```
+
+> **Security Note**: 認証サーバーを Docker 経由で起動する場合、コンテナ外部からのアクセスを許可するために `0.0.0.0` にバインドされます。公開サーバーで実行する場合は、ファイアウォール等で適切にアクセス制限を行ってください。
+
+データベース (`hw_genie.db`) は `./data` ディレクトリに保存・永続化されます。
+
+### libSQL (Turso) の利用
+libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。
+
+```bash
+export DATABASE_URL="sqlite+libsql://[your-db].turso.io?auth_token=[your-token]"
+```
+
+#### ローカルでの libSQL サーバーの起動
+Docker を使用してローカルに libSQL サーバー (`sqld`) を起動し、接続テストを行うことができます。
+
+```bash
+# 1. サーバーの起動
+docker run -d -p 8080:8080 -p 5001:5001 ghcr.io/tursodatabase/libsql-server:latest
+
+# 2. 接続先の設定
+export DATABASE_URL="libsql://localhost:8080"
+
+# 3. 実行
+uv run hw-genie --help
 ```
 
 ### 認証方法

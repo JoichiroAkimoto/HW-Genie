@@ -1,41 +1,46 @@
-import warnings
-from unittest.mock import patch
-
 import pytest
+from unittest.mock import MagicMock, patch
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from hw_genie.core.database import Base
+from hw_genie.core.client import HWClient, PlayerStatus
 
-# Suppress DeprecationWarnings from starlette/fastapi (Python 3.16 compatibility)
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="fastapi.*")
-
+@pytest.fixture(autouse=True)
+def setup_db():
+    """
+    テストごとにインメモリDBを初期化し、プロダクションDBへの影響を遮断する。
+    """
+    test_engine = create_engine("sqlite:///:memory:")
+    test_SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
+    
+    # database モジュールの変数を一時的に差し替え
+    with patch("hw_genie.core.database.engine", test_engine), \
+         patch("hw_genie.core.database.SessionLocal", test_SessionLocal):
+        
+        # リポジトリ内でのインポート先も差し替える必要があるため、
+        # 確実に反映されるように patch を重ねる
+        with patch("hw_genie.core.repository.SessionLocal", test_SessionLocal):
+            Base.metadata.create_all(test_engine)
+            yield
+            Base.metadata.drop_all(test_engine)
 
 @pytest.fixture
-def mock_sleep():
-    """time.sleep を無効化する fixture"""
-    with patch("time.sleep", return_value=None):
-        yield
+def mock_client():
+    # 本物の HWClient インスタンスを作成し、call と fetch_player_status をモックする
+    client = HWClient(headers={"x-auth-token": "test"})
+    mock_call = MagicMock()
+    client.call = mock_call
+    
+    # fetch_player_status もモック化（ネットワーク通信を防ぐため）
+    status = PlayerStatus(name="TestUser", level=130, gold=1000, gems=100, energy=100, arena_rank=1, grand_rank=1)
+    client.fetch_player_status = MagicMock(return_value=status)
+    
+    return client, mock_call
 
+@pytest.fixture
+def mock_sleep(mocker):
+    return mocker.patch("time.sleep", return_value=None)
 
 @pytest.fixture
 def default_headers():
-    """標準的なテスト用ヘッダーを提供"""
-    return {"x-auth-token": "test-token", "x-auth-player-id": "123", "x-request-id": "100"}
-
-
-@pytest.fixture
-def mock_client(default_headers):
-    """HWClient.call と mission_get_all をモック化する fixture"""
-    # インスタンスではなくクラスのメソッドをパッチする
-    with patch("hw_genie.core.client.HWClient.call") as mock_call, \
-          patch("hw_genie.core.client.HWClient.mission_get_all") as mock_mission_get_all:
-        from hw_genie.core.client import HWClient
-        from unittest.mock import MagicMock
-
-        client = HWClient(default_headers)
-        
-        # デフォルトで全ミッションが未実行(実行可能)である状態を返す
-        res = MagicMock()
-        res.is_success = True
-        res.detail = {"response": []}
-        mock_mission_get_all.return_value = res
-        
-        yield client, mock_call
+    return {"x-auth-session-id": "test", "x-auth-token": "test", "x-request-id": "100"}

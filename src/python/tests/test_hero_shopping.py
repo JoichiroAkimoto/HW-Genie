@@ -1,7 +1,4 @@
 from unittest.mock import MagicMock
-
-# スクリプトのディレクトリをパスに追加
-
 from . import dummy_responses as dummy
 from hw_genie.commands.hero_shopping import (
     ResponseStatus,
@@ -13,12 +10,6 @@ from hw_genie.commands.hero_shopping import (
 def test_hero_shopping_extraction_and_skip_bought(mock_client, mock_sleep):
     """購入対象の抽出と、購入済みアイテムのスキップを検証"""
     client, mock_call = mock_client
-
-    # 1. shopGetAll のレスポンスを設定 (SHOP_GET_ALL_VARIED)
-    # 4 (Arena): Slot 1 (対象), Slot 2 (購入済みスキップ)
-    # 8 (Soul): Slot 1 (対象), Slot 2 (対象 - itemだけどショップ8なので)
-    # 9 (Friend): Slot 1 (対象)
-    # 合計 4 つがキューに入るはず
 
     mock_responses = []
 
@@ -37,8 +28,6 @@ def test_hero_shopping_extraction_and_skip_bought(mock_client, mock_sleep):
     # 換金成功
     res_ex = MagicMock()
     res_ex.is_success = True
-    # HWClient.exchange_stones 内部で detail を解析して exchange_info を生成するため、
-    # 正しい detail を設定する
     res_ex.detail = dummy.INVENTORY_EXCHANGE_STONES_MULTI["results"][0]["result"]
     mock_responses.append(res_ex)
 
@@ -51,7 +40,6 @@ def test_hero_shopping_extraction_and_skip_bought(mock_client, mock_sleep):
     # 検証: 購入成功アイテムが 4 つあること
     success_items = [r for r in results if r.status == ResponseStatus.SUCCESS]
     assert len(success_items) == 4
-    # INVENTORY_EXCHANGE_STONES_MULTI の合計は 15
     assert ex_info.stones == 15
 
     # 呼び出し回数の確認: getAll(1) + buy(4) + exchange(1) = 6
@@ -81,8 +69,6 @@ def test_hero_shopping_insufficient_funds_skips_same_shop(mock_client, mock_slee
     res_buy_8_1.error_name = "NotEnough"
     mock_responses.append(res_buy_8_1)
 
-    # (Shop 8: Slot 2 はスキップされるはず)
-
     # Shop 9: Slot 1 -> 成功 (別のショップなので実行される)
     res_buy_9_1 = MagicMock()
     res_buy_9_1.is_success = True
@@ -98,11 +84,6 @@ def test_hero_shopping_insufficient_funds_skips_same_shop(mock_client, mock_slee
 
     results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
-
-    # 1. Shop 4 Slot 1: SUCCESS
-    # 2. Shop 8 Slot 1: ERROR (NotEnough)
-    # 3. Shop 9 Slot 1: SUCCESS
-    # 合計 3 つの実行結果があること (Shop 8 Slot 2 は run_hero_shopping 内でループ内で continue されるが results には追加されない)
 
     assert len(results) == 3
     assert results[0].status == ResponseStatus.SUCCESS  # Shop 4
@@ -123,12 +104,7 @@ def test_hero_shopping_empty_slots(mock_client, mock_sleep):
     res_all.is_success = True
     res_all.detail = {"response": {}}
     
-    # 換金
-    res_ex = MagicMock()
-    res_ex.is_success = True
-    res_ex.exchange_info = None
-    
-    mock_responses = [res_all, res_ex]
+    mock_responses = [res_all]
     mock_call.side_effect = mock_responses
 
     results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
@@ -163,12 +139,7 @@ def test_hero_shopping_count_souls_only(mock_client, mock_sleep, capsys):
 
     mock_responses = []
 
-    # shopGetAll (SHOP_GET_ALL_VARIED)
-    # Shop 4, Slot 1: fragmentHero x 5
-    # Shop 8, Slot 1: fragmentHero x 3
-    # Shop 8, Slot 2: item x 1 (集計対象外)
-    # Shop 9, Slot 1: fragmentHero x 5
-    # 合計: 5 + 3 + 5 = 13
+    # shopGetAll
     res_all = MagicMock()
     res_all.is_success = True
     res_all.detail = dummy.SHOP_GET_ALL_VARIED["results"][0]["result"]
@@ -187,3 +158,4 @@ def test_hero_shopping_count_souls_only(mock_client, mock_sleep, capsys):
     captured = capsys.readouterr()
     assert "Total Hero Souls Purchased: 13" in captured.out
     assert "Total Items Purchased" not in captured.out
+    assert mock_call.call_count == 5
