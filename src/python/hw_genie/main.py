@@ -35,11 +35,12 @@ def cmd_auth(args):
     # 一覧表示
     if args.list:
         from hw_genie.core.session_manager import SessionManager
+
         accounts = SessionManager.list_accounts()
         if not accounts:
             print("No accounts found in database.")
             return
-        
+
         print(f"\n{'Account Alias':<20} | {'Player Name':<20} | {'Level':<5} | {'Energy':<8} | {'Last Updated'}")
         print("-" * 80)
         for alias in sorted(accounts):
@@ -51,7 +52,7 @@ def cmd_auth(args):
             updated = data.get("last_updated", "Never")
             # ISO形式の時間を少し読みやすく
             updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
-            
+
             print(f"{alias:<20} | {p_name:<20} | {p_level:<5} | {p_energy:<8} | {updated_short}")
         print()
         return

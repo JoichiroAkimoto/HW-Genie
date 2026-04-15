@@ -9,6 +9,65 @@ from hw_genie.core.client import (
 from hw_genie.core.utils import print_player_status
 
 
+# デフォルトのミッションリスト
+DEFAULT_HERO_MISSION_IDS = [
+    1,
+    5,
+    10,
+    11,
+    16,
+    20,
+    25,
+    26,
+    31,
+    35,
+    40,
+    41,
+    46,
+    50,
+    55,
+    57,
+    61,
+    65,
+    70,
+    72,
+    76,
+    80,
+    85,
+    86,
+    91,
+    95,
+    100,
+    101,
+    106,
+    110,
+    115,
+    116,
+    121,
+    125,
+    130,
+    131,
+    136,
+    140,
+    146,
+    151,
+    155,
+    161,
+    166,
+    170,
+    177,
+    181,
+    185,
+    193,
+    198,
+    203,
+    204,
+    205,
+    209,
+    214,
+]
+
+
 @dataclass
 class MissionResult:
     id: int
@@ -38,13 +97,17 @@ def is_limit_reached_error(error_name: str | None, detail: Any) -> bool:
     return False
 
 
-def run_hero_raid(client_or_headers, mission_ids: list[int] | int, times: int = 3, allow_recovery: bool = True):
+def run_hero_raid(client_or_headers, mission_ids: list[int] | int | None = None, times: int = 3, allow_recovery: bool = True):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
         client = HWClient(client_or_headers)
     else:
         client = client_or_headers
+
+    # mission_ids が None または空リストの場合、デフォルトリストを使用
+    if mission_ids is None or (isinstance(mission_ids, list) and len(mission_ids) == 0):
+        mission_ids = DEFAULT_HERO_MISSION_IDS
 
     if isinstance(mission_ids, int):
         mission_ids = [mission_ids]

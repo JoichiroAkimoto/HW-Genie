@@ -126,7 +126,7 @@ class HWClient:
 
     API_URL = "https://heroes-wb.nextersglobal.com/api/"
     DEFAULT_TIMEOUT = 15
-    DEFAULT_SLEEP = 0.5
+    DEFAULT_SLEEP = 0.3
 
     def __init__(self, headers: dict[str, str], session: requests.Session | None = None):
         self.session = session or requests.Session()
