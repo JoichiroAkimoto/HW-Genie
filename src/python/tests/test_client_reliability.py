@@ -10,6 +10,12 @@ def client():
     return HWClient(headers)
 
 
+@pytest.fixture(autouse=True)
+def mock_sleep():
+    with patch("time.sleep"):
+        yield
+
+
 def test_retry_on_timeout(client):
     """タイムアウト発生時にリトライされることを検証"""
     with patch("requests.Session.post") as mock_post:
