@@ -179,3 +179,103 @@ def test_hero_raid_skips_already_done(mock_client, mock_sleep):
     assert results[1].id == 5
     assert results[1].status == "success"
     assert mock_call.call_count == 3  # getAll(1) + raid(1) + exchange(1)
+
+
+def test_hero_raid_stamina_recovery_success(mock_client, mock_sleep):
+    """スタミナ不足時に回復を行い、その後成功することを検証"""
+    client, mock_call = mock_client
+
+    # 0. mission_get_all
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = {"response": []}
+
+    # 1. スタミナ不足
+    res_stamina_err = MagicMock()
+    res_stamina_err.is_success = False
+    res_stamina_err.error_name = "notEnoughStamina"
+    res_stamina_err.detail = {}
+
+    # 2. スタミナ回復成功
+    res_recovery = MagicMock()
+    res_recovery.is_success = True
+
+    # 3. レイド成功
+    res_success = MagicMock()
+    res_success.is_success = True
+    res_success.detail = dummy.MISSION_RAID_SUCCESS["results"][0]["result"]
+
+    # 4. 換金
+    res_exchange = MagicMock()
+    res_exchange.is_success = True
+    res_exchange.detail = dummy.INVENTORY_EXCHANGE_STONES_SINGLE["results"][0]["result"]
+
+    mock_call.side_effect = [res_all, res_stamina_err, res_recovery, res_success, res_exchange]
+
+    results, recovery_count, ex_info = run_hero_raid(client, [1], times=3, allow_recovery=True)
+
+    assert results[0].status == "success"
+    assert recovery_count == 1
+    assert mock_call.call_count == 5  # getAll + raid(fail) + recover + raid(success) + exchange
+
+
+def test_hero_raid_stamina_recovery_failure(mock_client, mock_sleep):
+    """スタミナ回復に失敗した場合、エラーとして停止することを検証"""
+    client, mock_call = mock_client
+
+    # 0. mission_get_all
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = {"response": []}
+
+    # 1. スタミナ不足
+    res_stamina_err = MagicMock()
+    res_stamina_err.is_success = False
+    res_stamina_err.error_name = "notEnoughStamina"
+    res_stamina_err.detail = {}
+
+    # 2. スタミナ回復失敗
+    res_recovery_fail = MagicMock()
+    res_recovery_fail.is_success = False
+
+    # 3. 換金 (エラー後も実行される)
+    res_exchange = MagicMock()
+    res_exchange.is_success = True
+    res_exchange.detail = dummy.INVENTORY_EXCHANGE_STONES_SINGLE["results"][0]["result"]
+
+    mock_call.side_effect = [res_all, res_stamina_err, res_recovery_fail, res_exchange]
+
+    results, recovery_count, ex_info = run_hero_raid(client, [1], times=3, allow_recovery=True)
+
+    assert results[0].status == "stamina_error"
+    assert recovery_count == 0
+    assert mock_call.call_count == 4  # getAll + raid(fail) + recover(fail) + exchange
+
+
+def test_hero_raid_invalid_mission_id(mock_client, mock_sleep):
+    """無効なミッションIDでAPIがエラーを返した場合、適切に処理されることを検証"""
+    client, mock_call = mock_client
+
+    # 0. mission_get_all
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = {"response": []}
+
+    # 1. 無効なIDによるエラー
+    res_invalid = MagicMock()
+    res_invalid.is_success = False
+    res_invalid.error_name = "invalidMissionId"
+    res_invalid.detail = {"description": "Mission ID not found"}
+
+    # 2. 換金
+    res_exchange = MagicMock()
+    res_exchange.is_success = True
+    res_exchange.detail = dummy.INVENTORY_EXCHANGE_STONES_SINGLE["results"][0]["result"]
+
+    mock_call.side_effect = [res_all, res_invalid, res_exchange]
+
+    results, recovery_count, ex_info = run_hero_raid(client, [999], times=3)
+
+    assert results[0].status == "error"
+    assert results[0].name == "invalidMissionId"
+    assert mock_call.call_count == 3

@@ -184,3 +184,8 @@ docs/superpowers/
 # Temporary files
 implementer_task*.md
 fix_tests.py
+
+# Ralph Wiggum / TUI
+.ralph/
+.ralph-tui/
+tasks/
