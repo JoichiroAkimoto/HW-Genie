@@ -102,7 +102,9 @@ def cmd_auth(args):
         info = update_session_with_headers(session_data["headers"], account_alias)
         print(json.dumps(_prepare_info_for_json(info), indent=2))
     else:
-        print(json.dumps(session_data.get("headers"), indent=2))
+        headers = session_data.get("headers") or {}
+        redacted_headers = {k: ("***" if k.startswith("x-auth-") else v) for k, v in headers.items()}
+        print(json.dumps(redacted_headers, indent=2))
 
 
 def cmd_auth_server(args):

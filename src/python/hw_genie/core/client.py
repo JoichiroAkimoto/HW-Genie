@@ -1,10 +1,12 @@
 import copy
 import time
+import random
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Any
 
 import requests
+from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -127,6 +129,8 @@ class HWClient:
     API_URL = "https://heroes-wb.nextersglobal.com/api/"
     DEFAULT_TIMEOUT = 15
     DEFAULT_SLEEP = 0.3
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = 1.0  # Initial backoff in seconds
 
     def __init__(self, headers: dict[str, str], session: requests.Session | None = None):
         self.session = session or requests.Session()
@@ -143,6 +147,7 @@ class HWClient:
     def call(self, payload: dict[str, Any]) -> HWResponse:
         """
         APIを呼び出し、統一されたエラーハンドリングを行う。
+        一時的なネットワークエラーやレートリミットに対してはリトライを行う。
 
         Returns:
             HWResponse オブジェクト
@@ -152,57 +157,99 @@ class HWClient:
         headers = self.get_headers()
         current_request_id = self.request_id
 
-        try:
-            # actionTs の更新 (payload 内のすべての call context)
-            if "calls" in payload:
-                for call_item in payload["calls"]:
-                    if "context" in call_item:
-                        call_item["context"]["actionTs"] = int(time.time())
+        attempt = 0
+        while True:
+            try:
+                # actionTs の更新 (payload 内のすべての call context)
+                if "calls" in payload:
+                    for call_item in payload["calls"]:
+                        if "context" in call_item:
+                            call_item["context"]["actionTs"] = int(time.time())
 
-            response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
+                response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
 
-            # 0. Auth error check (HTTP 401)
-            if response.status_code == 401:
-                raise HWAuthError(Messages.AUTH_ERROR)
-
-            response.raise_for_status()
-            res_data = response.json()
-
-            # 1. Global error check
-            if "error" in res_data:
-                error = res_data["error"]
-                error_name = error.get("name") if isinstance(error, dict) else str(error)
-
-                if error_name in ["auth", "InvalidSession"]:
+                # 0. Auth error check (HTTP 401)
+                if response.status_code == 401:
                     raise HWAuthError(Messages.AUTH_ERROR)
 
-                return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
+                response.raise_for_status()
+                res_data = response.json()
 
-            # 2. Call-level response check
-            if "results" in res_data and len(res_data["results"]) > 0:
-                call_result = res_data["results"][0]
-
-                if "error" in call_result:
-                    error = call_result["error"]
+                # 1. Global error check
+                if "error" in res_data:
+                    error = res_data["error"]
                     error_name = error.get("name") if isinstance(error, dict) else str(error)
 
                     if error_name in ["auth", "InvalidSession"]:
                         raise HWAuthError(Messages.AUTH_ERROR)
 
                     return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
-                elif "result" in call_result:
-                    return HWResponse(status=ResponseStatus.SUCCESS, detail=call_result["result"], request_id=current_request_id)
-                else:
-                    return HWResponse(
-                        status=ResponseStatus.UNEXPECTED, error_name="unknown_format", detail=call_result, request_id=current_request_id
-                    )
-            else:
-                return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="empty_results", detail=res_data, request_id=current_request_id)
 
-        except HWAuthError:
-            raise
-        except Exception as e:
-            return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id)
+                # 2. Call-level response check
+                if "results" in res_data and len(res_data["results"]) > 0:
+                    results = res_data["results"]
+
+                    # 単一コールの場合は従来通り最初の結果を返す (後方互換性)
+                    if len(results) == 1:
+                        call_result = results[0]
+                        if "error" in call_result:
+                            error = call_result["error"]
+                            error_name = error.get("name") if isinstance(error, dict) else str(error)
+
+                            if error_name in ["auth", "InvalidSession"]:
+                                raise HWAuthError(Messages.AUTH_ERROR)
+
+                            return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
+                        elif "result" in call_result:
+                            return HWResponse(status=ResponseStatus.SUCCESS, detail=call_result["result"], request_id=current_request_id)
+                        else:
+                            return HWResponse(
+                                status=ResponseStatus.UNEXPECTED, error_name="unknown_format", detail=call_result, request_id=current_request_id
+                            )
+
+                    # 複数コールの場合は ident をキーにした辞書を返す
+                    results_map = {}
+                    for i, call_result in enumerate(results):
+                        # ident がない場合はインデックスを使用
+                        # 注意: payload の calls リストと results リストの順序は一致している
+                        # ここでは payload を辿って ident を取得するのが確実だが、
+                        # 簡易的に results 内に ident が含まれているか確認 (API 仕様に依存)
+                        # もし含まれていない場合は、呼び出し側で index 指定で取得してもらう
+                        ident = call_result.get("ident", str(i))
+                        results_map[ident] = call_result
+
+                    return HWResponse(status=ResponseStatus.SUCCESS, detail=results_map, request_id=current_request_id)
+                else:
+                    return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="empty_results", detail=res_data, request_id=current_request_id)
+
+            except HWAuthError:
+                raise
+            except (Timeout, ConnectionError, HTTPError) as e:
+                # HTTPError の場合、リトライすべきステータスコードか確認
+                if isinstance(e, HTTPError):
+                    status_code = e.response.status_code if e.response is not None else None
+                    # 429 (Too Many Requests) または 5xx (Server Error) はリトライ
+                    if status_code != 429 and (status_code is None or not (500 <= status_code < 600)):
+                        return HWResponse(
+                            status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id
+                        )
+
+                attempt += 1
+                if attempt > self.MAX_RETRIES:
+                    return HWResponse(
+                        status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id
+                    )
+
+                # Exponential backoff with jitter
+                sleep_time = (self.RETRY_BACKOFF * (2 ** (attempt - 1))) + (random.random() * 0.1)
+                time.sleep(sleep_time)
+
+                # リトライ時は request-id を更新して新しいリクエストとして送る
+                headers = self.get_headers()
+                current_request_id = self.request_id
+
+            except Exception as e:
+                return HWResponse(status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id)
 
     def mission_get_all(self) -> HWResponse:
         """キャンペーン（ストーリーモード）の各ステージクリア状況を取得"""
@@ -263,13 +310,25 @@ class HWClient:
         現在のプレイヤー情報（名前、レベル、リソース、アリーナ順位）を取得して辞書で返す。
         失敗した項目は None または 0 が入る。
         """
-        # 1. User Info
-        user_res = self.call({"calls": [{"name": ApiAction.USER_GET_INFO, "args": {}, "ident": "body"}]})
-        user_data = user_res.detail.get("response", {}) if user_res.is_success and user_res.detail else {}
+        # ユーザー情報とアリーナ情報を1回のリクエストでまとめて取得 (通信効率化)
+        payload = {
+            "calls": [
+                {"name": ApiAction.USER_GET_INFO, "args": {}, "ident": "user"},
+                {"name": ApiAction.ARENA_GET_ALL, "args": {}, "ident": "arena"},
+            ]
+        }
+        res = self.call(payload)
 
-        # 2. Arena Info
-        arena_res = self.call({"calls": [{"name": ApiAction.ARENA_GET_ALL, "args": {}, "ident": "arena"}]})
-        arena_data = arena_res.detail.get("response", {}) if arena_res.is_success and arena_res.detail else {}
+        user_data = {}
+        arena_data = {}
+
+        if res.is_success and isinstance(res.detail, dict):
+            # ident による結果の抽出
+            user_res = res.detail.get("user", {})
+            arena_res = res.detail.get("arena", {})
+
+            user_data = user_res.get("result", {}).get("response", {}) if "result" in user_res else {}
+            arena_data = arena_res.get("result", {}).get("response", {}) if "result" in arena_res else {}
 
         # データの抽出
         name = user_data.get("name", "Unknown")

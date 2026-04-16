@@ -11,7 +11,7 @@ def test_item_raid_max_iterations(mock_client, mock_sleep):
     # 常に成功を返す
     res_success = MagicMock()
     res_success.is_success = True
-    
+
     # 3回分
     mock_call.side_effect = [res_success, res_success, res_success]
 
@@ -34,7 +34,7 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
     res_error = MagicMock()
     res_error.is_success = False
     res_error.error_name = "notEnoughStamina"
-    
+
     mock_call.side_effect = [res_success, res_error]
 
     run_item_raid(client, {"calls": []})
@@ -46,16 +46,34 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
 def test_item_raid_auth_error_abort(mock_client, mock_sleep):
     """実行中に認証エラーが発生した場合、直ちに中断されることを検証"""
     client, mock_call = mock_client
-    
+
     # 1. 成功
     res_success = MagicMock()
     res_success.is_success = True
-    
+
     # 2. 認証エラー
     mock_call.side_effect = [res_success, HWAuthError("Session expired")]
 
     with pytest.raises(HWAuthError):
         run_item_raid(client, {"calls": []})
 
-    # 認証エラーで抜けるため2回で止まる
+
+def test_item_raid_stops_on_limit_reached(mock_client, mock_sleep):
+    """回数制限到達時にループを抜けることを検証"""
+    client, mock_call = mock_client
+
+    # 1. 成功
+    res_success = MagicMock()
+    res_success.is_success = True
+
+    # 2. 回数制限到達
+    res_limit = MagicMock()
+    res_limit.is_success = False
+    res_limit.error_name = "limitReached"
+
+    mock_call.side_effect = [res_success, res_limit]
+
+    run_item_raid(client, {"calls": []})
+
+    # 検証: 2 回で止まる
     assert mock_call.call_count == 2
