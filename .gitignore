@@ -189,3 +189,4 @@ fix_tests.py
 .ralph/
 .ralph-tui/
 tasks/
+.beads/

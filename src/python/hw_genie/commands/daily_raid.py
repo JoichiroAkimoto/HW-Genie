@@ -17,7 +17,8 @@ def run_daily_raid(client_or_headers, item_payload=None):
         account = client.headers.get("x-auth-user-id", "default")
     else:
         client = client_or_headers
-        account = "default"
+        # Try to get account from client headers
+        account = getattr(client, "headers", {}).get("x-auth-user-id", "default")
 
     print(f"\n{Emojis.START}Starting Daily Routine...", flush=True)
 
@@ -38,10 +39,14 @@ def run_daily_raid(client_or_headers, item_payload=None):
             mission_id = SessionManager.get_last_mission_id(account=account)
             if mission_id:
                 item_payload["mission_id"] = mission_id
-        
-        print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
-        client.sleep()
-        run_item_raid(client, item_payload)
+
+        # mission_id が最終的に設定されていない場合は実行しない
+        if item_payload.get("mission_id") is None:
+            print(f"\n{Emojis.INFO}No item raid mission ID configured. Skipping Item Raid.", flush=True)
+        else:
+            print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
+            client.sleep()
+            run_item_raid(client, item_payload)
 
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()

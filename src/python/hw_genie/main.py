@@ -194,7 +194,7 @@ def cmd_shop(args):
 def cmd_daily(args):
     """デイリーレイド実行"""
     headers = None
-    item_payload = None
+    item_payload = {}
 
     # curlコマンドから情報を抽出
     if args.curl:
@@ -209,10 +209,11 @@ def cmd_daily(args):
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
 
         # 2. アイテムレイド用ペイロードを抽出
-        item_payload = extract_payload_from_curl(args.curl)
-        if not item_payload:
+        extracted_payload = extract_payload_from_curl(args.curl)
+        if not extracted_payload:
             print("Error: Could not extract JSON payload from the provided curl command.")
             sys.exit(1)
+        item_payload = extracted_payload
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
