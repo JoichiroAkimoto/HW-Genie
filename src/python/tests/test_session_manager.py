@@ -14,6 +14,33 @@ def test_save_and_load():
     assert SessionManager.load("test_account") == data
 
 
+def test_prevent_account_duplication():
+    """同じ player_id を持つアカウントを異なる alias で保存したとき、重複せず更新されることを検証"""
+    from hw_genie.core.database import SessionLocal, Account
+
+    # 1回目の保存: alias="user1", player_id="id_123"
+    data1 = {"player": {"id": "id_123", "name": "User One"}}
+    SessionManager.save("user1", data1)
+
+    # 2回目の保存: alias="user1_alt", player_id="id_123"
+    data2 = {"player": {"id": "id_123", "name": "User One Updated"}}
+    SessionManager.save("user1_alt", data2)
+
+    # DBを確認してレコードが1つであることを検証
+    with SessionLocal() as db:
+        count = db.query(Account).filter(Account.player_id == "id_123").count()
+        assert count == 1
+        rec = db.query(Account).filter(Account.player_id == "id_123").first()
+        assert rec.alias == "user1_alt"
+
+    # alias "user1_alt" でロードできることを検証
+    loaded_alt = SessionManager.load("user1_alt")
+    assert loaded_alt["player"]["name"] == "User One Updated"
+
+    # 旧 alias "user1" ではロードできないことを検証
+    assert SessionManager.load("user1") == {}
+
+
 def test_save_overwrites_existing():
     """同一アカウントで保存した場合、データが正しく更新されることを検証"""
     account = "tdd_overwrite_user"
@@ -44,6 +71,18 @@ def test_account_isolation():
 def test_get_set_mission_id():
     SessionManager.set_last_mission_id(456, account="default")
     assert SessionManager.get_last_mission_id(account="default") == 456
+
+
+def test_last_mission_id_persistence():
+    """last_mission_id が正しく保存され、ロードされることを検証"""
+    account = "mission_test_user"
+    mission_id = 789
+
+    SessionManager.set_last_mission_id(mission_id, account=account)
+
+    # ロードして確認
+    loaded_data = SessionManager.load(account)
+    assert loaded_data.get("last_item_raid_mission_id") == mission_id
 
 
 def test_migration_from_json(tmp_path, monkeypatch):

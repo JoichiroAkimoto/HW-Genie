@@ -1,14 +1,43 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, JSON
+from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy.sql import func
 
 Base = declarative_base()
 
+
 class Session(Base):
-    __tablename__ = 'sessions'
+    __tablename__ = "sessions"
     account = Column(String, primary_key=True)
     data = Column(JSON)
+
+
+class Account(Base):
+    __tablename__ = "accounts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    player_id = Column(String, unique=True, nullable=False)
+    alias = Column(String)
+    player_name = Column(String)
+    level = Column(Integer, default=0)
+    gold = Column(Integer, default=0)
+    gems = Column(Integer, default=0)
+    energy = Column(Integer, default=0)
+    arena_rank = Column(Integer, default=0)
+    grand_rank = Column(Integer, default=0)
+    last_mission_id = Column(Integer, default=None)
+    last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AccountConfig(Base):
+    __tablename__ = "account_configs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    config_key = Column(String, nullable=False)
+    config_value = Column(JSON)
+    __table_args__ = (UniqueConstraint("account_id", "config_key", name="_account_config_uc"),)
+    # Using a unique constraint on (account_id, config_key) to ensure Key-Value uniqueness per account
+
 
 # プロジェクトルートの絶対パスを基点に DB パスを確定させる
 # 現在: src/python/hw_genie/core/database.py
@@ -28,6 +57,7 @@ if "sqlite" in db_url:
 
 engine = create_engine(db_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
 
 def init_db():
     # データベースファイルのディレクトリが存在することを確認

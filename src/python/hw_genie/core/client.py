@@ -29,6 +29,7 @@ class ResponseStatus(str, Enum):
 
 @dataclass
 class PlayerStatus:
+    id: str = "Unknown"
     name: str = "Unknown"
     level: int = 0
     gold: int = 0
@@ -52,6 +53,7 @@ class PlayerStatus:
         """辞書データからインスタンスを生成"""
         # 既存データのキーに合わせてマッピング
         return cls(
+            id=data.get("id", "Unknown"),
             name=data.get("name", "Unknown"),
             level=int(data.get("level", 0)),
             gold=int(data.get("gold", 0)),
