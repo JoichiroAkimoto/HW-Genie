@@ -1,4 +1,5 @@
 import os
+import time
 from google import genai
 from google.genai import types
 import subprocess
@@ -174,9 +175,31 @@ def main():
             )
         )
 
-        response = client.models.generate_content(
-            model=model_name, contents=prompt, config=config
-        )
+        # Retry logic for errors
+        max_retries = 3
+        retry_delay = 5
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model_name, contents=prompt, config=config
+                )
+                break
+            except Exception as e:
+                if any(code in str(e) for code in ["503", "429", "400"]):
+                    if attempt < max_retries - 1:
+                        print(f"Gemini API Error ({e}). Retrying in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                print(f"Gemini Review Error: {e}")
+                sys.exit(1) # Exit with error for non-retryable or final attempt failure
+
+        if response is None:
+            print("Failed to get response from Gemini after retries.")
+            sys.exit(1)
+
         end_time = datetime.datetime.now(JST)
         duration = (end_time - start_time).total_seconds()
 
@@ -242,9 +265,11 @@ def main():
 
         except Exception as api_e:
             print(f"GitHub API Error: {api_e}")
+            sys.exit(1)
 
     except Exception as e:
         print(f"Gemini Review Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
