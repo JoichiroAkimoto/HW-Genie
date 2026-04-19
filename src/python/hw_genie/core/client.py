@@ -162,12 +162,21 @@ class HWClient:
         attempt = 0
         while True:
             try:
-                # actionTs の更新 (payload 内のすべての call context)
+                # actionTs の更新 (payload 内のすべての call context および params)
+                now = int(time.time())
                 if "calls" in payload:
                     for call_item in payload["calls"]:
                         if "context" in call_item:
-                            call_item["context"]["actionTs"] = int(time.time())
+                            call_item["context"]["actionTs"] = now
+                        # stashClient などの内部データに含まれる actionTs も更新を試みる
+                        if "args" in call_item and isinstance(call_item["args"], dict) and "data" in call_item["args"]:
+                            for data_item in call_item["args"]["data"]:
+                                if isinstance(data_item, dict) and "params" in data_item and "actionTs" in data_item["params"]:
+                                    data_item["params"]["actionTs"] = now
 
+                import logging
+                import json
+                logging.debug(f"Payload: {json.dumps(payload)}")
                 response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
 
                 # 0. Auth error check (HTTP 401)
@@ -230,16 +239,23 @@ class HWClient:
                 # HTTPError の場合、リトライすべきステータスコードか確認
                 if isinstance(e, HTTPError):
                     status_code = e.response.status_code if e.response is not None else None
+                    response_text = e.response.text if e.response is not None else ""
                     # 429 (Too Many Requests) または 5xx (Server Error) はリトライ
                     if status_code != 429 and (status_code is None or not (500 <= status_code < 600)):
+                        detail = f"{str(e)} | Response: {response_text[:500]}"
                         return HWResponse(
-                            status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id
+                            status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=detail, request_id=current_request_id
                         )
 
                 attempt += 1
                 if attempt > self.MAX_RETRIES:
+                    response_text = ""
+                    if isinstance(e, HTTPError) and e.response is not None:
+                        response_text = f" | Response: {e.response.text[:500]}"
+                    
+                    detail = f"{str(e)}{response_text}"
                     return HWResponse(
-                        status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=str(e), request_id=current_request_id
+                        status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=detail, request_id=current_request_id
                     )
 
                 # Exponential backoff with jitter
