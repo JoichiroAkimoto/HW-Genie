@@ -14,40 +14,41 @@ class SessionRepository:
             player_info = {}
 
             configs = db.query(AccountConfig).filter(AccountConfig.account_id == account_rec.id).all()
+            
+            # Special mapping for specific config keys
+            special_keys = {
+                "headers": lambda val: data.update({"headers": val}),
+                "last_item_raid_mission_id": lambda val: data.update({"last_item_raid_mission_id": int(val)}) if account_rec.last_mission_id is None else None
+            }
+
             for cfg in configs:
                 key = cfg.config_key
                 val = cfg.config_value
 
-                if key.startswith("player_"):
-                    player_key = key[7:]
-                    player_info[player_key] = val
-                elif key == "headers":
-                    data["headers"] = val
-                elif key == "last_item_raid_mission_id":
-                    # Backward compatibility: still check config if table column is empty
-                    if account_rec.last_mission_id is None:
-                        try:
-                            data["last_item_raid_mission_id"] = int(val)
-                        except (ValueError, TypeError):
-                            pass
+                if key in special_keys:
+                    try:
+                        special_keys[key](val)
+                    except (ValueError, TypeError):
+                        pass
+                elif key.startswith("player_"):
+                    player_info[key[7:]] = val
                 else:
                     data[key] = val
 
             # Add basic player info from Account table
-            if account_rec.player_name and account_rec.player_name != "Unknown":
-                player_info["name"] = account_rec.player_name
-            if account_rec.level is not None and account_rec.level != 0:
-                player_info["level"] = account_rec.level
-            if account_rec.gold is not None and account_rec.gold != 0:
-                player_info["gold"] = account_rec.gold
-            if account_rec.gems is not None and account_rec.gems != 0:
-                player_info["gems"] = account_rec.gems
-            if account_rec.energy is not None and account_rec.energy != 0:
-                player_info["energy"] = account_rec.energy
-            if account_rec.arena_rank is not None and account_rec.arena_rank != 0:
-                player_info["arena_rank"] = account_rec.arena_rank
-            if account_rec.grand_rank is not None and account_rec.grand_rank != 0:
-                player_info["grand_rank"] = account_rec.grand_rank
+            status_fields = {
+                "player_name": "name",
+                "level": "level",
+                "gold": "gold",
+                "gems": "gems",
+                "energy": "energy",
+                "arena_rank": "arena_rank",
+                "grand_rank": "grand_rank",
+            }
+            for field, key in status_fields.items():
+                val = getattr(account_rec, field)
+                if val is not None and val != 0 and val != "Unknown":
+                    player_info[key] = val
 
             # Add last_mission_id to data
             if account_rec.last_mission_id is not None:
@@ -90,8 +91,8 @@ class SessionRepository:
                         if player_id:
                             account_rec = Account(player_id=player_id, alias=account)
                         else:
-                            # This case should be rare if API response is correct
-                            account_rec = Account(player_id=f"unknown_{account}", alias=account)
+                            # player_id is mandatory for account creation to ensure uniqueness
+                            raise ValueError(f"player_id is required to create a new account for alias: {account}")
                         db.add(account_rec)
                         db.flush()
                     except Exception:
@@ -145,14 +146,7 @@ class SessionRepository:
                 # Ensure account exists by alias
                 account_rec = db.query(Account).filter(Account.alias == account).first()
                 if not account_rec:
-                    try:
-                        # Without player_id, we can only create with a dummy one.
-                        account_rec = Account(player_id=f"unknown_{account}", alias=account)
-                        db.add(account_rec)
-                        db.flush()
-                    except Exception:
-                        db.rollback()
-                        account_rec = db.query(Account).filter(Account.alias == account).first()
+                    raise ValueError(f"Account not found for alias: {account}, and no player_id provided to create one.")
 
             # 2. Update other configs
             for k, v in data.items():

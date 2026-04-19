@@ -17,6 +17,7 @@ def test_save_session_preserves_mission_id():
     # 既存の session.json を作成
     initial_mission_id = 123
     initial_data = {
+        "player": {"id": "default_id", "name": "Default User"},
         "status": "success",
         "last_updated": "2026-04-09T00:00:00",
         "last_item_raid_mission_id": initial_mission_id
@@ -26,6 +27,7 @@ def test_save_session_preserves_mission_id():
     
     # 新しい情報を保存（mission_id は含まない）
     new_data = {
+        "player": {"id": "default_id", "name": "Default User"},
         "status": "success",
         "last_updated": "2026-04-09T01:00:00"
     }

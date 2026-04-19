@@ -32,6 +32,8 @@ def repo():
 
 
 def test_invalid_config_key(repo):
+    # Ensure account exists
+    repo.update_config("test_acc", {"player": {"id": "test_acc_id", "name": "Test Acc"}})
     # Test None key
     with pytest.raises(ValueError, match="Invalid config_key"):
         repo.update_config("test_acc", {None: "value"})
@@ -49,6 +51,8 @@ def test_parallel_account_updates(repo):
     accounts = [f"acc_{i}" for i in range(10)]
 
     def update_account(acc):
+        # Ensure account exists with player_id
+        repo.update_config(acc, {"player": {"id": f"{acc}_id", "name": acc}})
         for i in range(10):
             repo.update_config(acc, {f"key_{i}": f"val_{i}"})
             repo.get_data(acc)
@@ -69,6 +73,8 @@ def test_parallel_account_updates(repo):
 
 def test_parallel_same_account_updates(repo):
     acc = "parallel_acc"
+    # Ensure account exists with player_id
+    repo.update_config(acc, {"player": {"id": f"{acc}_id", "name": acc}})
 
     def update_val(i):
         repo.update_config(acc, {f"key_{i}": f"val_{i}"})

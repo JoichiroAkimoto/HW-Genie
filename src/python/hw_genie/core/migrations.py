@@ -5,6 +5,9 @@ from hw_genie.core.database import SessionLocal, Session, Account, AccountConfig
 def migrate_sessions_to_normalized_schema():
     """
     Migrates data from the legacy 'sessions' table to the normalized 'accounts' and 'account_configs' tables.
+    
+    NOTE: This function is intended for one-time migration. Once all users/environments are migrated,
+    this file can be safely deleted.
     """
     with SessionLocal() as db:
         # Get all legacy sessions
