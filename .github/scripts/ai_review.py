@@ -187,7 +187,7 @@ def main():
                 )
                 break
             except Exception as e:
-                if any(code in str(e) for code in ["503", "429", "400"]):
+                if any(code in str(e) for code in ["503", "429", "500"]):
                     if attempt < max_retries - 1:
                         print(f"Gemini API Error ({e}). Retrying in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})")
                         time.sleep(retry_delay)

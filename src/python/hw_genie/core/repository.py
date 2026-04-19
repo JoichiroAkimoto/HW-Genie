@@ -71,96 +71,73 @@ class SessionRepository:
 
     def update_config(self, account: str, data: Dict[str, Any]) -> None:
         with SessionLocal() as db:
-            # 1. Update/Create Account
-            player = data.get("player")
-            if player is not None and isinstance(player, dict):
-                player_id = player.get("id")
-                if not player_id:
-                    # If player_id is missing, we fall back to alias-based lookup for now,
-                    # but this is not ideal for the new unique requirement.
-                    # However, for compatibility we can't just crash.
-                    account_rec = db.query(Account).filter(Account.alias == account).first()
-                else:
-                    account_rec = db.query(Account).filter(Account.player_id == player_id).first()
+            try:
+                # 1. Update/Create Account
+                player = data.get("player")
+                if player is not None and isinstance(player, dict):
+                    player_id = player.get("id")
+                    if not player_id:
+                        # If player_id is missing, fall back to alias-based lookup for compatibility
+                        account_rec = db.query(Account).filter(Account.alias == account).first()
+                    else:
+                        account_rec = db.query(Account).filter(Account.player_id == player_id).first()
 
-                if not account_rec:
-                    try:
-                        # If player_id is provided, use it. Otherwise, this might fail unique constraint if player_id is missing.
-                        # If player_id is missing, we'll let it fail or handle as a new account with a dummy/random ID if allowed.
-                        # But according to PRD, we must use API ID.
+                    if not account_rec:
                         if player_id:
                             account_rec = Account(player_id=player_id, alias=account)
                         else:
-                            # player_id is mandatory for account creation to ensure uniqueness
                             raise ValueError(f"player_id is required to create a new account for alias: {account}")
                         db.add(account_rec)
                         db.flush()
-                    except Exception:
-                        db.rollback()
-                        account_rec = db.query(Account).filter(Account.alias == account).first()
-                        if not account_rec:
-                            raise
 
-                # Update alias to the current one (supports alias changes)
-                account_rec.alias = account
+                    # Update alias and basic info
+                    account_rec.alias = account
+                    if "name" in player:
+                        account_rec.player_name = player["name"]
+                    
+                    # Convert types safely
+                    fields = {
+                        "level": "level",
+                        "gold": "gold",
+                        "gems": "gems",
+                        "energy": "energy",
+                        "arena_rank": "arena_rank",
+                        "grand_rank": "grand_rank"
+                    }
+                    for p_key, attr in fields.items():
+                        if p_key in player:
+                            try:
+                                setattr(account_rec, attr, int(player[p_key]))
+                            except (ValueError, TypeError):
+                                pass
 
-                if "name" in player:
-                    account_rec.player_name = player["name"]
-                if "level" in player:
-                    try:
-                        account_rec.level = int(player["level"])
-                    except (ValueError, TypeError):
-                        pass
-                if "gold" in player:
-                    try:
-                        account_rec.gold = int(player["gold"])
-                    except (ValueError, TypeError):
-                        pass
-                if "gems" in player:
-                    try:
-                        account_rec.gems = int(player["gems"])
-                    except (ValueError, TypeError):
-                        pass
-                if "energy" in player:
-                    try:
-                        account_rec.energy = int(player["energy"])
-                    except (ValueError, TypeError):
-                        pass
-                if "arena_rank" in player:
-                    try:
-                        account_rec.arena_rank = int(player["arena_rank"])
-                    except (ValueError, TypeError):
-                        pass
-                if "grand_rank" in player:
-                    try:
-                        account_rec.grand_rank = int(player["grand_rank"])
-                    except (ValueError, TypeError):
-                        pass
+                    # Store other player configs
+                    for k, v in player.items():
+                        if k in ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank"):
+                            continue
+                        self._upsert_config(db, account_rec.id, f"player_{k}", v)
+                
+                elif player is None:
+                    account_rec = db.query(Account).filter(Account.alias == account).first()
+                    if not account_rec:
+                        raise ValueError(f"Account not found for alias: {account}, and no player_id provided to create one.")
 
-                # Store other player configs in AccountConfig
-                for k, v in player.items():
-                    if k in ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank"):
+                # 2. Update other configs
+                for k, v in data.items():
+                    if k == "player":
                         continue
-                    self._upsert_config(db, account_rec.id, f"player_{k}", v)
-            elif player is None:
-                # Ensure account exists by alias
-                account_rec = db.query(Account).filter(Account.alias == account).first()
-                if not account_rec:
-                    raise ValueError(f"Account not found for alias: {account}, and no player_id provided to create one.")
+                    if k == "last_item_raid_mission_id":
+                        try:
+                            account_rec.last_mission_id = int(v)
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        self._upsert_config(db, account_rec.id, k, v)
 
-            # 2. Update other configs
-            for k, v in data.items():
-                if k == "player":
-                    continue
-                if k == "last_item_raid_mission_id":
-                    try:
-                        account_rec.last_mission_id = int(v)
-                    except (ValueError, TypeError):
-                        pass
-                else:
-                    self._upsert_config(db, account_rec.id, k, v)
-
-            db.commit()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
     def _upsert_config(self, db, account_id: int, key: str, value: Any) -> None:
         if not key or not isinstance(key, str):
