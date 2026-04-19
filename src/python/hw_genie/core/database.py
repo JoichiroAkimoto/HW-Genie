@@ -7,12 +7,6 @@ from sqlalchemy.sql import func
 Base = declarative_base()
 
 
-class Session(Base):
-    __tablename__ = "sessions"
-    account = Column(String, primary_key=True)
-    data = Column(JSON)
-
-
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -27,6 +21,31 @@ class Account(Base):
     grand_rank = Column(Integer, default=0)
     last_mission_id = Column(Integer, default=None)
     last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    def update_from_dict(self, player_data: dict):
+        """
+        Updates account status fields from a dictionary, with type conversion.
+        
+        Args:
+            player_data (dict): Dictionary containing player info (name, level, gold, etc.)
+        """
+        if "name" in player_data:
+            self.player_name = player_data["name"]
+        
+        fields = {
+            "level": "level",
+            "gold": "gold",
+            "gems": "gems",
+            "energy": "energy",
+            "arena_rank": "arena_rank",
+            "grand_rank": "grand_rank"
+        }
+        for p_key, attr in fields.items():
+            if p_key in player_data:
+                try:
+                    setattr(self, attr, int(player_data[p_key]))
+                except (ValueError, TypeError):
+                    pass
 
 
 class AccountConfig(Base):
