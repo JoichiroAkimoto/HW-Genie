@@ -28,6 +28,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
+*   **デバッグ出力**: 各コマンドに `--debug` を付与することで詳細なペイロード等が出力されます (例: `uv run hw-genie --debug daily`)
 
 ### 3. API 仕様とメソッドの理解
 Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、以下のドキュメントを参照してください。

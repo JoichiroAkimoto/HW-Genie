@@ -23,6 +23,9 @@ uv sync
 
 # 2. 実行 (ルートディレクトリから直接可能)
 uv run hw-genie --help
+
+# デバッグログを表示する場合 (--debug はサブコマンドの前に配置)
+uv run hw-genie --debug auth --list
 ```
 
 ### Tips: direnv による自動有効化
