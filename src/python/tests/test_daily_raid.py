@@ -8,7 +8,7 @@ def test_daily_raid_phase1_stamina_stops_phase2(mock_client, mock_sleep):
     """Phase 1 でスタミナ切れが発生した際、Phase 2 がスキップされることを検証"""
     client, mock_call = mock_client
     # DB初期化
-    SessionManager.repo.save_data("default", {"headers": {}})
+    SessionManager.repo.save_data("default", {"headers": {}, "player": {"id": "def_id", "name": "Default"}})
     
     mock_responses = []
     
@@ -51,3 +51,32 @@ def test_daily_raid_phase1_stamina_stops_phase2(mock_client, mock_sleep):
         call({'calls': [{'name': ApiAction.MISSION_RAID, 'args': {'id': 2, 'times': 3}, 'context': {'actionTs': 0}, 'ident': 'body'}]}),
         call({'calls': [{'name': ApiAction.INVENTORY_EXCHANGE_STONES, 'args': {}, 'ident': 'exchange_stones'}]})
     ])
+
+@patch("hw_genie.commands.daily_raid.run_item_raid")
+@patch("hw_genie.commands.daily_raid.run_hero_raid")
+def test_daily_raid_item_payload_from_calls(mock_hero_raid, mock_item_raid, mock_client, mock_sleep):
+    """curl形式のペイロード（callsに含まれるID）が正しく認識され、アイテムレイドが実行されることを検証"""
+    client, mock_call = mock_client
+    
+    # run_hero_raid の戻り値を設定 (hero_res, recovery_count, ex_info)
+    # hero_res の中に STAMINA_ERROR がないようにする
+    mock_hero_res = [MagicMock(status=ResponseStatus.SUCCESS)]
+    mock_hero_raid.return_value = (mock_hero_res, 0, MagicMock())
+    
+    # status fetch 用
+    mock_call.return_value = MagicMock(name="PlayerStatus")
+    
+    # curl形式のペイロード
+    item_payload = {
+        "calls": [
+            {"name": "missionRaid", "args": {"id": 176, "times": 10}, "ident": "body"}
+        ]
+    }
+    
+    run_daily_raid(client, item_payload=item_payload)
+    
+    # run_item_raid が呼ばれたこと、および mission_id が正しくセットされていることを検証
+    mock_item_raid.assert_called_once()
+    called_payload = mock_item_raid.call_args[0][1]
+    assert called_payload["mission_id"] == 176
+

@@ -8,7 +8,7 @@ def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     """Phase 3 のソウルショップ購入が正しくフィルタリング・実行されるか検証"""
     client, mock_call = mock_client
     # DB初期化
-    SessionManager.repo.save_data("default", {"headers": {}})
+    SessionManager.repo.save_data("default", {"headers": {}, "player": {"id": "def_id", "name": "Default"}})
     
     mock_responses = []
     

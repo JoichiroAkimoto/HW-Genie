@@ -7,6 +7,7 @@ def test_daily_raid_uses_last_mission_id():
     # Setup
     account = "daily_test_user"
     mission_id = 123
+    SessionManager.save(account, {"player": {"id": f"{account}_id", "name": account}})
     SessionManager.set_last_mission_id(mission_id, account=account)
 
     args = MagicMock()
@@ -35,6 +36,7 @@ def test_run_daily_raid_fills_mission_id():
 
     account = "daily_test_user"
     mission_id = 456
+    SessionManager.save(account, {"player": {"id": f"{account}_id", "name": account}})
     SessionManager.set_last_mission_id(mission_id, account=account)
 
     client = MagicMock()

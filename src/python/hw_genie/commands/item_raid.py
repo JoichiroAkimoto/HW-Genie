@@ -3,7 +3,7 @@ from hw_genie.core.utils import print_player_status
 from hw_genie.core.session_manager import SessionManager
 
 
-def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
+def run_item_raid(client_or_headers, payload_template, max_iterations=9999, account=None):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -11,12 +11,18 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         # プレイヤー名を取得してアカウント名として使用
         try:
             status = client.fetch_player_status()
-            account = status.name
+            actual_account = status.name
         except Exception:
-            account = "default"
+            actual_account = "default"
+        
+        if account:
+            account = account
+        else:
+            account = actual_account
     else:
         client = client_or_headers
-        account = "default"
+        account = account or "default"
+
 
     # ミッションIDの決定: payload_template > SessionManager
     mission_id = payload_template.get("mission_id")
@@ -34,6 +40,18 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
         mission_id = SessionManager.get_last_mission_id(account=account)
         # payload_template にも反映しておく
         payload_template["mission_id"] = mission_id
+
+    # ペイロードに calls がない場合、デフォルトの missionRaid ペイロードを生成する
+    if not payload_template.get("calls") and mission_id:
+        payload_template["calls"] = [
+            {
+                "name": "missionRaid",
+                "args": {"id": mission_id, "times": 10},
+                "context": {"actionTs": 0},
+                "ident": "body",
+            }
+        ]
+
 
     print(f"\n{Emojis.START}Starting Item Raid (Max: {max_iterations}, Mission ID: {mission_id})...", flush=True)
 
@@ -58,7 +76,8 @@ def run_item_raid(client_or_headers, payload_template, max_iterations=9999):
             print(f"{Emojis.WARNING}Stopping: {res.error_name}", flush=True)
             break
         else:
-            print(f"{Emojis.ERROR}Failed ({res.error_name})", flush=True)
+            detail_msg = f": {res.detail}" if res.detail else ""
+            print(f"{Emojis.ERROR}Failed ({res.error_name}){detail_msg}", flush=True)
             break
 
         client.sleep()
