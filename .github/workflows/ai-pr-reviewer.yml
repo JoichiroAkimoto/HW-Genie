@@ -1,6 +1,15 @@
 name: '⚡ AI Quick Review'
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**.db'
+      - '**.jpg'
+      - '**.jpeg'
+      - '**.png'
+      - '**.gif'
+      - '**.webp'
   workflow_call:
     inputs:
       additional_context:

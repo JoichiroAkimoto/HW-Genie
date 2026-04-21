@@ -84,6 +84,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 elif item["ident"] == "arena":
                     arena_info = item["result"]["response"]
             player = PlayerStatus(
+                id=user_info.get("id", "Unknown"),
                 name=user_info.get("name", "Unknown"),
                 level=user_info.get("level", 0),
                 gold=user_info.get("gold", 0),

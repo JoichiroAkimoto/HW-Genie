@@ -14,7 +14,7 @@ def temp_session_files(tmp_path, monkeypatch):
 
 def test_load_session_headers_default(temp_session_files):
     """アカウント指定なしの場合に、自動移行経由で session.json が読み込まれること"""
-    data = {"headers": {"x-auth-token": "default-token"}}
+    data = {"headers": {"x-auth-token": "default-token"}, "player": {"id": "default_id", "name": "Default"}}
     with open(temp_session_files / "session.json", "w") as f:
         json.dump(data, f)
     
@@ -23,7 +23,7 @@ def test_load_session_headers_default(temp_session_files):
 
 def test_load_session_headers_account(temp_session_files):
     """アカウント指定がある場合に、自動移行経由で session.{account}.json が読み込まれること"""
-    data = {"headers": {"x-auth-token": "joe-token"}}
+    data = {"headers": {"x-auth-token": "joe-token"}, "player": {"id": "joe_id", "name": "Joe"}}
     with open(temp_session_files / "session.Joe.json", "w") as f:
         json.dump(data, f)
     
@@ -37,7 +37,7 @@ def test_load_session_headers_fallback(temp_session_files):
 
 def test_load_session_headers_from_db(temp_session_files):
     """DBにデータがある場合、ファイルがなくても読み込めること"""
-    data = {"headers": {"x-auth-token": "db-token"}}
+    data = {"headers": {"x-auth-token": "db-token"}, "player": {"id": "dbuser_id", "name": "dbuser"}}
     SessionManager.repo.save_data("dbuser", data)
     
     headers = load_session_headers("dbuser")

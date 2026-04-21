@@ -4,6 +4,7 @@ import sys
 import json
 from hw_genie.core.client import HWClient, load_session_headers
 from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl, extract_payload_from_curl
+from hw_genie.core.utils import format_number_with_suffix
 from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
@@ -41,19 +42,27 @@ def cmd_auth(args):
             print("No accounts found in database.")
             return
 
-        print(f"\n{'Account Alias':<20} | {'Player Name':<20} | {'Level':<5} | {'Energy':<8} | {'Last Updated'}")
-        print("-" * 80)
+        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {'Updated':<19}"
+        print(header)
+        print("-" * len(header))
         for alias in sorted(accounts):
             data = SessionManager.load(alias)
             player = data.get("player", {})
             p_name = player.get("name", "Unknown")
-            p_level = player.get("level", "-")
+            # 10文字を超える場合は「...」で省略
+            p_name_display = (p_name[:7] + "...") if len(p_name) > 10 else p_name
+            
             p_energy = player.get("energy", "-")
+            p_arena = player.get("arena_rank", "-")
+            p_grand = player.get("grand_rank", "-")
+            p_gold = format_number_with_suffix(player.get("gold", 0)) if player.get("gold") is not None else "-"
+            p_gems = format_number_with_suffix(player.get("gems", 0)) if player.get("gems") is not None else "-"
+            p_last_id = data.get("last_item_raid_mission_id", "-")
+            
             updated = data.get("last_updated", "Never")
-            # ISO形式の時間を少し読みやすく
             updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
 
-            print(f"{alias:<20} | {p_name:<20} | {p_level:<5} | {p_energy:<8} | {updated_short}")
+            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<19}")
         print()
         return
 
@@ -194,7 +203,7 @@ def cmd_shop(args):
 def cmd_daily(args):
     """デイリーレイド実行"""
     headers = None
-    item_payload = None
+    item_payload = {}
 
     # curlコマンドから情報を抽出
     if args.curl:
@@ -209,17 +218,18 @@ def cmd_daily(args):
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
 
         # 2. アイテムレイド用ペイロードを抽出
-        item_payload = extract_payload_from_curl(args.curl)
-        if not item_payload:
+        extracted_payload = extract_payload_from_curl(args.curl)
+        if not extracted_payload:
             print("Error: Could not extract JSON payload from the provided curl command.")
             sys.exit(1)
+        item_payload = extracted_payload
 
     # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
     if not headers:
         headers = _ensure_session(args)
 
     client = HWClient(headers)
-    run_daily_raid(client, item_payload=item_payload)
+    run_daily_raid(client, item_payload=item_payload, account_alias=args.account or "default")
 
 
 def main():
@@ -228,6 +238,7 @@ def main():
     # Parent parser for common arguments
     parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("--account", "-a", help="Account alias")
+    parent_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
@@ -243,6 +254,7 @@ def main():
     p_auth_server = subparsers.add_parser("auth-server", help="Start auth capture server")
     p_auth_server.add_argument("--port", "-p", type=int, help="Port to listen on (default: 8765, env: HW_GENIE_AUTH_PORT)")
     p_auth_server.add_argument("--once", action="store_true", help="Exit after first successful auth capture")
+    p_auth_server.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_auth_server.set_defaults(func=cmd_auth_server)
 
     # Raid
@@ -279,6 +291,10 @@ def main():
 
     from hw_genie.core.client import HWAuthError
     from hw_genie.core.database import init_db
+    import logging
+
+    if getattr(args, "debug", False):
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
 
     try:
         # Ensure DB tables exist

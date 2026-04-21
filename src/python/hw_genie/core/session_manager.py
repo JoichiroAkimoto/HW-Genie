@@ -24,7 +24,7 @@ class SessionManager:
     @classmethod
     def load(cls, account: str = "default") -> Dict[str, Any]:
         data = cls.repo.get_data(account)
-        
+
         # もし見つからず、かつ大文字小文字の違いがある可能性を考慮して再検索
         if not data and account != "default":
             accounts = cls.list_accounts()
@@ -59,6 +59,12 @@ class SessionManager:
 
     @classmethod
     def set_last_mission_id(cls, mission_id: int, account: str = "default"):
-        data = cls.load(account)
-        data["last_item_raid_mission_id"] = mission_id
-        cls.repo.save_data(account, data)
+        # 大文字小文字を区別せずに正しいエイリアスを特定する
+        resolved_account = account
+        if account != "default":
+            accounts = cls.list_accounts()
+            match = next((a for a in accounts if a.lower() == account.lower()), None)
+            if match:
+                resolved_account = match
+        
+        cls.repo.update_config(resolved_account, {"last_item_raid_mission_id": mission_id})

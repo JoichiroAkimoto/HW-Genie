@@ -84,7 +84,7 @@ def test_session_save_load(mock_open, mock_exists):
     """セッションの保存と読み込みを検証"""
     SessionManager._cached_data = None
     
-    test_data = {"headers": {"token": "test"}, "player": {"name": "test"}}
+    test_data = {"headers": {"token": "test"}, "player": {"id": "test_id", "name": "test"}}
 
     # セッションファイルの読み書きをモック
     mock_file = MagicMock()

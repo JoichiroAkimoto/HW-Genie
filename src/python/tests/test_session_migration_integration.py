@@ -8,7 +8,7 @@ def test_load_session_headers_triggers_migration(tmp_path, monkeypatch):
     """JSONファイルが存在する場合、load_session_headers が DB への移行をトリガーすることを検証"""
     # 1. JSONファイルを配置
     account = "migrator"
-    session_data = {"headers": {"x-auth-token": "migration-token"}}
+    session_data = {"headers": {"x-auth-token": "migration-token"}, "player": {"id": "migrator_id", "name": "Migrator"}}
     json_file = tmp_path / f"session.{account}.json"
     json_file.write_text(json.dumps(session_data))
 

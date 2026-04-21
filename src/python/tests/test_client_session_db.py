@@ -6,7 +6,7 @@ def test_load_session_headers_from_db_default():
     """DBの 'default' アカウントからヘッダーを読み込めることを検証"""
     account = "default"
     headers = {"x-auth-token": "default-db-token"}
-    data = {"headers": headers}
+    data = {"headers": headers, "player": {"id": "default_id", "name": "Default"}}
 
     SessionManager.save(account, data)
 
@@ -18,7 +18,7 @@ def test_load_session_headers_from_db_account():
     """DBの特定アカウントからヘッダーを読み込めることを検証"""
     account = "Joe"
     headers = {"x-auth-token": "joe-db-token"}
-    data = {"headers": headers}
+    data = {"headers": headers, "player": {"id": "joe_id", "name": "Joe"}}
 
     SessionManager.save(account, data)
 
