@@ -11,6 +11,35 @@ import io
 from unidiff import PatchSet
 
 
+def strip_review_metadata(review_body: str) -> tuple[str, str]:
+    """前回のレビューコメントからメタデータを分離する。
+
+    Returns:
+        tuple: (レビュー本文（ヘッダ・実行情報・マーカーを除去済み）, 実行情報セクション)
+    """
+    if not review_body:
+        return "", ""
+
+    # HTMLコメントマーカーを除去
+    body = re.sub(r"<!-- ai-pr-reviewer-comment -->", "", review_body).strip()
+
+    # ⚡ 実行情報の<details>ブロックを抽出・除去
+    exec_info = ""
+    details_match = re.search(
+        r"(<details>\s*<summary>⚡ 実行情報</summary>.*?</details>)",
+        body,
+        re.DOTALL,
+    )
+    if details_match:
+        exec_info = details_match.group(1)
+        body = body[: details_match.start()] + body[details_match.end() :]
+
+    # "### 🤖 AI コードレビュー" ヘッダを除去（行頭の # レベルは問わない）
+    body = re.sub(r"^#{1,4}\s*🤖\s*AI\s*コードレビュー\s*\n*", "", body, flags=re.MULTILINE).strip()
+
+    return body, exec_info
+
+
 def load_model_config():
     config_path = os.path.join(os.path.dirname(__file__), "models.json")
     try:
@@ -128,12 +157,15 @@ def main():
         )
 
         previous_review = ""
+        previous_exec_info = ""
         if existing_comment:
-            previous_review = existing_comment.get("body", "")
+            raw_previous = existing_comment.get("body", "")
+            previous_review, previous_exec_info = strip_review_metadata(raw_previous)
     except Exception as e:
         print(f"Error fetching previous comments: {e}")
         existing_comment = None
         previous_review = ""
+        previous_exec_info = ""
 
     limit = model_info.get("max_diff_chars", 500000)
     is_truncated = False
@@ -213,7 +245,18 @@ def main():
             )
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
-        metadata = "\n\n---\n<details><summary>⚡ 実行情報</summary>\n\n"
+        # 今回の実行情報
+        metadata = "\n\n---\n"
+
+        # 前回の実行情報がある場合、折りたたんだ状態で表示
+        if previous_exec_info:
+            # "⚡ 実行情報" → "📝 前回の実行情報" にラベル変更
+            prev_section = previous_exec_info.replace(
+                "⚡ 実行情報", "📝 前回の実行情報"
+            )
+            metadata += f"\n{prev_section}\n\n"
+
+        metadata += "<details open><summary>⚡ 今回の実行情報</summary>\n\n"
         metadata += f"- **モデル**: `{model_name}`\n"
         metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}`\n"
         metadata += f"- **所要時間**: `{duration:.2f} 秒`\n"
