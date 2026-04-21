@@ -176,7 +176,6 @@ session.*.json
 
 # Workspace / uv
 .uv
-uv.lock
 
 # Agent documents
 docs/superpowers/
@@ -190,3 +189,6 @@ fix_tests.py
 .ralph-tui/
 tasks/
 .beads/
+
+# Local scripts
+bin/
