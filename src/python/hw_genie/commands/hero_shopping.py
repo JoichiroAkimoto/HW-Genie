@@ -58,6 +58,7 @@ def run_hero_shopping(
     client_or_headers,
     buy_soul_shop_items: bool = True,
     hero_shop_ids: list[ShopId] | None = None,
+    buy_pet_potions: bool = True,
 ):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
@@ -92,6 +93,8 @@ def run_hero_shopping(
         shop_ids_to_check.update(hero_shop_ids)
     if buy_soul_shop_items:
         shop_ids_to_check.add(ShopId.SOUL)
+    if buy_pet_potions:
+        shop_ids_to_check.add(ShopId.PET_SOUL)
 
     # ソートして順番を安定させる（ShopIdの定義順など）
     # 元々の TARGET_SHOP_IDS の順序を尊重したい場合は工夫が必要だが、一旦セットからリスト化
@@ -123,6 +126,10 @@ def run_hero_shopping(
             
             # 2. ソウルショップ非ヒーローアイテム判定
             if not is_hero and shop_id_enum == ShopId.SOUL and buy_soul_shop_items:
+                should_buy = True
+            
+            # 3. ペットポーション購入判定 (PET_SOUL ショップのスロット 3)
+            if shop_id_enum == ShopId.PET_SOUL and slot_id == "3" and buy_pet_potions:
                 should_buy = True
 
             if should_buy:
