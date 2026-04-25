@@ -14,6 +14,7 @@ class ShopId(Enum):
     TOWER = "6"
     SOUL = "8"
     FRIEND = "9"
+    PET_SOUL = "17"
 
 @dataclass
 class ShopResult:
@@ -38,7 +39,11 @@ SHOP_NAMES = {
     ShopId.TOWER: "Tower",
     ShopId.SOUL: "Soul",
     ShopId.FRIEND: "Friend",
+    ShopId.PET_SOUL: "Pet Soul",
 }
+
+# ショップ固有の特定スロットID
+PET_POTION_SLOT_ID = "3"
 
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
     if not reward_dict:
@@ -56,7 +61,17 @@ def run_hero_shopping(
     client_or_headers,
     buy_soul_shop_items: bool = True,
     hero_shop_ids: list[ShopId] | None = None,
+    buy_pet_potions: bool = False,
 ):
+    """
+    ヒーローソウルおよび特定アイテムをショップで購入する。
+
+    Args:
+        client_or_headers: HWClientインスタンスまたはヘッダー辞書。
+        buy_soul_shop_items: ソウルショップの全アイテムを購入するかどうか。
+        hero_shop_ids: ヒーローソウルを購入する対象ショップのリスト。
+        buy_pet_potions: ペットソウルショップでペットポーションを購入するかどうか。
+    """
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -90,6 +105,8 @@ def run_hero_shopping(
         shop_ids_to_check.update(hero_shop_ids)
     if buy_soul_shop_items:
         shop_ids_to_check.add(ShopId.SOUL)
+    if buy_pet_potions:
+        shop_ids_to_check.add(ShopId.PET_SOUL)
 
     # ソートして順番を安定させる（ShopIdの定義順など）
     # 元々の TARGET_SHOP_IDS の順序を尊重したい場合は工夫が必要だが、一旦セットからリスト化
@@ -121,6 +138,10 @@ def run_hero_shopping(
             
             # 2. ソウルショップ非ヒーローアイテム判定
             if not is_hero and shop_id_enum == ShopId.SOUL and buy_soul_shop_items:
+                should_buy = True
+            
+            # 3. ペットポーション購入判定 (PET_SOUL ショップのスロット 3 はペットポーション固定)
+            if shop_id_enum == ShopId.PET_SOUL and slot_id == PET_POTION_SLOT_ID and buy_pet_potions:
                 should_buy = True
 
             if should_buy:
