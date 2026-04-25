@@ -159,3 +159,46 @@ def test_hero_shopping_count_souls_only(mock_client, mock_sleep, capsys):
     assert "Total Hero Souls Purchased: 13" in captured.out
     assert "Total Items Purchased" not in captured.out
     assert mock_call.call_count == 5
+
+
+def test_buy_pet_potion(mock_client, mock_sleep):
+    """ペットソウルショップのペットポーション（スロット3）が正しく購入対象として識別されることを検証"""
+    client, mock_call = mock_client
+
+    mock_responses = []
+
+    # shopGetAll
+    res_all = MagicMock()
+    res_all.is_success = True
+    res_all.detail = {
+        "response": {
+            "17": {
+                "slots": {
+                    "3": {
+                        "bought": False,
+                        "reward": {"consumable": {"31": 1}},
+                        "cost": {"petSoul": 10}
+                    }
+                }
+            }
+        }
+    }
+    mock_responses.append(res_all)
+
+    # 1 回の購入成功
+    res_buy = MagicMock()
+    res_buy.is_success = True
+    mock_responses.append(res_buy)
+
+    mock_call.side_effect = mock_responses
+
+    results, _ = run_hero_shopping(client, buy_pet_potions=True)
+
+    # 検証: 購入成功アイテムが 1 つあり、内容に "Pet Soul" と "3" が含まれること
+    success_items = [r for r in results if r.status == ResponseStatus.SUCCESS]
+    assert len(success_items) == 1
+    assert "Pet Soul" in success_items[0].action
+    assert "3" in success_items[0].action
+
+    # getAll(1) + buy(1) = 2
+    assert mock_call.call_count == 2
