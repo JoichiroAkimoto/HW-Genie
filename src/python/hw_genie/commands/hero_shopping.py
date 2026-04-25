@@ -42,6 +42,9 @@ SHOP_NAMES = {
     ShopId.PET_SOUL: "Pet Soul",
 }
 
+# ショップ固有の特定スロットID
+PET_POTION_SLOT_ID = "3"
+
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
     if not reward_dict:
         return "Unknown Item"
@@ -58,8 +61,17 @@ def run_hero_shopping(
     client_or_headers,
     buy_soul_shop_items: bool = True,
     hero_shop_ids: list[ShopId] | None = None,
-    buy_pet_potions: bool = True,
+    buy_pet_potions: bool = False,
 ):
+    """
+    ヒーローソウルおよび特定アイテムをショップで購入する。
+
+    Args:
+        client_or_headers: HWClientインスタンスまたはヘッダー辞書。
+        buy_soul_shop_items: ソウルショップの全アイテムを購入するかどうか。
+        hero_shop_ids: ヒーローソウルを購入する対象ショップのリスト。
+        buy_pet_potions: ペットソウルショップでペットポーションを購入するかどうか。
+    """
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -129,7 +141,7 @@ def run_hero_shopping(
                 should_buy = True
             
             # 3. ペットポーション購入判定 (PET_SOUL ショップのスロット 3 はペットポーション固定)
-            if shop_id_enum == ShopId.PET_SOUL and slot_id == "3" and buy_pet_potions:
+            if shop_id_enum == ShopId.PET_SOUL and slot_id == PET_POTION_SLOT_ID and buy_pet_potions:
                 should_buy = True
 
             if should_buy:

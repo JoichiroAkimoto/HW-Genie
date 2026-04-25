@@ -4,6 +4,7 @@ from hw_genie.commands.hero_shopping import (
     ResponseStatus,
     run_hero_shopping,
     TARGET_SHOP_IDS,
+    PET_POTION_SLOT_ID,
 )
 
 
@@ -174,7 +175,7 @@ def test_buy_pet_potion(mock_client, mock_sleep):
         "response": {
             "17": {
                 "slots": {
-                    "3": {
+                    PET_POTION_SLOT_ID: {
                         "bought": False,
                         "reward": {"consumable": {"85": 3000}},
                         "cost": {"coin": {"25": 600}}
@@ -194,11 +195,11 @@ def test_buy_pet_potion(mock_client, mock_sleep):
 
     results, _ = run_hero_shopping(client, buy_pet_potions=True)
 
-    # 検証: 購入成功アイテムが 1 つあり、内容に "Pet Soul" と "3" が含まれること
+    # 検証: 購入成功アイテムが 1 つあり、内容に "Pet Soul" と PET_POTION_SLOT_ID が含まれること
     success_items = [r for r in results if r.status == ResponseStatus.SUCCESS]
     assert len(success_items) == 1
     assert "Pet Soul" in success_items[0].action
-    assert "3" in success_items[0].action
+    assert PET_POTION_SLOT_ID in success_items[0].action
 
     # getAll(1) + buy(1) = 2
     assert mock_call.call_count == 2
