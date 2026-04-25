@@ -59,7 +59,7 @@ def run_daily_raid(client_or_headers, item_payload=None, account_alias=None):
 
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()
-    shop_res, shop_ex_info = run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=None)
+    shop_res, shop_ex_info = run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True)
 
     # Status
     status = client.fetch_player_status()
