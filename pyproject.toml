@@ -15,3 +15,10 @@ members = ["src/python"]
 
 [tool.uv.sources]
 hw-genie = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest~=9.0.2",
+    "pytest-mock~=3.15.1",
+    "ruff~=0.15.9",
+]

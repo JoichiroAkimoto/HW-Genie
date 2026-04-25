@@ -31,8 +31,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential cmake pkg-config
 
+    - name: Install dependencies
+      run: uv sync
+
     - name: Lint with ruff
-      run: uv run --project src/python --extra dev ruff check src/python
+      run: uv run ruff check src/python
 
     - name: Test with pytest
-      run: uv run --project src/python --extra dev pytest src/python/tests/
+      run: uv run pytest src/python/tests/
