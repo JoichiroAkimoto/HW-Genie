@@ -176,8 +176,8 @@ def test_buy_pet_potion(mock_client, mock_sleep):
                 "slots": {
                     "3": {
                         "bought": False,
-                        "reward": {"consumable": {"31": 1}},
-                        "cost": {"petSoul": 10}
+                        "reward": {"consumable": {"85": 3000}},
+                        "cost": {"coin": {"25": 600}}
                     }
                 }
             }
