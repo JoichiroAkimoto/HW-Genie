@@ -64,10 +64,10 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 新機能の追加やバグ修正の際は、`src/python/tests` に適切なテストケースを追加・更新し、既存のテストを壊していないことを確認してください。
 
 ### 依存関係の管理（重要）
-本リポジトリでは、すべての依存関係を `src/python/pyproject.toml` 一箇所で管理しています。新しいライブラリを追加する際は、このファイルの `dependencies` または `optional-dependencies` セクションを更新してください。
+本リポジトリでは、依存関係を `pyproject.toml` で管理しています。新しいライブラリを追加する際は、用途に応じて適切なファイルとセクションを更新してください。
 
-*   **`dependencies`**: ツールの実行に必要なライブラリ。
-*   **`optional-dependencies` (dev)**: `pytest` や `ruff` など、開発・テストに必要なツール。
+*   **`src/python/pyproject.toml` (`dependencies`)**: ツールの実行に必要なライブラリ。
+*   **ルートディレクトリの `pyproject.toml` (`dependency-groups`)**: `pytest` や `ruff` など、開発・テストに必要なツール（`dev` グループ）。
 
 > **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
 
