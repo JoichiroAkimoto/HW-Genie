@@ -14,6 +14,7 @@ class ShopId(Enum):
     TOWER = "6"
     SOUL = "8"
     FRIEND = "9"
+    PET_SOUL = "17"
 
 @dataclass
 class ShopResult:
@@ -38,6 +39,7 @@ SHOP_NAMES = {
     ShopId.TOWER: "Tower",
     ShopId.SOUL: "Soul",
     ShopId.FRIEND: "Friend",
+    ShopId.PET_SOUL: "Pet Soul",
 }
 
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
