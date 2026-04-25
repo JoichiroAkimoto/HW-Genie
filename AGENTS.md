@@ -58,8 +58,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 ### テストとリンターの実行（必須）
 `src/python/hw_genie` 以下のコードを変更した場合は、必ず以下のコマンドを実行し、エラーがないことを確認してください。
 
-*   **リンター**: `cd src/python && uv run ruff check . --fix`
-*   **テスト**: `cd src/python && uv run pytest`
+*   **リンター**: `uv run ruff check . --fix`
+*   **テスト**: `uv run pytest`
 
 新機能の追加やバグ修正の際は、`src/python/tests` に適切なテストケースを追加・更新し、既存のテストを壊していないことを確認してください。
 
@@ -68,6 +68,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 
 *   **`dependencies`**: ツールの実行に必要なライブラリ。
 *   **`optional-dependencies` (dev)**: `pytest` や `ruff` など、開発・テストに必要なツール。
+
+> **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
 
 以前使用されていたルートの `requirements.txt` は廃止されました。エージェントは常に `pyproject.toml` を唯一の正解（Source of Truth）として扱ってください。
 

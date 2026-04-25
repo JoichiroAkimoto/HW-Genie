@@ -37,7 +37,7 @@ echo "source .venv/bin/activate" > .envrc
 direnv allow
 ```
 
-有効化後は `uv run` を付けずに直接 `hw-genie` や `ruff` を実行可能です。
+有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行可能です。
 
 ### Docker での実行 (推奨)
 環境構築なしでコンテナを使用して認証サーバーを起動できます。
