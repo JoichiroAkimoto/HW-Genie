@@ -9,6 +9,7 @@ class SessionManager:
 
     @classmethod
     def save(cls, account: str, data: Dict[str, Any]):
+        account = account.strip()
         # PlayerStatus などのオブジェクトを辞書に変換して JSON シリアライズ可能にする
         save_data = data.copy()
         player = save_data.get("player")
@@ -23,13 +24,14 @@ class SessionManager:
 
     @classmethod
     def load(cls, account: str = "default") -> Dict[str, Any]:
+        account = account.strip()
         data = cls.repo.get_data(account)
 
         # もし見つからず、かつ大文字小文字の違いがある可能性を考慮して再検索
         if not data and account != "default":
             accounts = cls.list_accounts()
-            # 大文字小文字を区別せずに一致するものを探す
-            match = next((a for a in accounts if a.lower() == account.lower()), None)
+            # 大文字小文字および前後の空白を区別せずに一致するものを探す
+            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
             if match:
                 data = cls.repo.get_data(match)
 
@@ -55,15 +57,17 @@ class SessionManager:
 
     @classmethod
     def get_last_mission_id(cls, account: str = "default") -> Optional[int]:
+        account = account.strip()
         return cls.load(account).get("last_item_raid_mission_id")
 
     @classmethod
     def set_last_mission_id(cls, mission_id: int, account: str = "default"):
-        # 大文字小文字を区別せずに正しいエイリアスを特定する
+        account = account.strip()
+        # 大文字小文字および前後の空白を区別せずに正しいエイリアスを特定する
         resolved_account = account
         if account != "default":
             accounts = cls.list_accounts()
-            match = next((a for a in accounts if a.lower() == account.lower()), None)
+            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
             if match:
                 resolved_account = match
         
