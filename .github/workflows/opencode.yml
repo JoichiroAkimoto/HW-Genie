@@ -32,4 +32,4 @@ jobs:
           # GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }} 
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         with:
-          model: google/gemini-3.1-flash-lite-preview # or google/gemma-4-31b-it
+          model: google/gemini-3.1-flash-lite # or google/gemma-4-31b-it
