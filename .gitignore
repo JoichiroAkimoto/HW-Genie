@@ -192,3 +192,6 @@ tasks/
 
 # Local scripts
 bin/
+
+.gemini/*
+
