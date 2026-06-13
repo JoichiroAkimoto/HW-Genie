@@ -20,6 +20,7 @@ class Account(Base):
     arena_rank = Column(Integer, default=0)
     grand_rank = Column(Integer, default=0)
     last_mission_id = Column(Integer, default=None)
+    memo = Column(String, nullable=True)
     last_updated = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     def update_from_dict(self, player_data: dict):
@@ -31,6 +32,8 @@ class Account(Base):
         """
         if "name" in player_data:
             self.player_name = player_data["name"]
+        if "memo" in player_data:
+            self.memo = player_data["memo"]
         
         fields = {
             "level": "level",

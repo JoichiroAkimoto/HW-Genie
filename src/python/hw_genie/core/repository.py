@@ -55,6 +55,9 @@ class SessionRepository:
             if account_rec.last_mission_id is not None:
                 data["last_item_raid_mission_id"] = account_rec.last_mission_id
 
+            if account_rec.memo is not None:
+                data["memo"] = account_rec.memo
+
             if player_info:
                 data["player"] = player_info
 
@@ -118,7 +121,9 @@ class SessionRepository:
                 for k, v in data.items():
                     if k == "player":
                         continue
-                    if k == "last_item_raid_mission_id":
+                    if k == "memo":
+                        account_rec.memo = v
+                    elif k == "last_item_raid_mission_id":
                         try:
                             account_rec.last_mission_id = int(v)
                         except (ValueError, TypeError):

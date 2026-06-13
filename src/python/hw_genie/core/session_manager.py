@@ -10,13 +10,20 @@ class SessionManager:
     @classmethod
     def save(cls, account: str, data: Dict[str, Any]):
         account = account.strip()
+        resolved_account = account
+        if account != "default":
+            accounts = cls.list_accounts()
+            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
+            if match:
+                resolved_account = match
+
         # PlayerStatus などのオブジェクトを辞書に変換して JSON シリアライズ可能にする
         save_data = data.copy()
         player = save_data.get("player")
         if player and hasattr(player, "to_dict"):
             save_data["player"] = player.to_dict()
 
-        cls.repo.save_data(account, save_data)
+        cls.repo.save_data(resolved_account, save_data)
 
     @classmethod
     def list_accounts(cls) -> List[str]:

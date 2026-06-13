@@ -42,7 +42,7 @@ def cmd_auth(args):
             print("No accounts found in database.")
             return
 
-        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {'Updated':<19}"
+        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {'Updated':<19} | {'Memo':<20}"
         print(header)
         print("-" * len(header))
         for alias in sorted(accounts):
@@ -62,11 +62,27 @@ def cmd_auth(args):
             updated = data.get("last_updated", "Never")
             updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
 
-            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<19}")
+            memo = data.get("memo", "-")
+            memo_display = (memo[:17] + "...") if len(memo) > 20 else memo
+
+            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<19} | {memo_display:<20}")
         print()
         return
 
     account_alias = args.account or "default"
+
+    # curl等による更新前に、単体でmemoが指定された場合
+    if args.memo is not None:
+        from hw_genie.core.session_manager import SessionManager
+        session_data = SessionManager.load(account_alias)
+        if not session_data:
+            print(f"Error: Account '{account_alias}' not found in database. Please register the account first using --curl.")
+            sys.exit(1)
+        
+        session_data["memo"] = args.memo
+        SessionManager.save(account_alias, session_data)
+        print(f"Successfully updated memo for account '{account_alias}' to: '{args.memo}'")
+        return
 
     # curlコマンドからヘッダーを抽出する場合
     if args.curl:
@@ -248,6 +264,7 @@ def main():
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
+    p_auth.add_argument("--memo", help="Set or update the memo for the account")
     p_auth.set_defaults(func=cmd_auth)
 
     # Auth Server

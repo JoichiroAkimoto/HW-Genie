@@ -123,3 +123,29 @@ def test_migration_from_json(tmp_path, monkeypatch):
     os.remove(json_file)
     db_data = SessionManager.load("migrated")
     assert db_data == loaded_data_no_id
+
+
+def test_memo_persistence():
+    """memoが正しく保存され、ロードされることを検証"""
+    account = "memo_test_user"
+    player_with_id = {"id": "memo_id", "name": "Memo User"}
+    memo_text = "This is a test memo"
+
+    data = {
+        "player": player_with_id,
+        "memo": memo_text,
+        "some_key": "some_value"
+    }
+    
+    SessionManager.save(account, data)
+    
+    # ロードして確認
+    loaded = SessionManager.load(account)
+    assert loaded.get("memo") == memo_text
+    
+    # データベースのモデルを直接確認
+    from hw_genie.core.database import SessionLocal, Account
+    with SessionLocal() as db:
+        rec = db.query(Account).filter(Account.alias == account).first()
+        assert rec is not None
+        assert rec.memo == memo_text
