@@ -6,7 +6,7 @@ authors = [{ name = "JoichiroAkimoto" }]
 requires-python = ">=3.10, <3.14"
 dependencies = [
     "requests>=2.33,<2.35",
-    "fastapi>=0.135.3,<0.138.0",
+    "fastapi>=0.135.3,<0.139.0",
     "uvicorn>=0.44,<0.50",
     "httpx~=0.28.1",
     "sqlalchemy~=2.0.49",
