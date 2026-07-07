@@ -34,12 +34,17 @@ def _ensure_session(args) -> dict[str, str]:
 def cmd_auth(args):
     """認証情報の更新・表示"""
     # 一覧表示
-    if args.list:
+    if args.list or getattr(args, "list_names", False):
         from hw_genie.core.session_manager import SessionManager
 
         accounts = SessionManager.list_accounts()
         if not accounts:
             print("No accounts found in database.")
+            return
+
+        if getattr(args, "list_names", False):
+            for alias in sorted(accounts):
+                print(alias)
             return
 
         header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {'Updated':<19} | {'Memo':<20}"
@@ -264,6 +269,7 @@ def main():
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
+    p_auth.add_argument("--list-names", action="store_true", help="List all account names in plain text")
     p_auth.add_argument("--memo", help="Set or update the memo for the account")
     p_auth.set_defaults(func=cmd_auth)
 
