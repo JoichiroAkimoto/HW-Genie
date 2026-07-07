@@ -1,6 +1,7 @@
 services:
   auth-server:
     build: .
+    user: "1000:1000"
     ports:
       - "8765:8765"
     environment:
@@ -14,3 +15,4 @@ services:
       - ./data:/app/data
       # 開発時にソースコードの変更をビルドなしで反映させる（ホットリロード的な挙動）
       - ./src/python/hw_genie:/app/hw_genie
+
