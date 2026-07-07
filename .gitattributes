@@ -1,0 +1,10 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Force LF (Linux/Unix) line endings for shell scripts and env/envrc files
+*.sh text eol=lf
+*.envrc text eol=lf
+.env text eol=lf
+.env.* text eol=lf
+copy.envrc text eol=lf
+bin/* text eol=lf
