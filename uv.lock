@@ -270,7 +270,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.135.3,<0.137.0" },
+    { name = "fastapi", specifier = ">=0.135.3,<0.138.0" },
     { name = "httpx", specifier = "~=0.28.1" },
     { name = "requests", specifier = ">=2.33,<2.35" },
     { name = "sqlalchemy", specifier = "~=2.0.49" },

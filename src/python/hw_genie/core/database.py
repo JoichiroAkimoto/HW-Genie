@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, UniqueConstraint
@@ -65,15 +66,54 @@ class AccountConfig(Base):
 # 現在: src/python/hw_genie/core/database.py
 # 1: core, 2: hw_genie, 3: python, 4: src, 5: プロジェクトルート
 PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+
+# .env ファイルが存在する場合は環境変数にロードする
+env_path = os.path.join(PKG_ROOT, ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
+
 DEFAULT_DB_PATH = os.path.join(PKG_ROOT, "data", "hw_genie.db")
 DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 
 # 環境変数 DATABASE_URL で接続先を切り替え可能に
 db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 
-# SQLite を使用する場合、書き込み待ち時間を延長してロックエラーを防ぐ
+# 接続時の引数
 connect_args = {}
-if "sqlite" in db_url:
+
+if "libsql" in db_url:
+    # URLに認証トークンが含まれている場合、sqlalchemy-libsql のバグ/制限を回避するため、
+    # クエリ文字列からトークンを抽出して connect_args["auth_token"] に設定する
+    parsed = urllib.parse.urlparse(db_url)
+    query_params = urllib.parse.parse_qs(parsed.query)
+    
+    token = None
+    if "auth_token" in query_params:
+        token = query_params["auth_token"][0]
+    elif "authToken" in query_params:
+        token = query_params["authToken"][0]
+        
+    if token:
+        connect_args["auth_token"] = token
+        
+        # クエリパラメータからトークンを除去し、重複エラーを防ぐ
+        new_query_params = {k: v for k, v in query_params.items() if k not in ("auth_token", "authToken")}
+        # secure=true がない場合は付加して強制的に SSL 接続にする（308 リダイレクト回避）
+        if "secure" not in new_query_params:
+            new_query_params["secure"] = ["true"]
+            
+        new_query = urllib.parse.urlencode(new_query_params, doseq=True)
+        # 末尾スラッシュ付きのパスにしてパースエラーを防ぐ
+        path = parsed.path if parsed.path else "/"
+        db_url = urllib.parse.urlunparse(parsed._replace(path=path, query=new_query))
+
+elif "sqlite" in db_url:
+    # ローカル SQLite の場合は書き込みロックを防止する設定を付与
     connect_args["check_same_thread"] = False
     connect_args["timeout"] = 30  # 30秒まで待機（並列アクセス対策）
 

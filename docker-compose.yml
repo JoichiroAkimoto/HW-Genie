@@ -5,8 +5,8 @@ services:
       - "8765:8765"
     environment:
       # SQLite (default): sqlite:////app/data/hw_genie.db
-      # libSQL (Turso): sqlite+libsql://[your-db].turso.io?auth_token=[your-token]
-      - DATABASE_URL=sqlite:////app/data/hw_genie.db
+      # libSQL (Turso): sqlite+libsql://[your-db].turso.io/?auth_token=[your-token]&secure=true
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
       - HW_GENIE_AUTH_PORT=8765
       - HW_GENIE_AUTH_HOST=0.0.0.0
     volumes:
