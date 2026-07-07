@@ -155,7 +155,7 @@ cython_debug/
 # direnv
 .envrc
 .direnv/
-copy.envrc
+
 
 # Node.js
 node_modules/
@@ -191,7 +191,7 @@ tasks/
 .beads/
 
 # Local scripts
-bin/
+
 
 .gemini/*
 

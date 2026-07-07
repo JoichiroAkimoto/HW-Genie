@@ -29,15 +29,15 @@ uv run hw-genie --debug auth --list
 ```
 
 ### Tips: direnv による自動有効化
-[direnv](https://direnv.net/) を使用すると、ディレクトリに移動するだけで自動的に仮想環境を有効化できます。
+[direnv](https://direnv.net/) を使用すると、ディレクトリに移動するだけで自動的に仮想環境が有効化され、`bin/` 内の便利スクリプトへパスが通ります。
 
 ```bash
-# プロジェクトルートで実行
-echo "source .venv/bin/activate" > .envrc
+# テンプレートをコピーして .envrc を作成し、実行を許可
+cp copy.envrc .envrc
 direnv allow
 ```
 
-有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行可能です。
+有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です。
 
 ### Docker での実行 (推奨)
 環境構築なしでコンテナを使用して認証サーバーを起動できます。

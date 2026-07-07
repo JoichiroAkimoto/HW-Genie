@@ -1,0 +1,40 @@
+#!/bin/bash
+# Move to the project root directory
+cd "$(dirname "$0")/.."
+
+# 1. 引数がある場合は、そのアカウントの処理のみを実行して終了する（子プロセス用）
+if [ -n "$1" ]; then
+    ACCOUNT="$1"
+    echo "=== Starting: $ACCOUNT at $(date '+%Y-%m-%d %H:%M:%S') ==="
+    uv run hw-genie raid hero --account "$ACCOUNT"
+    uv run hw-genie shop --account "$ACCOUNT"
+    uv run hw-genie daily --account "$ACCOUNT"
+    echo "=== Finished: $ACCOUNT at $(date '+%Y-%m-%d %H:%M:%S') ==="
+    exit 0
+fi
+
+# 2. 引数がない場合は、全アカウントを並列で実行する（親プロセス用）
+uv run hw-genie auth --list
+
+LOG_DIR="data/logs"
+mkdir -p "$LOG_DIR"
+
+# DBから登録済みアカウント一覧を動的に取得
+ACCOUNTS=()
+while IFS= read -r line; do
+    ACCOUNTS+=("$line")
+done < <(uv run hw-genie auth --list-names)
+
+echo "Starting parallel execution for ${#ACCOUNTS[@]} accounts..."
+
+for acc in "${ACCOUNTS[@]}"; do
+    # スペースをアンダースコアに変換してログファイル名にする
+    log_name=$(echo "$acc" | tr ' ' '_')
+    # 自分自身をバックグラウンドで起動し、ログを出力
+    "$0" "$acc" > "$LOG_DIR/${log_name}.log" 2>&1 &
+done
+
+# すべてのバックグラウンドタスクの完了を待つ
+wait
+
+echo "✅ All Done! Logs are saved in $LOG_DIR/"
