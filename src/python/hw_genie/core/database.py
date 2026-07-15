@@ -86,7 +86,46 @@ db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 # 接続時の引数
 connect_args = {}
 
-if "libsql" in db_url:
+# Turso Syncs (Embedded Replicas) settings
+turso_sync_url = os.getenv("TURSO_SYNC_URL")
+turso_auth_token = os.getenv("TURSO_AUTH_TOKEN")
+turso_sync_interval = os.getenv("TURSO_SYNC_INTERVAL")
+
+if turso_sync_url:
+    # Determine the local database file path to act as the replica
+    if db_url.startswith("sqlite+libsql:///"):
+        parsed = urllib.parse.urlparse(db_url)
+        local_path = parsed.path
+    elif db_url.startswith("sqlite:///"):
+        parsed = urllib.parse.urlparse(db_url)
+        local_path = parsed.path
+    else:
+        local_path = DEFAULT_DB_PATH
+
+    # Clean up Windows absolute paths if needed (e.g. /C:/path -> C:/path)
+    if local_path.startswith("/") and len(local_path) > 2 and local_path[2] == ":":
+        local_path = local_path[1:]
+    elif local_path.startswith("/") and not local_path.startswith("//"):
+        local_path = os.path.abspath(local_path)
+
+    # Force using sqlite+libsql dialect pointing to the local file
+    db_url = f"sqlite+libsql:///{local_path}"
+
+    # Setup the replica connection parameters
+    connect_args["sync_url"] = turso_sync_url
+    if turso_auth_token:
+        connect_args["auth_token"] = turso_auth_token
+
+    if turso_sync_interval:
+        try:
+            connect_args["sync_interval"] = float(turso_sync_interval)
+        except (ValueError, TypeError):
+            pass
+
+    # Ensure check_same_thread is True for local-based replica (safe and default for multi-thread replica)
+    connect_args["check_same_thread"] = True
+
+elif "libsql" in db_url:
     # URLに認証トークンが含まれている場合、sqlalchemy-libsql のバグ/制限を回避するため、
     # クエリ文字列からトークンを抽出して connect_args["auth_token"] に設定する
     parsed = urllib.parse.urlparse(db_url)
