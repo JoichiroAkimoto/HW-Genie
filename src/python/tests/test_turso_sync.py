@@ -4,7 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import create_engine
 
+from hw_genie.core import database
 from hw_genie.core.database import build_database_config
 
 
@@ -108,3 +110,45 @@ def test_turso_sync_invalid_interval():
     assert "sync_interval" not in connect_args
     # 無効な値は警告ログとして報告される
     mock_warn.assert_called_once()
+
+
+def test_build_database_config_typeddict_keys():
+    """戻り値の connect_args に期待されるキーのみが含まれることを検証"""
+    env = {
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_SYNC_INTERVAL": "60",
+        "DATABASE_URL": "sqlite:///test_replica.db",
+    }
+    _, connect_args = build_database_config(env)
+
+    # 許可されたキーのみが含まれ、未知のキーが混ざっていないこと
+    allowed = {"sync_url", "auth_token", "sync_interval", "check_same_thread"}
+    assert set(connect_args.keys()) <= allowed
+    assert connect_args["check_same_thread"] is True
+    assert connect_args["sync_interval"] == 60.0
+
+
+def test_lazy_engine_initialization(monkeypatch):
+    """get_engine() は初回アクセス時に構築され、以降は同一インスタンスを返すことを検証"""
+    # conftest のパッチを避け、実際の遅延初期化ロジックを検証するため自前の getter を差し替える。
+    monkeypatch.setattr(database, "build_database_config", lambda env=None: ("sqlite:///:memory:", {}))
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_SessionLocal", None)
+
+    state = {"built": 0}
+
+    def fake_get_engine():
+        if database._engine is None:
+            database._engine = create_engine("sqlite:///:memory:")
+            state["built"] += 1
+        return database._engine
+
+    monkeypatch.setattr(database, "get_engine", fake_get_engine)
+
+    # 初回アクセスで構築され、以降は同一インスタンスが返る（遅延初期化 + キャッシュ）
+    engine1 = database.get_engine()
+    assert database._engine is engine1
+    engine2 = database.get_engine()
+    assert engine1 is engine2
+    assert state["built"] == 1

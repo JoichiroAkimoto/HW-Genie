@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import NotRequired, TypedDict
 import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -85,7 +86,21 @@ DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 logger = logging.getLogger(__name__)
 
 
-def build_database_config(env: dict[str, str] | None = None) -> tuple[str, dict]:
+class DatabaseConfig(TypedDict):
+    """SQLAlchemy connect_args produced by ``build_database_config``.
+
+    Turso Syncs-specific keys are optional and only present when
+    ``TURSO_SYNC_URL`` is configured.
+    """
+
+    sync_url: NotRequired[str]
+    auth_token: NotRequired[str]
+    sync_interval: NotRequired[float]
+    check_same_thread: bool
+    timeout: NotRequired[int]
+
+
+def build_database_config(env: dict[str, str] | None = None) -> tuple[str, DatabaseConfig]:
     """
     Build the database connection URL and SQLAlchemy connect_args.
 
@@ -107,7 +122,7 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, dict]
     db_url = env.get("DATABASE_URL", DEFAULT_DB_URL)
 
     # 接続時の引数
-    connect_args: dict = {}
+    connect_args: DatabaseConfig = {}
 
     turso_sync_url = env.get("TURSO_SYNC_URL")
     turso_auth_token = env.get("TURSO_AUTH_TOKEN")
@@ -186,20 +201,61 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, dict]
         connect_args["check_same_thread"] = False
         connect_args["timeout"] = 30  # 30秒まで待機（並列アクセス対策）
 
+    # libsql ブランチで check_same_thread が未設定の場合の安全なデフォルトを保証。
+    # TypedDict の必須キー check_same_thread を常に満たすため。
+    connect_args.setdefault("check_same_thread", False)
+
+
     return db_url, connect_args
 
 
-# Resolve the connection configuration once at import time and build the engine.
-db_url, connect_args = build_database_config()
-engine = create_engine(db_url, connect_args=connect_args)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+# Module-level cache for the lazily-initialised engine / session factory.
+# The engine is intentionally NOT created at import time: it is built on the
+# first call to get_engine() / get_session_local(), so importing this module
+# has no side effects (safe for tests and for controlling init order).
+_engine = None
+_SessionLocal = None
+
+
+def get_engine():
+    """Return the SQLAlchemy engine, creating it on first access (lazy init)."""
+    global _engine, engine
+    if _engine is None:
+        db_url, connect_args = build_database_config()
+        _engine = create_engine(db_url, connect_args=connect_args)
+        engine = _engine
+    return _engine
+
+
+def get_session_local():
+    """Return the scoped session factory, creating it on first access."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
+    return _SessionLocal
+
+
+# Backwards-compatible module-level aliases. These are lazy proxies so that
+# existing ``from hw_genie.core.database import SessionLocal`` imports and
+# ``patch("hw_genie.core.database.engine", ...)`` style monkeypatching keep
+# working, while the heavy engine object is still only built on first use.
+class _LazySessionLocal:
+    def __call__(self, *args, **kwargs):
+        return get_session_local()(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(get_session_local(), name)
+
+
+engine = None  # replaced lazily; accessible for introspection / patching
+SessionLocal = _LazySessionLocal()
 
 
 def init_db():
     # データベースファイルのディレクトリが存在することを確認
-    url_str = str(db_url)
+    url_str = str(get_engine().url)
     if ":memory:" in url_str:
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(get_engine())
         return
     if url_str.startswith(("sqlite:///", "sqlite+libsql:///")):
         parsed = urllib.parse.urlparse(url_str)
@@ -208,4 +264,4 @@ def init_db():
         db_dir = os.path.dirname(os.path.abspath(db_path))
         if not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(get_engine())
