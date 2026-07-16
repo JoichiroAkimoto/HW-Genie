@@ -1,4 +1,6 @@
+import logging
 import os
+from pathlib import Path
 import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -80,90 +82,115 @@ if os.path.exists(env_path):
 DEFAULT_DB_PATH = os.path.join(PKG_ROOT, "data", "hw_genie.db")
 DEFAULT_DB_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 
-# 環境変数 DATABASE_URL で接続先を切り替え可能に
-db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
+logger = logging.getLogger(__name__)
 
-# 接続時の引数
-connect_args = {}
 
-# Turso Syncs (Embedded Replicas) settings
-turso_sync_url = os.getenv("TURSO_SYNC_URL")
-turso_auth_token = os.getenv("TURSO_AUTH_TOKEN")
-turso_sync_interval = os.getenv("TURSO_SYNC_INTERVAL")
+def build_database_config(env: dict[str, str] | None = None) -> tuple[str, dict]:
+    """
+    Build the database connection URL and SQLAlchemy connect_args.
 
-if turso_sync_url:
-    # Determine the local database file path to act as the replica
-    if db_url.startswith("sqlite+libsql:///"):
+    Reads the relevant environment variables (or ``os.environ`` when ``env`` is
+    omitted) and resolves the final ``db_url`` / ``connect_args`` pair. This is a
+    pure function: it has no module-level side effects and is safe to call from
+    tests with a mocked environment.
+
+    Turso Embedded Replicas (Syncs) are enabled by setting ``TURSO_SYNC_URL``.
+    In that mode the local SQLite file (from ``DATABASE_URL``) becomes a replica
+    that is synchronised with the remote database.
+
+    Returns:
+        tuple: ``(db_url, connect_args)``.
+    """
+    env = os.environ if env is None else env
+
+    # 環境変数 DATABASE_URL で接続先を切り替え可能に
+    db_url = env.get("DATABASE_URL", DEFAULT_DB_URL)
+
+    # 接続時の引数
+    connect_args: dict = {}
+
+    turso_sync_url = env.get("TURSO_SYNC_URL")
+    turso_auth_token = env.get("TURSO_AUTH_TOKEN")
+    turso_sync_interval = env.get("TURSO_SYNC_INTERVAL")
+
+    if turso_sync_url:
+        # Determine the local database file path to act as the replica.
+        # Use pathlib for OS-agnostic, robust path normalisation.
+        if db_url.startswith(("sqlite+libsql:///", "sqlite:///")):
+            parsed = urllib.parse.urlparse(db_url)
+            local_path = Path(parsed.path)
+        else:
+            local_path = Path(DEFAULT_DB_PATH)
+
+        # Normalise to an absolute path. urlparse leaves a leading "/" on POSIX
+        # absolute filesystem paths; resolve() also handles Windows drive paths.
+        local_path = local_path.resolve()
+
+        # Force using sqlite+libsql dialect pointing to the local file
+        db_url = f"sqlite+libsql:///{local_path}"
+
+        # Setup the replica connection parameters
+        connect_args["sync_url"] = turso_sync_url
+        if turso_auth_token:
+            connect_args["auth_token"] = turso_auth_token
+
+        if turso_sync_interval:
+            try:
+                connect_args["sync_interval"] = float(turso_sync_interval)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid TURSO_SYNC_INTERVAL=%r ignored; falling back to the "
+                    "default sync interval.",
+                    turso_sync_interval,
+                )
+
+        # Ensure check_same_thread is True for local-based replica
+        connect_args["check_same_thread"] = True
+
+    elif "libsql" in db_url:
+        # URLに認証トークンが含まれている場合、sqlalchemy-libsql のバグ/制限を回避するため、
+        # クエリ文字列からトークンを抽出して connect_args["auth_token"] に設定する
         parsed = urllib.parse.urlparse(db_url)
-        local_path = parsed.path
-    elif db_url.startswith("sqlite:///"):
-        parsed = urllib.parse.urlparse(db_url)
-        local_path = parsed.path
-    else:
-        local_path = DEFAULT_DB_PATH
+        query_params = urllib.parse.parse_qs(parsed.query)
 
-    # Clean up Windows absolute paths if needed (e.g. /C:/path -> C:/path)
-    if local_path.startswith("/") and len(local_path) > 2 and local_path[2] == ":":
-        local_path = local_path[1:]
-    elif local_path.startswith("/") and not local_path.startswith("//"):
-        local_path = os.path.abspath(local_path)
+        token = None
+        if "auth_token" in query_params:
+            token = query_params["auth_token"][0]
+        elif "authToken" in query_params:
+            token = query_params["authToken"][0]
 
-    # Force using sqlite+libsql dialect pointing to the local file
-    db_url = f"sqlite+libsql:///{local_path}"
+        if token:
+            connect_args["auth_token"] = token
 
-    # Setup the replica connection parameters
-    connect_args["sync_url"] = turso_sync_url
-    if turso_auth_token:
-        connect_args["auth_token"] = turso_auth_token
+            # クエリパラメータからトークンを除去し、重複エラーを防ぐ
+            new_query_params = {k: v for k, v in query_params.items() if k not in ("auth_token", "authToken")}
+            # secure=true がない場合は付加して強制的に SSL 接続にする（308 リダイレクト回避）
+            if "secure" not in new_query_params:
+                new_query_params["secure"] = ["true"]
 
-    if turso_sync_interval:
-        try:
-            connect_args["sync_interval"] = float(turso_sync_interval)
-        except (ValueError, TypeError):
-            pass
+            new_query = urllib.parse.urlencode(new_query_params, doseq=True)
+            # 末尾スラッシュ付きのパスにしてパースエラーを防ぐ
+            path = parsed.path if parsed.path else "/"
+            db_url = urllib.parse.urlunparse(parsed._replace(path=path, query=new_query))
 
-    # Ensure check_same_thread is True for local-based replica (safe and default for multi-thread replica)
-    connect_args["check_same_thread"] = True
+    elif "sqlite" in db_url:
+        # ローカル SQLite の場合は書き込みロックを防止する設定を付与
+        connect_args["check_same_thread"] = False
+        connect_args["timeout"] = 30  # 30秒まで待機（並列アクセス対策）
 
-elif "libsql" in db_url:
-    # URLに認証トークンが含まれている場合、sqlalchemy-libsql のバグ/制限を回避するため、
-    # クエリ文字列からトークンを抽出して connect_args["auth_token"] に設定する
-    parsed = urllib.parse.urlparse(db_url)
-    query_params = urllib.parse.parse_qs(parsed.query)
-    
-    token = None
-    if "auth_token" in query_params:
-        token = query_params["auth_token"][0]
-    elif "authToken" in query_params:
-        token = query_params["authToken"][0]
-        
-    if token:
-        connect_args["auth_token"] = token
-        
-        # クエリパラメータからトークンを除去し、重複エラーを防ぐ
-        new_query_params = {k: v for k, v in query_params.items() if k not in ("auth_token", "authToken")}
-        # secure=true がない場合は付加して強制的に SSL 接続にする（308 リダイレクト回避）
-        if "secure" not in new_query_params:
-            new_query_params["secure"] = ["true"]
-            
-        new_query = urllib.parse.urlencode(new_query_params, doseq=True)
-        # 末尾スラッシュ付きのパスにしてパースエラーを防ぐ
-        path = parsed.path if parsed.path else "/"
-        db_url = urllib.parse.urlunparse(parsed._replace(path=path, query=new_query))
+    return db_url, connect_args
 
-elif "sqlite" in db_url:
-    # ローカル SQLite の場合は書き込みロックを防止する設定を付与
-    connect_args["check_same_thread"] = False
-    connect_args["timeout"] = 30  # 30秒まで待機（並列アクセス対策）
 
+# Resolve the connection configuration once at import time and build the engine.
+db_url, connect_args = build_database_config()
 engine = create_engine(db_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def init_db():
     # データベースファイルのディレクトリが存在することを確認
-    if db_url.startswith("sqlite:///"):
-        db_path = db_url.replace("sqlite:///", "")
+    if str(db_url).startswith("sqlite:///") or str(db_url).startswith("sqlite+libsql:///"):
+        db_path = str(db_url).split("///", 1)[1]
         if not db_path.startswith(":memory:"):
             db_dir = os.path.dirname(os.path.abspath(db_path))
             if not os.path.exists(db_dir):
