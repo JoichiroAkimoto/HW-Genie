@@ -479,6 +479,9 @@ def test_build_write_config_remote_direct_when_enabled():
     # リモート直接接続 (sqlite+libsql://host/) になり、sync_url は付かない
     assert write_url.startswith("sqlite+libsql://my-test-db.turso.io/")
     assert "sync_url" not in write_url
+    # secure=true を付与して dialect に https (TLS) 接続を強制し、
+    # Turso からの 308 Permanent Redirect を回避する (HW-Genie#xx)
+    assert "secure=true" in write_url
     assert write_args.get("auth_token") == "my-mock-auth-token"
 
 
