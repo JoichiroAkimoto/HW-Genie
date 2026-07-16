@@ -479,11 +479,14 @@ def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str,
         env.get("TURSO_WRITE_REMOTE", "false").lower() == "true"
         and turso_sync_url
     ):
-        # Build a direct remote (https) libSQL connection URL from the sync URL.
+        # Build a direct remote libSQL connection URL from the sync URL.
+        # Append ?secure=true so the dialect uses the https scheme (TLS) instead
+        # of defaulting to http://, which Triggers a 308 Permanent Redirect from
+        # Turso.
         host = turso_sync_url
         if host.startswith("libsql://"):
             host = host[len("libsql://"):]
-        remote_url = f"sqlite+libsql://{host}/"
+        remote_url = f"sqlite+libsql://{host}/?secure=true"
         connect_args: DatabaseConfig = {"check_same_thread": False}
         if turso_auth_token:
             connect_args["auth_token"] = turso_auth_token
