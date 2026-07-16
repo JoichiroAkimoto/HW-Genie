@@ -48,11 +48,11 @@ def test_turso_sync_config_set():
     }
     db_url, connect_args = build_database_config(env)
 
-    # 接続先URLが正確に sqlite+libsql:/// + 絶対パス になっていることを確認
-    # （余分なスラッシュや cwd 配下への誤った解決がないこと）
+    # sqlite:///test_replica.db は相対パスとして扱われ、スキーム区切りの
+    # 3スラッシュのみを持つ sqlite+libsql:///test_replica.db になること。
+    # （絶対パスでない入力を cwd 配下へ誤って解決しないこと）
     url_str = str(db_url)
-    resolved = Path("test_replica.db").absolute()
-    assert url_str == f"sqlite+libsql:///{resolved.as_posix().lstrip('/')}"
+    assert url_str == "sqlite+libsql:///test_replica.db"
     assert "sqlite+libsql:////" not in url_str
 
     # connect_args に同期用パラメータが正しく渡されていることを確認
