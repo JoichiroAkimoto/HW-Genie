@@ -119,11 +119,22 @@ class TokenMaskingFilter(logging.Filter):
 
 
 def install_token_masking_filter(logger: logging.Logger | None = None) -> None:
-    """Attach :class:`TokenMaskingFilter` to the root logger (idempotent)."""
-    target = logger if logger is not None else logging.getLogger()
-    if any(isinstance(f, TokenMaskingFilter) for f in target.filters):
-        return
-    target.addFilter(TokenMaskingFilter())
+    """Attach :class:`TokenMaskingFilter` to the root logger's handlers.
+
+    A ``logging.Filter`` on a logger only filters records emitted by that
+    logger itself, not by child loggers (e.g. ``sqlalchemy``, ``hw_genie``).
+    Tokens appear in SQLAlchemy/URL logs, so the filter must be attached to
+    the *handlers* (which every record passes through) rather than the logger.
+    Idempotent.
+    """
+    root = logging.getLogger() if logger is None else logger
+    # Ensure there is at least one handler to attach to.
+    if not root.handlers:
+        logging.basicConfig()
+    for handler in root.handlers:
+        if any(isinstance(f, TokenMaskingFilter) for f in handler.filters):
+            continue
+        handler.addFilter(TokenMaskingFilter())
 
 
 class Account(Base):

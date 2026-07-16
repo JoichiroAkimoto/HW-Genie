@@ -269,6 +269,37 @@ def test_token_masking_filter_redacts_log_records():
     assert "auth_token=***" in record.getMessage()
 
 
+def test_install_token_masking_filter_masks_child_logger():
+    """install_token_masking_filter は子ロガー(sqlalchemy等)のレコードもマスクする。
+
+    logging.Filter をロガーに付けるだけでは子ロガーのレコードは通らないため、
+    handler 経由でマスクされることを検証する。
+    """
+    import io
+    import logging as _logging
+
+    from hw_genie.core.database import install_token_masking_filter
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(_logging.DEBUG)
+    try:
+        install_token_masking_filter()
+
+        # 子ロガー経由でトークンを含むメッセージを出力
+        _logging.getLogger("hw_genie.core.database").info(
+            "connect url sqlite+libsql:///x?auth_token=CHILDSECRET&sync_interval=5"
+        )
+        output = stream.getvalue()
+    finally:
+        root.removeHandler(handler)
+
+    assert "CHILDSECRET" not in output
+    assert "auth_token=***" in output
+
+
 def test_windows_drive_path_builds_replica_url():
     """Windows ドライブレター付きパスでも replica URL が正しく構築される。"""
     env = {
