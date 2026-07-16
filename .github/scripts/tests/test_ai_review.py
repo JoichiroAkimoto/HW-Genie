@@ -77,6 +77,32 @@ def test_strip_review_metadata_removes_previous_exec_info():
     assert "本文" in body
 
 
+def test_strip_review_metadata_prefers_current_over_quoted():
+    """AI が古い実行情報を引用して複数ブロックを出した場合、「今回」を優先する。"""
+    review = (
+        "<details open><summary>⚡ 実行情報</summary>\n最初の引用ブロック</details>\n\n"
+        "<details open><summary>⚡ 今回の実行情報</summary>\n今回情報</details>\n\n"
+        "### 🤖 AI コードレビュー\n\n本文\n<!-- ai-pr-reviewer-comment -->"
+    )
+    body, exec_info = strip_review_metadata(review)
+    assert "今回情報" in exec_info
+    assert "最初の引用ブロック" not in exec_info
+    # 今回以外の実行情報ブロックは本文からも除去される（重複防止）
+    assert "最初の引用ブロック" not in body
+
+
+def test_strip_review_metadata_excludes_prefixed_blocks():
+    """「📝」を含むブロックは exec_info に採用しない。"""
+    review = (
+        "<details open><summary>📝 前回の実行情報</summary>\n古い</details>\n\n"
+        "<details open><summary>⚡ 今回の実行情報</summary>\n今回</details>\n\n"
+        "本文\n<!-- ai-pr-reviewer-comment -->"
+    )
+    _, exec_info = strip_review_metadata(review)
+    assert "今回" in exec_info
+    assert "古い" not in exec_info
+
+
 def test_strip_review_metadata_empty():
     assert strip_review_metadata("") == ("", "")
 
@@ -105,10 +131,20 @@ def test_resolve_model_unknown_keyword_fallback():
     assert name == "gemini-flash-latest-xyz"
 
 
-def test_resolve_model_unknown_zero_cost():
+def test_resolve_model_unknown_cost_is_none():
     info, name = resolve_model("some-unknown-model", MODEL_CONFIG)
-    assert info["input_cost_per_1m"] == 0.0
+    # 未知モデルはコスト不明(None)とし、高コストを安価と誤認しない
+    assert info["input_cost_per_1m"] is None
+    assert info["output_cost_per_1m"] is None
+    assert info["max_diff_chars"] == 500000
     assert name == "some-unknown-model"
+
+
+def test_resolve_model_partial_match_prefers_longer():
+    # "flash-lite" を部分一致で渡しても flash ではなく flash-lite に一致する
+    info, name = resolve_model("gemini-flash-lite", MODEL_CONFIG)
+    assert info["input_cost_per_1m"] == 0.25
+    assert name == "gemini-flash-lite"
 
 
 def test_models_json_valid():

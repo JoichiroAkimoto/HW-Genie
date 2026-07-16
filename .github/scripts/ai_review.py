@@ -122,10 +122,12 @@ def strip_review_metadata(review_body: str) -> tuple[str, str]:
 
     # 1. 「⚡ 今回の実行情報」または「⚡ 実行情報」の<details>ブロックを抽出・除去
     body, current_blocks = _extract_details_blocks(body, "実行情報")
+    # 「📝 前回の実行情報」は対象外（AI が古いブロックを引用した場合も弾く）
+    current_blocks = [b for b in current_blocks if "📝" not in b]
     exec_info = ""
+    # 「今回の」を優先して採用（複数ブロックがある場合）
     for block in current_blocks:
-        # ⚡ (今回の) 実行情報 のみを「今回」として採用
-        if "📝" not in block:
+        if "今回の" in block:
             exec_info = block
             break
     if not exec_info and current_blocks:
@@ -184,14 +186,17 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
             return info, display_name
 
     # 2. 部分一致（aliases / name / key のいずれかが model_key を含む、または逆）
+    #    より長い候補からマッチさせ、短いキーワード（flash 等）による
+    #    過剰な一致（flash-lite → flash）を防ぐ
     matched_info = None
     for key, info in model_config.items():
         candidates = [key, info.get("name", "")] + info.get("aliases", [])
-        if any(model_key in c or c in model_key for c in candidates if c):
+        candidates = sorted((c for c in candidates if c), key=len, reverse=True)
+        if any(model_key in c or c in model_key for c in candidates):
             matched_info = info
             break
 
-    # 3. キーワードによる推測
+    # 3. キーワードによる推測（flash-lite を flash より先に評価）
     if not matched_info:
         if "flash-lite" in model_key:
             matched_info = model_config.get("flash-lite")
@@ -211,13 +216,19 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
             model_key,
         )
 
-    # 4. それでも不明: ゼロコスト・デフォルト上限でフォールバック
+    # 4. それでも不明: コスト不明として扱う（高コストモデルを安価と誤認させない）
+    #    警告を stderr に出力し、コスト表示は「(不明)」となる
+    print(
+        f"Warning: Unknown model '{model_key}' not found in models.json; "
+        f"cost is treated as UNKNOWN (max_diff_chars=500000).",
+        file=sys.stderr,
+    )
     return (
         {
             "name": model_key,
-            "input_cost_per_1m": 0.0,
-            "output_cost_per_1m": 0.0,
-            "max_diff_chars": 2000000,
+            "input_cost_per_1m": None,
+            "output_cost_per_1m": None,
+            "max_diff_chars": 500000,
         },
         model_key,
     )
@@ -437,16 +448,22 @@ def main():
 
         try:
             usage = response.usage_metadata
-            in_tokens = usage.prompt_token_count
-            out_tokens = usage.candidates_token_count
+            in_tokens = usage.prompt_token_count or 0
+            out_tokens = usage.candidates_token_count or 0
 
             # コスト計算 (1M tokens あたりの単価)
-            in_cost = (in_tokens / 1_000_000) * model_info["input_cost_per_1m"]
-            out_cost = (out_tokens / 1_000_000) * model_info["output_cost_per_1m"]
-            total_cost = in_cost + out_cost
-
-            metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
-            metadata += f"- **推定コスト**: `${total_cost:.6f}`\n"
+            in_rate = model_info.get("input_cost_per_1m")
+            out_rate = model_info.get("output_cost_per_1m")
+            if in_rate is not None and out_rate is not None:
+                in_cost = (in_tokens / 1_000_000) * in_rate
+                out_cost = (out_tokens / 1_000_000) * out_rate
+                total_cost = in_cost + out_cost
+                metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
+                metadata += f"- **推定コスト**: `${total_cost:.6f}`\n"
+            else:
+                # 単価不明（未知モデル等）: 誤った安価表示を避ける
+                metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
+                metadata += "- **推定コスト**: (不明: 手動確認を推奨)\n"
         except Exception:
             metadata += "- **トークン/コスト**: (取得できませんでした)\n"
 
