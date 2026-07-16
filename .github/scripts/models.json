@@ -1,18 +1,21 @@
 {
   "flash": {
     "name": "gemini-3.5-flash",
+    "aliases": ["gemini-flash-latest", "gemini-flash"],
     "input_cost_per_1m": 1.50,
     "output_cost_per_1m": 9.00,
     "max_diff_chars": 2000000
   },
   "flash-lite": {
     "name": "gemini-3.1-flash-lite",
+    "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite", "gemini-3-flash-lite", "flash-lite"],
     "input_cost_per_1m": 0.25,
     "output_cost_per_1m": 1.50,
     "max_diff_chars": 2000000
   },
   "gemma": {
     "name": "gemma-4-31b-it",
+    "aliases": ["gemma-latest", "gemma"],
     "input_cost_per_1m": 0.0,
     "output_cost_per_1m": 0.0,
     "max_diff_chars": 500000
