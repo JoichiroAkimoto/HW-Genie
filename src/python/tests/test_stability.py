@@ -18,17 +18,25 @@ def repo():
         )
         Base.metadata.create_all(engine)
 
-        # Override get_session_local for the repository instance
+        # Override both read and write session factories so the repo operates
+        # entirely against the isolated temp engine (no real DB / remote).
         import hw_genie.core.repository as repo_mod
 
         original_get_session_local = repo_mod.get_session_local
-        repo_mod.get_session_local = lambda: sessionmaker(bind=engine, expire_on_commit=False)
+        original_get_write_session_local = repo_mod.get_write_session_local
+
+        def session_factory():
+            return sessionmaker(bind=engine, expire_on_commit=False)
+
+        repo_mod.get_session_local = session_factory
+        repo_mod.get_write_session_local = session_factory
 
         repository = SessionRepository()
         yield repository
 
-        # Restore original get_session_local
+        # Restore original session factories
         repo_mod.get_session_local = original_get_session_local
+        repo_mod.get_write_session_local = original_get_write_session_local
 
 
 def test_invalid_config_key(repo):

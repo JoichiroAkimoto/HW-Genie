@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
@@ -13,6 +14,21 @@ from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
 
 Base = declarative_base()
+
+# Per-thread flag recording whether the most recent connect_args built a Turso
+# embedded replica (i.e. opened a local file WITH a sync_url). ``on_connect``
+# consults this to decide whether to force an explicit ``sync()``. A
+# threading.local() is used because the dialect instance is shared across
+# threads but each connection is built on a single thread.
+_replica_mode = threading.local()
+
+
+def _mark_replica_mode(enabled: bool) -> None:
+    _replica_mode.active = enabled
+
+
+def _is_replica_mode() -> bool:
+    return bool(getattr(_replica_mode, "active", False))
 
 
 class TursoReplicaDialect(SQLiteDialect_libsql):
@@ -31,6 +47,48 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
     # compilation caching" SAWarning emitted on every connection.
     supports_statement_cache = True
 
+    @classmethod
+    def import_dbapi(cls):
+        import libsql_experimental as libsql
+
+        return libsql
+
+    def on_connect(self):
+        """Force a blocking ``sync()`` on every replica connection.
+
+        libSQL's background sync (``sync_interval``) only runs while the
+        process is alive, so a short-lived CLI command (e.g. ``auth --list``)
+        may query its local replica *before* any background pull completes,
+        returning stale data even though the remote was updated from another
+        client. Forcing an explicit ``sync()`` on connect guarantees the
+        replica is up to date before any statement runs.
+
+        This can be disabled by setting ``TURSO_SYNC_ON_CONNECT=false`` (the
+        always-on container auth-server relies on ``sync_interval`` instead).
+        """
+        super_on_connect = super().on_connect()
+        libsql = self.import_dbapi()
+
+        def connect(conn):
+            if super_on_connect is not None:
+                super_on_connect(conn)
+            # Only sync a real Turso replica connection that was opened with a
+            # sync_url (tracked via the per-thread flag set in
+            # create_connect_args). Remote (ws) connections and plain local
+            # sqlite connections are skipped.
+            if isinstance(conn, libsql.Connection) and _is_replica_mode():
+                if os.environ.get("TURSO_SYNC_ON_CONNECT", "true").lower() != "false":
+                    try:
+                        conn.sync()
+                    except Exception:  # pragma: no cover - best-effort
+                        logger.warning(
+                            "Turso replica sync() failed on connect; "
+                            "continuing with locally cached data.",
+                            exc_info=True,
+                        )
+
+        return connect
+
     def create_connect_args(self, url):
         pysqlite_args = (
             ("uri", bool),
@@ -45,6 +103,9 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
         connect_args: dict = {}
         for key, type_ in pysqlite_args:
             util.coerce_kw_type(opts, key, type_, dest=connect_args)
+
+        # Reset replica flag; it is only set below when a sync_url is attached.
+        _mark_replica_mode(False)
 
         if url.host:
             # Remote (ws/wss) mode: keep stock behaviour.
@@ -72,6 +133,7 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
         sync_url = opts.get("sync_url")
         if sync_url:
             connect_args["sync_url"] = sync_url
+            _mark_replica_mode(True)
             auth_token = opts.get("auth_token")
             if auth_token:
                 connect_args["auth_token"] = auth_token
@@ -396,12 +458,49 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     return db_url, connect_args
 
 
+def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str, DatabaseConfig]:
+    """Build the DB config used for WRITE operations.
+
+    When ``TURSO_WRITE_REMOTE=true`` (and ``TURSO_SYNC_URL`` is configured),
+    writes go **directly to the remote Turso primary** instead of through the
+    local embedded replica. This avoids replica-vs-replica write conflicts when
+    the same database is written from multiple machines (e.g. Windows writes,
+    Mac reads): every writer talks straight to the single primary, and readers
+    pull the latest via their replica's ``sync()``.
+
+    With the flag off (default), writes use the same replica config as reads
+    (backwards compatible).
+    """
+    env = os.environ if env is None else env
+    turso_sync_url = env.get("TURSO_SYNC_URL")
+    turso_auth_token = env.get("TURSO_AUTH_TOKEN")
+
+    if (
+        env.get("TURSO_WRITE_REMOTE", "false").lower() == "true"
+        and turso_sync_url
+    ):
+        # Build a direct remote (https) libSQL connection URL from the sync URL.
+        host = turso_sync_url
+        if host.startswith("libsql://"):
+            host = host[len("libsql://"):]
+        remote_url = f"sqlite+libsql://{host}/"
+        connect_args: DatabaseConfig = {"check_same_thread": False}
+        if turso_auth_token:
+            connect_args["auth_token"] = turso_auth_token
+        return remote_url, connect_args
+
+    # Fall back to the standard (replica) config for writes.
+    return build_database_config(env)
+
+
 # Module-level cache for the lazily-initialised engine / session factory.
 # The engine is intentionally NOT created at import time: it is built on the
 # first call to get_engine() / get_session_local(), so importing this module
 # has no side effects (safe for tests and for controlling init order).
 _engine = None
 _SessionLocal = None
+_write_engine = None
+_WriteSessionLocal = None
 
 
 def get_engine():
@@ -422,6 +521,46 @@ def get_session_local():
     return _SessionLocal
 
 
+def get_write_engine():
+    """Return the engine used for WRITE operations (see build_write_database_config).
+
+    When remote writes are disabled (``TURSO_WRITE_REMOTE`` unset/false) the
+    write engine is exactly the read engine, so no second connection is opened
+    and behaviour is identical to before this feature existed.
+    """
+    global _write_engine
+    if _write_engine is None:
+        env = os.environ
+        if env.get("TURSO_WRITE_REMOTE", "false").lower() != "true":
+            # No remote writes configured: reuse the (replica) read engine.
+            _write_engine = get_engine()
+        else:
+            db_url, connect_args = build_write_database_config()
+            _write_engine = create_engine(db_url, connect_args=connect_args)
+    return _write_engine
+
+
+def get_write_session_local():
+    """Return the session factory used for WRITE operations.
+
+    When remote writes are disabled the write session is the read session,
+    resolved on every call (not cached) so that test patching of
+    ``get_session_local`` stays effective across tests.
+    """
+    global _WriteSessionLocal
+    if _WriteSessionLocal is None or get_write_engine() is get_engine():
+        if get_write_engine() is get_engine():
+            # Delegate to the read session factory (remote-write disabled).
+            # Resolved on every call so live patching of get_session_local
+            # (used by tests) is respected.
+            return get_session_local()
+        if _WriteSessionLocal is None:
+            _WriteSessionLocal = sessionmaker(
+                bind=get_write_engine(), expire_on_commit=False
+            )
+    return _WriteSessionLocal
+
+
 # Backwards-compatible module-level aliases. These are lazy proxies so that
 # existing ``from hw_genie.core.database import SessionLocal`` imports and
 # ``patch("hw_genie.core.database.engine", ...)`` style monkeypatching keep
@@ -439,16 +578,25 @@ SessionLocal = _LazySessionLocal()
 
 
 def init_db():
-    # データベースファイルのディレクトリが存在することを確認
-    url_str = str(get_engine().url)
-    if ":memory:" in url_str:
-        Base.metadata.create_all(get_engine())
-        return
-    if url_str.startswith(("sqlite:///", "sqlite+libsql:///")):
-        parsed = urllib.parse.urlparse(url_str)
-        # Strip exactly one leading "/" (the scheme authority delimiter).
-        db_path = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
-        db_dir = os.path.dirname(os.path.abspath(db_path))
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
-    Base.metadata.create_all(get_engine())
+    # Ensure the schema exists on BOTH the read (replica) and write (remote,
+    # when TURSO_WRITE_REMOTE is enabled) engines so that writes can persist
+    # directly to the remote primary.
+    read_engine = get_engine()
+    write_engine = get_write_engine()
+    engines = {read_engine}
+    if write_engine is not read_engine:
+        engines.add(write_engine)
+
+    for eng in engines:
+        url_str = str(eng.url)
+        if ":memory:" in url_str:
+            Base.metadata.create_all(eng)
+            continue
+        if url_str.startswith(("sqlite:///", "sqlite+libsql:///")):
+            parsed = urllib.parse.urlparse(url_str)
+            # Strip exactly one leading "/" (the scheme authority delimiter).
+            db_path = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
+            db_dir = os.path.dirname(os.path.abspath(db_path))
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+        Base.metadata.create_all(eng)
