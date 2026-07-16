@@ -134,11 +134,12 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
         if db_url.startswith(("sqlite+libsql:///", "sqlite:///")):
             parsed = urllib.parse.urlparse(db_url)
             # urlparse keeps the URL's leading "/" (the authority delimiter of
-            # the sqlite:/// scheme) in the path. Strip exactly ONE leading
-            # slash so absolute paths resolve correctly; never strip more, as
-            # that would corrupt Windows drive paths (C:/...) or absolute paths.
-            path_str = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
-            local_path = Path(path_str or ".")
+            # the sqlite:/// scheme) in the path. Keep it as-is: an absolute
+            # path like "/app/data/hw_genie.db" stays absolute, while a relative
+            # path like "foo.db" is resolved against the current working dir by
+            # .absolute() below. Do NOT strip the leading slash, as that would
+            # turn an absolute path into a cwd-relative one.
+            local_path = Path(parsed.path or ".")
         else:
             local_path = Path(DEFAULT_DB_PATH)
 
