@@ -23,16 +23,27 @@ def strip_review_metadata(review_body: str) -> tuple[str, str]:
     # HTMLコメントマーカーを除去
     body = re.sub(r"<!-- ai-pr-reviewer-comment -->", "", review_body).strip()
 
-    # ⚡ 実行情報の<details>ブロックを抽出・除去
+    # 1. 「⚡ 今回の実行情報」または「⚡ 実行情報」の<details>ブロックを抽出・除去
     exec_info = ""
-    details_match = re.search(
-        r"(<details>\s*<summary>⚡ 実行情報</summary>.*?</details>)",
+    curr_match = re.search(
+        r"(<details(?:\s+open)?\s*>\s*<summary>\s*⚡\s*(?:今回の)?\s*実行情報\s*</summary>.*?</details>)",
         body,
         re.DOTALL,
     )
-    if details_match:
-        exec_info = details_match.group(1)
-        body = body[: details_match.start()] + body[details_match.end() :]
+    if curr_match:
+        exec_info = curr_match.group(1)
+        body = body[: curr_match.start()] + body[curr_match.end() :]
+
+    # 2. 「📝 前回の実行情報」の<details>ブロックも除去
+    body = re.sub(
+        r"<details(?:\s+open)?\s*>\s*<summary>\s*📝\s*前回の\s*実行情報\s*</summary>.*?</details>",
+        "",
+        body,
+        flags=re.DOTALL,
+    ).strip()
+
+    # もし水平線 (---) が末尾に残ってしまっていたら除去
+    body = re.sub(r"\n*---\s*$", "", body).strip()
 
     # "### 🤖 AI コードレビュー" ヘッダを除去（行頭の # レベルは問わない）
     body = re.sub(r"^#{1,4}\s*🤖\s*AI\s*コードレビュー\s*\n*", "", body, flags=re.MULTILINE).strip()
@@ -250,10 +261,10 @@ def main():
 
         # 前回の実行情報がある場合、折りたたんだ状態で表示
         if previous_exec_info:
-            # "⚡ 実行情報" → "📝 前回の実行情報" にラベル変更
-            prev_section = previous_exec_info.replace(
-                "⚡ 実行情報", "📝 前回の実行情報"
-            )
+            # 「⚡ 今回の実行情報」や「⚡ 実行情報」を「📝 前回の実行情報」に変更
+            # かつ、<details open> があれば <details>（openなし）に変更して折りたたむ
+            prev_section = re.sub(r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info)
+            prev_section = re.sub(r"<details\s+open\s*>", "<details>", prev_section)
             metadata += f"\n{prev_section}\n\n"
 
         metadata += "<details open><summary>⚡ 今回の実行情報</summary>\n\n"
