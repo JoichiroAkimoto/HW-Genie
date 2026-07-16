@@ -437,28 +437,30 @@ name = "hw-genie-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "google-genai" },
     { name = "hw-genie" },
+    { name = "unidiff" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "google-genai" },
     { name = "pytest" },
     { name = "pytest-mock" },
     { name = "ruff" },
-    { name = "unidiff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "hw-genie", editable = "src/python" }]
+requires-dist = [
+    { name = "google-genai" },
+    { name = "hw-genie", editable = "src/python" },
+    { name = "unidiff", specifier = ">=0.7.5" },
+]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "google-genai" },
     { name = "pytest", specifier = "~=9.0.2" },
     { name = "pytest-mock", specifier = "~=3.15.1" },
     { name = "ruff", specifier = "~=0.15.9" },
-    { name = "unidiff", specifier = ">=0.7.5" },
 ]
 
 [[package]]

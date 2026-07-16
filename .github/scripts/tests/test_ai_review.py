@@ -16,17 +16,24 @@ from ai_review import (  # noqa: E402
 MODEL_CONFIG = {
     "flash-lite": {
         "name": "gemini-3.1-flash-lite",
-        "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite"],
+        "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite", "gemini-3-flash-lite"],
         "input_cost_per_1m": 0.25,
         "output_cost_per_1m": 1.50,
         "max_diff_chars": 2000000,
     },
     "flash": {
         "name": "gemini-3.5-flash",
-        "aliases": ["gemini-flash-latest"],
+        "aliases": ["gemini-flash-latest", "gemini-flash"],
         "input_cost_per_1m": 1.50,
         "output_cost_per_1m": 9.00,
         "max_diff_chars": 2000000,
+    },
+    "gemma": {
+        "name": "gemma-4-31b-it",
+        "aliases": ["gemma-latest", "gemma"],
+        "input_cost_per_1m": 0.0,
+        "output_cost_per_1m": 0.0,
+        "max_diff_chars": 500000,
     },
 }
 
@@ -108,9 +115,25 @@ def test_strip_review_metadata_empty():
 
 
 def test_resolve_model_by_key():
+    # 設定キー入力は正規名へ解決される（エイリアスではない）
     info, name = resolve_model("flash-lite", MODEL_CONFIG)
     assert name == "gemini-3.1-flash-lite"
     assert info["input_cost_per_1m"] == 0.25
+
+
+def test_resolve_model_by_self_alias_returns_alias():
+    # "gemini-flash-lite" は flash-lite のエイリアス → 表示はエイリアス自身
+    # （本番では API で正規名へ解決される）
+    info, name = resolve_model("gemini-flash-lite", MODEL_CONFIG)
+    assert name == "gemini-flash-lite"
+    assert info["input_cost_per_1m"] == 0.25
+
+
+def test_resolve_model_exact_alias_does_not_become_unknown():
+    # "gemini-flash" は flash の厳密エイリアス → 未知にならない
+    info, name = resolve_model("gemini-flash", MODEL_CONFIG)
+    assert info["input_cost_per_1m"] == 1.50
+    assert name == "gemini-flash"
 
 
 def test_resolve_model_by_alias():
@@ -126,9 +149,19 @@ def test_resolve_model_by_name():
 
 
 def test_resolve_model_unknown_keyword_fallback():
+    # "gemini-flash-latest-xyz" は flash のエイリアスを一意に含むため flash 相当
     info, name = resolve_model("gemini-flash-latest-xyz", MODEL_CONFIG)
     assert info["input_cost_per_1m"] == 1.50  # flash 相当
     assert name == "gemini-flash-latest-xyz"
+
+
+def test_resolve_model_ambiguous_input_is_unknown():
+    # "gemini" のように複数モデルに曖昧にマッチする入力は意図しない推測を
+    # 避けるため未知（コスト不明）として扱う
+    info, name = resolve_model("gemini", MODEL_CONFIG)
+    assert info["input_cost_per_1m"] is None
+    assert info["output_cost_per_1m"] is None
+    assert name == "gemini"
 
 
 def test_resolve_model_unknown_cost_is_none():

@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Hero Wars Genie Workspace"
 authors = [{ name = "JoichiroAkimoto" }]
 requires-python = ">=3.10, <3.14"
-dependencies = ["hw-genie"]
+dependencies = [
+    "hw-genie",
+    "google-genai",
+    "unidiff>=0.7.5",
+]
 
 [tool.uv]
 managed = true
@@ -21,6 +25,4 @@ dev = [
     "pytest~=9.0.2",
     "pytest-mock~=3.15.1",
     "ruff~=0.15.9",
-    "google-genai",
-    "unidiff>=0.7.5",
 ]

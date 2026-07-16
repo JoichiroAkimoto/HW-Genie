@@ -170,13 +170,15 @@ DEFAULT_MODEL_KEY = "flash-lite"
 def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
     """models.json のキー・name・aliases のいずれかに一致するモデル設定を解決する。
 
-    model_key が未知の文字列（例: ``gemini-flash-lite-latest``）の場合は、
-    部分一致・キーワード推測で価格/上限を当て、正式名としてそのままの文字列を返す。
+    一致は「キー / 正式名 / エイリアス」の厳密一致、または候補との部分一致
+    （ model_key が候補を含む、または候補が model_key を含む）で行う。ただし
+    部分一致は **一意** に決まる場合のみ採用し、複数のモデルに曖昧にマッチする
+    入力（例: ``"gemini"``）は意図しないモデルへ推測させないよう未知として扱う。
 
     Returns:
         tuple: (model_info, model_name)
     """
-    # 1. 直接キー / name / aliases の完全一致
+    # 1. 直接キー / name / aliases の厳密一致（最優先）
     for key, info in model_config.items():
         aliases = info.get("aliases", [])
         if model_key == key or model_key == info.get("name") or model_key in aliases:
@@ -185,27 +187,19 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
             display_name = info["name"] if model_key in (key, info.get("name")) else model_key
             return info, display_name
 
-    # 2. 部分一致（aliases / name / key のいずれかが model_key を含む、または逆）
-    #    より長い候補からマッチさせ、短いキーワード（flash 等）による
-    #    過剰な一致（flash-lite → flash）を防ぐ
-    matched_info = None
+    # 2. 部分一致（一意に決まる場合のみ）。曖昧なら未知として扱う。
+    matched_key = None
     for key, info in model_config.items():
         candidates = [key, info.get("name", "")] + info.get("aliases", [])
-        candidates = sorted((c for c in candidates if c), key=len, reverse=True)
-        if any(model_key in c or c in model_key for c in candidates):
-            matched_info = info
-            break
+        if any(model_key in c or c in model_key for c in candidates if c):
+            if matched_key is not None:
+                # 複数モデルにマッチ → 曖昧なので解決しない
+                matched_key = None
+                break
+            matched_key = key
 
-    # 3. キーワードによる推測（flash-lite を flash より先に評価）
-    if not matched_info:
-        if "flash-lite" in model_key:
-            matched_info = model_config.get("flash-lite")
-        elif "flash" in model_key:
-            matched_info = model_config.get("flash")
-        elif "gemma" in model_key:
-            matched_info = model_config.get("gemma")
-
-    if matched_info:
+    if matched_key is not None:
+        matched_info = model_config[matched_key]
         return (
             {
                 "name": model_key,
@@ -216,7 +210,7 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
             model_key,
         )
 
-    # 4. それでも不明: コスト不明として扱う（高コストモデルを安価と誤認させない）
+    # 3. それでも不明: コスト不明として扱う（高コストモデルを安価と誤認させない）
     #    警告を stderr に出力し、コスト表示は「(不明)」となる
     print(
         f"Warning: Unknown model '{model_key}' not found in models.json; "
