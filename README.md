@@ -75,6 +75,25 @@ export DATABASE_URL="libsql://localhost:8080"
 uv run hw-genie --help
 ```
 
+#### Turso Embedded Replicas (Syncs) の利用
+
+`TURSO_SYNC_URL` を設定すると、ローカルの SQLite ファイルをリモート DB の
+**Embedded Replica (同期レプリカ)** として動作させられます。ローカルファイルへの
+読み書きは高速で、バックグラウンドでリモートと自動同期されます。
+
+```bash
+# ローカルレプリカの保存先（コンテナ内は /app/data がボリュームマウント済み）
+export DATABASE_URL="sqlite+libsql:///app/data/hw_genie.db"
+export TURSO_SYNC_URL="libsql://[your-db].turso.io"
+export TURSO_AUTH_TOKEN="[your-token]"
+export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可）
+```
+
+> **実装メモ**: `sqlalchemy-libsql` 0.2.0 の標準ダイアレクトはローカルファイル時に
+> `sync_url` 等を破棄してしまうため、`hw_genie/core/database.py` の
+> `TursoReplicaDialect` がこれらを `libsql_experimental.connect` へ転送します。
+> `sqlite+libsql://` スキームをそのまま利用できます。
+
 ### 認証方法
 
 #### 方法1: 手動 (curl コピー)

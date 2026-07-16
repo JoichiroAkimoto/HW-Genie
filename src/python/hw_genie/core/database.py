@@ -4,11 +4,88 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
 from sqlalchemy import create_engine
+from sqlalchemy import util
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
+from sqlalchemy.dialects import registry
+from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
 
 Base = declarative_base()
+
+
+class TursoReplicaDialect(SQLiteDialect_libsql):
+    """libSQL dialect with Embedded Replica (Syncs) support for local files.
+
+    ``sqlalchemy-libsql`` 0.2.0's stock dialect drops ``sync_url`` /
+    ``auth_token`` / ``sync_interval`` when the URL points at a local file
+    (it only forwards them in remote/ws mode), so the replica never syncs and
+    opens in plain "File mode". This subclass re-reads those parameters from the
+    URL query string and passes them straight to ``libsql_experimental.connect``,
+    which *does* support embedded replicas.
+    """
+
+    def create_connect_args(self, url):
+        pysqlite_args = (
+            ("uri", bool),
+            ("timeout", float),
+            ("isolation_level", str),
+            ("detect_types", int),
+            ("check_same_thread", bool),
+            ("cached_statements", int),
+            ("secure", bool),
+        )
+        opts = dict(url.query)
+        connect_args: dict = {}
+        for key, type_ in pysqlite_args:
+            util.coerce_kw_type(opts, key, type_, dest=connect_args)
+
+        if url.host:
+            # Remote (ws/wss) mode: keep stock behaviour.
+            connect_args["uri"] = True
+            filtered = {
+                k: v for k, v in opts.items() if k not in dict(pysqlite_args)
+            }
+            query_str = urllib.parse.urlencode(sorted(filtered.items()))
+            secure = connect_args.pop("secure", False)
+            scheme = "https" if secure else "http"
+            netloc = url.host
+            if url.port:
+                netloc += f":{url.port}"
+            connect_url = urllib.parse.urlunsplit(
+                (scheme, netloc, url.database or "", query_str, "")
+            )
+            return ([connect_url], connect_args)
+
+        # Local file: open as an embedded replica and forward sync params.
+        database = url.database or ":memory:"
+        if database != ":memory:":
+            database = os.path.abspath(database)
+        connect_url = database
+
+        sync_url = opts.get("sync_url")
+        if sync_url:
+            connect_args["sync_url"] = sync_url
+            auth_token = opts.get("auth_token")
+            if auth_token:
+                connect_args["auth_token"] = auth_token
+            sync_interval = opts.get("sync_interval")
+            if sync_interval:
+                try:
+                    connect_args["sync_interval"] = float(sync_interval)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Invalid sync_interval=%r ignored; using libSQL default.",
+                        sync_interval,
+                    )
+
+        connect_args.setdefault("check_same_thread", False)
+        return ([connect_url], connect_args)
+
+
+# Override the stock ``sqlite.libsql`` dialect so that ANY ``sqlite+libsql://``
+# URL (including the one built by build_database_config) gains replica support.
+registry.register("sqlite.libsql", __name__, "TursoReplicaDialect")
 
 
 class Account(Base):
@@ -128,7 +205,22 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     turso_auth_token = env.get("TURSO_AUTH_TOKEN")
     turso_sync_interval = env.get("TURSO_SYNC_INTERVAL")
 
-    if turso_sync_url:
+    # A remote libSQL URL (e.g. sqlite+libsql://host/db) cannot be turned into a
+    # local embedded replica, so TURSO_SYNC_URL is ignored in that case and the
+    # remote connection is used as-is.
+    # A relative local URL like ``sqlite://foo.db`` parses with hostname="foo.db"
+    # but an empty path; a real remote libSQL URL always carries a non-empty db
+    # path, so require both hostname AND path to avoid misclassifying relatives.
+    _parsed = urllib.parse.urlparse(db_url)
+    is_remote_libsql = bool(
+        turso_sync_url
+        and ("libsql" in db_url)
+        and _parsed.hostname
+        and _parsed.path
+    )
+    del _parsed
+
+    if turso_sync_url and not is_remote_libsql:
         # Determine the local database file path to act as the replica.
         # Use pathlib for OS-agnostic, robust path normalisation.
         if db_url.startswith(("sqlite+libsql:///", "sqlite:///")):
@@ -137,9 +229,14 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
             # the sqlite:/// scheme) in the path. Keep it as-is: an absolute
             # path like "/app/data/hw_genie.db" stays absolute, while a relative
             # path like "foo.db" is resolved against the current working dir by
-            # .absolute() below. Do NOT strip the leading slash, as that would
-            # turn an absolute path into a cwd-relative one.
+            # .absolute() below.
             local_path = Path(parsed.path or ".")
+        elif "libsql" in db_url or "sqlite" in db_url:
+            # Triple-slash でないローカル/相対指定 (例: sqlite+libsql://my.db,
+            # sqlite://my.db) の場合はユーザー指定のパスを尊重し、DEFAULT で
+            # 上書きしてデータ場所が意図せず変わるのを防ぐ。
+            parsed = urllib.parse.urlparse(db_url)
+            local_path = Path(parsed.path or DEFAULT_DB_PATH)
         else:
             local_path = Path(DEFAULT_DB_PATH)
 
@@ -148,28 +245,32 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
         # resolving relative-to-cwd paths. Handles Windows drive paths too.
         local_path = local_path.absolute()
 
-        # Force using sqlite+libsql dialect pointing to the local file.
-        # local_path is absolute (starts with "/"); strip that leading slash and
-        # prepend the scheme delimiter to yield exactly "sqlite+libsql:///abs/path".
-        db_url = f"sqlite+libsql:///{local_path.as_posix().lstrip('/')}"
-
-        # Setup the replica connection parameters
-        connect_args["sync_url"] = turso_sync_url
+        # Build a libSQL Embedded Replica URL pointing at the LOCAL file.
+        # The TursoReplicaDialect (registered for ``sqlite.libsql``) reads the
+        # sync_url/auth_token/sync_interval query parameters and forwards them to
+        # libsql_experimental.connect so the local file is opened as a synced
+        # replica rather than a plain "File mode" database.
+        # Normalise to exactly one leading slash so absolute paths render as
+        # "sqlite+libsql:////abs/path" (4 slashes) and relative paths as
+        # "sqlite+libsql:///rel/path" (3 slashes).
+        local_uri = "/" + local_path.as_posix().lstrip("/")
+        query = {"sync_url": turso_sync_url}
         if turso_auth_token:
-            connect_args["auth_token"] = turso_auth_token
-
+            query["auth_token"] = turso_auth_token
         if turso_sync_interval:
             try:
-                connect_args["sync_interval"] = float(turso_sync_interval)
+                query["sync_interval"] = str(float(turso_sync_interval))
             except (ValueError, TypeError):
                 logger.warning(
                     "Invalid TURSO_SYNC_INTERVAL=%r ignored; falling back to the "
                     "default sync interval.",
                     turso_sync_interval,
                 )
-
-        # Ensure check_same_thread is True for local-based replica
-        connect_args["check_same_thread"] = True
+        db_url = (
+            f"sqlite+libsql:///{local_uri}?"
+            f"{urllib.parse.urlencode(query)}"
+        )
+        connect_args["check_same_thread"] = False
 
     elif "libsql" in db_url:
         # URLに認証トークンが含まれている場合、sqlalchemy-libsql のバグ/制限を回避するため、
