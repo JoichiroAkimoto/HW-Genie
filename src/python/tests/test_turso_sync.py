@@ -175,6 +175,9 @@ def test_replica_dialect_forwards_sync_params():
     from sqlalchemy.engine.url import make_url
     from hw_genie.core.database import TursoReplicaDialect
 
+    # SQL compilation cache を有効にして SAWarning を抑止する
+    assert TursoReplicaDialect.supports_statement_cache is True
+
     dialect = TursoReplicaDialect()
     url = make_url(
         "sqlite+libsql:////tmp/replica.db"

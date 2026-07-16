@@ -26,6 +26,11 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
     which *does* support embedded replicas.
     """
 
+    # Enable SQLAlchemy's SQL compilation cache for this dialect (libSQL is
+    # safe to cache statements). Silences the "will not make use of SQL
+    # compilation caching" SAWarning emitted on every connection.
+    supports_statement_cache = True
+
     def create_connect_args(self, url):
         pysqlite_args = (
             ("uri", bool),
