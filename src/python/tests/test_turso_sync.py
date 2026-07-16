@@ -1,4 +1,6 @@
 import logging
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +11,7 @@ from hw_genie.core.database import build_database_config
 @pytest.fixture(autouse=True)
 def mock_no_env():
     # .env ファイルが存在しないと判定させて、実際の .env の読み込みを防ぐ
-    real_exists = __import__("os").path.exists
+    real_exists = os.path.exists
 
     def side_effect(path):
         if str(path).endswith(".env"):
@@ -44,16 +46,51 @@ def test_turso_sync_config_set():
     }
     db_url, connect_args = build_database_config(env)
 
-    # 接続先URLが sqlite+libsql:/// に変更されていることを確認
+    # 接続先URLが正確に sqlite+libsql:/// + 絶対パス になっていることを確認
+    # （余分なスラッシュや cwd 配下への誤った解決がないこと）
     url_str = str(db_url)
-    assert url_str.startswith("sqlite+libsql://")
-    assert "test_replica.db" in url_str
+    resolved = Path("test_replica.db").absolute()
+    assert url_str == f"sqlite+libsql:///{resolved.as_posix().lstrip('/')}"
+    assert "sqlite+libsql:////" not in url_str
 
     # connect_args に同期用パラメータが正しく渡されていることを確認
     assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
     assert connect_args.get("auth_token") == "my-mock-auth-token"
     assert connect_args.get("sync_interval") == 123.45
     assert connect_args.get("check_same_thread") is True
+
+
+def test_turso_sync_default_db_path():
+    """DATABASE_URL が未設定（デフォルト絶対パス）の場合、正しい絶対パスが使われる"""
+    # DATABASE_URL を明示的に与えない（デフォルト値 DEFAULT_DB_PATH が使われる）
+    env = {
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+    }
+    from hw_genie.core.database import DEFAULT_DB_PATH
+
+    db_url, connect_args = build_database_config(env)
+
+    url_str = str(db_url)
+    # デフォルトの絶対パスが正しく解決されていること（余分なスラッシュで cwd 配下になっていない）
+    resolved = Path(DEFAULT_DB_PATH).absolute()
+    assert url_str == f"sqlite+libsql:///{resolved.as_posix().lstrip('/')}"
+    assert "sqlite+libsql:////" not in url_str
+    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
+
+
+def test_turso_sync_libsql_url_input():
+    """DATABASE_URL にすでに sqlite+libsql:/// 形式の絶対パスが指定されている場合"""
+    env = {
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "DATABASE_URL": "sqlite+libsql:////tmp/existing_replica.db",
+    }
+    db_url, connect_args = build_database_config(env)
+
+    url_str = str(db_url)
+    assert url_str == "sqlite+libsql:///tmp/existing_replica.db"
+    assert "sqlite+libsql:////" not in url_str
+    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
 
 
 def test_turso_sync_invalid_interval():

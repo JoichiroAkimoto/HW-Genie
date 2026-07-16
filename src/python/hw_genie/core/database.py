@@ -118,16 +118,24 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, dict]
         # Use pathlib for OS-agnostic, robust path normalisation.
         if db_url.startswith(("sqlite+libsql:///", "sqlite:///")):
             parsed = urllib.parse.urlparse(db_url)
-            local_path = Path(parsed.path)
+            # urlparse keeps the URL's leading "/" (the authority delimiter of
+            # the sqlite:/// scheme) in the path. Strip exactly ONE leading
+            # slash so absolute paths resolve correctly; never strip more, as
+            # that would corrupt Windows drive paths (C:/...) or absolute paths.
+            path_str = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
+            local_path = Path(path_str or ".")
         else:
             local_path = Path(DEFAULT_DB_PATH)
 
-        # Normalise to an absolute path. urlparse leaves a leading "/" on POSIX
-        # absolute filesystem paths; resolve() also handles Windows drive paths.
-        local_path = local_path.resolve()
+        # Normalise to an absolute path. Use absolute() (not resolve()) so that
+        # symlink-based paths like /tmp stay as the user specified, while still
+        # resolving relative-to-cwd paths. Handles Windows drive paths too.
+        local_path = local_path.absolute()
 
-        # Force using sqlite+libsql dialect pointing to the local file
-        db_url = f"sqlite+libsql:///{local_path}"
+        # Force using sqlite+libsql dialect pointing to the local file.
+        # local_path is absolute (starts with "/"); strip that leading slash and
+        # prepend the scheme delimiter to yield exactly "sqlite+libsql:///abs/path".
+        db_url = f"sqlite+libsql:///{local_path.as_posix().lstrip('/')}"
 
         # Setup the replica connection parameters
         connect_args["sync_url"] = turso_sync_url
@@ -189,10 +197,15 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 def init_db():
     # データベースファイルのディレクトリが存在することを確認
-    if str(db_url).startswith("sqlite:///") or str(db_url).startswith("sqlite+libsql:///"):
-        db_path = str(db_url).split("///", 1)[1]
-        if not db_path.startswith(":memory:"):
-            db_dir = os.path.dirname(os.path.abspath(db_path))
-            if not os.path.exists(db_dir):
-                os.makedirs(db_dir, exist_ok=True)
+    url_str = str(db_url)
+    if ":memory:" in url_str:
+        Base.metadata.create_all(engine)
+        return
+    if url_str.startswith(("sqlite:///", "sqlite+libsql:///")):
+        parsed = urllib.parse.urlparse(url_str)
+        # Strip exactly one leading "/" (the scheme authority delimiter).
+        db_path = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
     Base.metadata.create_all(engine)
