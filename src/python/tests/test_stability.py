@@ -18,17 +18,17 @@ def repo():
         )
         Base.metadata.create_all(engine)
 
-        # Override SessionLocal for the repository instance
+        # Override get_session_local for the repository instance
         import hw_genie.core.repository as repo_mod
 
-        original_session_local = repo_mod.SessionLocal
-        repo_mod.SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        original_get_session_local = repo_mod.get_session_local
+        repo_mod.get_session_local = lambda: sessionmaker(bind=engine, expire_on_commit=False)
 
         repository = SessionRepository()
         yield repository
 
-        # Restore original SessionLocal
-        repo_mod.SessionLocal = original_session_local
+        # Restore original get_session_local
+        repo_mod.get_session_local = original_get_session_local
 
 
 def test_invalid_config_key(repo):

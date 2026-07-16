@@ -8,6 +8,12 @@ services:
       # SQLite (default): sqlite:////app/data/hw_genie.db
       # libSQL (Turso): sqlite+libsql://[your-db].turso.io/?auth_token=[your-token]&secure=true
       - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
+      # Turso Embedded Replicas (Syncs): set DATABASE_URL to a local file
+      # (e.g. sqlite:////app/data/hw_genie.db) and provide the values below to
+      # enable local-replica sync. When unset, sync is disabled.
+      - TURSO_SYNC_URL=${TURSO_SYNC_URL:-}
+      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
+      - TURSO_SYNC_INTERVAL=${TURSO_SYNC_INTERVAL:-}
       - HW_GENIE_AUTH_PORT=8765
       - HW_GENIE_AUTH_HOST=0.0.0.0
     volumes:

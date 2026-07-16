@@ -1,5 +1,5 @@
 from typing import Any, Dict, List
-from .database import SessionLocal, Account, AccountConfig
+from .database import Account, AccountConfig, get_session_local
 
 
 class SessionRepository:
@@ -13,7 +13,7 @@ class SessionRepository:
         Returns:
             Dict[str, Any]: A dictionary containing merged account data.
         """
-        with SessionLocal() as db:
+        with get_session_local()() as db:
             account_rec = db.query(Account).filter(Account.alias == account).first()
             if not account_rec:
                 return {}
@@ -65,7 +65,7 @@ class SessionRepository:
 
     def list_accounts(self) -> List[str]:
         """Returns a list of all account aliases."""
-        with SessionLocal() as db:
+        with get_session_local()() as db:
             records = db.query(Account.alias).all()
             return [r.alias for r in records]
 
@@ -81,7 +81,7 @@ class SessionRepository:
             account (str): The account alias.
             data (Dict[str, Any]): The data to save.
         """
-        with SessionLocal() as db:
+        with get_session_local()() as db:
             try:
                 # 1. Update/Create Account
                 player = data.get("player")

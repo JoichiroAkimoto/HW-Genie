@@ -12,14 +12,21 @@ def setup_db():
     """
     test_engine = create_engine("sqlite:///:memory:")
     test_SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
-    
-    # database モジュールの変数を一時的に差し替え
-    with patch("hw_genie.core.database.engine", test_engine), \
+
+    def _get_test_engine():
+        return test_engine
+
+    def _get_test_session_local():
+        return test_SessionLocal
+
+    # 遅延初期化された engine / SessionLocal をテスト用に差し替える。
+    # database と repository 双方の getter を差し替えることで、
+    # 本番DBへの影響を完全に遮断する。
+    with patch("hw_genie.core.database.get_engine", _get_test_engine), \
+         patch("hw_genie.core.database.get_session_local", _get_test_session_local), \
+         patch("hw_genie.core.database.engine", test_engine), \
          patch("hw_genie.core.database.SessionLocal", test_SessionLocal):
-        
-        # リポジトリ内でのインポート先も差し替える必要があるため、
-        # 確実に反映されるように patch を重ねる
-        with patch("hw_genie.core.repository.SessionLocal", test_SessionLocal):
+        with patch("hw_genie.core.repository.get_session_local", _get_test_session_local):
             Base.metadata.create_all(test_engine)
             yield
             Base.metadata.drop_all(test_engine)
