@@ -330,3 +330,195 @@ def test_windows_drive_path_builds_replica_url():
     assert db_url.startswith("sqlite+libsql:////C:/Users/me/data/hw_genie.db?")
     assert "sync_url=" in db_url
     assert connect_args.get("check_same_thread") is False
+
+
+def test_create_connect_args_sets_replica_mode_flag():
+    """Replica URL (sync_url 付き) は on_connect で sync() されるようフラグが立つ。"""
+    from sqlalchemy.engine.url import make_url
+
+    from hw_genie.core.database import (
+        TursoReplicaDialect,
+        _is_replica_mode,
+        _mark_replica_mode,
+    )
+
+    _mark_replica_mode(False)
+    dialect = TursoReplicaDialect()
+    url = make_url(
+        "sqlite+libsql:////tmp/replica.db"
+        "?sync_url=libsql://db.turso.io&auth_token=secret"
+    )
+    dialect.create_connect_args(url)
+    assert _is_replica_mode() is True
+
+
+def test_create_connect_args_clears_replica_mode_for_remote():
+    """Remote (ws) URL は replica フラグが立たない。"""
+    from sqlalchemy.engine.url import make_url
+
+    from hw_genie.core.database import (
+        TursoReplicaDialect,
+        _is_replica_mode,
+        _mark_replica_mode,
+    )
+
+    _mark_replica_mode(True)
+    dialect = TursoReplicaDialect()
+    url = make_url("sqlite+libsql://db.turso.io/my-db?auth_token=secret")
+    dialect.create_connect_args(url)
+    assert _is_replica_mode() is False
+
+
+def test_on_connect_syncs_replica_when_enabled(monkeypatch):
+    """replica モードで on_connect が conn.sync() を呼ぶ（デフォルト有効）。"""
+    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+
+    _mark_replica_mode(True)
+    calls = []
+
+    class FakeLibsqlConn:
+        def sync(self):
+            calls.append("sync")
+
+    # import_dbapi 経由で Connection 型を差し替え
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    # super().on_connect() は None を返す想定
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    dialect = TursoReplicaDialect()
+    hook = dialect.on_connect()
+    hook(FakeLibsqlConn())
+    assert calls == ["sync"]
+
+
+def test_on_connect_skips_sync_when_disabled(monkeypatch):
+    """TURSO_SYNC_ON_CONNECT=false なら sync() は呼ばれない。"""
+    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+
+    _mark_replica_mode(True)
+    monkeypatch.setenv("TURSO_SYNC_ON_CONNECT", "false")
+    calls = []
+
+    class FakeLibsqlConn:
+        def sync(self):
+            calls.append("sync")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    dialect = TursoReplicaDialect()
+    hook = dialect.on_connect()
+    hook(FakeLibsqlConn())
+    assert calls == []
+
+
+def test_on_connect_skips_sync_for_non_replica(monkeypatch):
+    """replica フラグが無い場合は sync() を呼ばない。"""
+    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+
+    _mark_replica_mode(False)
+    calls = []
+
+    class FakeLibsqlConn:
+        def sync(self):
+            calls.append("sync")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    dialect = TursoReplicaDialect()
+    hook = dialect.on_connect()
+    hook(FakeLibsqlConn())
+    assert calls == []
+
+
+def test_build_write_config_falls_back_to_replica_when_remote_off():
+    """TURSO_WRITE_REMOTE 未設定時は write 設定 = 通常(レプリカ)設定。"""
+    from hw_genie.core.database import build_write_database_config
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+    }
+    write_url, write_args = build_write_database_config(env)
+    read_url, read_args = build_database_config(env)
+    assert write_url == read_url
+    assert write_args == read_args
+
+
+def test_build_write_config_remote_direct_when_enabled():
+    """TURSO_WRITE_REMOTE=true 時は write 設定がリモート直接接続になる。"""
+    from hw_genie.core.database import build_write_database_config
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_WRITE_REMOTE": "true",
+    }
+    write_url, write_args = build_write_database_config(env)
+    # リモート直接接続 (sqlite+libsql://host/) になり、sync_url は付かない
+    assert write_url.startswith("sqlite+libsql://my-test-db.turso.io/")
+    assert "sync_url" not in write_url
+    assert write_args.get("auth_token") == "my-mock-auth-token"
+
+
+def test_get_write_session_local_reuses_read_when_remote_off(monkeypatch):
+    """remote-off 時、get_write_session_local は read セッションと同一。"""
+    from hw_genie.core.database import get_session_local, get_write_session_local
+
+    monkeypatch.setenv("TURSO_WRITE_REMOTE", "false")
+    # キャッシュをリセット
+    import hw_genie.core.database as db
+
+    db._write_engine = None
+    db._WriteSessionLocal = None
+    db._engine = None
+    db._SessionLocal = None
+
+    assert get_write_session_local() is get_session_local()
+
+
+def test_get_write_session_local_remote_uses_separate_engine(monkeypatch):
+    """remote-on 時、get_write_session_local は read とは別エンジンを返す。"""
+    from sqlalchemy import create_engine as sa_create
+    from sqlalchemy.pool import StaticPool
+
+    from hw_genie.core.database import get_session_local, get_write_session_local
+    import hw_genie.core.database as db
+
+    db._write_engine = None
+    db._WriteSessionLocal = None
+
+    monkeypatch.setenv("TURSO_WRITE_REMOTE", "true")
+    monkeypatch.setenv("TURSO_SYNC_URL", "libsql://my-test-db.turso.io")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "my-mock-auth-token")
+
+    # read エンジンは in-memory に差し替え、write は別 in-memory プールで構築されること
+    db._engine = sa_create(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    write_session = get_write_session_local()
+    assert write_session is not get_session_local()
+    # 別エンジンでもセッションは生成できる
+    s = write_session()
+    s.close()

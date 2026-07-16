@@ -87,13 +87,35 @@ uv run hw-genie --help
 export DATABASE_URL="sqlite+libsql:///./data/hw_genie.db"
 export TURSO_SYNC_URL="libsql://[your-db].turso.io"
 export TURSO_AUTH_TOKEN="[your-token]"
-export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可）
+export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可)
+# 接続ごとに明示的に sync() する (デフォルト true)。短時間のCLIコマンド
+# (auth --list 等) は接続直後にクエリを投げるため、バックグラウンド同期が
+# 完了する前に古いデータを読むのを防ぎます。常駐コンテナでは false にして
+# sync_interval 任せにする方が効率的です。
+export TURSO_SYNC_ON_CONNECT="true"
+# 複数端末から書き込む場合は、write をリモートプライマリに直接行うよう推奨。
+# 各端末のローカルレプリカ同士で書き込み競合するのを防ぐ。
+export TURSO_WRITE_REMOTE="true"
 ```
 
 > **実装メモ**: `sqlalchemy-libsql` 0.2.0 の標準ダイアレクトはローカルファイル時に
 > `sync_url` 等を破棄してしまうため、`hw_genie/core/database.py` の
 > `TursoReplicaDialect` がこれらを `libsql_experimental.connect` へ転送します。
 > `sqlite+libsql://` スキームをそのまま利用できます。
+>
+> **接続時同期の重要性**: バックグラウンド同期 (`sync_interval`) はプロセスが
+> 生存している間しか動きません。`auth --list` のような短時間コマンドは接続直後に
+> クエリを投げるため、同期完了前に古いローカルレプリカを読む可能性があります。
+> `TURSO_SYNC_ON_CONNECT=true` (既定) にすると、レプリカ接続のたびに
+> `conn.sync()` をブロック実行し、必ず最新状態を読み込みます。他端末で書いた
+> 変更を即座に反映したい場合はこの設定を有効にしてください。
+>
+> **書き込みはリモート直接 (`TURSO_WRITE_REMOTE=true`)**: 複数端末から書き込む構成では、
+> 各端末のローカルレプリカがそれぞれリモートへ push し競合する恐れがあります。
+> `TURSO_WRITE_REMOTE=true` にすると、`SessionRepository` の書き込み系メソッド
+> (`update_config` 等) はローカルレプリカではなく**リモートプライマリへ直接**書き込みます。
+> 読み取りは引き続きローカルレプリカ (`TURSO_SYNC_ON_CONNECT` で最新化) を使用するため、
+> 端末間で一貫性が保たれます。未設定時は読み書きとも従来のレプリカ経由で動作します。
 >
 > **パス指定**: `DATABASE_URL` のローカルファイルパスは以下の通り解決されます。
 > - `sqlite+libsql:///./data/hw_genie.db` → `PKG_ROOT/data/hw_genie.db`（相対・推奨）

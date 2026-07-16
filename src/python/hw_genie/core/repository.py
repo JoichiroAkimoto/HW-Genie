@@ -1,15 +1,23 @@
 from typing import Any, Dict, List
-from .database import Account, AccountConfig, get_session_local
+from .database import (
+    Account,
+    AccountConfig,
+    get_session_local,
+    get_write_session_local,
+)
 
 
 class SessionRepository:
     def get_data(self, account: str) -> Dict[str, Any]:
         """
         Retrieves all data for an account, merging info from Account and AccountConfig tables.
-        
+
+        Reads use the (local replica) session: with TURSO_SYNC_ON_CONNECT the
+        replica pulls the latest from the remote before querying.
+
         Args:
             account (str): The account alias.
-            
+
         Returns:
             Dict[str, Any]: A dictionary containing merged account data.
         """
@@ -81,7 +89,7 @@ class SessionRepository:
             account (str): The account alias.
             data (Dict[str, Any]): The data to save.
         """
-        with get_session_local()() as db:
+        with get_write_session_local()() as db:
             try:
                 # 1. Update/Create Account
                 player = data.get("player")

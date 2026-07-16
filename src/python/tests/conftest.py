@@ -30,6 +30,12 @@ def setup_db():
             Base.metadata.create_all(test_engine)
             yield
             Base.metadata.drop_all(test_engine)
+            # モジュールレベルのエンジンキャッシュをクリアし、本番DBや
+            # 前のテストのエンジンが残らないようにする。
+            import hw_genie.core.database as _db
+
+            for _attr in ("_engine", "_SessionLocal", "_write_engine", "_WriteSessionLocal"):
+                setattr(_db, _attr, None)
 
 @pytest.fixture
 def mock_client():
