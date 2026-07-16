@@ -319,6 +319,11 @@ def main():
     if getattr(args, "debug", False):
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
 
+    # Mask Turso auth tokens that may appear in logged DB connection URLs.
+    from hw_genie.core.database import install_token_masking_filter
+
+    install_token_masking_filter()
+
     try:
         # Ensure DB tables exist
         init_db()

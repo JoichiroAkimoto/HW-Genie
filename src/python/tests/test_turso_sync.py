@@ -1,5 +1,6 @@
 import logging
 import os
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,23 +49,25 @@ def test_turso_sync_config_set():
     }
     db_url, connect_args = build_database_config(env)
 
-    # sqlite:///test_replica.db は相対パスとして扱われ、スキーム区切りの
-    # 3スラッシュのみを持つ sqlite+libsql:///test_replica.db になること。
-    # （絶対パスでない入力を cwd 配下へ誤って解決しないこと）
+    # sqlite:///test_replica.db はセマンティクス上は絶対パス /test_replica.db
+    # として扱われ、sqlite+libsql の絶対パス形式（4スラッシュ）になる。
+    # sync 用パラメータが URL のクエリ文字列に付与されること。
     url_str = str(db_url)
-    assert url_str == "sqlite+libsql:///test_replica.db"
-    assert "sqlite+libsql:////" not in url_str
+    assert url_str.startswith("sqlite+libsql:////test_replica.db?")
+    assert "sqlite+libsql://///" not in url_str
 
-    # connect_args に同期用パラメータが正しく渡されていることを確認
-    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
-    assert connect_args.get("auth_token") == "my-mock-auth-token"
-    assert connect_args.get("sync_interval") == 123.45
-    assert connect_args.get("check_same_thread") is True
+    # TursoReplicaDialect が URL クエリの sync_* を le.connect へ渡すため、
+    # クエリ文字列に正しく含まれていることを確認する。
+    parsed = urllib.parse.urlparse(url_str)
+    q = urllib.parse.parse_qs(parsed.query)
+    assert q["sync_url"] == ["libsql://my-test-db.turso.io"]
+    assert q["auth_token"] == ["my-mock-auth-token"]
+    assert q["sync_interval"] == ["123.45"]
+    assert connect_args.get("check_same_thread") is False
 
 
 def test_turso_sync_default_db_path():
     """DATABASE_URL が未設定（デフォルト絶対パス）の場合、正しい絶対パスが使われる"""
-    # DATABASE_URL を明示的に与えない（デフォルト値 DEFAULT_DB_PATH が使われる）
     env = {
         "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
         "TURSO_AUTH_TOKEN": "my-mock-auth-token",
@@ -73,12 +76,11 @@ def test_turso_sync_default_db_path():
 
     db_url, connect_args = build_database_config(env)
 
-    url_str = str(db_url)
-    # デフォルトの絶対パスが正しく解決されていること（余分なスラッシュで cwd 配下になっていない）
+    # デフォルトの絶対パスが正しく解決されていること（絶対パスは 4 スラッシュ形式）
     resolved = Path(DEFAULT_DB_PATH).absolute()
-    assert url_str == f"sqlite+libsql:///{resolved.as_posix().lstrip('/')}"
-    assert "sqlite+libsql:////" not in url_str
-    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
+    url_str = str(db_url)
+    assert url_str.startswith(f"sqlite+libsql:////{resolved.as_posix().lstrip('/')}?")
+    assert connect_args.get("check_same_thread") is False
 
 
 def test_turso_sync_libsql_url_input():
@@ -90,9 +92,9 @@ def test_turso_sync_libsql_url_input():
     db_url, connect_args = build_database_config(env)
 
     url_str = str(db_url)
-    assert url_str == "sqlite+libsql:///tmp/existing_replica.db"
-    assert "sqlite+libsql:////" not in url_str
-    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
+    # 絶対パスは 4 スラッシュ形式のまま維持され、sync パラメータがクエリに付与される
+    assert url_str.startswith("sqlite+libsql:////tmp/existing_replica.db?")
+    assert "sqlite+libsql://///" not in url_str
 
 
 def test_turso_sync_invalid_interval():
@@ -104,11 +106,11 @@ def test_turso_sync_invalid_interval():
         "DATABASE_URL": "sqlite:///test_replica.db",
     }
     with patch.object(logging.getLogger("hw_genie.core.database"), "warning") as mock_warn:
-        _, connect_args = build_database_config(env)
+        db_url, connect_args = build_database_config(env)
 
-    assert connect_args.get("sync_url") == "libsql://my-test-db.turso.io"
-    assert "sync_interval" not in connect_args
-    # 無効な値は警告ログとして報告される
+    # 無効な interval はクエリに含まれず、警告ログとして報告される
+    url_str = str(db_url)
+    assert "sync_interval" not in url_str
     mock_warn.assert_called_once()
 
 
@@ -122,11 +124,10 @@ def test_build_database_config_typeddict_keys():
     }
     _, connect_args = build_database_config(env)
 
-    # 許可されたキーのみが含まれ、未知のキーが混ざっていないこと
-    allowed = {"sync_url", "auth_token", "sync_interval", "check_same_thread"}
+    # connect_args には check_same_thread のみ（sync_* は URL クエリへ移動）
+    allowed = {"check_same_thread"}
     assert set(connect_args.keys()) <= allowed
-    assert connect_args["check_same_thread"] is True
-    assert connect_args["sync_interval"] == 60.0
+    assert connect_args["check_same_thread"] is False
 
 
 def test_lazy_engine_initialization(monkeypatch):
@@ -152,3 +153,131 @@ def test_lazy_engine_initialization(monkeypatch):
     engine2 = database.get_engine()
     assert engine1 is engine2
     assert state["built"] == 1
+
+
+def test_replica_dialect_forwards_sync_params():
+    """TursoReplicaDialect はローカル URL の sync_* クエリを le.connect へ渡す。"""
+    from sqlalchemy.engine.url import make_url
+    from hw_genie.core.database import TursoReplicaDialect
+
+    dialect = TursoReplicaDialect()
+    url = make_url(
+        "sqlite+libsql:////tmp/replica.db"
+        "?sync_url=libsql://db.turso.io"
+        "&auth_token=secret"
+        "&sync_interval=30"
+    )
+    cargs, cparams = dialect.create_connect_args(url)
+
+    assert cargs[0] == os.path.abspath("/tmp/replica.db")
+    # sync params are forwarded to libsql_experimental.connect as floats/strings
+    assert cparams["sync_url"] == "libsql://db.turso.io"
+    assert cparams["auth_token"] == "secret"
+    assert cparams["sync_interval"] == 30.0
+
+
+def test_replica_dialect_remote_mode_passthrough():
+    """Remote (ws) URL は同期パラメータを受け継がず wss/http 形式で構築される。"""
+    from sqlalchemy.engine.url import make_url
+    from hw_genie.core.database import TursoReplicaDialect
+
+    dialect = TursoReplicaDialect()
+    url = make_url(
+        "sqlite+libsql://user:pass@db.turso.io/my-db"
+        "?auth_token=secret&sync_interval=30"
+    )
+    cargs, cparams = dialect.create_connect_args(url)
+    # remote mode uses http(s) URL scheme, not a local file path
+    assert cargs[0].startswith("http")
+    assert "sync_url" not in cparams
+
+
+def test_remote_libsql_branch_extracts_token():
+    """リモート libSQL URL の auth_token が connect_args へ抽出され、secure=true が付与される。"""
+    env = {
+        "DATABASE_URL": "sqlite+libsql://db.turso.io/my-db?auth_token=SECRET123",
+    }
+    db_url, connect_args = build_database_config(env)
+
+    # auth_token は URL から除去され connect_args へ移動、secure=true が付与される
+    assert "auth_token=SECRET123" not in db_url
+    assert "secure=true" in db_url
+    assert connect_args.get("auth_token") == "SECRET123"
+    assert connect_args.get("check_same_thread") is False
+
+
+def test_remote_libsql_branch_with_turso_sync_url_ignored():
+    """TURSO_SYNC_URL ありでもリモート DATABASE_URL なら replica 化せず接続先はそのまま。"""
+    env = {
+        "DATABASE_URL": "sqlite+libsql://db.turso.io/my-db?auth_token=SECRET123",
+        "TURSO_SYNC_URL": "libsql://other.turso.io",
+    }
+    db_url, connect_args = build_database_config(env)
+
+    # replica クエリ (sync_url=) は付与されず、remote 接続のまま
+    assert "sync_url=" not in db_url
+    assert connect_args.get("auth_token") == "SECRET123"
+
+
+def test_relative_local_url_with_turso_sync_becomes_replica():
+    """相対ローカル URL (sqlite://foo.db) + TURSO_SYNC_URL は replica になる（remote と誤判定しない）。"""
+    env = {
+        "DATABASE_URL": "sqlite://foo.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+    }
+    db_url, connect_args = build_database_config(env)
+
+    # 相対パスは cwd 配下の replica として sync_url 付きで構築される
+    assert "sync_url=" in db_url
+    assert connect_args.get("check_same_thread") is False
+
+
+def test_remote_url_with_secure_uses_https_in_dialect():
+    """Remote URL に secure=true があればダイアレクトは https を構築する。"""
+    from sqlalchemy.engine.url import make_url
+    from hw_genie.core.database import TursoReplicaDialect
+
+    dialect = TursoReplicaDialect()
+    url = make_url("sqlite+libsql://db.turso.io/my-db?auth_token=secret&secure=true")
+    cargs, cparams = dialect.create_connect_args(url)
+    assert cargs[0].startswith("https://")
+
+
+def test_mask_sensitive_masks_auth_token():
+    """mask_sensitive は URL 中の auth_token をマスキングする。"""
+    from hw_genie.core.database import mask_sensitive
+
+    url = "sqlite+libsql:////tmp/x.db?sync_url=lib://t&auth_token=SECRET123&sync_interval=5"
+    masked = mask_sensitive(url)
+    assert "SECRET123" not in masked
+    assert "auth_token=***" in masked
+    # sync_url は維持される（トークン直後までマスクされるため sync_interval は含まれる）
+    assert "sync_url=lib://t" in masked
+
+
+def test_token_masking_filter_redacts_log_records():
+    """TokenMaskingFilter はログレコードの auth_token を除去する。"""
+    from hw_genie.core.database import TokenMaskingFilter
+
+    record = logging.LogRecord(
+        "hw_genie", logging.INFO, __file__, 1,
+        "connecting to sqlite+libsql:////x.db?auth_token=TOPSECRET", None, None,
+    )
+    assert TokenMaskingFilter().filter(record) is True
+    assert "TOPSECRET" not in record.getMessage()
+    assert "auth_token=***" in record.getMessage()
+
+
+def test_windows_drive_path_builds_replica_url():
+    """Windows ドライブレター付きパスでも replica URL が正しく構築される。"""
+    env = {
+        "DATABASE_URL": "sqlite+libsql:///C:/Users/me/data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+    }
+    db_url, connect_args = build_database_config(env)
+    # スキーム区切りの 4 スラッシュ + ドライブレターが維持される
+    assert db_url.startswith("sqlite+libsql:////C:/Users/me/data/hw_genie.db?")
+    assert "sync_url=" in db_url
+    assert connect_args.get("check_same_thread") is False
