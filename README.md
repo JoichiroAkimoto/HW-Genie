@@ -82,8 +82,9 @@ uv run hw-genie --help
 読み書きは高速で、バックグラウンドでリモートと自動同期されます。
 
 ```bash
-# ローカルレプリカの保存先（コンテナ内は /app/data がボリュームマウント済み）
-export DATABASE_URL="sqlite+libsql:///app/data/hw_genie.db"
+# ローカルレプリカの保存先。"./" 付きの相対パスはプロジェクトルート(PKG_ROOT)基準で
+# 解決されるため、コンテナ(/app/data)とホスト(リポジトリの data/)で同じ .env が使える。
+export DATABASE_URL="sqlite+libsql:///./data/hw_genie.db"
 export TURSO_SYNC_URL="libsql://[your-db].turso.io"
 export TURSO_AUTH_TOKEN="[your-token]"
 export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可）
@@ -93,6 +94,11 @@ export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可）
 > `sync_url` 等を破棄してしまうため、`hw_genie/core/database.py` の
 > `TursoReplicaDialect` がこれらを `libsql_experimental.connect` へ転送します。
 > `sqlite+libsql://` スキームをそのまま利用できます。
+>
+> **パス指定**: `DATABASE_URL` のローカルファイルパスは以下の通り解決されます。
+> - `sqlite+libsql:///./data/hw_genie.db` → `PKG_ROOT/data/hw_genie.db`（相対・推奨）
+> - `sqlite+libsql:////abs/path.db` （4スラッシュ）→ そのまま絶対パス
+> - `sqlite+libsql:///data/hw_genie.db` （3スラッシュ, `./` なし）→ リテラル絶対パス `/data/...`
 
 ### 認証方法
 

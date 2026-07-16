@@ -40,5 +40,8 @@ COPY src/python/hw_genie ./hw_genie
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+# Prefer the copied source at /app/hw_genie over the installed site-packages copy
+# so that PKG_ROOT (used to resolve ./data relative paths) points at /app.
+ENV PYTHONPATH=/app
 
 CMD ["hw-genie", "auth-server"]

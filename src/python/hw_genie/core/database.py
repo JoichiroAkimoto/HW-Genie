@@ -191,10 +191,34 @@ class AccountConfig(Base):
     # Using a unique constraint on (account_id, config_key) to ensure Key-Value uniqueness per account
 
 
-# プロジェクトルートの絶対パスを基点に DB パスを確定させる
-# 現在: src/python/hw_genie/core/database.py
-# 1: core, 2: hw_genie, 3: python, 4: src, 5: プロジェクトルート
-PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+# プロジェクトルートの絶対パスを基点に DB パスを確定させる。
+# 開発環境では src/python/hw_genie/core/database.py、コンテナでは
+# /app/hw_genie/core/database.py のようにネスト深さが異なるため、固定の
+# ".." 数ではなく「hw_genie パッケージを直接含むディレクトリ」を探索する。
+def _find_pkg_root(start: str) -> str:
+    current = os.path.dirname(os.path.abspath(start))
+    # プロジェクトルートを特定する。
+    # 1) .git がある階層（開発環境のリポジトリルート）を優先。
+    # 2) .git が無い環境（コンテナ等）は、hw_genie パッケージを直接含む階層
+    #    (/app 等) をルートとする。
+    # 開発環境(src/python/hw_genie/...)でもコンテナ(/app/hw_genie/...)でも
+    # data/ や .env の位置が正しく解決される。
+    while True:
+        if os.path.isdir(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            # ルートまで到達しても .git が無い場合は、hw_genie パッケージの
+            # 親ディレクトリ（/app など）を返す。
+            # start = .../hw_genie/core/database.py -> 3 階層上がパッケージの親。
+            pkg_parent = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(start)))
+            )
+            return pkg_parent
+        current = parent
+
+
+PKG_ROOT = _find_pkg_root(__file__)
 
 # .env ファイルが存在する場合は環境変数にロードする
 env_path = os.path.join(PKG_ROOT, ".env")
@@ -275,11 +299,18 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
         if db_url.startswith(("sqlite+libsql:///", "sqlite:///")):
             parsed = urllib.parse.urlparse(db_url)
             # urlparse keeps the URL's leading "/" (the authority delimiter of
-            # the sqlite:/// scheme) in the path. Keep it as-is: an absolute
-            # path like "/app/data/hw_genie.db" stays absolute, while a relative
-            # path like "foo.db" is resolved against the current working dir by
-            # .absolute() below.
-            local_path = Path(parsed.path or ".")
+            # the sqlite:/// scheme) in the path. A leading "./" marks a path
+            # *relative to the project root* (PKG_ROOT): this lets the same
+            # .env work both inside the Docker container (PKG_ROOT=/app ->
+            # /app/data) and on a host machine (PKG_ROOT=<repo root> ->
+            # <repo>/data). Any other (absolute) path is used verbatim; an
+            # explicit absolute path may also use the 4-slash form
+            # (sqlite+libsql:////abs/path).
+            path_str = parsed.path or "."
+            if path_str.startswith("/."):
+                local_path = Path(PKG_ROOT) / path_str[2:].lstrip("/")
+            else:
+                local_path = Path(path_str)
         elif "libsql" in db_url or "sqlite" in db_url:
             # Triple-slash でないローカル/相対指定 (例: sqlite+libsql://my.db,
             # sqlite://my.db) の場合はユーザー指定のパスを尊重し、DEFAULT で

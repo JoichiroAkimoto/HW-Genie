@@ -45,15 +45,17 @@ def test_turso_sync_config_set():
         "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
         "TURSO_AUTH_TOKEN": "my-mock-auth-token",
         "TURSO_SYNC_INTERVAL": "123.45",
-        "DATABASE_URL": "sqlite:///test_replica.db",
+        "DATABASE_URL": "sqlite:///./test_replica.db",
     }
     db_url, connect_args = build_database_config(env)
 
-    # sqlite:///test_replica.db はセマンティクス上は絶対パス /test_replica.db
-    # として扱われ、sqlite+libsql の絶対パス形式（4スラッシュ）になる。
-    # sync 用パラメータが URL のクエリ文字列に付与されること。
+    # ./ 付きの相対パスは PKG_ROOT 基準に解決され、sqlite+libsql の絶対パス形式
+    # （4スラッシュ）になる。sync 用パラメータが URL のクエリ文字列に付与されること。
     url_str = str(db_url)
-    assert url_str.startswith("sqlite+libsql:////test_replica.db?")
+    from hw_genie.core.database import PKG_ROOT
+
+    expected = f"sqlite+libsql:////{Path(PKG_ROOT).joinpath('test_replica.db').as_posix().lstrip('/')}?"
+    assert url_str.startswith(expected)
     assert "sqlite+libsql://///" not in url_str
 
     # TursoReplicaDialect が URL クエリの sync_* を le.connect へ渡すため、
@@ -64,6 +66,19 @@ def test_turso_sync_config_set():
     assert q["auth_token"] == ["my-mock-auth-token"]
     assert q["sync_interval"] == ["123.45"]
     assert connect_args.get("check_same_thread") is False
+
+
+def test_turso_sync_relative_path_resolves_to_pkg_root():
+    """./ 付き相対パスは PKG_ROOT 基準で解決される（コンテナ/ホスト共通 .env 用）。"""
+    from hw_genie.core.database import PKG_ROOT
+
+    env = {
+        "DATABASE_URL": "sqlite+libsql:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+    }
+    db_url, _ = build_database_config(env)
+    expected = f"sqlite+libsql:////{Path(PKG_ROOT).joinpath('data/hw_genie.db').as_posix().lstrip('/')}?"
+    assert str(db_url).startswith(expected)
 
 
 def test_turso_sync_default_db_path():
@@ -301,14 +316,14 @@ def test_install_token_masking_filter_masks_child_logger():
 
 
 def test_windows_drive_path_builds_replica_url():
-    """Windows ドライブレター付きパスでも replica URL が正しく構築される。"""
+    """Windows ドライブレター付き絶対パス（4スラッシュ形式）はそのまま維持される。"""
     env = {
-        "DATABASE_URL": "sqlite+libsql:///C:/Users/me/data/hw_genie.db",
+        "DATABASE_URL": "sqlite+libsql:////C:/Users/me/data/hw_genie.db",
         "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
         "TURSO_AUTH_TOKEN": "my-mock-auth-token",
     }
     db_url, connect_args = build_database_config(env)
-    # スキーム区切りの 4 スラッシュ + ドライブレターが維持される
+    # 4 スラッシュの絶対パス（ドライブレター付き）はそのまま維持される
     assert db_url.startswith("sqlite+libsql:////C:/Users/me/data/hw_genie.db?")
     assert "sync_url=" in db_url
     assert connect_args.get("check_same_thread") is False
