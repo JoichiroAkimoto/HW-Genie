@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
@@ -86,6 +87,43 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
 # Override the stock ``sqlite.libsql`` dialect so that ANY ``sqlite+libsql://``
 # URL (including the one built by build_database_config) gains replica support.
 registry.register("sqlite.libsql", __name__, "TursoReplicaDialect")
+
+
+# Matches an auth_token (or authToken) query parameter anywhere in a logged
+# string (e.g. a SQLAlchemy connection URL) so it can be masked. Tokens are
+# long base64url/JWT-like strings with no whitespace or '&'.
+_TOKEN_RE = re.compile(r"(auth_token=|authToken=)\S+", re.IGNORECASE)
+
+
+def mask_sensitive(value: str) -> str:
+    """Mask auth_token / authToken values in a string (e.g. a DB URL)."""
+    if not value:
+        return value
+    return _TOKEN_RE.sub(r"\1***", value)
+
+
+class TokenMaskingFilter(logging.Filter):
+    """Redacts auth_token / authToken query params from any log record.
+
+    The Turso auth token is embedded in the SQLAlchemy connection URL (query
+    string). SQLAlchemy may log the URL on connect errors / debug, so this
+    filter masks the token before it reaches the handler output.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "auth" in msg.lower() and _TOKEN_RE.search(msg):
+            record.msg = mask_sensitive(str(record.msg))
+            record.args = None
+        return True
+
+
+def install_token_masking_filter(logger: logging.Logger | None = None) -> None:
+    """Attach :class:`TokenMaskingFilter` to the root logger (idempotent)."""
+    target = logger if logger is not None else logging.getLogger()
+    if any(isinstance(f, TokenMaskingFilter) for f in target.filters):
+        return
+    target.addFilter(TokenMaskingFilter())
 
 
 class Account(Base):

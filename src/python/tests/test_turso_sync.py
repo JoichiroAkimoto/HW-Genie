@@ -242,3 +242,42 @@ def test_remote_url_with_secure_uses_https_in_dialect():
     url = make_url("sqlite+libsql://db.turso.io/my-db?auth_token=secret&secure=true")
     cargs, cparams = dialect.create_connect_args(url)
     assert cargs[0].startswith("https://")
+
+
+def test_mask_sensitive_masks_auth_token():
+    """mask_sensitive は URL 中の auth_token をマスキングする。"""
+    from hw_genie.core.database import mask_sensitive
+
+    url = "sqlite+libsql:////tmp/x.db?sync_url=lib://t&auth_token=SECRET123&sync_interval=5"
+    masked = mask_sensitive(url)
+    assert "SECRET123" not in masked
+    assert "auth_token=***" in masked
+    # sync_url は維持される（トークン直後までマスクされるため sync_interval は含まれる）
+    assert "sync_url=lib://t" in masked
+
+
+def test_token_masking_filter_redacts_log_records():
+    """TokenMaskingFilter はログレコードの auth_token を除去する。"""
+    from hw_genie.core.database import TokenMaskingFilter
+
+    record = logging.LogRecord(
+        "hw_genie", logging.INFO, __file__, 1,
+        "connecting to sqlite+libsql:////x.db?auth_token=TOPSECRET", None, None,
+    )
+    assert TokenMaskingFilter().filter(record) is True
+    assert "TOPSECRET" not in record.getMessage()
+    assert "auth_token=***" in record.getMessage()
+
+
+def test_windows_drive_path_builds_replica_url():
+    """Windows ドライブレター付きパスでも replica URL が正しく構築される。"""
+    env = {
+        "DATABASE_URL": "sqlite+libsql:///C:/Users/me/data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+    }
+    db_url, connect_args = build_database_config(env)
+    # スキーム区切りの 4 スラッシュ + ドライブレターが維持される
+    assert db_url.startswith("sqlite+libsql:////C:/Users/me/data/hw_genie.db?")
+    assert "sync_url=" in db_url
+    assert connect_args.get("check_same_thread") is False
