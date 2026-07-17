@@ -11,7 +11,7 @@ if [ -n "$1" ]; then
     exit 0
 fi
 
-# 2. 引数がない場合は、全アカウントを並列で実行する（親プロセス用）
+# 2. 引数がない場合は、全アカウントを並列（同時実行数制限付き）で実行する（親プロセス用）
 uv run hw-genie auth --list
 
 LOG_DIR="data/logs"
@@ -23,16 +23,42 @@ while IFS= read -r line; do
     ACCOUNTS+=("$line")
 done < <(uv run hw-genie auth --list-names)
 
-echo "Starting parallel daily routine for ${#ACCOUNTS[@]} accounts..."
+# 同時実行数の上限。
+# 現在は read/write ともに Turso リモートプライマリへ直結（TURSO_READ_REMOTE=true）
+# しているため、ローカル replica の WAL 競合は発生せず、全アカウント同時実行しても
+# 問題ない。既定は「アカウント数 (= 事実上無制限)」。環境変数 HWDA_MAX_PARALLEL で
+# 明示的に絞りたい場合のみ上書き可能。
+# （将来ローカル Embedded Replica を併用する場合は、この値を絞るか専用コンテナへ
+#   アクセスを集約する必要がある。詳細は TODO イシュー参照）
+MAX_PARALLEL="${HWDA_MAX_PARALLEL:-${#ACCOUNTS[@]}}"
+# アカウント数が 0 の場合のフォールバック
+[ "$MAX_PARALLEL" -lt 1 ] && MAX_PARALLEL=1
 
+echo "Starting daily routine for ${#ACCOUNTS[@]} accounts (parallel, max $MAX_PARALLEL)..."
+
+pids=()
 for acc in "${ACCOUNTS[@]}"; do
     # スペースをアンダースコアに変換してログファイル名にする
     log_name=$(echo "$acc" | tr ' ' '_')
     # 自分自身をバックグラウンドで起動し、ログを出力
     "$0" "$acc" > "$LOG_DIR/${log_name}.log" 2>&1 &
+    pids+=("$!")
+
+    # 同時実行数が上限に達したら、いずれかが終わるまで待機
+    if [ "${#pids[@]}" -ge "$MAX_PARALLEL" ]; then
+        # wait -n で終了した子プロセスの PID を受け取り、配列から除去する
+        if command -v wait >/dev/null 2>&1; then
+            finished=$(wait -n 2>/dev/null) || finished="${pids[0]}"
+        else
+            wait "${pids[0]}"
+            finished="${pids[0]}"
+        fi
+        # 完全一致で該当 PID のみを配列から除去（部分一致誤除去を防ぐ）
+        pids=("${pids[@]/#"$finished"/}")
+    fi
 done
 
-# すべてのバックグラウンドタスクの完了を待つ
+# 残りのバックグラウンドタスクの完了を待つ
 wait
 
 echo "✅ All Done! Logs are saved in $LOG_DIR/"

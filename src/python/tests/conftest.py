@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
@@ -5,37 +7,55 @@ from sqlalchemy.orm import sessionmaker
 from hw_genie.core.database import Base
 from hw_genie.core.client import HWClient, PlayerStatus
 
+TURSO_KEYS_TO_SKIP = (
+    "TURSO_SYNC_URL",
+    "TURSO_AUTH_TOKEN",
+    "TURSO_SYNC_INTERVAL",
+    "TURSO_WRITE_REMOTE",
+    "TURSO_READ_REMOTE",
+    "TURSO_SYNC_ON_CONNECT",
+)
+
+
 @pytest.fixture(autouse=True)
 def setup_db():
     """
     テストごとにインメモリDBを初期化し、プロダクションDBへの影響を遮断する。
     """
-    test_engine = create_engine("sqlite:///:memory:")
-    test_SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
+    # .env 由来の TURSO_* 設定がテストに漏れないよう一時的に除去する。
+    # （build_database_config は os.environ を直接読むため、ローカルファイル
+    #   モードでないとインメモリ差し替えと本物のリモートエンジンが分断される）
+    saved = {k: os.environ.pop(k) for k in TURSO_KEYS_TO_SKIP if k in os.environ}
+    try:
+        test_engine = create_engine("sqlite:///:memory:")
+        test_SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
 
-    def _get_test_engine():
-        return test_engine
+        def _get_test_engine():
+            return test_engine
 
-    def _get_test_session_local():
-        return test_SessionLocal
+        def _get_test_session_local():
+            return test_SessionLocal
 
-    # 遅延初期化された engine / SessionLocal をテスト用に差し替える。
-    # database と repository 双方の getter を差し替えることで、
-    # 本番DBへの影響を完全に遮断する。
-    with patch("hw_genie.core.database.get_engine", _get_test_engine), \
-         patch("hw_genie.core.database.get_session_local", _get_test_session_local), \
-         patch("hw_genie.core.database.engine", test_engine), \
-         patch("hw_genie.core.database.SessionLocal", test_SessionLocal):
-        with patch("hw_genie.core.repository.get_session_local", _get_test_session_local):
-            Base.metadata.create_all(test_engine)
-            yield
-            Base.metadata.drop_all(test_engine)
-            # モジュールレベルのエンジンキャッシュをクリアし、本番DBや
-            # 前のテストのエンジンが残らないようにする。
-            import hw_genie.core.database as _db
+        # 遅延初期化された engine / SessionLocal をテスト用に差し替える。
+        # database と repository 双方の getter を差し替えることで、
+        # 本番DBへの影響を完全に遮断する。
+        with patch("hw_genie.core.database.get_engine", _get_test_engine), \
+             patch("hw_genie.core.database.get_session_local", _get_test_session_local), \
+             patch("hw_genie.core.database.engine", test_engine), \
+             patch("hw_genie.core.database.SessionLocal", test_SessionLocal):
+            with patch("hw_genie.core.repository.get_session_local", _get_test_session_local):
+                Base.metadata.create_all(test_engine)
+                yield
+                Base.metadata.drop_all(test_engine)
+                # モジュールレベルのエンジンキャッシュをクリアし、本番DBや
+                # 前のテストのエンジンが残らないようにする。
+                import hw_genie.core.database as _db
 
-            for _attr in ("_engine", "_SessionLocal", "_write_engine", "_WriteSessionLocal"):
-                setattr(_db, _attr, None)
+                for _attr in ("_engine", "_SessionLocal", "_write_engine", "_WriteSessionLocal"):
+                    setattr(_db, _attr, None)
+    finally:
+        # 除去した TURSO_* 環境変数を元に戻す
+        os.environ.update(saved)
 
 @pytest.fixture
 def mock_client():

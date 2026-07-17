@@ -149,3 +149,36 @@ def test_memo_persistence():
         rec = db.query(Account).filter(Account.alias == account).first()
         assert rec is not None
         assert rec.memo == memo_text
+
+
+def test_save_strips_alias_whitespace():
+    """保存時にエイリアスの前後空白が除去されることを検証"""
+    from hw_genie.core.database import SessionLocal, Account
+
+    SessionManager.save("  spaced_user  ", {"player": {"id": "sp_id", "name": "Spaced"}})
+    with SessionLocal() as db:
+        rec = db.query(Account).filter(Account.player_id == "sp_id").first()
+        assert rec.alias == "spaced_user"
+    # トリム済みエイリアスでロードできる
+    assert SessionManager.load("spaced_user")["player"]["name"] == "Spaced"
+
+
+def test_save_normalizes_trailing_space_existing_alias():
+    """既存レコードの alias に末尾スペースがあっても、トリム済みで上書きされる"""
+    from hw_genie.core.database import SessionLocal, Account
+
+    # 意図的に末尾スペース付きで作成（DB 層を直接操作して再現）
+    with SessionLocal() as db:
+        db.add(Account(player_id="tr_id", alias="Trailing ", player_name="Trailing"))
+        db.commit()
+
+    # トリム済みエイリアスで保存 → 既存レコードを正規化して上書き
+    SessionManager.save("Trailing", {"player": {"id": "tr_id", "name": "Trailing Fixed"}})
+    with SessionLocal() as db:
+        recs = db.query(Account).filter(Account.player_id == "tr_id").all()
+        assert len(recs) == 1
+        assert recs[0].alias == "Trailing"
+    assert SessionManager.load("Trailing")["player"]["name"] == "Trailing Fixed"
+    # 大文字小文字・前後空白を無視した照合により、スペース付きでも正しくロードできる
+    assert SessionManager.load("Trailing ")["player"]["name"] == "Trailing Fixed"
+

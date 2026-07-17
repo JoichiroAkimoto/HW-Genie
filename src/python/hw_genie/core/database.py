@@ -360,6 +360,23 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     )
     del _parsed
 
+    if env.get("TURSO_READ_REMOTE", "false").lower() == "true":
+        if not turso_sync_url:
+            # 設定漏れ: read remote を希望しているのに sync URL が無い。
+            # サイレントにローカル replica へフォールバックせず警告する。
+            logger.warning(
+                "TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set; "
+                "falling back to local file mode."
+            )
+        else:
+            # Read directly from the remote Turso primary instead of a local
+            # embedded replica. This avoids wal_insert_begin failed contention
+            # that occurs when multiple parallel hw-genie processes each open the
+            # SAME local replica file and race to write its WAL during sync().
+            # Reads stay fresh because they hit the primary directly. Pair with
+            # TURSO_WRITE_REMOTE=true for a fully remote (no local file) setup.
+            return build_write_database_config(env)
+
     if turso_sync_url and not is_remote_libsql:
         # Determine the local database file path to act as the replica.
         # Use pathlib for OS-agnostic, robust path normalisation.
@@ -480,13 +497,23 @@ def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str,
         and turso_sync_url
     ):
         # Build a direct remote libSQL connection URL from the sync URL.
-        # Append ?secure=true so the dialect uses the https scheme (TLS) instead
-        # of defaulting to http://, which Triggers a 308 Permanent Redirect from
-        # Turso.
-        host = turso_sync_url
-        if host.startswith("libsql://"):
-            host = host[len("libsql://"):]
-        remote_url = f"sqlite+libsql://{host}/?secure=true"
+        # TURSO_SYNC_URL may be expressed either as:
+        #   - libsql://host            (canonical form, per AGENTS.md)
+        #   - https://host(?secure=...)  (already https; the ?secure=true
+        #     query is just stripped and re-appended as a dialect hint)
+        # In every case we end up with an https remote connection so the
+        # dialect uses TLS instead of defaulting to http://, which triggers a
+        # 308 Permanent Redirect from Turso.
+        # The full netloc (user:pass@host:port) is preserved so that token-in-URL
+        # forms (e.g. libsql://<token>@host) are not silently dropped.
+        parsed = urllib.parse.urlparse(turso_sync_url)
+        netloc = parsed.netloc or turso_sync_url
+        # urlparse on a non-standard scheme (libsql://) may leave the scheme in
+        # netloc; strip a stray "libsql://" prefix so only host[:port] (and any
+        # userinfo) remains. userinfo (token@host) is preserved as-is.
+        if netloc.startswith("libsql://"):
+            netloc = netloc[len("libsql://"):]
+        remote_url = f"sqlite+libsql://{netloc}/?secure=true"
         connect_args: DatabaseConfig = {"check_same_thread": False}
         if turso_auth_token:
             connect_args["auth_token"] = turso_auth_token

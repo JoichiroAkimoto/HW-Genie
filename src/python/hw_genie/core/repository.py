@@ -110,7 +110,7 @@ class SessionRepository:
                         db.flush()
 
                     # Update alias and basic info using model method
-                    account_rec.alias = account
+                    account_rec.alias = account.strip()
                     account_rec.update_from_dict(player)
 
                     # Store other player configs
