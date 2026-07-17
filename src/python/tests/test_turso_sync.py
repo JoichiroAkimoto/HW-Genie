@@ -525,3 +525,65 @@ def test_get_write_session_local_remote_uses_separate_engine(monkeypatch):
     # 別エンジンでもセッションは生成できる
     s = write_session()
     s.close()
+
+
+@pytest.mark.parametrize(
+    "sync_url,expected_netloc",
+    [
+        # canonical libsql:// form
+        ("libsql://my-test-db.turso.io", "my-test-db.turso.io"),
+        # already-https form (secure query is stripped/re-appended)
+        ("https://my-test-db.turso.io?secure=true", "my-test-db.turso.io"),
+        # explicit port preserved
+        ("libsql://my-test-db.turso.io:443", "my-test-db.turso.io:443"),
+        # token-in-URL form: userinfo must be preserved
+        ("libsql://my-token@my-test-db.turso.io", "my-token@my-test-db.turso.io"),
+        (
+            "https://my-token@my-test-db.turso.io:443?secure=true",
+            "my-token@my-test-db.turso.io:443",
+        ),
+    ],
+)
+def test_build_write_config_url_forms(sync_url, expected_netloc):
+    """TURSO_SYNC_URL の各表記で正しいリモート URL が作れる（トークン落ち防止）。"""
+    from hw_genie.core.database import build_write_database_config
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": sync_url,
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_WRITE_REMOTE": "true",
+    }
+    write_url, _ = build_write_database_config(env)
+    assert write_url == f"sqlite+libsql://{expected_netloc}/?secure=true"
+
+
+def test_build_database_config_read_remote_returns_write_config():
+    """TURSO_READ_REMOTE=true 時は read 設定もリモート直接接続になる。"""
+    from hw_genie.core.database import build_database_config
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_READ_REMOTE": "true",
+        "TURSO_WRITE_REMOTE": "true",
+    }
+    read_url, _ = build_database_config(env)
+    assert read_url == "sqlite+libsql://my-test-db.turso.io/?secure=true"
+
+
+def test_build_database_config_read_remote_without_sync_url_warns(caplog):
+    """TURSO_READ_REMOTE=true だが sync URL 未設定は警告しローカルへフォールバック。"""
+    from hw_genie.core.database import build_database_config
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_READ_REMOTE": "true",
+    }
+    with caplog.at_level(logging.WARNING):
+        read_url, _ = build_database_config(env)
+    assert "TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set" in caplog.text
+    # ローカルファイルモード（replica ではなく plain sqlite）へフォールバック
+    assert "sqlite://" in str(read_url)
+
