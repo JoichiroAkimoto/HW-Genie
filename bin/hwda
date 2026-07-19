@@ -1,70 +1,22 @@
 #!/bin/bash
-# Move to the project root directory
+# Run the daily routine for ALL registered accounts inside a SINGLE Python
+# process (parallel via a thread pool). Running in one process lets the libSQL
+# Embedded Replica be opened concurrently without the multi-process
+# `wal_insert_begin failed` WAL contention (see issue #47).
+#
+# This script is intended to run inside the Docker container (or locally with
+# uv) where the DB (and optionally Turso Syncs) is already available.
+#
+# Usage:
+#   bin/hwda [ACCOUNT ...] [--parallel N]
+#   (mode "daily" is baked in; pass only account aliases and/or --parallel)
+# Concurrency is capped by HWDA_MAX_PARALLEL (0/unset = unbounded = all at once).
+set -u
+
 cd "$(dirname "$0")/.."
 
-# 1. 引数がある場合は、そのアカウントの処理のみを実行して終了する（子プロセス用）
-if [ -n "$1" ]; then
-    ACCOUNT="$1"
-    echo "=== Starting daily routine for: $ACCOUNT at $(date '+%Y-%m-%d %H:%M:%S') ==="
-    uv run hw-genie daily --account "$ACCOUNT"
-    echo "=== Finished daily routine for: $ACCOUNT at $(date '+%Y-%m-%d %H:%M:%S') ==="
-    exit 0
-fi
-
-# 2. 引数がない場合は、全アカウントを並列（同時実行数制限付き）で実行する（親プロセス用）
-uv run hw-genie auth --list
-
-LOG_DIR="data/logs"
-mkdir -p "$LOG_DIR"
-
-# DBから登録済みアカウント一覧を動的に取得
-ACCOUNTS=()
-while IFS= read -r line; do
-    ACCOUNTS+=("$line")
-done < <(uv run hw-genie auth --list-names)
-
-# 同時実行数の上限。
-# 現在は read/write ともに Turso リモートプライマリへ直結（TURSO_READ_REMOTE=true）
-# しているため、ローカル replica の WAL 競合は発生せず、全アカウント同時実行しても
-# 問題ない。既定は「アカウント数 (= 事実上無制限)」。環境変数 HWDA_MAX_PARALLEL で
-# 明示的に絞りたい場合のみ上書き可能。
-# （将来ローカル Embedded Replica を併用する場合は、この値を絞るか専用コンテナへ
-#   アクセスを集約する必要がある。詳細は TODO イシュー参照）
-MAX_PARALLEL="${HWDA_MAX_PARALLEL:-${#ACCOUNTS[@]}}"
-# アカウント数が 0 の場合のフォールバック
-[ "$MAX_PARALLEL" -lt 1 ] && MAX_PARALLEL=1
-
-echo "Starting daily routine for ${#ACCOUNTS[@]} accounts (parallel, max $MAX_PARALLEL)..."
-
-pids=()
-for acc in "${ACCOUNTS[@]}"; do
-    # スペースをアンダースコアに変換してログファイル名にする
-    log_name=$(echo "$acc" | tr ' ' '_')
-    # 自分自身をバックグラウンドで起動し、ログを出力
-    "$0" "$acc" > "$LOG_DIR/${log_name}.log" 2>&1 &
-    pids+=("$!")
-
-    # 同時実行数が上限に達したら、いずれかが終わるまで待機
-    if [ "${#pids[@]}" -ge "$MAX_PARALLEL" ]; then
-        # wait -n -p VAR: 終了したジョブの PID を VAR に格納（bash 5.1+/zsh 対応）。
-        # コマンド置換にしないこと（サブシェルでは親のジョブが見えないため）。
-        # 終了コードのみで判定し、finished が空のときはフォールバックへ。
-        finished=""
-        if wait -n -p finished 2>/dev/null && [ -n "$finished" ]; then
-            new_pids=()
-            for pid in "${pids[@]}"; do
-                [ "$pid" != "$finished" ] && new_pids+=("$pid")
-            done
-            pids=("${new_pids[@]}")
-        elif [ "${#pids[@]}" -gt 0 ]; then
-            # 非対応環境 / フォールバック: pids[0] が終わるのを待ち、先頭を除外。
-            wait "${pids[0]}"
-            pids=("${pids[@]:1}")
-        fi
-    fi
-done
-
-# 残りのバックグラウンドタスクの完了を待つ
-wait
-
-echo "✅ All Done! Logs are saved in $LOG_DIR/"
+echo "=== Starting parallel daily routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ==="
+uv run hw-genie multi daily "$@"
+code=$?
+echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="
+exit $code

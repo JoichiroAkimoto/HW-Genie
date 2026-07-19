@@ -10,6 +10,7 @@ from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
+from hw_genie.runner import run_all_accounts, summarize
 
 
 def _prepare_info_for_json(info: dict) -> dict:
@@ -253,6 +254,29 @@ def cmd_daily(args):
     run_daily_raid(client, item_payload=item_payload, account_alias=args.account or "default")
 
 
+def cmd_multi(args):
+    """Run a routine against all accounts inside a single process (parallel)."""
+    from hw_genie.runner import (
+        daily_routine,
+        full_routine,
+        list_account_aliases,
+    )
+
+    mode = args.mode
+    accounts = args.accounts
+    if accounts:
+        accounts = list(accounts)
+    else:
+        accounts = list_account_aliases()
+
+    routine = full_routine if mode == "full" else daily_routine
+
+    results = run_all_accounts(routine, accounts=accounts, max_parallel=args.parallel)
+    failed = summarize(results.items())
+    if failed:
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="hw-genie", description="Hero Wars Genie CLI")
 
@@ -307,6 +331,36 @@ def main():
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
 
+    # Multi (single-process parallel across accounts)
+    # NOTE: do NOT inherit parent_parser — the ``--account`` flag is meaningless
+    # here because ``multi`` orchestrates accounts internally, and exposing it
+    # would be a dead, confusing option.
+    p_multi = subparsers.add_parser(
+        "multi",
+        help="Run a routine for all accounts inside one process (parallel)",
+    )
+    p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
+    p_multi.add_argument(
+        "mode",
+        choices=["daily", "full"],
+        nargs="?",
+        default="daily",
+        help="Routine to run: 'daily' (default) or 'full' (raid+shop+daily)",
+    )
+    p_multi.add_argument(
+        "accounts",
+        nargs="*",
+        help="Optional account aliases to limit the run (default: all)",
+    )
+    p_multi.add_argument(
+        "--parallel",
+        "-p",
+        type=int,
+        default=None,
+        help="Max concurrent accounts (default: HWDA_MAX_PARALLEL / unbounded)",
+    )
+    p_multi.set_defaults(func=cmd_multi)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -318,6 +372,9 @@ def main():
 
     if getattr(args, "debug", False):
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
+    else:
+        # Default to INFO so the parallel runner's progress / summary is shown.
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
     # Mask Turso auth tokens that may appear in logged DB connection URLs.
     from hw_genie.core.database import install_token_masking_filter

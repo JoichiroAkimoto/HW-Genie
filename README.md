@@ -45,11 +45,11 @@ direnv allow
 有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です。
 
 ### Docker での実行 (推奨)
-環境構築なしでコンテナを使用して認証サーバーを起動できます。
+環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
 ```bash
-# 1. ビルドと起動
-docker-compose up --build -d
+# 1. 認証サーバーのビルドと起動
+docker-compose up --build -d auth-server
 
 # 2. ログの確認
 docker-compose logs -f
@@ -58,6 +58,27 @@ docker-compose logs -f
 > **Security Note**: 認証サーバーを Docker 経由で起動する場合、コンテナ外部からのアクセスを許可するために `0.0.0.0` にバインドされます。公開サーバーで実行する場合は、ファイアウォール等で適切にアクセス制限を行ってください。
 
 データベース (`hw_genie.db`) は `./data` ディレクトリに保存・永続化されます。
+
+#### コンテナ内での全アカウント一括実行（並列）
+`hwda` / `hwsa` 相当の処理は、1 つのコンテナプロセス内で全アカウントを並列（スレッドプール）実行する `hw-genie multi` コマンドで行います。プロセス内並列のため、libSQL の Embedded Replica（ローカルファイル + Turso Syncs）をそのまま共有でき、`wal_insert_begin failed` の WAL 競合を回避できます（issue #47 の「案 E」）。
+
+```bash
+# 認証サーバーとは別に、全アカウントのデイリーを並列実行するサービスを起動
+docker compose --profile bulk up --build -d hwda
+
+# あるいは都度実行（指定アカウントのみ / 同時実行数を制限）
+# サービスの command に既に `multi daily`/`multi full` が含まれるため、
+# 渡すのはアカウント名と --parallel のみ（multi daily は重複指定しない）
+docker-compose run --rm hwda --parallel 4 account1 account2
+docker-compose run --rm hwsa
+# ホスト上で直接実行する場合は bin/hwda・bin/hwsa を使う
+bin/hwda --parallel 4 account1 account2
+bin/hwsa
+```
+
+- `hwda` サービス: `hw-genie multi daily`（全アカウントのデイリールーチン）
+- `hwsa` サービス: `hw-genie multi full`（ヒーローレイド + ショップ + デイリー）
+- 同時実行数は環境変数 `HWDA_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用
 libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。

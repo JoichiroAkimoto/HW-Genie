@@ -527,19 +527,27 @@ def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str,
 # The engine is intentionally NOT created at import time: it is built on the
 # first call to get_engine() / get_session_local(), so importing this module
 # has no side effects (safe for tests and for controlling init order).
+#
+# A single module-level lock guards the lazy initialisers. They are invoked
+# from multiple threads once ``hw-genie multi`` runs every account's routine in
+# a thread pool (see hw_genie.runner). Without the lock two threads could race
+# to build competing singletons (e.g. two session factories) on first use.
 _engine = None
 _SessionLocal = None
 _write_engine = None
 _WriteSessionLocal = None
+_init_lock = threading.RLock()
 
 
 def get_engine():
     """Return the SQLAlchemy engine, creating it on first access (lazy init)."""
     global _engine, engine
     if _engine is None:
-        db_url, connect_args = build_database_config()
-        _engine = create_engine(db_url, connect_args=connect_args)
-        engine = _engine
+        with _init_lock:
+            if _engine is None:
+                db_url, connect_args = build_database_config()
+                _engine = create_engine(db_url, connect_args=connect_args)
+                engine = _engine
     return _engine
 
 
@@ -547,7 +555,9 @@ def get_session_local():
     """Return the scoped session factory, creating it on first access."""
     global _SessionLocal
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
+        with _init_lock:
+            if _SessionLocal is None:
+                _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
     return _SessionLocal
 
 
@@ -560,13 +570,15 @@ def get_write_engine():
     """
     global _write_engine
     if _write_engine is None:
-        env = os.environ
-        if env.get("TURSO_WRITE_REMOTE", "false").lower() != "true":
-            # No remote writes configured: reuse the (replica) read engine.
-            _write_engine = get_engine()
-        else:
-            db_url, connect_args = build_write_database_config()
-            _write_engine = create_engine(db_url, connect_args=connect_args)
+        with _init_lock:
+            if _write_engine is None:
+                env = os.environ
+                if env.get("TURSO_WRITE_REMOTE", "false").lower() != "true":
+                    # No remote writes configured: reuse the (replica) read engine.
+                    _write_engine = get_engine()
+                else:
+                    db_url, connect_args = build_write_database_config()
+                    _write_engine = create_engine(db_url, connect_args=connect_args)
     return _write_engine
 
 
@@ -584,10 +596,11 @@ def get_write_session_local():
             # Resolved on every call so live patching of get_session_local
             # (used by tests) is respected.
             return get_session_local()
-        if _WriteSessionLocal is None:
-            _WriteSessionLocal = sessionmaker(
-                bind=get_write_engine(), expire_on_commit=False
-            )
+        with _init_lock:
+            if _WriteSessionLocal is None:
+                _WriteSessionLocal = sessionmaker(
+                    bind=get_write_engine(), expire_on_commit=False
+                )
     return _WriteSessionLocal
 
 
@@ -613,6 +626,12 @@ def init_db():
     # directly to the remote primary.
     read_engine = get_engine()
     write_engine = get_write_engine()
+    # Pre-warm the session factories on the (single) main thread BEFORE any
+    # thread-pool work, so the lazy getters don't race to build competing
+    # singletons when ``hw-genie multi`` runs accounts in parallel.
+    get_session_local()
+    if write_engine is not read_engine:
+        get_write_session_local()
     engines = {read_engine}
     if write_engine is not read_engine:
         engines.add(write_engine)
