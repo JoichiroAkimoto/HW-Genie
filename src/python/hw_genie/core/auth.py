@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict, Optional
 import requests
 from hw_genie.core.client import PlayerStatus
@@ -93,7 +93,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 arena_rank=int(arena_info.get("arenaPlace", 0)),
                 grand_rank=int(arena_info.get("grandPlace", 0)),
             )
-            return {"headers": headers, "status": "success", "last_updated": datetime.now().isoformat(), "player": player}
+            return {"headers": headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
         return {"status": "error", "message": "API error"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
