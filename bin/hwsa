@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/hwsa_$(date '+%Y%m%d_%H%M%S').log"
 # (default 7; find's -mtime +N keeps roughly the last N days). Set to 0 to
 # disable cleanup. Only hwda_/hwsa_ logs under LOG_DIR are touched.
 KEEP_DAYS="${HWDA_LOG_KEEP_DAYS:-7}"
-if [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
+if [ -d "$LOG_DIR" ] && [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
   find "$LOG_DIR" -maxdepth 1 \( -name 'hwda_*.log' -o -name 'hwsa_*.log' \) -type f -mtime "+$KEEP_DAYS" -delete 2>/dev/null
 fi
 
