@@ -49,7 +49,18 @@ def cmd_auth(args):
                 print(alias)
             return
 
-        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {'Updated':<19} | {'Memo':<20}"
+        from hw_genie.core.utils import (
+            display_timezone_name,
+            format_timestamp_for_display,
+        )
+
+        tz_label = display_timezone_name()
+        updated_col = f"Updated ({tz_label})"
+        # Body timestamps are 19 chars ("YYYY-MM-DD HH:MM:SS"); widen the column
+        # to the header label when the tz name makes it longer (e.g. Asia/Tokyo).
+        updated_width = max(19, len(updated_col))
+
+        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {updated_col:<{updated_width}} | {'Memo':<20}"
         print(header)
         print("-" * len(header))
         for alias in sorted(accounts):
@@ -58,21 +69,21 @@ def cmd_auth(args):
             p_name = player.get("name", "Unknown")
             # 10文字を超える場合は「...」で省略
             p_name_display = (p_name[:7] + "...") if len(p_name) > 10 else p_name
-            
+
             p_energy = player.get("energy", "-")
             p_arena = player.get("arena_rank", "-")
             p_grand = player.get("grand_rank", "-")
             p_gold = format_number_with_suffix(player.get("gold", 0)) if player.get("gold") is not None else "-"
             p_gems = format_number_with_suffix(player.get("gems", 0)) if player.get("gems") is not None else "-"
             p_last_id = data.get("last_item_raid_mission_id", "-")
-            
+
             updated = data.get("last_updated", "Never")
-            updated_short = updated.split(".")[0].replace("T", " ") if "T" in updated else updated
+            updated_short = format_timestamp_for_display(updated)
 
             memo = data.get("memo", "-")
             memo_display = (memo[:17] + "...") if len(memo) > 20 else memo
 
-            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<19} | {memo_display:<20}")
+            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<{updated_width}} | {memo_display:<20}")
         print()
         return
 

@@ -22,6 +22,14 @@ LOG_DIR="data/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hwda_$(date '+%Y%m%d_%H%M%S').log"
 
+# Prune old logs. Delete hwda_/hwsa_ logs older than HWDA_LOG_KEEP_DAYS*24h
+# (default 7; find's -mtime +N keeps roughly the last N days). Set to 0 to
+# disable cleanup. Only hwda_/hwsa_ logs under LOG_DIR are touched.
+KEEP_DAYS="${HWDA_LOG_KEEP_DAYS:-7}"
+if [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
+  find "$LOG_DIR" -maxdepth 1 \( -name 'hwda_*.log' -o -name 'hwsa_*.log' \) -type f -mtime "+$KEEP_DAYS" -delete 2>/dev/null
+fi
+
 echo "=== Starting parallel daily routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
 uv run hw-genie multi daily "$@" 2>&1 | tee -a "$LOG_FILE"
 code=${PIPESTATUS[0]}

@@ -148,6 +148,13 @@ export TURSO_WRITE_REMOTE="true"
 > - `sqlite+libsql:////abs/path.db` （4スラッシュ）→ そのまま絶対パス
 > - `sqlite+libsql:///data/hw_genie.db` （3スラッシュ, `./` なし）→ リテラル絶対パス `/data/...`
 
+### 表示・運用の環境変数
+
+| 変数 | 既定値 | 説明 |
+| --- | --- | --- |
+| `HWGENIE_TZ` | `UTC` | `auth --list` の `Updated` 列の表示タイムゾーン（IANA 名、例: `Asia/Tokyo`）。以降の更新は UTC で保存され、表示時のみ変換されます。<br>※ 本変更より前に保存された既存レコードはナイーブなローカル時刻で保存されているため、UTC として解釈され、`HWGENIE_TZ` 指定時にはオフセット分ずれて表示されます。各アカウントを一度 `auth` で更新すれば UTC で保存し直されます。 |
+| `HWDA_LOG_KEEP_DAYS` | `7` | `bin/hwda` / `bin/hwsa` が `data/logs/` の古いログ（`hwda_*.log` / `hwsa_*.log`）を自動削除する保持日数。`0` で削除を無効化。 |
+
 ### 認証方法
 
 #### 方法1: 手動 (curl コピー)

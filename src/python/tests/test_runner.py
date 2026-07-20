@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from hw_genie.runner import (
+    _display_width,
+    _render_summary_table,
     _resolve_max_parallel,
     list_account_aliases,
     run_all_accounts,
@@ -472,3 +474,68 @@ def test_main_sets_logging_level_info(monkeypatch):
     main.setup_logging(debug=True)
     assert logging.getLogger().level == logging.DEBUG
 
+
+
+def test_render_summary_table_widths_are_dynamic_and_have_no_lv():
+    """The summary table sizes columns to content and never shows Lv (UX fix)."""
+    rows = [
+        ["VitaminD", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["TheBestAccountName", "38/190", "53", "8", "2.3B", "180.2K"],
+    ]
+    table = _render_summary_table(rows)
+
+    # No Lv column / label anywhere.
+    assert "Lv" not in table
+
+    # Long account name drives the Account column width (>= its length).
+    assert "TheBestAccountName" in table
+
+    # Widths are dynamic: a longer account name yields a wider table than a
+    # short one (not a fixed 64-char box).
+    narrow = _render_summary_table([["Joe", "82/190", "4", "3", "28.8B", "502.0K"]])
+    assert len(table.splitlines()[0]) > len(narrow.splitlines()[0])
+
+    # Header labels present (emoji-prefixed, self-labeling).
+    for label in ("Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "💎Gems"):
+        assert label in table
+
+
+def test_render_summary_table_is_display_aligned_with_emoji():
+    """Every rendered line must share the same DISPLAY width (emoji-aware).
+
+    Emoji are double-width in terminals but one code point, so naive len()
+    padding misaligns the ``|`` separators. This asserts the emoji-aware
+    padding keeps all rows (separators, header, body) the same visual width.
+    """
+    rows = [
+        ["VitaminD", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["The Best", "38/190", "53", "8", "2.3B", "180.2K"],
+    ]
+    lines = _render_summary_table(rows).splitlines()
+    widths = {_display_width(line) for line in lines}
+    # All lines (===, header, ---, body rows, ===) render to one width.
+    assert len(widths) == 1
+    # The header carries 5 double-width emoji (⚡🏆👑💰💎), so its display
+    # width must exceed the raw code-point length.
+    header = lines[1]
+    assert _display_width(header) > len(header)
+
+
+def test_format_timestamp_for_display_respects_hwgenie_tz(monkeypatch):
+    """Stored UTC timestamps are converted to HWGENIE_TZ for display (UX fix)."""
+    from hw_genie.core.utils import format_timestamp_for_display
+
+    utc_iso = "2026-07-20T04:55:42+00:00"
+
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    assert format_timestamp_for_display(utc_iso) == "2026-07-20 13:55:42"
+
+    monkeypatch.setenv("HWGENIE_TZ", "")
+    assert format_timestamp_for_display(utc_iso) == "2026-07-20 04:55:42"
+
+    # Non-UTC invalid zone falls back to UTC.
+    monkeypatch.setenv("HWGENIE_TZ", "Not/AZone")
+    assert format_timestamp_for_display(utc_iso) == "2026-07-20 04:55:42"
+
+    # Missing/unknown values pass through untouched.
+    assert format_timestamp_for_display("Never") == "Never"

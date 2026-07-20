@@ -170,45 +170,86 @@ def full_routine(client: HWClient, account: str) -> object:
     return daily_routine(client, account)
 
 
-def _render_status_row(account: str, result: object) -> str:
-    """Format one account's PlayerStatus (or error) as a table row."""
+def _status_cells(account: str, result: object) -> list[str] | None:
+    """Return the column cells for one account, or None if status is unavailable."""
     from hw_genie.core.client import PlayerStatus
     from hw_genie.core.utils import format_number_with_suffix
 
-    if isinstance(result, PlayerStatus):
-        return (
-            f"  {account:<18} | Lv.{result.level:<4} | "
-            f"⚡{result.energy_text:<12} | 🏆{result.arena_rank:<5} | "
-            f"👑{result.grand_rank:<5} | 💰{format_number_with_suffix(result.gold):<7} | "
-            f"💎{format_number_with_suffix(result.gems)}"
-        )
-    return f"  {account:<18} | (status unavailable)"
+    if not isinstance(result, PlayerStatus):
+        return None
+    return [
+        account,
+        result.energy_text,
+        str(result.arena_rank),
+        str(result.grand_rank),
+        format_number_with_suffix(result.gold),
+        format_number_with_suffix(result.gems),
+    ]
+
+
+# Column headers (emoji-prefixed so each column is self-labeling and compact).
+_SUMMARY_HEADERS = ["Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "💎Gems"]
+
+# Emoji rendered double-width by most terminals. ``len()`` counts them as one
+# code point, so we correct the display width to keep columns aligned.
+_WIDE_CHARS = frozenset("⚡🏆👑💰💎📊")
+
+
+def _display_width(text: str) -> int:
+    """Terminal display width of ``text`` (double-width emoji count as 2)."""
+    return sum(2 if ch in _WIDE_CHARS else 1 for ch in text)
+
+
+def _pad(text: str, width: int) -> str:
+    """Left-justify ``text`` to ``width`` display columns (emoji-aware)."""
+    return text + " " * max(0, width - _display_width(text))
+
+
+def _render_summary_table(rows: list[list[str]]) -> str:
+    """Render the per-account table with widths derived from the actual content."""
+    headers = _SUMMARY_HEADERS
+    if not rows:
+        return ""
+    # Width of each column = max(header label, longest cell) in DISPLAY columns.
+    widths = [
+        max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
+        for i in range(len(headers))
+    ]
+    header_line = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
+    rule_width = _display_width(header_line)
+    body_lines = [
+        " | ".join(_pad(cell, widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    sep = "=" * rule_width
+    return "\n".join([sep, header_line, "-" * rule_width, *body_lines, sep])
 
 
 def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | None]]]) -> int:
     """Print a per-account status table to stdout and return failed count."""
     ok = 0
     failed: list[str] = []
-    rows: list[str] = []
+    rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None:
             ok += 1
-            rows.append(_render_status_row(account, res))
+            cells = _status_cells(account, res)
+            if cells is not None:
+                rows.append(cells)
+            else:
+                failed.append(f"{account} (status unavailable)")
         else:
             failed.append(account)
 
     # Separator so the table stands out from the per-account progress logs.
-    print("\n" + "=" * 64)
+    print("\n" + "=" * 48)
     print("📊 --- Multi-account summary ---")
     if rows:
-        print(f"  {'Account':<18} | {'Lv':<6} | {'Energy':<12} | {'Arena':<5} | "
-              f"{'GA':<5} | {'Gold':<7} | {'Gems'}")
-        print("  " + "-" * 60)
-        print("\n".join(rows))
+        print(_render_summary_table(rows))
     if failed:
-        print("-" * 64)
+        print("-" * 48)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
-    print("=" * 64)
+    print("=" * 48)
     print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
     return len(failed)
 
