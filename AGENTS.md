@@ -24,7 +24,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **デイリールーチン**: `uv run hw-genie daily`
-*   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。
+*   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。実行後はアカウント別ステータス表（Lv/Energy/Arena/GA/Gold/Gems）と失敗一覧を標準出力に表示。`bin/hwda` / `bin/hwsa` はこのコマンドを単一プロセスで呼び出し、出力を `data/logs/` にミラーリングします（注: 旧来の「アカウント別個別ログファイル」ではなく、実行ごとの統合ログ `data/logs/hwda_<ts>.log` になります）。
 *   **登録済みアカウント一覧**: `uv run hw-genie auth --list`
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)

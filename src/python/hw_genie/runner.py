@@ -136,26 +136,15 @@ def daily_routine(client: HWClient, account: str) -> object:
 
     Unlike the single-account CLI (which requires a ``--curl`` payload to know
     the item-raid mission), this builds an item-raid payload from the mission
-    id stored in the DB (``SessionManager.get_last_mission_id``) so the item
-    raid actually runs to the stamina limit inside ``run_daily_raid``.
+    id stored in the DB (``SessionManager.build_item_raid_payload``) so the
+    item raid actually runs to the stamina limit inside ``run_daily_raid``.
     """
     from hw_genie.commands.daily_raid import run_daily_raid
     from hw_genie.core.session_manager import SessionManager
 
-    item_payload = None
-    mission_id = SessionManager.get_last_mission_id(account=account)
-    if mission_id:
-        item_payload = {
-            "mission_id": mission_id,
-            "calls": [
-                {
-                    "name": "missionRaid",
-                    "args": {"id": mission_id, "times": 10},
-                    "context": {"actionTs": 0},
-                    "ident": "body",
-                }
-            ],
-        }
+    # The payload shape (calls/ident/context) is owned by SessionManager; the
+    # runner just consumes it. Returns None when no mission id is configured.
+    item_payload = SessionManager.build_item_raid_payload(account=account)
 
     run_daily_raid(client, item_payload=item_payload, account_alias=account)
     # Fetch the latest status for the summary table. run_daily_raid already
@@ -164,6 +153,7 @@ def daily_routine(client: HWClient, account: str) -> object:
     try:
         return client.fetch_player_status()
     except Exception:  # pragma: no cover - best-effort, never abort summary
+        logger.error("Failed to fetch final status for account '%s'.", account)
         return None
 
 
