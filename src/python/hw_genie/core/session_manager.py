@@ -82,3 +82,28 @@ class SessionManager:
                 resolved_account = match
         
         cls.repo.update_config(resolved_account, {"last_item_raid_mission_id": mission_id})
+
+    @classmethod
+    def build_item_raid_payload(cls, account: str = "default") -> dict | None:
+        """Build an item-raid payload for ``account`` from the stored mission id.
+
+        Returns ``None`` when no mission id is configured for the account
+        (item raid should then be skipped). The payload structure (``calls`` /
+        ``ident`` / ``context``) lives here so callers (e.g. the parallel
+        runner) don't have to know the API request shape.
+        """
+        account = account.strip()
+        mission_id = cls.get_last_mission_id(account)
+        if not mission_id:
+            return None
+        return {
+            "mission_id": mission_id,
+            "calls": [
+                {
+                    "name": "missionRaid",
+                    "args": {"id": mission_id, "times": 10},
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ],
+        }

@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import sys
 import json
@@ -368,13 +369,8 @@ def main():
 
     from hw_genie.core.client import HWAuthError
     from hw_genie.core.database import init_db
-    import logging
 
-    if getattr(args, "debug", False):
-        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
-    else:
-        # Default to INFO so the parallel runner's progress / summary is shown.
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    setup_logging(getattr(args, "debug", False))
 
     # Mask Turso auth tokens that may appear in logged DB connection URLs.
     from hw_genie.core.database import install_token_masking_filter
@@ -403,3 +399,18 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def setup_logging(debug: bool = False) -> None:
+    """Configure root logging.
+
+    Defaults to INFO so the parallel runner's progress and summary table are
+    shown. ``install_token_masking_filter`` (called later in ``main``) only
+    calls ``basicConfig`` when no handler exists yet, so this INFO setup wins.
+    """
+    level = logging.DEBUG if debug else logging.INFO
+    # basicConfig only acts when no handler exists yet; force the level so the
+    # parallel runner's progress/summary is shown even if a handler (e.g. the
+    # token-masking filter) was already attached.
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
+    logging.getLogger().setLevel(level)

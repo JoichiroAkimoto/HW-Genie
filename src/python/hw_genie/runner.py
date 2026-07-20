@@ -129,12 +129,32 @@ def run_all_accounts(
 
 
 def daily_routine(client: HWClient, account: str) -> object:
-    """Run the full daily routine for ``account``."""
-    from hw_genie.commands.daily_raid import run_daily_raid
+    """Run the full daily routine for ``account``.
 
-    # run_daily_raid accepts a client and resolves the item-raid mission id
-    # internally from the DB, so no item_payload is required here.
-    return run_daily_raid(client, item_payload=None, account_alias=account)
+    Returns the final :class:`PlayerStatus` so the runner can render a
+    per-account summary table (see :func:`summarize`).
+
+    Unlike the single-account CLI (which requires a ``--curl`` payload to know
+    the item-raid mission), this builds an item-raid payload from the mission
+    id stored in the DB (``SessionManager.build_item_raid_payload``) so the
+    item raid actually runs to the stamina limit inside ``run_daily_raid``.
+    """
+    from hw_genie.commands.daily_raid import run_daily_raid
+    from hw_genie.core.session_manager import SessionManager
+
+    # The payload shape (calls/ident/context) is owned by SessionManager; the
+    # runner just consumes it. Returns None when no mission id is configured.
+    item_payload = SessionManager.build_item_raid_payload(account=account)
+
+    run_daily_raid(client, item_payload=item_payload, account_alias=account)
+    # Fetch the latest status for the summary table. run_daily_raid already
+    # prints it, but returning it lets multi-account runs show a consolidated
+    # view at the end.
+    try:
+        return client.fetch_player_status()
+    except Exception:  # pragma: no cover - best-effort, never abort summary
+        logger.error("Failed to fetch final status for account '%s'.", account)
+        return None
 
 
 def full_routine(client: HWClient, account: str) -> object:
@@ -147,29 +167,49 @@ def full_routine(client: HWClient, account: str) -> object:
         client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS
     )
     client.exchange_stones()
-    daily_routine(client, account)
-    return hero_res
+    return daily_routine(client, account)
+
+
+def _render_status_row(account: str, result: object) -> str:
+    """Format one account's PlayerStatus (or error) as a table row."""
+    from hw_genie.core.client import PlayerStatus
+    from hw_genie.core.utils import format_number_with_suffix
+
+    if isinstance(result, PlayerStatus):
+        return (
+            f"  {account:<18} | Lv.{result.level:<4} | "
+            f"⚡{result.energy_text:<12} | 🏆{result.arena_rank:<5} | "
+            f"👑{result.grand_rank:<5} | 💰{format_number_with_suffix(result.gold):<7} | "
+            f"💎{format_number_with_suffix(result.gems)}"
+        )
+    return f"  {account:<18} | (status unavailable)"
 
 
 def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | None]]]) -> int:
-    """Log a summary and return the number of failed accounts."""
+    """Print a per-account status table to stdout and return failed count."""
     ok = 0
     failed: list[str] = []
-    for account, (_, err) in results:
+    rows: list[str] = []
+    for account, (res, err) in results:
         if err is None:
             ok += 1
+            rows.append(_render_status_row(account, res))
         else:
             failed.append(account)
 
+    # Separator so the table stands out from the per-account progress logs.
+    print("\n" + "=" * 64)
+    print("📊 --- Multi-account summary ---")
+    if rows:
+        print(f"  {'Account':<18} | {'Lv':<6} | {'Energy':<12} | {'Arena':<5} | "
+              f"{'GA':<5} | {'Gold':<7} | {'Gems'}")
+        print("  " + "-" * 60)
+        print("\n".join(rows))
     if failed:
-        logger.warning(
-            "%d account(s) succeeded, %d failed: %s",
-            ok,
-            len(failed),
-            ", ".join(failed),
-        )
-    else:
-        logger.info("%d account(s) completed successfully.", ok)
+        print("-" * 64)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * 64)
+    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
     return len(failed)
 
 
