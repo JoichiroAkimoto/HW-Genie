@@ -11,12 +11,20 @@
 #   bin/hwda [ACCOUNT ...] [--parallel N]
 #   (mode "daily" is baked in; pass only account aliases and/or --parallel)
 # Concurrency is capped by HWDA_MAX_PARALLEL (0/unset = unbounded = all at once).
+#
+# Output is mirrored to data/logs/hwda_<timestamp>.log (the combined,
+# interleaved log of all accounts in the single process).
 set -u
 
 cd "$(dirname "$0")/.."
 
-echo "=== Starting parallel daily routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ==="
-uv run hw-genie multi daily "$@"
-code=$?
-echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="
+LOG_DIR="data/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/hwda_$(date '+%Y%m%d_%H%M%S').log"
+
+echo "=== Starting parallel daily routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
+uv run hw-genie multi daily "$@" 2>&1 | tee -a "$LOG_FILE"
+code=${PIPESTATUS[0]}
+echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
+echo "Log saved to $LOG_FILE"
 exit $code

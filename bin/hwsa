@@ -11,12 +11,20 @@
 #   bin/hwsa [ACCOUNT ...] [--parallel N]
 #   (mode "full" is baked in; pass only account aliases and/or --parallel)
 # Concurrency is capped by HWDA_MAX_PARALLEL (0/unset = unbounded = all at once).
+#
+# Output is mirrored to data/logs/hwsa_<timestamp>.log (the combined,
+# interleaved log of all accounts in the single process).
 set -u
 
 cd "$(dirname "$0")/.."
 
-echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ==="
-uv run hw-genie multi full "$@"
-code=$?
-echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="
+LOG_DIR="data/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/hwsa_$(date '+%Y%m%d_%H%M%S').log"
+
+echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
+uv run hw-genie multi full "$@" 2>&1 | tee -a "$LOG_FILE"
+code=${PIPESTATUS[0]}
+echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
+echo "Log saved to $LOG_FILE"
 exit $code

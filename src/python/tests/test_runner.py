@@ -114,15 +114,19 @@ def test_run_all_accounts_empty(monkeypatch):
     assert run_all_accounts(lambda c, a: None) == {}
 
 
-def test_summarize_counts_failures(caplog):
+def test_summarize_counts_failures(capsys):
+    from hw_genie.core.client import PlayerStatus
+
     results = [
-        ("alpha", (None, None)),
+        ("alpha", (PlayerStatus(name="Alpha", level=10, gold=100, gems=5, energy=80, arena_rank=3, grand_rank=2), None)),
         ("beta", (None, ValueError("x"))),
     ]
-    with caplog.at_level("WARNING"):
-        failed = summarize(results)
+    failed = summarize(results)
+    out = capsys.readouterr().out
     assert failed == 1
-    assert "beta" in caplog.text
+    assert "alpha" in out
+    assert "beta" in out
+    assert "Failed (1)" in out
 
 
 def test_cmd_multi_dispatch_daily(monkeypatch):
@@ -178,17 +182,50 @@ def test_daily_routine_invokes_run_daily_raid(monkeypatch):
     from hw_genie import runner
 
     calls = {}
-    fake_client = object()
+    fake_client = type("C", (), {})()
+    fake_client.fetch_player_status = lambda: "status_ok"
 
     def fake_daily(client, item_payload=None, account_alias=None):
         calls["client"] = client
         calls["account"] = account_alias
+        calls["item_payload"] = item_payload
         return "ok"
 
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
-    assert runner.daily_routine(fake_client, "acc") == "ok"
+    monkeypatch.setattr(
+        "hw_genie.core.session_manager.SessionManager.get_last_mission_id",
+        lambda account="default": 123,
+    )
+    # daily_routine now returns the fetched PlayerStatus for the summary table
+    # and builds an item-raid payload from the stored mission id so item raid
+    # actually runs (regression: passing None skipped item raid entirely).
+    assert runner.daily_routine(fake_client, "acc") == "status_ok"
     assert calls["client"] is fake_client
     assert calls["account"] == "acc"
+    assert calls["item_payload"] is not None
+    assert calls["item_payload"]["mission_id"] == 123
+    assert calls["item_payload"]["calls"][0]["args"]["id"] == 123
+
+
+def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
+    from hw_genie import runner
+
+    calls = {}
+    fake_client = type("C", (), {})()
+    fake_client.fetch_player_status = lambda: "status_ok"
+
+    def fake_daily(client, item_payload=None, account_alias=None):
+        calls["item_payload"] = item_payload
+        return "ok"
+
+    monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr(
+        "hw_genie.core.session_manager.SessionManager.get_last_mission_id",
+        lambda account="default": None,
+    )
+    runner.daily_routine(fake_client, "acc")
+    # No stored mission id -> item raid is skipped (None), not a broken payload.
+    assert calls["item_payload"] is None
 
 
 def test_full_routine_invokes_subroutines(monkeypatch):
