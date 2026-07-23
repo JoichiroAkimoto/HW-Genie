@@ -109,3 +109,16 @@ def test_auth_error_handling_invalid_session(default_headers, mock_sleep):
         with patch("hw_genie.core.client.HWClient.call", side_effect=HWClient.call, autospec=True):
             with pytest.raises(HWAuthError):
                 client.call({"calls": []})
+
+
+def test_player_status_is_valid():
+    from hw_genie.core.client import PlayerStatus
+
+    invalid_status = PlayerStatus(name="Unknown", level=0)
+    assert not invalid_status.is_valid
+
+    valid_by_level = PlayerStatus(name="Unknown", level=130)
+    assert valid_by_level.is_valid
+
+    valid_by_name = PlayerStatus(name="Joe", level=0)
+    assert valid_by_name.is_valid
