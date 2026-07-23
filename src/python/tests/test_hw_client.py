@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 # パス追加
 
 from . import dummy_responses as dummy
-from hw_genie.core.client import HWClient
+from hw_genie.core.client import HWClient, _safe_int
 
 
 def test_exchange_stones_multi(mock_client, mock_sleep):
@@ -125,3 +125,43 @@ def test_player_status_is_valid():
 
     # 両方有効 → 有効
     assert PlayerStatus(name="Joe", level=130).is_valid
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (42, 42),
+        ("42", 42),
+        ("0", 0),
+        (0, 0),
+        ("abc", 0),
+        ({}, 0),
+        ([], 0),
+        (3.14, 3),
+        ("", 0),
+        ("123.0", 123),
+        ("45.7", 45),
+        ("3.99", 3),
+        ("1e5", 100000),
+        ("1.5e3", 1500),
+    ],
+)
+def test_safe_int_normal(value, expected):
+    assert _safe_int(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, 0),
+        (True, 0),
+        (False, 0),
+    ],
+)
+def test_safe_int_bool_none(value, expected):
+    assert _safe_int(value) == expected
+    assert _safe_int(value, default=-1) == -1
+
+
+def test_safe_int_custom_default():
+    assert _safe_int("nope", default=99) == 99
