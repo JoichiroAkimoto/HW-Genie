@@ -175,7 +175,7 @@ def _status_cells(account: str, result: object) -> list[str] | None:
     from hw_genie.core.client import PlayerStatus
     from hw_genie.core.utils import format_number_with_suffix
 
-    if not isinstance(result, PlayerStatus):
+    if not isinstance(result, PlayerStatus) or not result.is_valid:
         return None
     return [
         account,
@@ -232,9 +232,9 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None:
-            ok += 1
             cells = _status_cells(account, res)
             if cells is not None:
+                ok += 1
                 rows.append(cells)
             else:
                 failed.append(f"{account} (status unavailable)")

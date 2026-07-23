@@ -3,7 +3,7 @@ import time
 import random
 from dataclasses import dataclass, asdict
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
@@ -29,6 +29,8 @@ class ResponseStatus(str, Enum):
 
 @dataclass
 class PlayerStatus:
+    UNKNOWN_NAME: ClassVar[str] = "Unknown"
+
     id: str = "Unknown"
     name: str = "Unknown"
     level: int = 0
@@ -37,6 +39,15 @@ class PlayerStatus:
     energy: int = 0
     arena_rank: int = 0
     grand_rank: int = 0
+
+    @property
+    def is_valid(self) -> bool:
+        """ステータス情報が正常に取得できているか判定。
+
+        名前がデフォルト値（``Unknown``）でなく、かつレベルが 1 以上の場合にのみ
+        ``True`` を返す。どちらか一方でも不正値の場合は ``False``。
+        """
+        return self.name != self.UNKNOWN_NAME and self.level > 0
 
     @property
     def max_energy(self) -> int:
