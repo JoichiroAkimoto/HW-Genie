@@ -155,7 +155,7 @@ def load_model_config():
         # Fallback basic config
         return {
             "flash-lite": {
-                "name": "gemini-3.1-flash-lite",
+                "name": "gemini-flash-lite-latest",
                 "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite"],
                 "input_cost_per_1m": 0.25,
                 "output_cost_per_1m": 1.50,
