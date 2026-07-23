@@ -44,11 +44,10 @@ class PlayerStatus:
     def is_valid(self) -> bool:
         """ステータス情報が正常に取得できているか判定。
 
-        名前・レベルの両方がデフォルト値（``Unknown`` / ``0``）のままの場合は
-        API 通信失敗やパースエラーと見なし ``False`` を返す。
-        どちらか一方でも有効な値が取得できていれば ``True``。
+        名前がデフォルト値（``Unknown``）でなく、かつレベルが 1 以上の場合にのみ
+        ``True`` を返す。どちらか一方でも不正値の場合は ``False``。
         """
-        return not (self.name == self.UNKNOWN_NAME and self.level == 0)
+        return self.name != self.UNKNOWN_NAME and self.level > 0
 
     @property
     def max_energy(self) -> int:
