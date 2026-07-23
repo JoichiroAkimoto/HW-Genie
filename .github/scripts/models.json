@@ -20,7 +20,7 @@
     "max_diff_chars": 2000000
   },
   "gemma": {
-    "name": "gemma-latest",
+    "name": "gemma-4-31b-it",
     "aliases": [
       "gemma-latest",
       "gemma"

@@ -10,6 +10,16 @@ from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Convert value to int safely, returning default on failure."""
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def load_session_headers(account_alias: str | None = None) -> dict[str, str] | None:
     """SessionManager を使用して DB からヘッダー情報を読み込む"""
     account = account_alias or "default"
@@ -66,12 +76,12 @@ class PlayerStatus:
         return cls(
             id=data.get("id", "Unknown"),
             name=data.get("name", "Unknown"),
-            level=int(data.get("level", 0)),
-            gold=int(data.get("gold", 0)),
-            gems=data.get("gems", data.get("starMoney", 0)),  # core.auth では gems ではなく starMoney
-            energy=int(data.get("energy", 0)),
-            arena_rank=int(data.get("arena_rank", data.get("arenaPlace", 0))),
-            grand_rank=int(data.get("grand_rank", data.get("grandPlace", 0))),
+            level=_safe_int(data.get("level")),
+            gold=_safe_int(data.get("gold")),
+            gems=_safe_int(data.get("gems") if "gems" in data else data.get("starMoney")),  # core.auth では gems ではなく starMoney
+            energy=_safe_int(data.get("energy")),
+            arena_rank=_safe_int(data.get("arena_rank", data.get("arenaPlace"))),
+            grand_rank=_safe_int(data.get("grand_rank", data.get("grandPlace"))),
         )
 
     def to_dict(self) -> dict:
@@ -361,19 +371,19 @@ class HWClient:
 
         # データの抽出
         name = user_data.get("name", "Unknown")
-        level = user_data.get("level", 0)
-        gold = user_data.get("gold", 0)
-        gems = user_data.get("starMoney", 0)
+        level = _safe_int(user_data.get("level"))
+        gold = _safe_int(user_data.get("gold"))
+        gems = _safe_int(user_data.get("starMoney"))
 
         energy = 0
         if "refillable" in user_data:
             for item in user_data["refillable"]:
                 if item.get("id") == 1:
-                    energy = item.get("amount", 0)
+                    energy = _safe_int(item.get("amount"))
                     break
 
-        arena_rank = arena_data.get("arenaPlace", 0)
-        grand_rank = arena_data.get("grandPlace", 0)
+        arena_rank = _safe_int(arena_data.get("arenaPlace"))
+        grand_rank = _safe_int(arena_data.get("grandPlace"))
 
         return PlayerStatus(
             name=name,
