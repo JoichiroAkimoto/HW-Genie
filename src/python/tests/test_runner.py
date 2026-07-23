@@ -133,6 +133,20 @@ def test_summarize_counts_failures(capsys):
     assert "Failed (1)" in out
 
 
+def test_summarize_counts_unknown_player_status_as_failed(capsys):
+    from hw_genie.core.client import PlayerStatus
+
+    results = [
+        ("alpha", (PlayerStatus(name="Alpha", level=10, gold=100, gems=5, energy=80, arena_rank=3, grand_rank=2), None)),
+        ("VitaminD", (PlayerStatus(name="Unknown", level=0, gold=0, gems=0, energy=0, arena_rank=0, grand_rank=0), None)),
+    ]
+    failed = summarize(results)
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "1 account(s) completed, ❌ 1 failed." in out
+    assert "VitaminD (status unavailable)" in out
+
+
 def test_cmd_multi_dispatch_daily(monkeypatch):
     from hw_genie import main
 

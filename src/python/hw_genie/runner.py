@@ -177,6 +177,8 @@ def _status_cells(account: str, result: object) -> list[str] | None:
 
     if not isinstance(result, PlayerStatus):
         return None
+    if result.name == "Unknown" and result.level == 0:
+        return None
     return [
         account,
         result.energy_text,
@@ -232,9 +234,9 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None:
-            ok += 1
             cells = _status_cells(account, res)
             if cells is not None:
+                ok += 1
                 rows.append(cells)
             else:
                 failed.append(f"{account} (status unavailable)")
