@@ -114,11 +114,10 @@ def test_auth_error_handling_invalid_session(default_headers, mock_sleep):
 def test_player_status_is_valid():
     from hw_genie.core.client import PlayerStatus
 
-    invalid_status = PlayerStatus(name="Unknown", level=0)
-    assert not invalid_status.is_valid
+    # name と level の両方がデフォルト値 → 無効
+    assert not PlayerStatus(name="Unknown", level=0).is_valid
 
-    valid_by_level = PlayerStatus(name="Unknown", level=130)
-    assert valid_by_level.is_valid
-
-    valid_by_name = PlayerStatus(name="Joe", level=0)
-    assert valid_by_name.is_valid
+    # どちらか一方でも有効値なら有効
+    assert PlayerStatus(name="Unknown", level=130).is_valid  # level が有効
+    assert PlayerStatus(name="Joe", level=0).is_valid        # name が有効
+    assert PlayerStatus(name="Joe", level=130).is_valid      # 両方有効
