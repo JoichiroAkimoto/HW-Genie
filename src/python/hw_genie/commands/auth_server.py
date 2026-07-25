@@ -161,4 +161,16 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, once: bool = False) ->
         print(f"Allowed origins: {', '.join(ALLOWED_ORIGINS)}")
         print("Press Ctrl+C to stop")
 
-    uvicorn.run(create_app(), host=host, port=port, log_level="info", reload=True)
+    reload_enabled = os.environ.get("HW_GENIE_AUTH_RELOAD", "").lower() in ("1", "true", "yes")
+
+    if reload_enabled:
+        uvicorn.run(
+            "hw_genie.commands.auth_server:create_app",
+            host=host,
+            port=port,
+            log_level="info",
+            reload=True,
+            factory=True,
+        )
+    else:
+        uvicorn.run(create_app(), host=host, port=port, log_level="info")
