@@ -46,6 +46,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
     *   **ローカル確認（推奨）**: `uv run hw-genie sync && sqlite3 data/hw_genie.db "SELECT ..."` — Turso CLI 不要。明示的同期後にローカルレプリカを確認。
     *   **スキーマ確認**: `sqlite3 data/hw_genie.db ".schema"` または `sqlite3 data/hw_genie.db ".tables"`。
     *   詳細は `.agents/skills/db-inspect/SKILL.md` を参照。
+    *   スキーマや型定義の詳細は **[docs/db/schema.md](docs/db/schema.md)** を参照。
 *   **セッション管理**: 認証情報は `hw_genie.db` (SQLite) で一元管理されています。環境変数 `DATABASE_URL` で接続先を切り替えることも可能です（Turso 等）。`TURSO_SYNC_URL` を設定すると、ローカルファイルをリモートの Embedded Replica として自動同期できます（詳細は README の「Turso Embedded Replicas (Syncs) の利用」）。
     *   これらの環境変数は `.env` から読み込まれます。direnv を使う場合は `copy.envrc` を `.envrc` にコピーしてください（`.env` の `dotenv` 読み込みが含まれています）。読み込みがないと `TURSO_*` 未設定となり接続エラーになります。
     *   複数端末から書き込む場合は `TURSO_WRITE_REMOTE=true` で write をリモートプライマリへ直接行い、read はローカルレプリカ（接続時に `conn.sync()`）を使う。`TURSO_SYNC_ON_CONNECT` は read 側の最新化用（既定 `true`）。`TURSO_WRITE_REMOTE=true` の場合、write エンジンは `https://...?secure=true` 形式の remote URL を使用します（`libsql://` のままだと 308 リダイレクトエラーになります）。
