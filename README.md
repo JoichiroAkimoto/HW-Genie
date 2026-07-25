@@ -47,6 +47,27 @@ direnv allow
 
 有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です。
 
+### Nix を使用する場合（推奨）
+[Nix](https://nixos.org/) がインストール済みの環境では、`direnv` が Python 3.13 や uv、turso-cli 等のツールを Nix 経由で自動的に提供します。従来の `.venv` による環境構築は不要です。
+
+```bash
+# 1. Nix のインストール（未インストールの場合）
+# Determinate Nix Installer 推奨
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh
+
+# 2. テンプレートから .envrc を作成して許可
+cp copy.envrc .envrc
+direnv allow
+
+# 3. 以降、ディレクトリに入るだけで環境が自動構築される
+#   - Nix が Python 3.13, uv, turso-cli, ruff, pytest 等を提供
+#   - .env の環境変数を自動読み込み
+#   - uv sync + .venv の有効化を自動実行
+hw-genie --help
+```
+
+> Nix がインストールされていない環境では、従来の `.venv` ベースの環境に自動フォールバックします。
+
 ### Docker での実行 (推奨)
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
