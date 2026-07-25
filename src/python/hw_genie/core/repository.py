@@ -136,14 +136,14 @@ class SessionRepository:
                     player = data.get("player")
                     if player is not None and isinstance(player, dict):
                         player_id = player.get("id")
-                        if not player_id:
+                        if player_id is None or player_id == "":
                             # Fallback to alias for compatibility
                             account_rec = db.query(Account).filter(Account.alias == account).first()
                         else:
                             account_rec = db.query(Account).filter(Account.player_id == player_id).first()
 
                         if not account_rec:
-                            if player_id:
+                            if player_id is not None and player_id != "":
                                 account_rec = Account(player_id=player_id, alias=account)
                             else:
                                 raise ValueError(f"player_id is required for new account alias: {account}")
