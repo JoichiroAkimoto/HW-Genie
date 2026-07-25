@@ -21,6 +21,5 @@ tasks/
 .env
 .envrc
 copy.envrc
-**/*.md
 docs/
 .DS_Store
