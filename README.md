@@ -52,7 +52,7 @@ direnv allow
 
 ```bash
 # 1. Nix のインストール（未インストールの場合）
-curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
 
 # 2. テンプレートから .envrc を作成して許可
 cp copy.envrc .envrc
