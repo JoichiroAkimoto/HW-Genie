@@ -68,7 +68,6 @@ uv run --locked ruff check .
 ```
 
 > Nix がインストールされていない環境では、従来の `.venv` ベースの環境に自動フォールバックします（`.venv` が存在すれば `source .venv/bin/activate`、なければ何もしません）。
-> `nix develop` 単独で使用する場合も同様に、`uv run --locked` で各コマンドを実行してください。`bin/hwda` や `bin/hwsa` は `nix develop` 内では `bin/hwda` のようにフルパスで指定します。
 
 ### Docker での実行 (推奨)
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
