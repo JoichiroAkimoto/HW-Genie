@@ -19,17 +19,9 @@
             python313
             uv
             turso-cli
-            ruff
-            pytest
             sqlite
             sqlite-interactive
           ];
-
-          shellHook = ''
-            # uv sync + 仮想環境有効化
-            uv sync --frozen || uv sync
-            source .venv/bin/activate
-          '';
         };
       }
     );
