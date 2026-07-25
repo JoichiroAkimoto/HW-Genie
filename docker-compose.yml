@@ -1,3 +1,14 @@
+x-db-env: &db-env
+  # SQLite (default): sqlite:////app/data/hw_genie.db
+  # libSQL (Turso): sqlite+libsql://[your-db].turso.io/?auth_token=[your-token]&secure=true
+  DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
+  # Turso Embedded Replicas (Syncs): set DATABASE_URL to a local file
+  # (e.g. sqlite:////app/data/hw_genie.db) and provide the values below to
+  # enable local-replica sync. When unset, sync is disabled.
+  TURSO_SYNC_URL: ${TURSO_SYNC_URL:-}
+  TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
+  TURSO_SYNC_INTERVAL: ${TURSO_SYNC_INTERVAL:-}
+
 services:
   auth-server:
     build: .
@@ -5,21 +16,13 @@ services:
     ports:
       - "8765:8765"
     environment:
-      # SQLite (default): sqlite:////app/data/hw_genie.db
-      # libSQL (Turso): sqlite+libsql://[your-db].turso.io/?auth_token=[your-token]&secure=true
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
-      # Turso Embedded Replicas (Syncs): set DATABASE_URL to a local file
-      # (e.g. sqlite:////app/data/hw_genie.db) and provide the values below to
-      # enable local-replica sync. When unset, sync is disabled.
-      - TURSO_SYNC_URL=${TURSO_SYNC_URL:-}
-      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
-      - TURSO_SYNC_INTERVAL=${TURSO_SYNC_INTERVAL:-}
-      - HW_GENIE_AUTH_PORT=8765
-      - HW_GENIE_AUTH_HOST=0.0.0.0
+      <<: *db-env
+      HW_GENIE_AUTH_PORT: 8765
+      HW_GENIE_AUTH_HOST: 0.0.0.0
     volumes:
       # マウント先をディレクトリにすることで、SQLite のジャーナルファイル作成等でのトラブルを防ぐ
       - ./data:/app/data
-      # 開発時にソースコードの変更をビルドなしで反映させる（ホットリロード的な挙動）
+      # ソース変更は再ビルド不要。反映には `docker compose restart auth-server` を実行する。
       - ./src/python/hw_genie:/app/hw_genie
 
   # Bulk runner: runs a routine for ALL accounts inside a single container
@@ -38,11 +41,8 @@ services:
     build: .
     user: "1000:1000"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
-      - TURSO_SYNC_URL=${TURSO_SYNC_URL:-}
-      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
-      - TURSO_SYNC_INTERVAL=${TURSO_SYNC_INTERVAL:-}
-      - HWDA_MAX_PARALLEL=${HWDA_MAX_PARALLEL:-}
+      <<: *db-env
+      HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie
@@ -53,11 +53,8 @@ services:
     build: .
     user: "1000:1000"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/hw_genie.db}
-      - TURSO_SYNC_URL=${TURSO_SYNC_URL:-}
-      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
-      - TURSO_SYNC_INTERVAL=${TURSO_SYNC_INTERVAL:-}
-      - HWDA_MAX_PARALLEL=${HWDA_MAX_PARALLEL:-}
+      <<: *db-env
+      HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie

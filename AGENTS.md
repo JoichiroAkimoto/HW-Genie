@@ -69,8 +69,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 ### テストとリンターの実行（必須）
 `src/python/hw_genie` 以下のコードを変更した場合は、必ず以下のコマンドを実行し、エラーがないことを確認してください。
 
-*   **リンター**: `uv run ruff check . --fix`
-*   **テスト**: `uv run pytest`
+*   **リンター**: `uv run --locked ruff check . --fix`
+*   **テスト**: `uv run --locked pytest`
 
 新機能の追加やバグ修正の際は、`src/python/tests` に適切なテストケースを追加・更新し、既存のテストを壊していないことを確認してください。
 
