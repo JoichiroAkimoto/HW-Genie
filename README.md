@@ -10,12 +10,15 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
+- **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
 
 ### Python CLI (hw-genie)
 Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
+
+> **開発者向け**: DB の状態確認には [turso CLI](https://docs.turso.tech/reference/turso-cli) が便利です。`turso auth login` で認証後、`turso db shell hw-genie-db "SELECT ..."` で Turso クラウド上の最新データを直接参照できます。
 
 ```bash
 # 1. 依存関係のインストール (初回のみ)
@@ -99,6 +102,14 @@ export DATABASE_URL="libsql://localhost:8080"
 
 # 3. 実行
 uv run hw-genie --help
+```
+
+#### 明示的同期
+
+`uv run hw-genie sync` で、ローカルレプリカを Turso クラウドと明示的に同期できます。`TURSO_SYNC_URL` 未設定時は何もせず終了します。
+
+```bash
+uv run hw-genie sync
 ```
 
 #### Turso Embedded Replicas (Syncs) の利用

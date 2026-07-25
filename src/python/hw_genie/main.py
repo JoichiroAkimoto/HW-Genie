@@ -266,6 +266,32 @@ def cmd_daily(args):
     run_daily_raid(client, item_payload=item_payload, account_alias=args.account or "default")
 
 
+def cmd_sync(args):
+    """Sync the local Turso replica with the remote cloud database."""
+    sync_url = os.environ.get("TURSO_SYNC_URL")
+    if not sync_url:
+        print("TURSO_SYNC_URL is not set — nothing to sync.")
+        return
+
+    from hw_genie.core.database import get_engine
+
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            raw = conn.connection.dbapi_connection
+            if hasattr(raw, "sync"):
+                raw.sync()
+            else:
+                from sqlalchemy import text
+
+                conn.execute(text("SELECT 1"))
+    except Exception as e:
+        print(f"✗ Sync failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+
+
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
     from hw_genie.runner import (
@@ -342,6 +368,10 @@ def main():
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
+
+    # Sync
+    p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
+    p_sync.set_defaults(func=cmd_sync)
 
     # Multi (single-process parallel across accounts)
     # NOTE: do NOT inherit parent_parser — the ``--account`` flag is meaningless

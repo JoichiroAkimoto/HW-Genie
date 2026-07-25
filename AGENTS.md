@@ -15,6 +15,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-shopping**: HW-Genie を使用して、ターゲットショップのヒーローソウルとソウルショップの全アイテムを一括購入します。
 *   **hero-wars-auth**: HW-Genie を使用してセッション情報を管理し、ユーザー情報を取得します。ブラウザからコピーした curl コマンドを使用して認証情報を更新できます。
 *   **item-raid**: HW-Genie を使用して特定のアイテムを収集します。失敗する（スタミナ不足等）か指定回数に達するまで繰り返し実行します。
+*   **db-inspect**: HW-Genie のデータベース（Turso クラウド / ローカルレプリカ）を確認します。機能開発時の状態確認やデバッグに使用します。
 
 ### 2. コマンドラインツールの使用法
 すべての操作はルートディレクトリから `uv run hw-genie` を通じて行われます。
@@ -29,6 +30,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
+*   **同期**: `uv run hw-genie sync` （ローカル Turso レプリカをクラウドと明示的に同期）
 *   **デバッグ出力**: 各コマンドに `--debug` を付与することで詳細なペイロード等が出力されます (例: `uv run hw-genie --debug daily`)
 
 ### 3. API 仕様とメソッドの理解
@@ -39,6 +41,11 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 エージェントが新しいレイド対象を提案したり、特定の API レスポンスを解析したりする際に、このドキュメントが役立ちます。
 
 ### 4. 重要事項（エージェント向け）
+*   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。
+    *   **リモート確認（推奨）**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。
+    *   **ローカル確認**: `uv run hw-genie sync && sqlite3 data/hw_genie.db "SELECT ..."` — 明示的同期後にローカルレプリカを確認。
+    *   **スキーマ確認**: `turso db shell hw-genie-db ".schema"` または `turso db shell hw-genie-db ".tables"`。
+    *   詳細は `.agents/skills/db-inspect/SKILL.md` を参照。
 *   **セッション管理**: 認証情報は `hw_genie.db` (SQLite) で一元管理されています。環境変数 `DATABASE_URL` で接続先を切り替えることも可能です（Turso 等）。`TURSO_SYNC_URL` を設定すると、ローカルファイルをリモートの Embedded Replica として自動同期できます（詳細は README の「Turso Embedded Replicas (Syncs) の利用」）。
     *   これらの環境変数は `.env` から読み込まれます。direnv を使う場合は `copy.envrc` を `.envrc` にコピーしてください（`.env` の `dotenv` 読み込みが含まれています）。読み込みがないと `TURSO_*` 未設定となり接続エラーになります。
     *   複数端末から書き込む場合は `TURSO_WRITE_REMOTE=true` で write をリモートプライマリへ直接行い、read はローカルレプリカ（接続時に `conn.sync()`）を使う。`TURSO_SYNC_ON_CONNECT` は read 側の最新化用（既定 `true`）。`TURSO_WRITE_REMOTE=true` の場合、write エンジンは `https://...?secure=true` 形式の remote URL を使用します（`libsql://` のままだと 308 リダイレクトエラーになります）。
