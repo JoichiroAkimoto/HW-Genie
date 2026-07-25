@@ -1,14 +1,14 @@
 import json
 import os
-from typing import Optional, Dict, Any, List
-from .repository import SessionRepository
+from typing import Optional, List
+from .repository import SessionRepository, AccountData
 
 
 class SessionManager:
     repo = SessionRepository()
 
     @classmethod
-    def save(cls, account: str, data: Dict[str, Any]):
+    def save(cls, account: str, data: AccountData):
         account = account.strip()
         resolved_account = account
         if account != "default":
@@ -33,7 +33,7 @@ class SessionManager:
         return cls.repo.list_accounts()
 
     @classmethod
-    def load(cls, account: str = "default") -> Dict[str, Any]:
+    def load(cls, account: str = "default") -> AccountData:
         account = account.strip()
         data = cls.repo.get_data(account)
 
