@@ -161,4 +161,4 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, once: bool = False) ->
         print(f"Allowed origins: {', '.join(ALLOWED_ORIGINS)}")
         print("Press Ctrl+C to stop")
 
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    uvicorn.run(create_app(), host=host, port=port, log_level="info", reload=True)
