@@ -45,7 +45,7 @@ direnv allow
 `copy.envrc` の最新版を `.envrc` に反映してください（`.env` の `dotenv` 読み込みが
 含まれていないと `TURSO_*` 等が未設定となります）。
 
-有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です。
+有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。
 
 ### Nix を使用する場合（推奨）
 [Nix](https://nixos.org/) がインストール済みの環境では、`direnv` が Python 3.13 や uv、turso-cli 等のツールを Nix 経由で自動的に提供します。
