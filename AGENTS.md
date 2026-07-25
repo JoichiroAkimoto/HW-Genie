@@ -42,7 +42,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 
 ### 4. 重要事項（エージェント向け）
 *   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。
-    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただし Turso 無料プランのため、DB 作成者アカウントでのログインが必要です。
+    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただしDB 作成者アカウントでのログインが必要です。
     *   **ローカル確認（推奨）**: `uv run hw-genie sync && sqlite3 data/hw_genie.db "SELECT ..."` — Turso CLI 不要。明示的同期後にローカルレプリカを確認。
     *   **スキーマ確認**: `sqlite3 data/hw_genie.db ".schema"` または `sqlite3 data/hw_genie.db ".tables"`。
     *   詳細は `.agents/skills/db-inspect/SKILL.md` を参照。
