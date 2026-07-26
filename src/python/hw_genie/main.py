@@ -466,7 +466,6 @@ class _Tee:
         for s in self.streams:
             s.write(data)
         self.file.write(data)
-        self.file.flush()
 
     def writelines(self, lines):
         for line in lines:
@@ -493,6 +492,12 @@ class _Tee:
         return "utf-8"
 
     def isatty(self):
+        for s in (*self.streams, self.file):
+            try:
+                if s.isatty():
+                    return True
+            except AttributeError:
+                continue
         return False
 
     def getvalue(self):
@@ -554,7 +559,7 @@ def _setup_file_logging(log_dir: str, log_name: str = "hw-genie") -> None:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, f"{log_name}_{ts}.log")
 
-    log_file = open(log_path, "a", encoding="utf-8")
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
     atexit.register(log_file.close)
 
     _out = sys.stdout
