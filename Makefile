@@ -1,4 +1,4 @@
-.PHONY: test lint format typecheck docker-build clean
+.PHONY: test lint format docker-build clean
 
 test:
 	uv run pytest
@@ -8,9 +8,6 @@ lint:
 
 format:
 	uv run ruff format .
-
-typecheck:
-	uv run ruff check .
 
 docker-build:
 	docker build -t hw-genie .

@@ -192,7 +192,7 @@ _SUMMARY_HEADERS = ["Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "
 
 # Emoji rendered double-width by most terminals. ``len()`` counts them as one
 # code point, so we correct the display width to keep columns aligned.
-_WIDE_CHARS = frozenset("⚡🏆👑💰💎📊")
+_WIDE_CHARS = frozenset("⚡🏆👑💰💎")
 
 
 def _display_width(text: str) -> int:
@@ -232,9 +232,9 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None:
-            ok += 1
             cells = _status_cells(account, res)
             if cells is not None:
+                ok += 1
                 rows.append(cells)
             else:
                 failed.append(f"{account} (status unavailable)")
