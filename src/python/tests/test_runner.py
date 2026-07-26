@@ -1,5 +1,4 @@
 import logging
-import sys
 import time
 from unittest.mock import MagicMock
 
@@ -554,3 +553,98 @@ def test_format_timestamp_for_display_respects_hwgenie_tz(monkeypatch):
 
     # Missing/unknown values pass through untouched.
     assert format_timestamp_for_display("Never") == "Never"
+
+
+def test_cmd_sync_no_turso(monkeypatch, capsys):
+    """sync without TURSO_SYNC_URL should print message and return."""
+    monkeypatch.delenv("TURSO_SYNC_URL", raising=False)
+    from hw_genie import main
+
+    args = type("A", (), {"account": None, "debug": False})()
+    main.cmd_sync(args)
+    captured = capsys.readouterr()
+    assert "not set" in captured.out
+
+
+def test_cmd_sync_with_turso(monkeypatch, capsys):
+    """sync with TURSO_SYNC_URL should call sync() on the raw connection."""
+    monkeypatch.setenv("TURSO_SYNC_URL", "libsql://test.turso.io")
+
+    sync_called = False
+
+    class FakeRawConn:
+        def sync(self):
+            nonlocal sync_called
+            sync_called = True
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        @property
+        def connection(self):
+            return self
+
+        @property
+        def dbapi_connection(self):
+            return FakeRawConn()
+
+        def execute(self, *a, **kw):
+            pass
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    monkeypatch.setattr("hw_genie.core.database.get_engine", lambda: FakeEngine())
+
+    from hw_genie import main
+
+    args = type("A", (), {"account": None, "debug": False})()
+    main.cmd_sync(args)
+    captured = capsys.readouterr()
+    assert sync_called
+    assert "synced" in captured.out.lower()
+    assert "test.turso.io" in captured.out
+
+
+def test_cmd_sync_sync_failure(monkeypatch, capsys):
+    """sync should report failure when raw.sync() raises."""
+    monkeypatch.setenv("TURSO_SYNC_URL", "libsql://test.turso.io")
+
+    class FakeRawConn:
+        def sync(self):
+            raise RuntimeError("connection refused")
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        @property
+        def connection(self):
+            return self
+
+        @property
+        def dbapi_connection(self):
+            return FakeRawConn()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    monkeypatch.setattr("hw_genie.core.database.get_engine", lambda: FakeEngine())
+
+    from hw_genie import main
+
+    args = type("A", (), {"account": None, "debug": False})()
+    with pytest.raises(SystemExit):
+        main.cmd_sync(args)
+    captured = capsys.readouterr()
+    assert "Sync failed" in captured.err
+    assert "connection refused" in captured.err

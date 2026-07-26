@@ -32,6 +32,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Stage 2: Runtime stage
 FROM python:3.13-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy installed packages from builder
