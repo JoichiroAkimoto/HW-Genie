@@ -165,7 +165,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
     args = type(
         "A",
         (),
-        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False, "log_dir": None},
+        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False},
     )()
 
     with pytest.raises(SystemExit) as exc:
@@ -190,7 +190,7 @@ def test_cmd_multi_default_all_accounts(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False, "log_dir": None})()
+    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False})()
     main.cmd_multi(args)
     # empty accounts -> all accounts used
     assert captured["accounts"] == ["x", "y"]
@@ -344,7 +344,7 @@ def test_cmd_multi_limits_to_named_account(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False, "log_dir": None})()
+    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False})()
     main.cmd_multi(args)
     assert captured["accounts"] == ["account1"]
 
