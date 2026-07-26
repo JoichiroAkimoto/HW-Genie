@@ -1,8 +1,12 @@
 import argparse
+import atexit
+import datetime
+import glob
 import logging
 import os
 import sys
 import json
+import time
 from hw_genie.core.client import HWClient, load_session_headers
 from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl, extract_payload_from_curl
 from hw_genie.core.utils import format_number_with_suffix
@@ -266,8 +270,37 @@ def cmd_daily(args):
     run_daily_raid(client, item_payload=item_payload, account_alias=args.account or "default")
 
 
+def cmd_sync(args):
+    """Sync the local Turso replica with the remote cloud database."""
+    sync_url = os.environ.get("TURSO_SYNC_URL")
+    if not sync_url:
+        print("TURSO_SYNC_URL is not set — nothing to sync.")
+        return
+
+    from hw_genie.core.database import get_engine
+
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            raw = conn.connection.dbapi_connection
+            if hasattr(raw, "sync"):
+                raw.sync()
+            else:
+                from sqlalchemy import text
+
+                conn.execute(text("SELECT 1"))
+    except Exception as e:
+        print(f"✗ Sync failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+
+
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    if args.log_dir:
+        _setup_file_logging(args.log_dir)
+
     from hw_genie.runner import (
         daily_routine,
         full_routine,
@@ -343,6 +376,10 @@ def main():
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
 
+    # Sync
+    p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
+    p_sync.set_defaults(func=cmd_sync)
+
     # Multi (single-process parallel across accounts)
     # NOTE: do NOT inherit parent_parser — the ``--account`` flag is meaningless
     # here because ``multi`` orchestrates accounts internally, and exposing it
@@ -370,6 +407,12 @@ def main():
         type=int,
         default=None,
         help="Max concurrent accounts (default: HWDA_MAX_PARALLEL / unbounded)",
+    )
+    p_multi.add_argument(
+        "--log-dir",
+        type=str,
+        default=None,
+        help="Directory to write mirrored log files (enables log rotation)",
     )
     p_multi.set_defaults(func=cmd_multi)
 
@@ -410,6 +453,127 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+class _Tee:
+    """Write to multiple streams simultaneously (like shell ``tee``)."""
+
+    def __init__(self, file, *streams):
+        self.file = file
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+        self.file.write(data)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+        self.file.flush()
+
+    @property
+    def closed(self):
+        return self.file.closed
+
+    @property
+    def encoding(self):
+        for s in (*self.streams, self.file):
+            try:
+                enc = s.encoding
+            except AttributeError:
+                continue
+            if enc:
+                return enc
+        return "utf-8"
+
+    def isatty(self):
+        for s in (*self.streams, self.file):
+            try:
+                if s.isatty():
+                    return True
+            except AttributeError:
+                continue
+        return False
+
+    def getvalue(self):
+        for s in self.streams:
+            gv = getattr(s, "getvalue", None)
+            if gv:
+                return gv()
+        return ""
+
+
+def _prune_logs(log_dir: str, *patterns: str) -> None:
+    """Remove logs older than ``HWDA_LOG_KEEP_DAYS`` from ``log_dir``.
+
+    Each ``pattern`` is a glob (e.g. ``"hw-genie_*.log"``). Default retention
+    is 7 days; set ``HWDA_LOG_KEEP_DAYS=0`` to disable.
+    """
+    raw = os.environ.get("HWDA_LOG_KEEP_DAYS", "7")
+    try:
+        keep_days = int(raw)
+    except (TypeError, ValueError):
+        keep_days = 7
+    if keep_days <= 0 or not patterns:
+        return
+    cutoff = time.time() - keep_days * 86400
+    for pat in patterns:
+        for path in glob.glob(os.path.join(log_dir, pat)):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError as exc:
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to remove old log %s: %s", path, exc)
+
+
+_LOGGING_SET_UP = False
+
+
+def _setup_file_logging(log_dir: str, log_name: str = "hw-genie") -> None:
+    """Mirror console output to a timestamped log file in ``log_dir``.
+
+    Wraps ``sys.stdout`` / ``sys.stderr`` with a ``_Tee`` so that all console
+    output (``print``, ``logging``, exception tracebacks) is simultaneously
+    written to both the terminal and a file. ``StreamHandler`` objects that
+    write to the original ``sys.stderr`` are redirected to the wrapped stderr
+    so logger output is captured too.
+
+    Old logs matching ``{log_name}_*.log`` (plus legacy ``hwda_*`` / ``hwsa_*``
+    patterns) are pruned on startup (see ``_prune_logs``).
+
+    Safe to call multiple times — subsequent calls are no-ops.
+    """
+    global _LOGGING_SET_UP
+    if _LOGGING_SET_UP:
+        return
+    _LOGGING_SET_UP = True
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(log_dir, f"{log_name}_{ts}.log")
+
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    atexit.register(log_file.close)
+
+    _out = sys.stdout
+    _err = sys.stderr
+    sys.stdout = _Tee(log_file, _out)
+    sys.stderr = _Tee(log_file, _err)
+
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            h.stream = sys.stderr
+
+    print(f"Logging to {log_path}")
+    _prune_logs(log_dir, f"{log_name}_*.log", "hwda_*.log", "hwsa_*.log")
 
 
 def setup_logging(debug: bool = False) -> None:

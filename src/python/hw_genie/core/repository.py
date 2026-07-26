@@ -1,11 +1,41 @@
 import threading
-from typing import Any, Dict, List
+from typing import Any, List, TypedDict
 from .database import (
     Account,
     AccountConfig,
     get_session_local,
     get_write_session_local,
 )
+
+
+class HeadersConfig(TypedDict, total=False):
+    """``config_key = "headers"`` — authentication headers stored per account."""
+    x_auth_session_id: str
+    x_auth_token: str
+    x_auth_user_id: str
+    x_request_id: str
+
+
+class PlayerInfo(TypedDict, total=False):
+    """Player profile assembled from ``Account`` columns and ``player_*`` config keys."""
+    id: str
+    name: str
+    level: int
+    gold: int
+    gems: int
+    energy: int
+    arena_rank: int
+    grand_rank: int
+
+
+class AccountData(TypedDict, total=False):
+    """Full account data dict returned by :meth:`get_data` and accepted by :meth:`update_config`."""
+    headers: HeadersConfig
+    player: PlayerInfo
+    status: str
+    last_updated: str
+    last_item_raid_mission_id: int
+    memo: str
 
 # Process-wide lock serialising write transactions. When running all accounts
 # inside one process (``hw-genie multi`` / bin/hwda), multiple threads may try
@@ -18,7 +48,7 @@ _write_lock = threading.Lock()
 
 
 class SessionRepository:
-    def get_data(self, account: str) -> Dict[str, Any]:
+    def get_data(self, account: str) -> AccountData:
         """
         Retrieves all data for an account, merging info from Account and AccountConfig tables.
 
@@ -29,7 +59,7 @@ class SessionRepository:
             account (str): The account alias.
 
         Returns:
-            Dict[str, Any]: A dictionary containing merged account data.
+            AccountData: A dictionary containing merged account data.
         """
         with get_session_local()() as db:
             account_rec = db.query(Account).filter(Account.alias == account).first()
@@ -87,17 +117,17 @@ class SessionRepository:
             records = db.query(Account.alias).all()
             return [r.alias for r in records]
 
-    def save_data(self, account: str, data: Dict[str, Any]) -> None:
+    def save_data(self, account: str, data: AccountData) -> None:
         """Backward compatibility wrapper for update_config."""
         self.update_config(account, data)
 
-    def update_config(self, account: str, data: Dict[str, Any]) -> None:
+    def update_config(self, account: str, data: AccountData) -> None:
         """
         Updates account data in both Account and AccountConfig tables.
         
         Args:
             account (str): The account alias.
-            data (Dict[str, Any]): The data to save.
+            data (AccountData): The data to save.
         """
         with _write_lock:
             with get_write_session_local()() as db:
@@ -106,14 +136,14 @@ class SessionRepository:
                     player = data.get("player")
                     if player is not None and isinstance(player, dict):
                         player_id = player.get("id")
-                        if not player_id:
+                        if player_id is None or player_id == "":
                             # Fallback to alias for compatibility
                             account_rec = db.query(Account).filter(Account.alias == account).first()
                         else:
                             account_rec = db.query(Account).filter(Account.player_id == player_id).first()
 
                         if not account_rec:
-                            if player_id:
+                            if player_id is not None and player_id != "":
                                 account_rec = Account(player_id=player_id, alias=account)
                             else:
                                 raise ValueError(f"player_id is required for new account alias: {account}")

@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
-from hw_genie.commands.auth_server import create_app, AuthServer, validate_auth_headers
+from hw_genie.commands.auth_server import create_app, AuthServer, run_server, validate_auth_headers
 
 
 VALID_HEADERS = {
@@ -154,3 +154,16 @@ class TestValidateHeaders:
             "x-auth-user-id": "67890",
         }
         assert validate_auth_headers(headers) is True
+
+
+class TestAuthServerStartup:
+    @patch("uvicorn.run")
+    @patch("hw_genie.commands.auth_server.init_db")
+    def test_run_server_does_not_enable_reload_from_environment(self, mock_init_db, mock_uvicorn_run, monkeypatch):
+        monkeypatch.setenv("HW_GENIE_AUTH_RELOAD", "true")
+
+        run_server()
+
+        args, kwargs = mock_uvicorn_run.call_args
+        assert not isinstance(args[0], str)
+        assert kwargs.get("reload") is None

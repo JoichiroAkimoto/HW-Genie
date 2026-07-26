@@ -2,18 +2,14 @@
 # Run the FULL routine (hero raid + shop + daily) for ALL registered accounts
 # inside a SINGLE Python process (parallel via a thread pool). Running in one
 # process lets the libSQL Embedded Replica be opened concurrently without the
-# multi-process `wal_insert_begin failed` WAL contention (see issue #47).
+# multi-process WAL contention (see issue #47).
 #
-# This script is intended to run inside the Docker container (or locally with
-# uv) where the DB (and optionally Turso Syncs) is already available.
+# Output is mirrored to data/logs/hw-genie_<timestamp>.log by the Python
+# ``--log-dir`` option (log rotation handled internally).
 #
 # Usage:
 #   bin/hwsa [ACCOUNT ...] [--parallel N]
 #   (mode "full" is baked in; pass only account aliases and/or --parallel)
-# Concurrency is capped by HWDA_MAX_PARALLEL (0/unset = unbounded = all at once).
-#
-# Output is mirrored to data/logs/hwsa_<timestamp>.log (the combined,
-# interleaved log of all accounts in the single process).
 set -u
 
 cd "$(dirname "$0")/.."

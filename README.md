@@ -10,12 +10,15 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
+- **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
 
 ### Python CLI (hw-genie)
 Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
+
+> **開発者向け**: DB の状態確認には [turso CLI](https://docs.turso.tech/reference/turso-cli) が便利です。`turso auth login` で認証後、`turso db shell hw-genie-db "SELECT ..."` で Turso クラウド上の最新データを直接参照できます。
 
 ```bash
 # 1. 依存関係のインストール (初回のみ)
@@ -42,7 +45,29 @@ direnv allow
 `copy.envrc` の最新版を `.envrc` に反映してください（`.env` の `dotenv` 読み込みが
 含まれていないと `TURSO_*` 等が未設定となります）。
 
-有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です。
+有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。
+
+### Nix を使用する場合（推奨）
+[Nix](https://nixos.org/) がインストール済みの環境では、`direnv` が Python 3.13 や uv、turso-cli 等のツールを Nix 経由で自動的に提供します。
+
+```bash
+# 1. Nix のインストール（未インストールの場合）
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+
+# 2. テンプレートから .envrc を作成して許可
+cp copy.envrc .envrc
+direnv allow
+
+# 3. 依存関係の同期（初回のみ、または pyproject.toml/uv.lock 更新後）
+uv sync --locked
+
+# 4. コマンドは uv run --locked 経由で実行
+uv run --locked hw-genie --help
+uv run --locked pytest
+uv run --locked ruff check .
+```
+
+> Nix がインストールされていない環境では、従来の `.venv` ベースの環境に自動フォールバックします（`.venv` が存在すれば `source .venv/bin/activate`、なければ何もしません）。
 
 ### Docker での実行 (推奨)
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
@@ -99,6 +124,14 @@ export DATABASE_URL="libsql://localhost:8080"
 
 # 3. 実行
 uv run hw-genie --help
+```
+
+#### 明示的同期
+
+`uv run hw-genie sync` で、ローカルレプリカを Turso クラウドと明示的に同期できます。`TURSO_SYNC_URL` 未設定時は何もせず終了します。
+
+```bash
+uv run hw-genie sync
 ```
 
 #### Turso Embedded Replicas (Syncs) の利用

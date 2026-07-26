@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -133,6 +134,20 @@ def test_summarize_counts_failures(capsys):
     assert "Failed (1)" in out
 
 
+def test_summarize_counts_unknown_player_status_as_failed(capsys):
+    from hw_genie.core.client import PlayerStatus
+
+    results = [
+        ("alpha", (PlayerStatus(name="Alpha", level=10, gold=100, gems=5, energy=80, arena_rank=3, grand_rank=2), None)),
+        ("VitaminD", (PlayerStatus(name="Unknown", level=0, gold=0, gems=0, energy=0, arena_rank=0, grand_rank=0), None)),
+    ]
+    failed = summarize(results)
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "1 account(s) completed, ❌ 1 failed." in out
+    assert "VitaminD (status unavailable)" in out
+
+
 def test_cmd_multi_dispatch_daily(monkeypatch):
     from hw_genie import main
 
@@ -151,7 +166,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
     args = type(
         "A",
         (),
-        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False},
+        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False, "log_dir": None},
     )()
 
     with pytest.raises(SystemExit) as exc:
@@ -176,7 +191,7 @@ def test_cmd_multi_default_all_accounts(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False})()
+    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False, "log_dir": None})()
     main.cmd_multi(args)
     # empty accounts -> all accounts used
     assert captured["accounts"] == ["x", "y"]
@@ -330,7 +345,7 @@ def test_cmd_multi_limits_to_named_account(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False})()
+    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False, "log_dir": None})()
     main.cmd_multi(args)
     assert captured["accounts"] == ["account1"]
 

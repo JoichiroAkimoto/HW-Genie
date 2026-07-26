@@ -175,7 +175,8 @@ def _status_cells(account: str, result: object) -> list[str] | None:
     from hw_genie.core.client import PlayerStatus
     from hw_genie.core.utils import format_number_with_suffix
 
-    if not isinstance(result, PlayerStatus):
+<<<<<<< HEAD
+    if not isinstance(result, PlayerStatus) or not result.is_valid:
         return None
     return [
         account,

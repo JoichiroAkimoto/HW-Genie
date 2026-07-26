@@ -3,7 +3,7 @@ FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
-# Install build tools for native extensions (required for libsql-experimental)
+# Install build tools for native extensions (libsql-experimental needs a C compiler)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -16,15 +16,18 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # 1. Copy only dependency files first to leverage Docker cache
 COPY src/python/pyproject.toml src/python/uv.lock* ./
 
-# 2. Install dependencies using a temporary requirements file to avoid shell issues with process substitution
-RUN uv export --format requirements-txt > requirements.txt && \
+# 2. Export dependencies to requirements.txt and install them system-wide.
+#    Using a temporary file avoids shell process-substitution issues.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv export --frozen --no-dev --format requirements-txt > requirements.txt && \
     uv pip install --system -r requirements.txt
 
 # 3. Now copy the source code
 COPY src/python/hw_genie ./hw_genie
 
 # 4. Install the project (this will be fast since deps are already installed)
-RUN uv pip install --system .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system .
 
 # Stage 2: Runtime stage
 FROM python:3.13-slim

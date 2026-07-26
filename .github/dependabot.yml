@@ -1,7 +1,7 @@
 version: 2
 updates:
   # 1. Python dependency check (src/python/pyproject.toml)
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/src/python"
     schedule:
       interval: "weekly"
