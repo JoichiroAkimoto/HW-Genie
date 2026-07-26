@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -165,7 +166,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
     args = type(
         "A",
         (),
-        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False},
+        {"mode": "daily", "accounts": ["a", "b"], "parallel": 2, "debug": False, "log_dir": None},
     )()
 
     with pytest.raises(SystemExit) as exc:
@@ -190,7 +191,7 @@ def test_cmd_multi_default_all_accounts(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False})()
+    args = type("A", (), {"mode": "full", "accounts": [], "parallel": None, "debug": False, "log_dir": None})()
     main.cmd_multi(args)
     # empty accounts -> all accounts used
     assert captured["accounts"] == ["x", "y"]
@@ -344,7 +345,7 @@ def test_cmd_multi_limits_to_named_account(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
 
-    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False})()
+    args = type("A", (), {"mode": "daily", "accounts": ["account1"], "parallel": None, "debug": False, "log_dir": None})()
     main.cmd_multi(args)
     assert captured["accounts"] == ["account1"]
 
@@ -609,6 +610,292 @@ def test_cmd_sync_with_turso(monkeypatch, capsys):
     assert sync_called
     assert "synced" in captured.out.lower()
     assert "test.turso.io" in captured.out
+
+
+def _run_multi_with_log_dir(monkeypatch, tmp_path, mode="daily"):
+    """Helper: run ``cmd_multi`` with ``--log-dir`` and return the log file."""
+    from hw_genie import main
+
+    monkeypatch.setattr("hw_genie.main._LOGGING_SET_UP", False)
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+    monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
+
+    args = type("A", (), {
+        "mode": mode, "accounts": [], "parallel": None,
+        "debug": False, "log_dir": str(log_dir),
+    })()
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    root = logging.getLogger()
+    old_handler_streams = {
+        h: h.stream
+        for h in root.handlers[:]
+        if isinstance(h, logging.StreamHandler)
+    }
+    try:
+        main.cmd_multi(args)
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        for h, stream in old_handler_streams.items():
+            h.stream = stream
+
+    log_files = sorted(log_dir.glob("hw-genie_*.log"))
+    assert len(log_files) == 1
+    return log_files[0]
+
+
+def test_cmd_multi_with_log_dir_creates_log_file(monkeypatch, tmp_path):
+    """``hw-genie multi daily --log-dir <dir>`` writes a mirrored log file."""
+    log_path = _run_multi_with_log_dir(monkeypatch, tmp_path, mode="daily")
+    content = log_path.read_text("utf-8")
+    assert "Logging to" in content
+
+
+def test_cmd_multi_with_log_dir_full_mode(monkeypatch, tmp_path):
+    """``hw-genie multi full --log-dir <dir>`` also writes a log file."""
+    log_path = _run_multi_with_log_dir(monkeypatch, tmp_path, mode="full")
+    content = log_path.read_text("utf-8")
+    assert "Logging to" in content
+
+
+def _reset_logging_flag(monkeypatch):
+    monkeypatch.setattr("hw_genie.main._LOGGING_SET_UP", False)
+
+
+def test_setup_file_logging_captures_stderr(monkeypatch, tmp_path):
+    """Output to stderr is mirrored to the log file."""
+    _reset_logging_flag(monkeypatch)
+    from hw_genie.main import _setup_file_logging
+
+    log_dir = tmp_path / "logs"
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    root = logging.getLogger()
+    old_handler_streams = {
+        h: h.stream
+        for h in root.handlers[:]
+        if isinstance(h, logging.StreamHandler)
+    }
+    try:
+        _setup_file_logging(str(log_dir))
+        log_path = sorted(log_dir.glob("hw-genie_*.log"))[0]
+
+        print("stderr test", file=sys.stderr)
+        sys.stderr.flush()
+        assert "stderr test" in log_path.read_text("utf-8")
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        for h, stream in old_handler_streams.items():
+            h.stream = stream
+
+
+def test_setup_file_logging_captures_logging(monkeypatch, tmp_path):
+    """``logging`` module output is mirrored to the log file."""
+    _reset_logging_flag(monkeypatch)
+    from hw_genie.main import _setup_file_logging
+
+    log_dir = tmp_path / "logs"
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    root = logging.getLogger()
+
+    # Ensure a StreamHandler exists on the root logger (as ``main()`` would
+    # set up via ``setup_logging`` before ``cmd_multi`` is reached).
+    if not root.handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    old_handler_streams = {
+        h: h.stream
+        for h in root.handlers[:]
+        if isinstance(h, logging.StreamHandler)
+    }
+    try:
+        _setup_file_logging(str(log_dir))
+        log_path = sorted(log_dir.glob("hw-genie_*.log"))[0]
+
+        test_logger = logging.getLogger("test_logger")
+        test_logger.info("hello from logging")
+        sys.stderr.flush()
+        assert "hello from logging" in log_path.read_text("utf-8")
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        for h, stream in old_handler_streams.items():
+            h.stream = stream
+
+
+def test_setup_file_logging_double_call_is_noop(monkeypatch, tmp_path):
+    """Subsequent calls to ``_setup_file_logging`` do nothing."""
+    _reset_logging_flag(monkeypatch)
+    from hw_genie.main import _setup_file_logging
+
+    log_dir = tmp_path / "logs"
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    root = logging.getLogger()
+    old_handler_streams = {
+        h: h.stream
+        for h in root.handlers[:]
+        if isinstance(h, logging.StreamHandler)
+    }
+    try:
+        _setup_file_logging(str(log_dir))
+        _setup_file_logging(str(tmp_path / "other"))
+        # Only one log file should exist (from the first call).
+        log_files = sorted(log_dir.glob("hw-genie_*.log"))
+        assert len(log_files) == 1
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        for h, stream in old_handler_streams.items():
+            h.stream = stream
+
+
+def test_tee_encoding_isatty_closed():
+    from hw_genie.main import _Tee
+    import io
+
+    buf = io.StringIO()
+    log = io.StringIO()
+    tee = _Tee(log, buf)
+
+    assert tee.encoding is not None
+    assert tee.isatty() is False
+    assert not tee.closed
+
+
+def test_tee_writes_to_all_streams():
+    from hw_genie.main import _Tee
+    import io
+
+    buf1 = io.StringIO()
+    buf2 = io.StringIO()
+    log = io.StringIO()
+    tee = _Tee(log, buf1, buf2)
+
+    tee.write("hello\n")
+    tee.flush()
+
+    assert buf1.getvalue() == "hello\n"
+    assert buf2.getvalue() == "hello\n"
+    assert log.getvalue() == "hello\n"
+
+
+def test_setup_file_logging_creates_log_file(tmp_path):
+    """``_setup_file_logging`` creates a timestamped log and mirrors output."""
+    from hw_genie.main import _setup_file_logging
+
+    log_dir = tmp_path / "logs"
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    root = logging.getLogger()
+    old_handler_streams = {
+        h: h.stream
+        for h in root.handlers[:]
+        if isinstance(h, logging.StreamHandler)
+    }
+    try:
+        _setup_file_logging(str(log_dir))
+
+        assert log_dir.is_dir()
+        log_files = sorted(log_dir.glob("hw-genie_*.log"))
+        assert len(log_files) == 1
+        log_path = log_files[0]
+
+        content = log_path.read_text("utf-8")
+        assert "Logging to" in content
+        assert str(log_path) in content
+
+        # Output written after setup should appear in the log file.
+        print("hello from print")
+        sys.stdout.flush()
+        assert "hello from print" in log_path.read_text("utf-8")
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        for h, stream in old_handler_streams.items():
+            h.stream = stream
+
+
+def test_prune_logs_removes_expired(tmp_path, monkeypatch):
+    from hw_genie.main import _prune_logs
+    import time
+    import os
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    old_file = log_dir / "hw-genie_20200101_000000.log"
+    old_file.write_text("old")
+    old_mtime = time.time() - 30 * 86400
+    os.utime(str(old_file), (old_mtime, old_mtime))
+
+    new_file = log_dir / "hw-genie_20991231_235959.log"
+    new_file.write_text("new")
+
+    monkeypatch.setenv("HWDA_LOG_KEEP_DAYS", "7")
+    _prune_logs(str(log_dir), "hw-genie_*.log")
+
+    assert not old_file.exists()
+    assert new_file.exists()
+
+
+def test_prune_logs_cleans_legacy_patterns(tmp_path, monkeypatch):
+    from hw_genie.main import _prune_logs
+    import time
+    import os
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    legacy = log_dir / "hwda_20200101_000000.log"
+    legacy.write_text("old")
+    old_mtime = time.time() - 30 * 86400
+    os.utime(str(legacy), (old_mtime, old_mtime))
+
+    monkeypatch.setenv("HWDA_LOG_KEEP_DAYS", "7")
+    _prune_logs(str(log_dir), "hw-genie_*.log", "hwda_*.log", "hwsa_*.log")
+
+    assert not legacy.exists()
+
+
+def test_prune_logs_keeps_all_when_disabled(tmp_path, monkeypatch):
+    from hw_genie.main import _prune_logs
+    import time
+    import os
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    old_file = log_dir / "hw-genie_20200101_000000.log"
+    old_file.write_text("old")
+    old_mtime = time.time() - 30 * 86400
+    os.utime(str(old_file), (old_mtime, old_mtime))
+
+    monkeypatch.setenv("HWDA_LOG_KEEP_DAYS", "0")
+    _prune_logs(str(log_dir), "hw-genie_*.log")
+
+    assert old_file.exists()
+
+
+def test_prune_logs_fallback_on_bad_env(tmp_path, monkeypatch):
+    from hw_genie.main import _prune_logs
+    import time
+    import os
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    old_file = log_dir / "hw-genie_20200101_000000.log"
+    old_file.write_text("old")
+    old_mtime = time.time() - 30 * 86400
+    os.utime(str(old_file), (old_mtime, old_mtime))
+
+    monkeypatch.setenv("HWDA_LOG_KEEP_DAYS", "not-a-number")
+    _prune_logs(str(log_dir), "hw-genie_*.log")
+
+    assert not old_file.exists()
 
 
 def test_cmd_sync_sync_failure(monkeypatch, capsys):

@@ -46,7 +46,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie
-    command: ["hw-genie", "multi", "daily"]
+    command: ["hw-genie", "multi", "daily", "--log-dir", "/app/data/logs"]
     profiles: ["bulk"]
 
   hwsa:
@@ -58,5 +58,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie
-    command: ["hw-genie", "multi", "full"]
+    command: ["hw-genie", "multi", "full", "--log-dir", "/app/data/logs"]
     profiles: ["bulk"]
