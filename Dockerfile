@@ -44,4 +44,7 @@ ENV PYTHONUNBUFFERED=1
 # so that PKG_ROOT (used to resolve ./data relative paths) points at /app.
 ENV PYTHONPATH=/app
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')" || exit 1
+
 CMD ["hw-genie", "auth-server"]

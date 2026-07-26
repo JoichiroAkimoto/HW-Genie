@@ -29,3 +29,4 @@ line-length = 150
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+addopts = "--cov=hw_genie --cov-report=term-missing --cov-report=xml"
