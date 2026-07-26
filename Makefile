@@ -14,4 +14,4 @@ docker-build:
 
 clean:
 	rm -rf .ruff_cache/ .pytest_cache/ data/logs/
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -not -path './.venv/*' -not -path './node_modules/*' -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
