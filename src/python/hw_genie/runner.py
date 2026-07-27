@@ -192,7 +192,7 @@ _SUMMARY_HEADERS = ["Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "
 
 # Emoji rendered double-width by most terminals. ``len()`` counts them as one
 # code point, so we correct the display width to keep columns aligned.
-_WIDE_CHARS = frozenset("⚡🏆👑💰💎📊")
+_WIDE_CHARS = frozenset("⚡🏆👑💰💎")
 
 
 def _display_width(text: str) -> int:

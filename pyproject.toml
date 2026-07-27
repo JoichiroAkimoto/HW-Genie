@@ -6,8 +6,6 @@ authors = [{ name = "JoichiroAkimoto" }]
 requires-python = ">=3.10, <3.14"
 dependencies = [
     "hw-genie",
-    "google-genai",
-    "unidiff>=0.7.5",
 ]
 
 [tool.uv]
@@ -24,5 +22,10 @@ hw-genie = { workspace = true }
 dev = [
     "pytest~=9.0.2",
     "pytest-mock~=3.15.1",
+    "pytest-cov~=6.1.0",
     "ruff~=0.15.9",
+]
+ci = [
+    "google-genai",
+    "unidiff>=0.7.5",
 ]

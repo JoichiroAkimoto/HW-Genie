@@ -29,3 +29,4 @@ line-length = 150
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+

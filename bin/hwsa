@@ -4,13 +4,32 @@
 # process lets the libSQL Embedded Replica be opened concurrently without the
 # multi-process WAL contention (see issue #47).
 #
-# Output is mirrored to data/logs/hw-genie_<timestamp>.log by the Python
-# ``--log-dir`` option (log rotation handled internally).
+# Output is mirrored to data/logs/hwsa_<timestamp>.log via shell tee.
+# Old logs are pruned by find based on HW_LOG_KEEP_DAYS (default 7).
 #
 # Usage:
 #   bin/hwsa [ACCOUNT ...] [--parallel N]
 #   (mode "full" is baked in; pass only account aliases and/or --parallel)
-set -u
+set -euo pipefail
 
 cd "$(dirname "$0")/.."
-exec uv run --locked hw-genie multi full --log-dir data/logs "$@"
+
+LOG_DIR="data/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/hwsa_$(date '+%Y%m%d_%H%M%S').log"
+
+# Prune old logs. Delete hwda_/hwsa_ logs older than HW_LOG_KEEP_DAYS*24h
+# (default 7; find's -mtime +N keeps roughly the last N days). Set to 0 to
+# disable cleanup. Only hwda_/hwsa_ logs under LOG_DIR are touched.
+KEEP_DAYS="${HW_LOG_KEEP_DAYS:-${HWDA_LOG_KEEP_DAYS:-7}}"
+if [ -d "$LOG_DIR" ] && [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
+  deleted=$(find "$LOG_DIR" -maxdepth 1 \( -name 'hwda_*.log' -o -name 'hwsa_*.log' \) -type f -mtime "+$KEEP_DAYS" -print -delete)
+  [ -n "$deleted" ] && echo "Pruned $(echo "$deleted" | wc -l | tr -d ' ') old log(s) (older than ${KEEP_DAYS}d)"
+fi
+
+echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
+code=0
+uv run --locked hw-genie multi full "$@" 2>&1 | tee -a "$LOG_FILE" || code=$?
+echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
+echo "Log saved to $LOG_FILE"
+exit $code
