@@ -28,7 +28,6 @@ copy.envrc
 Dockerfile
 docker-compose.yml
 LICENSE
-uv.lock
 Makefile
 flake.lock
 flake.nix
