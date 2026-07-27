@@ -32,6 +32,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Stage 2: Runtime stage
 FROM python:3.13-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy installed packages from builder
@@ -46,5 +50,8 @@ ENV PYTHONUNBUFFERED=1
 # Prefer the copied source at /app/hw_genie over the installed site-packages copy
 # so that PKG_ROOT (used to resolve ./data relative paths) points at /app.
 ENV PYTHONPATH=/app
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import os, urllib.request; port = os.environ.get('HW_GENIE_AUTH_PORT', '8765'); urllib.request.urlopen(f'http://localhost:{port}/health')" || exit 1
 
 CMD ["hw-genie", "auth-server"]

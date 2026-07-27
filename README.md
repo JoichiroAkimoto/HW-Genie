@@ -186,7 +186,7 @@ export TURSO_WRITE_REMOTE="true"
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
 | `HWGENIE_TZ` | `UTC` | `auth --list` の `Updated` 列の表示タイムゾーン（IANA 名、例: `Asia/Tokyo`）。DB には常に UTC で保存され、表示時のみ変換されます。 |
-| `HWDA_LOG_KEEP_DAYS` | `7` | ``--log-dir`` 使用時に `data/logs/` の古いログ（`hw-genie_*.log`, `hwda_*.log`, `hwsa_*.log`）を自動削除する保持日数。`0` で削除を無効化。 |
+| `HW_LOG_KEEP_DAYS` | `7` | `bin/hwda` / `bin/hwsa` が `data/logs/` の古いログ（`hwda_*.log` / `hwsa_*.log`）を自動削除する保持日数。`0` で削除を無効化。後方互換のため `HWDA_LOG_KEEP_DAYS` も読み込みます。 |
 
 ### 認証方法
 
