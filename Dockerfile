@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # 1. Copy only dependency files first to leverage Docker cache
-COPY pyproject.toml ./pyproject.toml
-COPY src/python/pyproject.toml src/python/uv.lock* ./src/python/
+COPY pyproject.toml uv.lock ./
+COPY src/python/pyproject.toml ./src/python/
 
 # 2. Export dependencies to requirements.txt and install them system-wide.
 #    Using a temporary file avoids shell process-substitution issues.
