@@ -52,6 +52,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')" || exit 1
+  CMD python -c "import os, urllib.request; port = os.environ.get('HW_GENIE_AUTH_PORT', '8765'); urllib.request.urlopen(f'http://localhost:{port}/health')" || exit 1
 
 CMD ["hw-genie", "auth-server"]

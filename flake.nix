@@ -21,6 +21,7 @@
             turso-cli
             sqlite
             sqlite-interactive
+            git
           ];
         };
       }

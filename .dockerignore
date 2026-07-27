@@ -2,6 +2,7 @@
 .gitattributes
 .gitignore
 .venv/
+.direnv/
 .agents/
 .github/
 .ruff_cache/
