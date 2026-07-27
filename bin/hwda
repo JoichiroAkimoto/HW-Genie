@@ -28,8 +28,8 @@ if [ -d "$LOG_DIR" ] && [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
 fi
 
 echo "=== Starting parallel daily routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
-uv run --locked hw-genie multi daily "$@" 2>&1 | tee -a "$LOG_FILE"
-code=${PIPESTATUS[0]}
+code=0
+uv run --locked hw-genie multi daily "$@" 2>&1 | tee -a "$LOG_FILE" || code=$?
 echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
 echo "Log saved to $LOG_FILE"
 exit $code
