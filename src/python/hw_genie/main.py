@@ -11,7 +11,7 @@ from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
-from hw_genie.runner import run_all_accounts, summarize
+from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
 def _prepare_info_for_json(info: dict) -> dict:
@@ -35,10 +35,17 @@ def _ensure_session(args) -> dict[str, str]:
 
 def cmd_auth(args):
     """認証情報の更新・表示"""
-    # --fresh は --list との併用が必須（単体指定はエラー）
-    if getattr(args, "fresh", False) and not args.list:
-        print("Error: --fresh requires --list.", file=sys.stderr)
-        sys.exit(1)
+    # --fresh は --list との併用が必須（--list-names 併用は常にエラー）
+    if getattr(args, "fresh", False):
+        if getattr(args, "list_names", False):
+            print(
+                "Error: --fresh cannot be combined with --list-names.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not args.list:
+            print("Error: --fresh requires --list.", file=sys.stderr)
+            sys.exit(1)
 
     # 一覧表示
     if args.list or getattr(args, "list_names", False):
@@ -63,7 +70,10 @@ def cmd_auth(args):
 
             # -a 併用時はそのアカウントのみ最新化する
             targets = [args.account] if args.account else accounts
-            refreshed = refresh_all_accounts(targets)
+            # 並列数は multi と同様 HWDA_MAX_PARALLEL（上限）を尊重する
+            refreshed = refresh_all_accounts(
+                targets, max_parallel=resolve_max_parallel(None, len(targets))
+            )
             failed = [err for _, err in refreshed if err]
             for account, err in refreshed:
                 if err:
@@ -75,6 +85,8 @@ def cmd_auth(args):
                     "showing cached values.",
                     file=sys.stderr,
                 )
+            # refresh で alias が変わった場合に備え、表示用リストを再取得する
+            accounts = SessionManager.list_accounts()
 
         from hw_genie.core.utils import (
             display_timezone_name,
@@ -300,15 +312,25 @@ def cmd_sync(args):
         print("TURSO_SYNC_URL is not set — nothing to sync.")
         return
 
-    from hw_genie.core.database import get_engine, retry_on_wal_contention
+    from hw_genie.core.database import (
+        get_engine,
+        retry_on_wal_contention,
+        _wal_io_lock,
+    )
 
     try:
         engine = get_engine()
         with engine.connect() as conn:
             raw = conn.connection.dbapi_connection
             if hasattr(raw, "sync"):
+                # sync() は WAL にフレームを書くため、他の書き込み操作と
+                # 同じ共有ロックで直列化する（試行ごとに取り直し）。
+                def _sync(raw=raw):
+                    with _wal_io_lock:
+                        raw.sync()
+
                 retry_on_wal_contention(
-                    raw.sync, logger=logging.getLogger(__name__)
+                    _sync, logger=logging.getLogger(__name__)
                 )
             else:
                 from sqlalchemy import text

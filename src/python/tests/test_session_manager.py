@@ -126,6 +126,33 @@ def test_set_last_mission_id_skips_write_when_unchanged(monkeypatch):
     assert SessionManager.get_last_mission_id(account=account) == 789
 
 
+def test_set_last_mission_id_normalizes_string_input(monkeypatch):
+    """文字列の mission_id でも int に正規化され、同値比較でスキップが機能する"""
+    from hw_genie.core.repository import SessionRepository
+
+    account = "str_mission_user"
+    SessionManager.save(account, {"player": {"id": "sm_id", "name": "Str"}})
+
+    calls = []
+    real_update_config = SessionRepository.update_config
+
+    def spy_update_config(self, a, d):
+        calls.append((a, d))
+        return real_update_config(self, a, d)
+
+    monkeypatch.setattr(SessionRepository, "update_config", spy_update_config)
+
+    # 文字列で設定 → int で保存される
+    SessionManager.set_last_mission_id("456", account=account)
+    assert len(calls) == 1
+    assert SessionManager.get_last_mission_id(account=account) == 456
+
+    # int 同値でも文字列でもスキップされる
+    SessionManager.set_last_mission_id(456, account=account)
+    SessionManager.set_last_mission_id("456", account=account)
+    assert len(calls) == 1
+
+
 def test_migration_from_json(tmp_path, monkeypatch):
     """jsonファイルが存在する場合、初回アクセス時にDBへ自動移行されることを検証"""
     session_data = {"headers": {"test": "header"}, "player": {"id": "mig_id", "name": "MigratedUser"}}

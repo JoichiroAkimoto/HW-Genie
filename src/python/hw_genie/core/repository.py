@@ -139,15 +139,21 @@ class SessionRepository:
             account (str): The account alias.
             data (AccountData): The data to save.
         """
+        # The local replica's SQLite WAL only allows a single writer, and OTHER
+        # processes sharing the same replica file (auth-server, a concurrently
+        # launched CLI, ...) can transiently hold it. Retry such races with
+        # exponential backoff instead of aborting the run. The lock is taken
+        # per attempt (NOT around the whole retry loop) so that backoff sleeps
+        # between attempts do not block other threads in this process.
+        retry_on_wal_contention(
+            lambda: self._update_config_locked(account, data),
+            logger=logger,
+        )
+
+    def _update_config_locked(self, account: str, data: AccountData) -> None:
+        """Single locked ``update_config`` attempt (retried on WAL contention)."""
         with _wal_io_lock:
-            # The local replica's SQLite WAL only allows a single writer, and
-            # OTHER processes sharing the same replica file (auth-server, a
-            # concurrently launched CLI, ...) can transiently hold it. Retry
-            # such races with exponential backoff instead of aborting the run.
-            retry_on_wal_contention(
-                lambda: self._update_config_tx(account, data),
-                logger=logger,
-            )
+            return self._update_config_tx(account, data)
 
     def _update_config_tx(self, account: str, data: AccountData) -> None:
         """Single ``update_config`` transaction attempt (retried on WAL contention)."""

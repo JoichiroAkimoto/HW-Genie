@@ -20,7 +20,8 @@ services:
       # 常駐コンテナがローカルレプリカを共有すると、ホスト CLI の書き込みと
       # WAL 競合 (wal_insert_begin failed) が発生する。auth-server は低頻度
       # アクセスなので Turso クラウド直結（完全リモート）にし、競合を構造的に
-      # 回避する（TURSO_SYNC_URL が必須。未設定時は起動エラーになる）。
+      # 回避する（TURSO_SYNC_URL 未設定時は警告してローカルファイルモードへ
+      # フォールバックする）。
       TURSO_READ_REMOTE: "true"
       TURSO_WRITE_REMOTE: "true"
       HW_GENIE_AUTH_PORT: 8765

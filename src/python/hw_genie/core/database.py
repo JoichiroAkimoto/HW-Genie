@@ -139,13 +139,17 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
                         # sync() writes frames into the shared local WAL, so
                         # concurrent syncs/writes (even within this process,
                         # e.g. the parallel --fresh refreshes) can transiently
-                        # fail with ``wal_insert_begin failed``. Serialise all
-                        # WAL-writing operations process-wide, then retry the
-                        # remaining cross-process races a few times.
-                        with _wal_io_lock:
-                            retry_on_wal_contention(
-                                conn.sync, attempts=3, base_delay=0.25, logger=logger
-                            )
+                        # fail with ``wal_insert_begin failed``. Serialise each
+                        # attempt with the shared lock, then retry the remaining
+                        # cross-process races a few times. The lock is taken per
+                        # attempt so backoff sleeps don't block other threads.
+                        def _sync(conn=conn):
+                            with _wal_io_lock:
+                                conn.sync()
+
+                        retry_on_wal_contention(
+                            _sync, attempts=3, base_delay=0.25, logger=logger
+                        )
                     except Exception:  # pragma: no cover - best-effort
                         logger.warning(
                             "Turso replica sync() failed on connect; "
@@ -164,8 +168,20 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
         from parallel threads cannot race them (``wal_insert_begin failed``).
         """
         if getattr(self, "_replica_mode", False):
-            with _wal_io_lock:
-                return super().connect(*cargs, **cparams)
+
+            def _open(cargs=cargs, cparams=cparams):
+                with _wal_io_lock:
+                    return super(TursoReplicaDialect, self).connect(*cargs, **cparams)
+
+            # 他プロセス (常駐 auth-server / hwda 等) が WAL ライターロックを
+            # 保持していると接続オープン自体が wal_insert_begin failed を
+            # 送出するため、リトライする (プロセス内競合はロックで直列化済み)。
+            return retry_on_wal_contention(
+                _open,
+                attempts=3,
+                base_delay=0.25,
+                logger=logger,
+            )
         return super().connect(*cargs, **cparams)
 
     def create_connect_args(self, url):
@@ -740,4 +756,12 @@ def init_db():
             db_dir = os.path.dirname(os.path.abspath(db_path))
             if db_dir and not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
-        Base.metadata.create_all(eng)
+        # create_all も WAL に書き込むため、複数プロセスが同時に起動した場合
+        # の競合 (wal_insert_begin failed) に備えてロック + リトライする。
+        # ロックは試行ごとに取り直し、バックオフ sleep 中は保持しない。
+
+        def _locked_create_all(eng=eng):
+            with _wal_io_lock:
+                Base.metadata.create_all(eng)
+
+        retry_on_wal_contention(_locked_create_all, logger=logger)

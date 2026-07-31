@@ -7,7 +7,7 @@ import pytest
 from hw_genie.runner import (
     _display_width,
     _render_summary_table,
-    _resolve_max_parallel,
+    resolve_max_parallel,
     list_account_aliases,
     run_all_accounts,
     run_for_account,
@@ -25,21 +25,21 @@ def fake_accounts(monkeypatch):
 
 
 def test_resolve_max_parallel_unbounded():
-    assert _resolve_max_parallel(None, 3) == 3
-    assert _resolve_max_parallel(0, 3) == 3
+    assert resolve_max_parallel(None, 3) == 3
+    assert resolve_max_parallel(0, 3) == 3
 
 
 def test_resolve_max_parallel_capped():
-    assert _resolve_max_parallel(2, 5) == 2
+    assert resolve_max_parallel(2, 5) == 2
     # never below 1
-    assert _resolve_max_parallel(-1, 0) == 1
+    assert resolve_max_parallel(-1, 0) == 1
 
 
 def test_resolve_max_parallel_reads_env(monkeypatch):
     monkeypatch.setenv("HWDA_MAX_PARALLEL", "2")
-    assert _resolve_max_parallel(None, 10) == 2
+    assert resolve_max_parallel(None, 10) == 2
     monkeypatch.setenv("HWDA_MAX_PARALLEL", "not-a-number")
-    assert _resolve_max_parallel(None, 4) == 4
+    assert resolve_max_parallel(None, 4) == 4
 
 
 def test_list_account_aliases_sorted(fake_accounts):

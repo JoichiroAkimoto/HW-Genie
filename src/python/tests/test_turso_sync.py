@@ -478,6 +478,90 @@ def test_connect_serialises_replica_open(monkeypatch):
     assert len(entered) == 1  # 非 replica (remote/plain sqlite) ではロック不要
 
 
+def test_connect_retries_wal_contention(monkeypatch, mock_sleep):
+    """replica モードの接続オープンは WAL 競合をリトライして成功する。
+
+    他プロセスが WAL ライターロックを保持している間は接続オープン自体が
+    ``wal_insert_begin failed`` を送出するため、指数バックオフで再試行する。
+    """
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+    calls = {"n": 0}
+
+    def flaky_connect(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+        return "conn"
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": flaky_connect})())
+    dialect._replica_mode = True
+
+    assert dialect.connect() == "conn"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+    # 非 replica モードではリトライせず即座に送出される
+    dialect._replica_mode = False
+    calls["n"] = 0
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        dialect.connect()
+    assert calls["n"] == 1
+
+
+def test_connect_wal_contention_exhausted_reraises(monkeypatch, mock_sleep):
+    """接続オープンの WAL 競合が全試行失敗したら最後の例外を再送出する。"""
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+
+    def always_wal(*args, **kwargs):
+        raise ValueError("database is locked")
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": always_wal})())
+    dialect._replica_mode = True
+
+    with pytest.raises(ValueError, match="database is locked"):
+        dialect.connect()
+    assert mock_sleep.call_count == 2
+
+
+def test_connect_non_wal_error_propagates_immediately(monkeypatch, mock_sleep):
+    """接続オープンの非競合エラーは即時送出し再試行しない。"""
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+
+    def boom(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": boom})())
+    dialect._replica_mode = True
+
+    with pytest.raises(OSError, match="connection refused"):
+        dialect.connect()
+    assert mock_sleep.call_count == 0
+
+
 def test_build_write_config_falls_back_to_replica_when_remote_off():
     """TURSO_WRITE_REMOTE 未設定時は write 設定 = 通常(レプリカ)設定。"""
     from hw_genie.core.database import build_write_database_config
@@ -707,9 +791,14 @@ def test_retry_on_wal_contention_rejects_invalid_attempts():
     assert called["n"] == 0
 
 
-def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep):
+def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep, monkeypatch):
     """バックオフ待機はジッター付きで複数プロセスの再衝突を防ぐ。"""
     from hw_genie.core.database import retry_on_wal_contention
+
+    # ジッター係数を 1.5 に固定し、待機時間を決定的に検証する
+    monkeypatch.setattr(
+        "hw_genie.core.database.random.uniform", lambda a, b: b
+    )
 
     calls = {"n": 0}
 
@@ -721,11 +810,9 @@ def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep):
     retry_on_wal_contention(flaky, attempts=5, base_delay=1.0)
     assert calls["n"] == 3
     assert mock_sleep.call_count == 2
-    # ジッター (0.5x-1.5x) 適用後の待機時間を検証:
-    # 1回目: 1.0 * 2^0 * [0.5,1.5]、2回目: 1.0 * 2^1 * [0.5,1.5]
+    # 1回目: 1.0 * 2^0 * 1.5 = 1.5、2回目: 1.0 * 2^1 * 1.5 = 3.0
     delays = [c.args[0] for c in mock_sleep.call_args_list]
-    assert 0.5 <= delays[0] <= 1.5
-    assert 1.0 <= delays[1] <= 3.0
+    assert delays == [1.5, 3.0]
 
 
 def test_on_connect_sync_retries_on_wal_contention(monkeypatch, mock_sleep):

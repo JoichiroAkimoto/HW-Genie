@@ -133,16 +133,15 @@ def _refresh_one(account: str) -> str | None:
     info = get_user_info(headers)
     if info["status"] != "success":
         return f"{account}: {info.get('message', 'API error')}"
-    # 対象アカウントのみ保存する（update_session_with_headers は "default" と
-    # 実名にも保存するため 1 アカウントにつき最大 3 書き込みになる。--fresh の
-    # 並列更新ではアカウント 1 件につき 1 書き込みに抑え、WAL 競合の機会と
-    # 途中終了時のアカウント名書き換えを防ぐ）。
-    # 単一アカウント運用（alias=default）では実名エイリアスも維持する。
-    if account == "default":
-        save_session(info, account)
-        save_session(info, info["player"].name)
-    else:
-        save_session(info, account)
+    # 対象アカウントへ 1 書き込みのみ（--fresh の並列更新ではアカウント 1 件
+    # につき 1 書き込みに抑え、WAL 競合の機会と途中終了時のアカウント名
+    # 書き換えを防ぐ）。
+    # 実名エイリアスへは追加保存しない: player_id は UNIQUE 制約のため、
+    # 同一プレイヤーを 2 つの alias に保存すると 2 回目の保存が同じ行の
+    # alias をリネームし、"default" エイリアスが消滅してしまう。
+    # （--curl の再登録フロー（update_session_with_headers）とは異なり、
+    # ここは既存アカウントの更新のみを目的とする。）
+    save_session(info, account)
     return None
 
 
@@ -154,6 +153,11 @@ def refresh_all_accounts(
     Each account is refreshed and persisted to the DB independently; a failure
     (expired session, network error, ...) is captured as an error message
     instead of aborting the other accounts.
+
+    Args:
+        max_parallel: 同時実行の上限。既定 4。``cmd_auth`` はこの既定値でなく
+            ``runner.resolve_max_parallel``（``HWDA_MAX_PARALLEL`` を尊重）
+            から導出した値を渡す。
 
     Returns:
         list of ``(account, error_message_or_None)``.
@@ -171,6 +175,7 @@ def refresh_all_accounts(
             try:
                 err = fut.result()
             except Exception as exc:  # noqa: BLE001 - isolate per-account failures
-                err = str(exc)
+                # 空メッセージの例外でも失敗として扱えるよう例外型名を併記する
+                err = str(exc) or type(exc).__name__
             results.append((acc, err))
     return results

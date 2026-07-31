@@ -73,6 +73,8 @@ class SessionManager:
     @classmethod
     def set_last_mission_id(cls, mission_id: int, account: str = "default"):
         account = account.strip()
+        # 文字列（例: "100"）で渡されても int に正規化してから比較・保存する
+        mission_id = int(mission_id)
         # 現在値と同値なら書き込みトランザクションをスキップする
         # （WAL 競合リトライの対象を減らす。読み取りのみで済む場合は軽い）
         if cls.get_last_mission_id(account) == mission_id:

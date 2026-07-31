@@ -16,12 +16,12 @@ def _save_accounts():
     SessionManager.save("VitaminD", {"player": {"id": "v1", "name": "VitaminD"}})
 
 
-def _success_info(name: str) -> dict:
+def _success_info(name: str, player_id: str = "p1") -> dict:
     return {
         "headers": {"x-auth-token": "t"},
         "status": "success",
         "player": auth_module.PlayerStatus(
-            name=name, level=130, gold=100, gems=10, energy=5, arena_rank=1, grand_rank=2
+            id=player_id, name=name, level=130, gold=100, gems=10, energy=5, arena_rank=1, grand_rank=2
         ),
     }
 
@@ -42,8 +42,12 @@ def test_refresh_all_accounts_success():
     assert mock_save.call_args[0][1] == "Joe"
 
 
-def test_refresh_all_accounts_default_alias_preserves_player_name():
-    """alias=default（単一アカウント運用）では実名エイリアスも維持する。"""
+def test_refresh_all_accounts_default_alias_saves_only_default():
+    """alias=default でも対象エイリアスへ 1 書き込みのみ（実名エイリアスは作らない）。
+
+    player_id は UNIQUE 制約のため、同一プレイヤーを実名でも保存すると
+    同じ行の alias がリネームされ "default" が消滅してしまう。
+    """
     info = _success_info("Joe")
     with patch.object(
         auth_module, "load_session_headers", return_value={"x-auth-token": "t"}
@@ -54,9 +58,31 @@ def test_refresh_all_accounts_default_alias_preserves_player_name():
 
     assert results == [("default", None)]
     mock_fetch.assert_called_once()
-    assert mock_save.call_count == 2
-    assert mock_save.call_args_list[0][0] == (info, "default")
-    assert mock_save.call_args_list[1][0] == (info, "Joe")
+    assert mock_save.call_count == 1
+    assert mock_save.call_args[0] == (info, "default")
+
+
+def test_refresh_one_default_keeps_alias_in_db():
+    """実 DB で _refresh_one("default") が alias をリネームしない（回帰防止）。
+
+    player_id が UNIQUE のため、実名への追加保存は "default" 行のリネームに
+    なり、load_session_headers の既定エイリアスが消滅する。更新は対象
+    エイリアスのみに行い、実名エイリアスは作られないことを検証する。
+    （インメモリ DB はスレッドごとに別物になるため _refresh_one を直接呼ぶ）
+    """
+    SessionManager.save("default", {"player": {"id": "d1", "name": "Old", "level": 100}})
+    assert "default" in SessionManager.list_accounts()
+
+    with patch.object(
+        auth_module, "load_session_headers", return_value={"x-auth-token": "t"}
+    ), patch.object(auth_module, "get_user_info", return_value=_success_info("Joe", "d1")):
+        err = auth_module._refresh_one("default")
+
+    assert err is None
+    accounts = SessionManager.list_accounts()
+    assert "default" in accounts  # "default" エイリアスは保持される
+    assert "Joe" not in accounts  # 実名エイリアスは作られない
+    assert SessionManager.load("default")["player"]["name"] == "Joe"  # 値は更新される
 
 
 def test_refresh_all_accounts_missing_session():
@@ -110,6 +136,19 @@ def test_refresh_all_accounts_exception_is_isolated():
     assert mock_save.call_args[0][1] == "OK"
 
 
+def test_refresh_all_accounts_empty_message_exception_reports_type():
+    """空メッセージの例外は例外型名で失敗として報告される。"""
+    with patch.object(
+        auth_module, "load_session_headers", return_value={"x-auth-token": "t"}
+    ), patch.object(auth_module, "get_user_info", side_effect=lambda h: (_ for _ in ()).throw(RuntimeError())), patch.object(
+        auth_module, "save_session"
+    ) as mock_save:
+        results = auth_module.refresh_all_accounts(["Joe"])
+
+    assert results == [("Joe", "RuntimeError")]
+    mock_save.assert_not_called()
+
+
 def test_refresh_all_accounts_empty():
     """アカウント 0 件は空リストを返す。"""
     assert auth_module.refresh_all_accounts([]) == []
@@ -142,9 +181,10 @@ def test_cmd_auth_fresh_requires_list(capsys):
     assert "--fresh requires --list" in capsys.readouterr().err
 
 
-def test_cmd_auth_fresh_with_account_refreshes_only_that_account(capsys):
+def test_cmd_auth_fresh_with_account_refreshes_only_that_account(capsys, monkeypatch):
     """--list --fresh -a Joe は Joe のみ最新化して表示する。"""
     _save_accounts()
+    monkeypatch.delenv("HWDA_MAX_PARALLEL", raising=False)
     with patch(
         "hw_genie.core.auth.refresh_all_accounts",
         return_value=[("Joe", None)],
@@ -152,7 +192,7 @@ def test_cmd_auth_fresh_with_account_refreshes_only_that_account(capsys):
         args = SimpleNamespace(fresh=True, list=True, list_names=False, account="Joe")
         cmd_auth(args)
 
-    mock_refresh.assert_called_once_with(["Joe"])
+    mock_refresh.assert_called_once_with(["Joe"], max_parallel=1)
     out = capsys.readouterr()
     assert "Joe" in out.out
     assert "VitaminD" in out.out
@@ -177,12 +217,21 @@ def test_cmd_auth_fresh_failure_shows_warning_and_old_values(capsys):
 
 
 def test_cmd_auth_fresh_with_list_names_is_rejected(capsys):
-    """--list-names との併用は --list を要求するエラーで終了する。"""
+    """--fresh と --list-names の併用はエラーメッセージとともに終了する。"""
     args = SimpleNamespace(fresh=True, list=False, list_names=True, account=None)
     with pytest.raises(SystemExit) as exc_info:
         cmd_auth(args)
     assert exc_info.value.code == 1
-    assert "--fresh requires --list" in capsys.readouterr().err
+    assert "--fresh cannot be combined with --list-names" in capsys.readouterr().err
+
+
+def test_cmd_auth_fresh_list_with_list_names_is_rejected(capsys):
+    """--fresh --list --list-names の 3 併用も --fresh が黙って無視されずエラーになる。"""
+    args = SimpleNamespace(fresh=True, list=True, list_names=True, account=None)
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_auth(args)
+    assert exc_info.value.code == 1
+    assert "--fresh cannot be combined with --list-names" in capsys.readouterr().err
 
 
 def test_cmd_auth_list_without_fresh_skips_refresh(capsys):
@@ -201,7 +250,7 @@ def test_cmd_auth_list_without_fresh_skips_refresh(capsys):
 def test_cmd_auth_fresh_reflects_new_values_in_table(capsys):
     """--fresh の取得結果が DB を経由して一覧表に反映される（配線の検証）。"""
 
-    def fake_refresh(accounts):
+    def fake_refresh(accounts, max_parallel=4):
         # refresh_all_accounts の実挙動を模し、実 DB へ書き込む
         for acc in accounts:
             SessionManager.save(
