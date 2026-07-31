@@ -1,7 +1,9 @@
 import logging
 import os
+import random
 import re
 import threading
+import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
@@ -14,6 +16,56 @@ from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
 
 Base = declarative_base()
+
+# Substrings that identify SQLite WAL single-writer contention. When multiple
+# SEPARATE processes share the same libSQL Embedded Replica file (e.g. a
+# long-running auth-server plus a CLI command), they race to write the single
+# local WAL. libSQL fails fast with these errors instead of waiting, so the
+# call sites retry with exponential backoff.
+_WAL_CONTENTION_MARKERS = (
+    "wal_insert_begin failed",
+    "database is locked",
+)
+
+
+def is_wal_contention(exc: BaseException) -> bool:
+    """True when ``exc`` indicates SQLite WAL single-writer contention."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _WAL_CONTENTION_MARKERS)
+
+
+def retry_on_wal_contention(
+    fn,
+    *,
+    attempts: int = 5,
+    base_delay: float = 0.2,
+    logger: logging.Logger | None = None,
+):
+    """Call ``fn`` (no args), retrying transient WAL-contention errors.
+
+    Backoff is ``base_delay * 2 ** (attempt - 1)`` between attempts, with
+    random jitter (0.5x-1.5x) so multiple processes sharing the replica do not
+    retry in lockstep and re-collide. Non-WAL exceptions propagate immediately;
+    the last exception is re-raised when all attempts are exhausted. Returns
+    ``fn()``'s value on success.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if not is_wal_contention(exc) or attempt == attempts:
+                raise
+            if logger is not None:
+                logger.warning(
+                    "DB WAL contention (attempt %d/%d): %s",
+                    attempt,
+                    attempts,
+                    exc,
+                )
+            jittered = base_delay * (2 ** (attempt - 1)) * random.uniform(0.5, 1.5)
+            time.sleep(jittered)
 
 # Per-thread flag recording whether the most recent connect_args built a Turso
 # embedded replica (i.e. opened a local file WITH a sync_url). ``on_connect``
@@ -79,7 +131,12 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
             if isinstance(conn, libsql.Connection) and _is_replica_mode():
                 if os.environ.get("TURSO_SYNC_ON_CONNECT", "true").lower() != "false":
                     try:
-                        conn.sync()
+                        # sync() writes frames into the shared local WAL, so
+                        # concurrent processes can transiently fail with
+                        # ``wal_insert_begin failed``; retry a few times.
+                        retry_on_wal_contention(
+                            conn.sync, attempts=3, base_delay=0.25, logger=logger
+                        )
                     except Exception:  # pragma: no cover - best-effort
                         logger.warning(
                             "Turso replica sync() failed on connect; "
@@ -375,7 +432,13 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
             # SAME local replica file and race to write its WAL during sync().
             # Reads stay fresh because they hit the primary directly. Pair with
             # TURSO_WRITE_REMOTE=true for a fully remote (no local file) setup.
-            return build_write_database_config(env)
+            #
+            # NOTE: built inline (not via build_write_database_config) so that
+            # TURSO_READ_REMOTE=true without TURSO_WRITE_REMOTE does not recurse
+            # infinitely (build_write_database_config's fallback re-enters this
+            # function). In that case writes also go remote because the write
+            # engine reuses the (remote) read engine.
+            return _build_remote_libsql_url(env)
 
     if turso_sync_url and not is_remote_libsql:
         # Determine the local database file path to act as the replica.
@@ -475,6 +538,36 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     return db_url, connect_args
 
 
+def _build_remote_libsql_url(
+    env: dict[str, str],
+) -> tuple[str, DatabaseConfig]:
+    """Build a direct remote libSQL connection URL from ``TURSO_SYNC_URL``.
+
+    ``TURSO_SYNC_URL`` may be expressed either as:
+      - libsql://host            (canonical form, per AGENTS.md)
+      - https://host(?secure=...)  (already https; the ?secure=true query is
+        just stripped and re-appended as a dialect hint)
+    In every case we end up with an https remote connection so the dialect uses
+    TLS instead of defaulting to http://, which triggers a 308 Permanent
+    Redirect from Turso. The full netloc (user:pass@host:port) is preserved so
+    that token-in-URL forms (e.g. libsql://<token>@host) are not dropped.
+    """
+    turso_sync_url = env.get("TURSO_SYNC_URL")
+    turso_auth_token = env.get("TURSO_AUTH_TOKEN")
+    parsed = urllib.parse.urlparse(turso_sync_url)
+    netloc = parsed.netloc or turso_sync_url
+    # urlparse on a non-standard scheme (libsql://) may leave the scheme in
+    # netloc; strip a stray "libsql://" prefix so only host[:port] (and any
+    # userinfo) remains. userinfo (token@host) is preserved as-is.
+    if netloc.startswith("libsql://"):
+        netloc = netloc[len("libsql://"):]
+    remote_url = f"sqlite+libsql://{netloc}/?secure=true"
+    connect_args: DatabaseConfig = {"check_same_thread": False}
+    if turso_auth_token:
+        connect_args["auth_token"] = turso_auth_token
+    return remote_url, connect_args
+
+
 def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str, DatabaseConfig]:
     """Build the DB config used for WRITE operations.
 
@@ -489,35 +582,12 @@ def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str,
     (backwards compatible).
     """
     env = os.environ if env is None else env
-    turso_sync_url = env.get("TURSO_SYNC_URL")
-    turso_auth_token = env.get("TURSO_AUTH_TOKEN")
 
     if (
         env.get("TURSO_WRITE_REMOTE", "false").lower() == "true"
-        and turso_sync_url
+        and env.get("TURSO_SYNC_URL")
     ):
-        # Build a direct remote libSQL connection URL from the sync URL.
-        # TURSO_SYNC_URL may be expressed either as:
-        #   - libsql://host            (canonical form, per AGENTS.md)
-        #   - https://host(?secure=...)  (already https; the ?secure=true
-        #     query is just stripped and re-appended as a dialect hint)
-        # In every case we end up with an https remote connection so the
-        # dialect uses TLS instead of defaulting to http://, which triggers a
-        # 308 Permanent Redirect from Turso.
-        # The full netloc (user:pass@host:port) is preserved so that token-in-URL
-        # forms (e.g. libsql://<token>@host) are not silently dropped.
-        parsed = urllib.parse.urlparse(turso_sync_url)
-        netloc = parsed.netloc or turso_sync_url
-        # urlparse on a non-standard scheme (libsql://) may leave the scheme in
-        # netloc; strip a stray "libsql://" prefix so only host[:port] (and any
-        # userinfo) remains. userinfo (token@host) is preserved as-is.
-        if netloc.startswith("libsql://"):
-            netloc = netloc[len("libsql://"):]
-        remote_url = f"sqlite+libsql://{netloc}/?secure=true"
-        connect_args: DatabaseConfig = {"check_same_thread": False}
-        if turso_auth_token:
-            connect_args["auth_token"] = turso_auth_token
-        return remote_url, connect_args
+        return _build_remote_libsql_url(env)
 
     # Fall back to the standard (replica) config for writes.
     return build_database_config(env)

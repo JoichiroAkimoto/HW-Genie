@@ -176,6 +176,13 @@ export TURSO_WRITE_REMOTE="true"
 > 読み取りは引き続きローカルレプリカ (`TURSO_SYNC_ON_CONNECT` で最新化) を使用するため、
 > 端末間で一貫性が保たれます。未設定時は読み書きとも従来のレプリカ経由で動作します。
 >
+> **WAL 競合の自動リトライ**: ローカルレプリカは同一マシン上の複数プロセス
+> （並列起動した CLI・常駐 auth-server・`multi` 等）で共有されるため、SQLite WAL の
+> 単一ライター制約により稀に `wal_insert_begin failed` が発生します。接続時 `sync()`
+> と書き込みは指数バックオフ付きで自動リトライされます（非競合エラーは即時失敗）。
+> 頻発する場合は `TURSO_READ_REMOTE=true` と `TURSO_WRITE_REMOTE=true` を併用した
+> 完全リモート構成（ローカルファイル不使用）に切り替えることで構造的に回避できます。
+>
 > **パス指定**: `DATABASE_URL` のローカルファイルパスは以下の通り解決されます。
 > - `sqlite+libsql:///./data/hw_genie.db` → `PKG_ROOT/data/hw_genie.db`（相対・推奨）
 > - `sqlite+libsql:////abs/path.db` （4スラッシュ）→ そのまま絶対パス

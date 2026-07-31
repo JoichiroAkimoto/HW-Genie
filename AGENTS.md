@@ -50,7 +50,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **セッション管理**: 認証情報は `hw_genie.db` (SQLite) で一元管理されています。環境変数 `DATABASE_URL` で接続先を切り替えることも可能です（Turso 等）。`TURSO_SYNC_URL` を設定すると、ローカルファイルをリモートの Embedded Replica として自動同期できます（詳細は README の「Turso Embedded Replicas (Syncs) の利用」）。
     *   これらの環境変数は `.env` から読み込まれます。direnv を使う場合は `copy.envrc` を `.envrc` にコピーしてください（`.env` の `dotenv` 読み込みが含まれています）。読み込みがないと `TURSO_*` 未設定となり接続エラーになります。
     *   複数端末から書き込む場合は `TURSO_WRITE_REMOTE=true` で write をリモートプライマリへ直接行い、read はローカルレプリカ（接続時に `conn.sync()`）を使う。`TURSO_SYNC_ON_CONNECT` は read 側の最新化用（既定 `true`）。`TURSO_WRITE_REMOTE=true` の場合、write エンジンは `https://...?secure=true` 形式の remote URL を使用します（`libsql://` のままだと 308 リダイレクトエラーになります）。
-*   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
+    *   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
+*   **WAL 競合の自動リトライ**: ローカルレプリカは複数プロセス（CLI の並列起動・常駐 auth-server・hwda 等）で共有されるため、SQLite WAL の単一ライター制約により稀に `wal_insert_begin failed` が発生します。接続時 `sync()` と書き込みは指数バックオフ付きで自動リトライされるため通常は無害ですが、頻発する場合は `TURSO_READ_REMOTE=true` / `TURSO_WRITE_REMOTE=true` でローカルファイルを使わない完全リモート構成に切り替えられます。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
 

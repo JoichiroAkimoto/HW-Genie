@@ -273,14 +273,16 @@ def cmd_sync(args):
         print("TURSO_SYNC_URL is not set — nothing to sync.")
         return
 
-    from hw_genie.core.database import get_engine
+    from hw_genie.core.database import get_engine, retry_on_wal_contention
 
     try:
         engine = get_engine()
         with engine.connect() as conn:
             raw = conn.connection.dbapi_connection
             if hasattr(raw, "sync"):
-                raw.sync()
+                retry_on_wal_contention(
+                    raw.sync, logger=logging.getLogger(__name__)
+                )
             else:
                 from sqlalchemy import text
 

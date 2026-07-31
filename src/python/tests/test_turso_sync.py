@@ -573,6 +573,29 @@ def test_build_database_config_read_remote_returns_write_config():
     assert read_url == "sqlite+libsql://my-test-db.turso.io/?secure=true"
 
 
+def test_build_database_config_read_remote_alone_does_not_recurse():
+    """TURSO_READ_REMOTE 単体指定でも相互再帰 (RecursionError) にならない。"""
+    from hw_genie.core.database import (
+        build_database_config,
+        build_write_database_config,
+    )
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_READ_REMOTE": "true",
+    }
+    expected = "sqlite+libsql://my-test-db.turso.io/?secure=true"
+    read_url, read_args = build_database_config(env)
+    write_url, write_args = build_write_database_config(env)
+    # read / write ともリモート直結になる（write エンジンは read エンジンを再利用）
+    assert read_url == expected
+    assert write_url == expected
+    assert read_args.get("auth_token") == "my-mock-auth-token"
+    assert write_args.get("auth_token") == "my-mock-auth-token"
+
+
 def test_build_database_config_read_remote_without_sync_url_warns(caplog):
     """TURSO_READ_REMOTE=true だが sync URL 未設定は警告しローカルへフォールバック。"""
     from hw_genie.core.database import build_database_config
@@ -586,4 +609,150 @@ def test_build_database_config_read_remote_without_sync_url_warns(caplog):
     assert "TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set" in caplog.text
     # ローカルファイルモード（replica ではなく plain sqlite）へフォールバック
     assert "sqlite://" in str(read_url)
+
+
+def test_is_wal_contention_markers():
+    """WAL 競合の判定（wal_insert_begin failed / database is locked）。"""
+    from hw_genie.core.database import is_wal_contention
+
+    assert is_wal_contention(ValueError("wal_insert_begin failed"))
+    assert is_wal_contention(ValueError("database is locked"))
+    assert is_wal_contention(ValueError("SQLITE_BUSY: database is locked (5)"))
+    assert not is_wal_contention(RuntimeError("connection refused"))
+    assert not is_wal_contention(ValueError("no such table: accounts"))
+
+
+def test_retry_on_wal_contention_recovers(mock_sleep):
+    """WAL 競合で一時失敗しても再試行で成功する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+
+def test_retry_on_wal_contention_raises_after_exhaustion(mock_sleep):
+    """全再試行が WAL 競合で失敗したら最後の例外を再送出する。"""
+
+    def flaky():
+        raise ValueError("wal_insert_begin failed")
+
+    from hw_genie.core.database import retry_on_wal_contention
+
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        retry_on_wal_contention(flaky, attempts=3, base_delay=0.01)
+    assert mock_sleep.call_count == 2
+
+
+def test_retry_on_wal_contention_non_contention_raises_immediately(mock_sleep):
+    """WAL 競合以外のエラーは即時送出し再試行しない。"""
+
+    def flaky():
+        raise RuntimeError("boom")
+
+    from hw_genie.core.database import retry_on_wal_contention
+
+    with pytest.raises(RuntimeError, match="boom"):
+        retry_on_wal_contention(flaky, attempts=5)
+    assert mock_sleep.call_count == 0
+
+
+def test_retry_on_wal_contention_rejects_invalid_attempts():
+    """attempts < 1 は ValueError を送出し、fn を実行しない。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    called = {"n": 0}
+
+    def fn():
+        called["n"] += 1
+
+    with pytest.raises(ValueError, match="attempts"):
+        retry_on_wal_contention(fn, attempts=0)
+    assert called["n"] == 0
+
+
+def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep):
+    """バックオフ待機はジッター付きで複数プロセスの再衝突を防ぐ。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+
+    retry_on_wal_contention(flaky, attempts=5, base_delay=1.0)
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+    # ジッター (0.5x-1.5x) 適用後の待機時間を検証:
+    # 1回目: 1.0 * 2^0 * [0.5,1.5]、2回目: 1.0 * 2^1 * [0.5,1.5]
+    delays = [c.args[0] for c in mock_sleep.call_args_list]
+    assert 0.5 <= delays[0] <= 1.5
+    assert 1.0 <= delays[1] <= 3.0
+
+
+def test_on_connect_sync_retries_on_wal_contention(monkeypatch, mock_sleep):
+    """接続時 sync() が WAL 競合で失敗しても再試行して成功する。"""
+    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+
+    _mark_replica_mode(True)
+    calls = []
+
+    class FakeLibsqlConn:
+        def sync(self):
+            calls.append("sync")
+            if len(calls) < 3:
+                raise ValueError("wal_insert_begin failed")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    dialect = TursoReplicaDialect()
+    hook = dialect.on_connect()
+    hook(FakeLibsqlConn())
+    assert len(calls) == 3
+
+
+def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock_sleep):
+    """接続時 sync() が全再試行失敗でも例外にせず警告のみ（ベストエフォート）。"""
+    import logging as _logging
+
+    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+
+    _mark_replica_mode(True)
+
+    class FakeLibsqlConn:
+        def sync(self):
+            raise ValueError("wal_insert_begin failed")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    with caplog.at_level(_logging.WARNING, logger="hw_genie.core.database"):
+        dialect = TursoReplicaDialect()
+        hook = dialect.on_connect()
+        hook(FakeLibsqlConn())
+
+    assert "sync() failed on connect" in caplog.text
 

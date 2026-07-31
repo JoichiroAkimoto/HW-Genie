@@ -1,3 +1,4 @@
+import logging
 import threading
 from typing import Any, List, TypedDict
 from .database import (
@@ -5,6 +6,7 @@ from .database import (
     AccountConfig,
     get_session_local,
     get_write_session_local,
+    retry_on_wal_contention,
 )
 
 
@@ -44,7 +46,14 @@ class AccountData(TypedDict, total=False):
 # raise ``wal_insert_begin failed`` / ``database is locked``. This lock (held
 # only for the duration of a ``update_config`` transaction) guarantees a single
 # writer at a time while reads and the network-heavy work stay parallel.
+#
+# NOTE: this lock only serialises threads WITHIN one process. Separate
+# processes (e.g. a long-running auth-server plus a CLI command) share the same
+# replica file too; their races are handled by the WAL-contention retry in
+# :func:`hw_genie.core.database.retry_on_wal_contention`.
 _write_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
 
 
 class SessionRepository:
@@ -130,60 +139,71 @@ class SessionRepository:
             data (AccountData): The data to save.
         """
         with _write_lock:
-            with get_write_session_local()() as db:
-                try:
-                    # 1. Update/Create Account
-                    player = data.get("player")
-                    if player is not None and isinstance(player, dict):
-                        player_id = player.get("id")
-                        if player_id is None or player_id == "":
-                            # Fallback to alias for compatibility
-                            account_rec = db.query(Account).filter(Account.alias == account).first()
-                        else:
-                            account_rec = db.query(Account).filter(Account.player_id == player_id).first()
+            # The local replica's SQLite WAL only allows a single writer, and
+            # OTHER processes sharing the same replica file (auth-server, a
+            # concurrently launched CLI, ...) can transiently hold it. Retry
+            # such races with exponential backoff instead of aborting the run.
+            retry_on_wal_contention(
+                lambda: self._update_config_tx(account, data),
+                logger=logger,
+            )
 
-                        if not account_rec:
-                            if player_id is not None and player_id != "":
-                                account_rec = Account(player_id=player_id, alias=account)
-                            else:
-                                raise ValueError(f"player_id is required for new account alias: {account}")
-                            db.add(account_rec)
-                            db.flush()
-
-                        # Update alias and basic info using model method
-                        account_rec.alias = account.strip()
-                        account_rec.update_from_dict(player)
-
-                        # Store other player configs
-                        status_fields = ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank")
-                        for k, v in player.items():
-                            if k in status_fields:
-                                continue
-                            self._upsert_config(db, account_rec.id, f"player_{k}", v)
-
-                    elif player is None:
+    def _update_config_tx(self, account: str, data: AccountData) -> None:
+        """Single ``update_config`` transaction attempt (retried on WAL contention)."""
+        with get_write_session_local()() as db:
+            try:
+                # 1. Update/Create Account
+                player = data.get("player")
+                if player is not None and isinstance(player, dict):
+                    player_id = player.get("id")
+                    if player_id is None or player_id == "":
+                        # Fallback to alias for compatibility
                         account_rec = db.query(Account).filter(Account.alias == account).first()
-                        if not account_rec:
-                            raise ValueError(f"Account not found for alias: {account}")
+                    else:
+                        account_rec = db.query(Account).filter(Account.player_id == player_id).first()
 
-                    # 2. Update other configs
-                    for k, v in data.items():
-                        if k == "player":
-                            continue
-                        if k == "memo":
-                            account_rec.memo = v
-                        elif k == "last_item_raid_mission_id":
-                            try:
-                                account_rec.last_mission_id = int(v)
-                            except (ValueError, TypeError):
-                                pass
+                    if not account_rec:
+                        if player_id is not None and player_id != "":
+                            account_rec = Account(player_id=player_id, alias=account)
                         else:
-                            self._upsert_config(db, account_rec.id, k, v)
+                            raise ValueError(f"player_id is required for new account alias: {account}")
+                        db.add(account_rec)
+                        db.flush()
 
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                    raise
+                    # Update alias and basic info using model method
+                    account_rec.alias = account.strip()
+                    account_rec.update_from_dict(player)
+
+                    # Store other player configs
+                    status_fields = ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank")
+                    for k, v in player.items():
+                        if k in status_fields:
+                            continue
+                        self._upsert_config(db, account_rec.id, f"player_{k}", v)
+
+                elif player is None:
+                    account_rec = db.query(Account).filter(Account.alias == account).first()
+                    if not account_rec:
+                        raise ValueError(f"Account not found for alias: {account}")
+
+                # 2. Update other configs
+                for k, v in data.items():
+                    if k == "player":
+                        continue
+                    if k == "memo":
+                        account_rec.memo = v
+                    elif k == "last_item_raid_mission_id":
+                        try:
+                            account_rec.last_mission_id = int(v)
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        self._upsert_config(db, account_rec.id, k, v)
+
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
     def _upsert_config(self, db, account_id: int, key: str, value: Any) -> None:
         """
