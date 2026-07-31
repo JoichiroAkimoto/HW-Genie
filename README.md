@@ -204,6 +204,13 @@ export TURSO_WRITE_REMOTE="true"
 hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
 ```
 
+**最新ステータスの一覧取得**: `auth --list` は DB のキャッシュ値を表示します。
+ゲームサーバーから最新ステータスを取得して DB を更新してから表示するには `--fresh` を併用します
+（全アカウント並列、`-a` で特定アカウントのみ指定可能）:
+```bash
+hw-genie auth --list --fresh
+```
+
 #### 方法2: 自動キャプチャ (推奨)
 1. 認証サーバーを起動:
 ```bash

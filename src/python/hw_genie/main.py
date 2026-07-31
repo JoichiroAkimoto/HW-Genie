@@ -35,19 +35,46 @@ def _ensure_session(args) -> dict[str, str]:
 
 def cmd_auth(args):
     """認証情報の更新・表示"""
+    # --fresh は --list との併用が必須（単体指定はエラー）
+    if getattr(args, "fresh", False) and not args.list:
+        print("Error: --fresh requires --list.", file=sys.stderr)
+        sys.exit(1)
+
     # 一覧表示
     if args.list or getattr(args, "list_names", False):
         from hw_genie.core.session_manager import SessionManager
+
+        if getattr(args, "list_names", False):
+            accounts = SessionManager.list_accounts()
+            if not accounts:
+                print("No accounts found in database.")
+                return
+            for alias in sorted(accounts):
+                print(alias)
+            return
 
         accounts = SessionManager.list_accounts()
         if not accounts:
             print("No accounts found in database.")
             return
 
-        if getattr(args, "list_names", False):
-            for alias in sorted(accounts):
-                print(alias)
-            return
+        if getattr(args, "fresh", False):
+            from hw_genie.core.auth import refresh_all_accounts
+
+            # -a 併用時はそのアカウントのみ最新化する
+            targets = [args.account] if args.account else accounts
+            refreshed = refresh_all_accounts(targets)
+            failed = [err for _, err in refreshed if err]
+            for account, err in refreshed:
+                if err:
+                    print(f"⚠️ {err}", file=sys.stderr)
+            if failed:
+                # 失敗したアカウントは DB の旧値のまま表示する
+                print(
+                    f"⚠️ Could not refresh {len(failed)} account(s); "
+                    "showing cached values.",
+                    file=sys.stderr,
+                )
 
         from hw_genie.core.utils import (
             display_timezone_name,
@@ -333,6 +360,7 @@ def main():
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
+    p_auth.add_argument("--fresh", action="store_true", help="Fetch the latest player status from the game API before --list")
     p_auth.add_argument("--list-names", action="store_true", help="List all account names in plain text")
     p_auth.add_argument("--memo", help="Set or update the memo for the account")
     p_auth.set_defaults(func=cmd_auth)

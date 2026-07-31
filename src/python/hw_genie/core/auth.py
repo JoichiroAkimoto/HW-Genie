@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
 import requests
-from hw_genie.core.client import PlayerStatus
+from hw_genie.core.client import PlayerStatus, load_session_headers
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -123,3 +123,54 @@ def update_session_with_headers(headers: dict[str, str], account_alias: str = "d
         if account_alias != "default" and account_alias != player_name:
             save_session(info, account_alias)
     return info
+
+
+def _refresh_one(account: str) -> str | None:
+    """Fetch fresh status for a single account; returns an error message or None."""
+    headers = load_session_headers(account)
+    if not headers:
+        return f"Session not found for account '{account}'."
+    info = get_user_info(headers)
+    if info["status"] != "success":
+        return f"{account}: {info.get('message', 'API error')}"
+    # 対象アカウントのみ保存する（update_session_with_headers は "default" と
+    # 実名にも保存するため 1 アカウントにつき最大 3 書き込みになる。--fresh の
+    # 並列更新ではアカウント 1 件につき 1 書き込みに抑え、WAL 競合の機会と
+    # 途中終了時のアカウント名書き換えを防ぐ）。
+    # 単一アカウント運用（alias=default）では実名エイリアスも維持する。
+    if account == "default":
+        save_session(info, account)
+        save_session(info, info["player"].name)
+    else:
+        save_session(info, account)
+    return None
+
+
+def refresh_all_accounts(
+    accounts: list[str], max_parallel: int = 4
+) -> list[tuple[str, str | None]]:
+    """Fetch the latest player status for ``accounts`` from the game API (parallel).
+
+    Each account is refreshed and persisted to the DB independently; a failure
+    (expired session, network error, ...) is captured as an error message
+    instead of aborting the other accounts.
+
+    Returns:
+        list of ``(account, error_message_or_None)``.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not accounts:
+        return []
+    workers = max(1, min(max_parallel, len(accounts)))
+    results: list[tuple[str, str | None]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_refresh_one, acc): acc for acc in accounts}
+        for fut in as_completed(futures):
+            acc = futures[fut]
+            try:
+                err = fut.result()
+            except Exception as exc:  # noqa: BLE001 - isolate per-account failures
+                err = str(exc)
+            results.append((acc, err))
+    return results
