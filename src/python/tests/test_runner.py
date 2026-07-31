@@ -138,13 +138,13 @@ def test_summarize_counts_unknown_player_status_as_failed(capsys):
 
     results = [
         ("alpha", (PlayerStatus(name="Alpha", level=10, gold=100, gems=5, energy=80, arena_rank=3, grand_rank=2), None)),
-        ("VitaminD", (PlayerStatus(name="Unknown", level=0, gold=0, gems=0, energy=0, arena_rank=0, grand_rank=0), None)),
+        ("Bob", (PlayerStatus(name="Unknown", level=0, gold=0, gems=0, energy=0, arena_rank=0, grand_rank=0), None)),
     ]
     failed = summarize(results)
     out = capsys.readouterr().out
     assert failed == 1
     assert "1 account(s) completed, ❌ 1 failed." in out
-    assert "VitaminD (status unavailable)" in out
+    assert "Bob (status unavailable)" in out
 
 
 def test_cmd_multi_dispatch_daily(monkeypatch):
@@ -502,8 +502,8 @@ def test_main_sets_logging_level_info(monkeypatch):
 def test_render_summary_table_widths_are_dynamic_and_have_no_lv():
     """The summary table sizes columns to content and never shows Lv (UX fix)."""
     rows = [
-        ["VitaminD", "76/190", "11", "17", "900.8M", "570.1K"],
-        ["TheBestAccountName", "38/190", "53", "8", "2.3B", "180.2K"],
+        ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["AVeryLongTestAccountName", "38/190", "53", "8", "2.3B", "180.2K"],
     ]
     table = _render_summary_table(rows)
 
@@ -511,11 +511,11 @@ def test_render_summary_table_widths_are_dynamic_and_have_no_lv():
     assert "Lv" not in table
 
     # Long account name drives the Account column width (>= its length).
-    assert "TheBestAccountName" in table
+    assert "AVeryLongTestAccountName" in table
 
     # Widths are dynamic: a longer account name yields a wider table than a
     # short one (not a fixed 64-char box).
-    narrow = _render_summary_table([["Joe", "82/190", "4", "3", "28.8B", "502.0K"]])
+    narrow = _render_summary_table([["Test", "82/190", "4", "3", "28.8B", "502.0K"]])
     assert len(table.splitlines()[0]) > len(narrow.splitlines()[0])
 
     # Header labels present (emoji-prefixed, self-labeling).
@@ -531,8 +531,8 @@ def test_render_summary_table_is_display_aligned_with_emoji():
     padding keeps all rows (separators, header, body) the same visual width.
     """
     rows = [
-        ["VitaminD", "76/190", "11", "17", "900.8M", "570.1K"],
-        ["The Best", "38/190", "53", "8", "2.3B", "180.2K"],
+        ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],
     ]
     lines = _render_summary_table(rows).splitlines()
     widths = {_display_width(line) for line in lines}
