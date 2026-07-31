@@ -189,6 +189,7 @@ fix_tests.py
 .ralph-tui/
 tasks/
 .beads/
+.commandcode/
 
 # Local scripts
 

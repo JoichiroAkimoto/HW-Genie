@@ -1,5 +1,5 @@
 ---
-name: ヒーローレイド
+name: hero-raid
 description: HW-Genie を使用して指定されたミッションのヒーローレイドを実行します。
 ---
 # ヒーローレイド Skill (HW-Genie 版)

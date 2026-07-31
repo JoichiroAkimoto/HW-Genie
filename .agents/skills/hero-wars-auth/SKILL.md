@@ -1,5 +1,5 @@
 ---
-name: Hero Wars 認証・ユーザー情報取得
+name: hero-wars-auth
 description: HW-Genie を使用してセッション情報を管理し、ユーザー情報を取得します。ブラウザからコピーした curl コマンドを使用して認証情報を更新できます。
 ---
 # 認証・ユーザー情報取得 (HW-Genie 版)

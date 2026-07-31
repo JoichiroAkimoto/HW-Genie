@@ -1,5 +1,5 @@
 ---
-name: ヒーローショッピング
+name: hero-shopping
 description: HW-Genie を使用して、ターゲットショップのヒーローソウルとソウルショップの全アイテムを一括購入します。
 ---
 # ヒーローショッピング (HW-Genie 版)
