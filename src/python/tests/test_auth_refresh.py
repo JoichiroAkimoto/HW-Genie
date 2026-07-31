@@ -115,6 +115,24 @@ def test_refresh_all_accounts_empty():
     assert auth_module.refresh_all_accounts([]) == []
 
 
+def test_wal_writes_share_single_process_lock():
+    """update_config と on-connect の sync は同一のリエントラントロックで直列化される。
+
+    --fresh の並列更新は複数スレッドが同一ローカルレプリカの WAL に書き込む
+    ため、ロックが共有されていないと wal_insert_begin failed が毎回発生する。
+    書き込みパスは接続作成時の sync() を再入するため RLock である必要がある。
+    """
+    from hw_genie.core import database as db_module
+    from hw_genie.core import repository as repo_module
+
+    assert repo_module._wal_io_lock is db_module._wal_io_lock
+    lock = repo_module._wal_io_lock
+    lock.acquire()
+    lock.acquire()  # リエントラント: 素の Lock だとここでデッドロック
+    lock.release()
+    lock.release()
+
+
 def test_cmd_auth_fresh_requires_list(capsys):
     """--fresh 単体（--list なし）はエラーメッセージとともに終了する。"""
     args = SimpleNamespace(fresh=True, list=False, list_names=False, account=None)

@@ -1,9 +1,9 @@
 import logging
-import threading
 from typing import Any, List, TypedDict
 from .database import (
     Account,
     AccountConfig,
+    _wal_io_lock,
     get_session_local,
     get_write_session_local,
     retry_on_wal_contention,
@@ -39,19 +39,20 @@ class AccountData(TypedDict, total=False):
     last_item_raid_mission_id: int
     memo: str
 
-# Process-wide lock serialising write transactions. When running all accounts
-# inside one process (``hw-genie multi`` / bin/hwda), multiple threads may try
-# to write the SAME local libSQL Embedded Replica file concurrently. SQLite WAL
-# permits only a single writer, so without serialisation concurrent writers can
-# raise ``wal_insert_begin failed`` / ``database is locked``. This lock (held
-# only for the duration of a ``update_config`` transaction) guarantees a single
-# writer at a time while reads and the network-heavy work stay parallel.
+# Process-wide lock serialising every operation that writes into the shared
+# local libSQL Embedded Replica WAL. When running all accounts inside one
+# process (``hw-genie multi`` / bin/hwda / the parallel ``auth --list --fresh``
+# refreshes), multiple threads may try to sync() or write the SAME local file
+# concurrently. SQLite WAL permits only a single writer, so without
+# serialisation concurrent writers can raise ``wal_insert_begin failed`` /
+# ``database is locked``. ``_wal_io_lock`` (an RLock, shared with the
+# on-connect ``sync()`` in database.py) guarantees a single writer at a time
+# while reads and the network-heavy work stay parallel.
 #
 # NOTE: this lock only serialises threads WITHIN one process. Separate
 # processes (e.g. a long-running auth-server plus a CLI command) share the same
 # replica file too; their races are handled by the WAL-contention retry in
 # :func:`hw_genie.core.database.retry_on_wal_contention`.
-_write_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class SessionRepository:
             account (str): The account alias.
             data (AccountData): The data to save.
         """
-        with _write_lock:
+        with _wal_io_lock:
             # The local replica's SQLite WAL only allows a single writer, and
             # OTHER processes sharing the same replica file (auth-server, a
             # concurrently launched CLI, ...) can transiently hold it. Retry

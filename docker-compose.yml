@@ -17,6 +17,12 @@ services:
       - "8765:8765"
     environment:
       <<: *db-env
+      # 常駐コンテナがローカルレプリカを共有すると、ホスト CLI の書き込みと
+      # WAL 競合 (wal_insert_begin failed) が発生する。auth-server は低頻度
+      # アクセスなので Turso クラウド直結（完全リモート）にし、競合を構造的に
+      # 回避する（TURSO_SYNC_URL が必須。未設定時は起動エラーになる）。
+      TURSO_READ_REMOTE: "true"
+      TURSO_WRITE_REMOTE: "true"
       HW_GENIE_AUTH_PORT: 8765
       HW_GENIE_AUTH_HOST: 0.0.0.0
     volumes:
@@ -42,6 +48,10 @@ services:
     user: "1000:1000"
     environment:
       <<: *db-env
+      # 長時間稼働のためバックグラウンド sync で replica を新鮮に保つ
+      # （短命なホスト CLI では設定しないこと: 接続オープン直後の
+      # バックグラウンド sync が WAL 競合を招く）。
+      TURSO_SYNC_INTERVAL: "30"
       HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data
@@ -54,6 +64,7 @@ services:
     user: "1000:1000"
     environment:
       <<: *db-env
+      TURSO_SYNC_INTERVAL: "30"
       HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data

@@ -67,20 +67,25 @@ def retry_on_wal_contention(
             jittered = base_delay * (2 ** (attempt - 1)) * random.uniform(0.5, 1.5)
             time.sleep(jittered)
 
-# Per-thread flag recording whether the most recent connect_args built a Turso
-# embedded replica (i.e. opened a local file WITH a sync_url). ``on_connect``
-# consults this to decide whether to force an explicit ``sync()``. A
-# threading.local() is used because the dialect instance is shared across
-# threads but each connection is built on a single thread.
-_replica_mode = threading.local()
+# Reentrant lock serialising every operation that WRITES frames into the
+# shared local replica WAL: the on-connect ``sync()`` (see
+# ``TursoReplicaDialect.on_connect``) and the ``update_config`` write
+# transaction. Without it, threads inside ONE process (``auth --list --fresh``
+# refreshes accounts in parallel, ``hw-genie multi`` runs accounts in a thread
+# pool) race each other for the single WAL writer and raise
+# ``wal_insert_begin failed``. RLock so the write path may re-enter it while
+# opening its own connection (whose on-connect sync() also needs the lock).
+_wal_io_lock = threading.RLock()
 
-
-def _mark_replica_mode(enabled: bool) -> None:
-    _replica_mode.active = enabled
-
-
-def _is_replica_mode() -> bool:
-    return bool(getattr(_replica_mode, "active", False))
+# ``create_connect_args`` records here whether the engine URL opens the local
+# file as a Turso embedded replica (i.e. carries a ``sync_url``). ``on_connect``
+# consults it to decide whether to force an explicit ``sync()``. A plain
+# instance attribute (NOT threading.local) is used: SQLAlchemy may build the
+# connect args once (e.g. on the main thread at engine creation) and reuse them
+# for every connection, so a per-thread flag would be unset in worker threads
+# and their connections would never sync explicitly -- libSQL then performs an
+# implicit lazy sync at the first statement, outside our process-wide WAL lock,
+# racing other threads' writes and raising ``wal_insert_begin failed``.
 
 
 class TursoReplicaDialect(SQLiteDialect_libsql):
@@ -128,15 +133,19 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
             # sync_url (tracked via the per-thread flag set in
             # create_connect_args). Remote (ws) connections and plain local
             # sqlite connections are skipped.
-            if isinstance(conn, libsql.Connection) and _is_replica_mode():
+            if isinstance(conn, libsql.Connection) and getattr(self, "_replica_mode", False):
                 if os.environ.get("TURSO_SYNC_ON_CONNECT", "true").lower() != "false":
                     try:
                         # sync() writes frames into the shared local WAL, so
-                        # concurrent processes can transiently fail with
-                        # ``wal_insert_begin failed``; retry a few times.
-                        retry_on_wal_contention(
-                            conn.sync, attempts=3, base_delay=0.25, logger=logger
-                        )
+                        # concurrent syncs/writes (even within this process,
+                        # e.g. the parallel --fresh refreshes) can transiently
+                        # fail with ``wal_insert_begin failed``. Serialise all
+                        # WAL-writing operations process-wide, then retry the
+                        # remaining cross-process races a few times.
+                        with _wal_io_lock:
+                            retry_on_wal_contention(
+                                conn.sync, attempts=3, base_delay=0.25, logger=logger
+                            )
                     except Exception:  # pragma: no cover - best-effort
                         logger.warning(
                             "Turso replica sync() failed on connect; "
@@ -145,6 +154,19 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
                         )
 
         return connect
+
+    def connect(self, *cargs, **cparams):
+        """Open a DBAPI connection (the pool's default creator).
+
+        Opening a replica file performs an internal blocking sync that writes
+        WAL frames. Serialise the open with the other WAL-writing operations
+        (on-connect ``sync()``, ``update_config``) so that connections opened
+        from parallel threads cannot race them (``wal_insert_begin failed``).
+        """
+        if getattr(self, "_replica_mode", False):
+            with _wal_io_lock:
+                return super().connect(*cargs, **cparams)
+        return super().connect(*cargs, **cparams)
 
     def create_connect_args(self, url):
         pysqlite_args = (
@@ -162,7 +184,7 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
             util.coerce_kw_type(opts, key, type_, dest=connect_args)
 
         # Reset replica flag; it is only set below when a sync_url is attached.
-        _mark_replica_mode(False)
+        self._replica_mode = False
 
         if url.host:
             # Remote (ws/wss) mode: keep stock behaviour.
@@ -190,7 +212,7 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
         sync_url = opts.get("sync_url")
         if sync_url:
             connect_args["sync_url"] = sync_url
-            _mark_replica_mode(True)
+            self._replica_mode = True
             auth_token = opts.get("auth_token")
             if auth_token:
                 connect_args["auth_token"] = auth_token

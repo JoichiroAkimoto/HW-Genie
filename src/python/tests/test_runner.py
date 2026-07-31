@@ -397,19 +397,28 @@ def test_run_all_accounts_respects_max_parallel(monkeypatch):
 
 
 def test_write_lock_serializes_writes(monkeypatch):
-    """Concurrent update_config calls must serialize via the real _write_lock (6c).
+    """Concurrent update_config calls must serialize via the real _wal_io_lock (6c).
 
-    ``repository._write_lock`` is a ``threading.Lock`` used by ``update_config``
-    to serialize writes (no concurrent writers -> no "database is locked" /
-    ``wal_insert_begin failed``). We replace it with a composing counting lock
-    that delegates to a real ``threading.Lock`` and records the max number of
-    simultaneous holders, then drive concurrent writers and prove the peak is 1.
+    ``repository._wal_io_lock`` is the process-wide lock (shared with the
+    on-connect ``sync()``) used by ``update_config`` to serialize writes
+    (no concurrent writers -> no "database is locked" / ``wal_insert_begin
+    failed``). We replace it with a composing counting lock that delegates to a
+    real ``threading.Lock`` and records the max number of simultaneous holders,
+    then drive concurrent writers and prove the peak is 1.
     """
     import threading
+    from hw_genie.core import database as db_module
     from hw_genie.core import repository
 
-    # The production invariant: writes are guarded by a threading.Lock.
-    assert isinstance(repository._write_lock, threading.Lock)
+    # The production invariant: update_config and the on-connect sync share the
+    # same process-wide lock (RLock -- reentrant, so a write transaction may
+    # open its own connection whose sync() re-acquires it).
+    assert repository._wal_io_lock is db_module._wal_io_lock
+    lock = repository._wal_io_lock
+    lock.acquire()
+    lock.acquire()  # reentrant: a plain Lock would deadlock here
+    lock.release()
+    lock.release()
 
     peak = {"n": 0}
     lock_state = {"n": 0}
@@ -430,10 +439,10 @@ def test_write_lock_serializes_writes(monkeypatch):
             inner.release()
             return False
 
-    monkeypatch.setattr(repository, "_write_lock", CountingLock())
+    monkeypatch.setattr(repository, "_wal_io_lock", CountingLock())
 
     # Fake session: commit simulates work. update_config holds the (now counting)
-    # _write_lock around this, so concurrent commits must serialize.
+    # _wal_io_lock around this, so concurrent commits must serialize.
     import contextlib
 
     def fake_commit(self):
@@ -461,7 +470,7 @@ def test_write_lock_serializes_writes(monkeypatch):
     for t in threads:
         t.join()
 
-    # The real _write_lock was exercised: at most one holder at any time.
+    # The real _wal_io_lock was exercised: at most one holder at any time.
     assert peak["n"] <= 1
     # And it was actually acquired by every writer.
     assert peak["n"] == 1
