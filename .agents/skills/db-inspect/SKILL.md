@@ -1,5 +1,5 @@
 ---
-name: DB インスペクション
+name: db-inspect
 description: HW-Genie のデータベース（Turso クラウド / ローカルレプリカ）のテーブル構造やデータを確認します。機能開発時の状態確認やデバッグに使用します。
 ---
 

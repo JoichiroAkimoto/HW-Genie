@@ -28,7 +28,7 @@ def list_account_aliases() -> list[str]:
     return sorted(SessionManager.list_accounts())
 
 
-def _resolve_max_parallel(
+def resolve_max_parallel(
     max_parallel: int | None, account_count: int
 ) -> int:
     """Compute the effective worker count.
@@ -106,7 +106,7 @@ def run_all_accounts(
         logger.warning("No accounts found; nothing to run.")
         return {}
 
-    workers = _resolve_max_parallel(max_parallel, len(accounts))
+    workers = resolve_max_parallel(max_parallel, len(accounts))
     logger.info(
         "Running routine for %d account(s) (parallel, max %d)...",
         len(accounts),

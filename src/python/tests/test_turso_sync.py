@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
@@ -336,44 +337,33 @@ def test_create_connect_args_sets_replica_mode_flag():
     """Replica URL (sync_url 付き) は on_connect で sync() されるようフラグが立つ。"""
     from sqlalchemy.engine.url import make_url
 
-    from hw_genie.core.database import (
-        TursoReplicaDialect,
-        _is_replica_mode,
-        _mark_replica_mode,
-    )
+    from hw_genie.core.database import TursoReplicaDialect
 
-    _mark_replica_mode(False)
     dialect = TursoReplicaDialect()
     url = make_url(
         "sqlite+libsql:////tmp/replica.db"
         "?sync_url=libsql://db.turso.io&auth_token=secret"
     )
     dialect.create_connect_args(url)
-    assert _is_replica_mode() is True
+    assert dialect._replica_mode is True
 
 
 def test_create_connect_args_clears_replica_mode_for_remote():
     """Remote (ws) URL は replica フラグが立たない。"""
     from sqlalchemy.engine.url import make_url
 
-    from hw_genie.core.database import (
-        TursoReplicaDialect,
-        _is_replica_mode,
-        _mark_replica_mode,
-    )
+    from hw_genie.core.database import TursoReplicaDialect
 
-    _mark_replica_mode(True)
     dialect = TursoReplicaDialect()
     url = make_url("sqlite+libsql://db.turso.io/my-db?auth_token=secret")
     dialect.create_connect_args(url)
-    assert _is_replica_mode() is False
+    assert dialect._replica_mode is False
 
 
 def test_on_connect_syncs_replica_when_enabled(monkeypatch):
     """replica モードで on_connect が conn.sync() を呼ぶ（デフォルト有効）。"""
-    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+    from hw_genie.core.database import TursoReplicaDialect
 
-    _mark_replica_mode(True)
     calls = []
 
     class FakeLibsqlConn:
@@ -392,6 +382,7 @@ def test_on_connect_syncs_replica_when_enabled(monkeypatch):
     )
 
     dialect = TursoReplicaDialect()
+    dialect._replica_mode = True
     hook = dialect.on_connect()
     hook(FakeLibsqlConn())
     assert calls == ["sync"]
@@ -399,9 +390,8 @@ def test_on_connect_syncs_replica_when_enabled(monkeypatch):
 
 def test_on_connect_skips_sync_when_disabled(monkeypatch):
     """TURSO_SYNC_ON_CONNECT=false なら sync() は呼ばれない。"""
-    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+    from hw_genie.core.database import TursoReplicaDialect
 
-    _mark_replica_mode(True)
     monkeypatch.setenv("TURSO_SYNC_ON_CONNECT", "false")
     calls = []
 
@@ -419,6 +409,7 @@ def test_on_connect_skips_sync_when_disabled(monkeypatch):
     )
 
     dialect = TursoReplicaDialect()
+    dialect._replica_mode = True
     hook = dialect.on_connect()
     hook(FakeLibsqlConn())
     assert calls == []
@@ -426,9 +417,8 @@ def test_on_connect_skips_sync_when_disabled(monkeypatch):
 
 def test_on_connect_skips_sync_for_non_replica(monkeypatch):
     """replica フラグが無い場合は sync() を呼ばない。"""
-    from hw_genie.core.database import TursoReplicaDialect, _mark_replica_mode
+    from hw_genie.core.database import TursoReplicaDialect
 
-    _mark_replica_mode(False)
     calls = []
 
     class FakeLibsqlConn:
@@ -448,6 +438,128 @@ def test_on_connect_skips_sync_for_non_replica(monkeypatch):
     hook = dialect.on_connect()
     hook(FakeLibsqlConn())
     assert calls == []
+
+
+def test_connect_serialises_replica_open(monkeypatch):
+    """replica モードの接続オープンは WAL ロックの下で行われる。
+
+    libSQL はローカルファイルを開く際に内部でブロッキング sync を行い WAL に
+    書き込むため、並列スレッドの接続オープン同士が競合する。dialect.connect()
+    が共有ロック (``_wal_io_lock``) を取ることを検証する。
+    """
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    entered = []
+    held_by = []
+
+    class LockSpy:
+        def __enter__(self):
+            entered.append(threading.current_thread().name)
+            held_by.append(threading.current_thread().name)
+            return self
+
+        def __exit__(self, *exc):
+            held_by.clear()
+            return False
+
+    monkeypatch.setattr(db_module, "_wal_io_lock", LockSpy())
+    dialect = TursoReplicaDialect()
+    monkeypatch.setattr(
+        dialect, "dbapi", type("dbapi", (), {"connect": lambda *a, **k: "conn"})()
+    )
+
+    dialect._replica_mode = True
+    assert dialect.connect() == "conn"
+    assert len(entered) == 1
+
+    dialect._replica_mode = False
+    dialect.connect()
+    assert len(entered) == 1  # 非 replica (remote/plain sqlite) ではロック不要
+
+
+def test_connect_retries_wal_contention(monkeypatch, mock_sleep):
+    """replica モードの接続オープンは WAL 競合をリトライして成功する。
+
+    他プロセスが WAL ライターロックを保持している間は接続オープン自体が
+    ``wal_insert_begin failed`` を送出するため、指数バックオフで再試行する。
+    """
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+    calls = {"n": 0}
+
+    def flaky_connect(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+        return "conn"
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": flaky_connect})())
+    dialect._replica_mode = True
+
+    assert dialect.connect() == "conn"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+    # 非 replica モードではリトライせず即座に送出される
+    dialect._replica_mode = False
+    calls["n"] = 0
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        dialect.connect()
+    assert calls["n"] == 1
+
+
+def test_connect_wal_contention_exhausted_reraises(monkeypatch, mock_sleep):
+    """接続オープンの WAL 競合が全試行失敗したら最後の例外を再送出する。"""
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+
+    def always_wal(*args, **kwargs):
+        raise ValueError("database is locked")
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": always_wal})())
+    dialect._replica_mode = True
+
+    with pytest.raises(ValueError, match="database is locked"):
+        dialect.connect()
+    assert mock_sleep.call_count == 2
+
+
+def test_connect_non_wal_error_propagates_immediately(monkeypatch, mock_sleep):
+    """接続オープンの非競合エラーは即時送出し再試行しない。"""
+    from hw_genie.core import database as db_module
+    from hw_genie.core.database import TursoReplicaDialect
+
+    monkeypatch.setattr(
+        db_module,
+        "_wal_io_lock",
+        type("Lock", (), {"__enter__": lambda s: s, "__exit__": lambda s, *a: False})(),
+    )
+    dialect = TursoReplicaDialect()
+
+    def boom(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": boom})())
+    dialect._replica_mode = True
+
+    with pytest.raises(OSError, match="connection refused"):
+        dialect.connect()
+    assert mock_sleep.call_count == 0
 
 
 def test_build_write_config_falls_back_to_replica_when_remote_off():
@@ -573,6 +685,29 @@ def test_build_database_config_read_remote_returns_write_config():
     assert read_url == "sqlite+libsql://my-test-db.turso.io/?secure=true"
 
 
+def test_build_database_config_read_remote_alone_does_not_recurse():
+    """TURSO_READ_REMOTE 単体指定でも相互再帰 (RecursionError) にならない。"""
+    from hw_genie.core.database import (
+        build_database_config,
+        build_write_database_config,
+    )
+
+    env = {
+        "DATABASE_URL": "sqlite:///./data/hw_genie.db",
+        "TURSO_SYNC_URL": "libsql://my-test-db.turso.io",
+        "TURSO_AUTH_TOKEN": "my-mock-auth-token",
+        "TURSO_READ_REMOTE": "true",
+    }
+    expected = "sqlite+libsql://my-test-db.turso.io/?secure=true"
+    read_url, read_args = build_database_config(env)
+    write_url, write_args = build_write_database_config(env)
+    # read / write ともリモート直結になる（write エンジンは read エンジンを再利用）
+    assert read_url == expected
+    assert write_url == expected
+    assert read_args.get("auth_token") == "my-mock-auth-token"
+    assert write_args.get("auth_token") == "my-mock-auth-token"
+
+
 def test_build_database_config_read_remote_without_sync_url_warns(caplog):
     """TURSO_READ_REMOTE=true だが sync URL 未設定は警告しローカルへフォールバック。"""
     from hw_genie.core.database import build_database_config
@@ -586,4 +721,152 @@ def test_build_database_config_read_remote_without_sync_url_warns(caplog):
     assert "TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set" in caplog.text
     # ローカルファイルモード（replica ではなく plain sqlite）へフォールバック
     assert "sqlite://" in str(read_url)
+
+
+def test_is_wal_contention_markers():
+    """WAL 競合の判定（wal_insert_begin failed / database is locked）。"""
+    from hw_genie.core.database import is_wal_contention
+
+    assert is_wal_contention(ValueError("wal_insert_begin failed"))
+    assert is_wal_contention(ValueError("database is locked"))
+    assert is_wal_contention(ValueError("SQLITE_BUSY: database is locked (5)"))
+    assert not is_wal_contention(RuntimeError("connection refused"))
+    assert not is_wal_contention(ValueError("no such table: accounts"))
+
+
+def test_retry_on_wal_contention_recovers(mock_sleep):
+    """WAL 競合で一時失敗しても再試行で成功する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+
+def test_retry_on_wal_contention_raises_after_exhaustion(mock_sleep):
+    """全再試行が WAL 競合で失敗したら最後の例外を再送出する。"""
+
+    def flaky():
+        raise ValueError("wal_insert_begin failed")
+
+    from hw_genie.core.database import retry_on_wal_contention
+
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        retry_on_wal_contention(flaky, attempts=3, base_delay=0.01)
+    assert mock_sleep.call_count == 2
+
+
+def test_retry_on_wal_contention_non_contention_raises_immediately(mock_sleep):
+    """WAL 競合以外のエラーは即時送出し再試行しない。"""
+
+    def flaky():
+        raise RuntimeError("boom")
+
+    from hw_genie.core.database import retry_on_wal_contention
+
+    with pytest.raises(RuntimeError, match="boom"):
+        retry_on_wal_contention(flaky, attempts=5)
+    assert mock_sleep.call_count == 0
+
+
+def test_retry_on_wal_contention_rejects_invalid_attempts():
+    """attempts < 1 は ValueError を送出し、fn を実行しない。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    called = {"n": 0}
+
+    def fn():
+        called["n"] += 1
+
+    with pytest.raises(ValueError, match="attempts"):
+        retry_on_wal_contention(fn, attempts=0)
+    assert called["n"] == 0
+
+
+def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep, monkeypatch):
+    """バックオフ待機はジッター付きで複数プロセスの再衝突を防ぐ。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    # ジッター係数を 1.5 に固定し、待機時間を決定的に検証する
+    monkeypatch.setattr(
+        "hw_genie.core.database.random.uniform", lambda a, b: b
+    )
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("wal_insert_begin failed")
+
+    retry_on_wal_contention(flaky, attempts=5, base_delay=1.0)
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+    # 1回目: 1.0 * 2^0 * 1.5 = 1.5、2回目: 1.0 * 2^1 * 1.5 = 3.0
+    delays = [c.args[0] for c in mock_sleep.call_args_list]
+    assert delays == [1.5, 3.0]
+
+
+def test_on_connect_sync_retries_on_wal_contention(monkeypatch, mock_sleep):
+    """接続時 sync() が WAL 競合で失敗しても再試行して成功する。"""
+    from hw_genie.core.database import TursoReplicaDialect
+
+    calls = []
+
+    class FakeLibsqlConn:
+        def sync(self):
+            calls.append("sync")
+            if len(calls) < 3:
+                raise ValueError("wal_insert_begin failed")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    dialect = TursoReplicaDialect()
+    dialect._replica_mode = True
+    hook = dialect.on_connect()
+    hook(FakeLibsqlConn())
+    assert len(calls) == 3
+
+
+def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock_sleep):
+    """接続時 sync() が全再試行失敗でも例外にせず警告のみ（ベストエフォート）。"""
+    import logging as _logging
+
+    from hw_genie.core.database import TursoReplicaDialect
+
+    class FakeLibsqlConn:
+        def sync(self):
+            raise ValueError("wal_insert_begin failed")
+
+    monkeypatch.setattr(
+        TursoReplicaDialect, "import_dbapi",
+        lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.database.SQLiteDialect_libsql.on_connect",
+        lambda self: None,
+    )
+
+    with caplog.at_level(_logging.WARNING, logger="hw_genie.core.database"):
+        dialect = TursoReplicaDialect()
+        dialect._replica_mode = True
+        hook = dialect.on_connect()
+        hook(FakeLibsqlConn())
+
+    assert "sync() failed on connect" in caplog.text
 

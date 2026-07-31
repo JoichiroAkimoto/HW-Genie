@@ -11,7 +11,7 @@ from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
-from hw_genie.runner import run_all_accounts, summarize
+from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
 def _prepare_info_for_json(info: dict) -> dict:
@@ -35,19 +35,58 @@ def _ensure_session(args) -> dict[str, str]:
 
 def cmd_auth(args):
     """認証情報の更新・表示"""
+    # --fresh は --list との併用が必須（--list-names 併用は常にエラー）
+    if getattr(args, "fresh", False):
+        if getattr(args, "list_names", False):
+            print(
+                "Error: --fresh cannot be combined with --list-names.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not args.list:
+            print("Error: --fresh requires --list.", file=sys.stderr)
+            sys.exit(1)
+
     # 一覧表示
     if args.list or getattr(args, "list_names", False):
         from hw_genie.core.session_manager import SessionManager
+
+        if getattr(args, "list_names", False):
+            accounts = SessionManager.list_accounts()
+            if not accounts:
+                print("No accounts found in database.")
+                return
+            for alias in sorted(accounts):
+                print(alias)
+            return
 
         accounts = SessionManager.list_accounts()
         if not accounts:
             print("No accounts found in database.")
             return
 
-        if getattr(args, "list_names", False):
-            for alias in sorted(accounts):
-                print(alias)
-            return
+        if getattr(args, "fresh", False):
+            from hw_genie.core.auth import refresh_all_accounts
+
+            # -a 併用時はそのアカウントのみ最新化する
+            targets = [args.account] if args.account else accounts
+            # 並列数は multi と同様 HWDA_MAX_PARALLEL（上限）を尊重する
+            refreshed = refresh_all_accounts(
+                targets, max_parallel=resolve_max_parallel(None, len(targets))
+            )
+            failed = [err for _, err in refreshed if err]
+            for account, err in refreshed:
+                if err:
+                    print(f"⚠️ {err}", file=sys.stderr)
+            if failed:
+                # 失敗したアカウントは DB の旧値のまま表示する
+                print(
+                    f"⚠️ Could not refresh {len(failed)} account(s); "
+                    "showing cached values.",
+                    file=sys.stderr,
+                )
+            # refresh で alias が変わった場合に備え、表示用リストを再取得する
+            accounts = SessionManager.list_accounts()
 
         from hw_genie.core.utils import (
             display_timezone_name,
@@ -273,14 +312,26 @@ def cmd_sync(args):
         print("TURSO_SYNC_URL is not set — nothing to sync.")
         return
 
-    from hw_genie.core.database import get_engine
+    from hw_genie.core.database import (
+        get_engine,
+        retry_on_wal_contention,
+        _wal_io_lock,
+    )
 
     try:
         engine = get_engine()
         with engine.connect() as conn:
             raw = conn.connection.dbapi_connection
             if hasattr(raw, "sync"):
-                raw.sync()
+                # sync() は WAL にフレームを書くため、他の書き込み操作と
+                # 同じ共有ロックで直列化する（試行ごとに取り直し）。
+                def _sync(raw=raw):
+                    with _wal_io_lock:
+                        raw.sync()
+
+                retry_on_wal_contention(
+                    _sync, logger=logging.getLogger(__name__)
+                )
             else:
                 from sqlalchemy import text
 
@@ -331,6 +382,7 @@ def main():
     p_auth.add_argument("--curl", "-c", help="Update session with curl command")
     p_auth.add_argument("--info", "-i", action="store_true", help="Get player info and update session")
     p_auth.add_argument("--list", "-l", action="store_true", help="List all accounts in database")
+    p_auth.add_argument("--fresh", action="store_true", help="Fetch the latest player status from the game API before --list")
     p_auth.add_argument("--list-names", action="store_true", help="List all account names in plain text")
     p_auth.add_argument("--memo", help="Set or update the memo for the account")
     p_auth.set_defaults(func=cmd_auth)

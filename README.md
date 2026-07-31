@@ -146,7 +146,11 @@ uv run hw-genie sync
 export DATABASE_URL="sqlite+libsql:///./data/hw_genie.db"
 export TURSO_SYNC_URL="libsql://[your-db].turso.io"
 export TURSO_AUTH_TOKEN="[your-token]"
-export TURSO_SYNC_INTERVAL="30"   # 同期間隔（秒、省略可)
+# バックグラウンド同期間隔（秒）。注意: 設定すると接続オープン直後に libSQL が
+# バックグラウンド sync を走らせ、複数接続を並列に使うコマンド (auth --list
+# --fresh 等) で WAL 競合を頻発させるため、短命なホスト CLI では設定しないこと。
+# 長時間稼働の hwda/hwsa コンテナ用は docker-compose.yml で個別指定する。
+# export TURSO_SYNC_INTERVAL="30"
 # 接続ごとに明示的に sync() する (デフォルト true)。短時間のCLIコマンド
 # (auth --list 等) は接続直後にクエリを投げるため、バックグラウンド同期が
 # 完了する前に古いデータを読むのを防ぎます。常駐コンテナでは false にして
@@ -176,6 +180,18 @@ export TURSO_WRITE_REMOTE="true"
 > 読み取りは引き続きローカルレプリカ (`TURSO_SYNC_ON_CONNECT` で最新化) を使用するため、
 > 端末間で一貫性が保たれます。未設定時は読み書きとも従来のレプリカ経由で動作します。
 >
+> **WAL 競合の自動リトライ**: ローカルレプリカは同一マシン上の複数プロセス
+> （並列起動した CLI・常駐 auth-server・`multi` 等）で共有されるため、SQLite WAL の
+> 単一ライター制約により稀に `wal_insert_begin failed` が発生します。同一プロセス内では
+> 接続時 `sync()` と書き込みトランザクションが共有ロック（RLock）で直列化され、
+> プロセス間の競合のみ指数バックオフ付きで自動リトライされます（非競合エラーは即時失敗）。
+> 頻発する場合は `TURSO_READ_REMOTE=true` と `TURSO_WRITE_REMOTE=true` を併用した
+> 完全リモート構成（ローカルファイル不使用）に切り替えることで構造的に回避できます。
+> **`TURSO_SYNC_INTERVAL` は設定しないこと**: 設定すると libSQL が接続オープン直後に
+> バックグラウンド sync を走らせ、複数接続を並列に使うコマンド（`auth --list --fresh` 等）で
+> WAL 競合を毎回招きます（新鮮さは接続時 sync が担保）。長時間稼働の hwda/hwsa コンテナ用にのみ
+> docker-compose.yml で個別指定しています。
+>
 > **パス指定**: `DATABASE_URL` のローカルファイルパスは以下の通り解決されます。
 > - `sqlite+libsql:///./data/hw_genie.db` → `PKG_ROOT/data/hw_genie.db`（相対・推奨）
 > - `sqlite+libsql:////abs/path.db` （4スラッシュ）→ そのまま絶対パス
@@ -195,6 +211,13 @@ export TURSO_WRITE_REMOTE="true"
 2. ターミナルで実行:
 ```bash
 hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
+```
+
+**最新ステータスの一覧取得**: `auth --list` は DB のキャッシュ値を表示します。
+ゲームサーバーから最新ステータスを取得して DB を更新してから表示するには `--fresh` を併用します
+（全アカウント並列、`-a` で特定アカウントのみ指定可能）:
+```bash
+hw-genie auth --list --fresh
 ```
 
 #### 方法2: 自動キャプチャ (推奨)

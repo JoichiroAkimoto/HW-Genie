@@ -26,7 +26,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **デイリールーチン**: `uv run hw-genie daily`
 *   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。実行後はアカウント別ステータス表（Account / ⚡Energy / 🏆Arena / 👑GA / 💰Gold / 💎Gems、列幅は内容に応じて自動調整）と失敗一覧を標準出力に表示。`bin/hwda` / `bin/hwsa` はこのコマンドを単一プロセスで呼び出し、出力を `data/logs/` にミラーリングします（実行ごとの統合ログ `data/logs/hwda_<ts>.log`）。ログは `HW_LOG_KEEP_DAYS`（既定 7 日、0 で無効、後方互換用に `HWDA_LOG_KEEP_DAYS` も可）で自動削除されます。表示タイムゾーンは `HWGENIE_TZ`（既定 `UTC`、例 `Asia/Tokyo`）で指定でき、`auth --list` の `Updated` 列に反映されます（DB 保存は常に UTC）。
-*   **登録済みアカウント一覧**: `uv run hw-genie auth --list`
+*   **登録済みアカウント一覧**: `uv run hw-genie auth --list`（`--fresh` を併用するとゲームサーバーから最新ステータスを取得して DB を更新してから表示）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
@@ -50,7 +50,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **セッション管理**: 認証情報は `hw_genie.db` (SQLite) で一元管理されています。環境変数 `DATABASE_URL` で接続先を切り替えることも可能です（Turso 等）。`TURSO_SYNC_URL` を設定すると、ローカルファイルをリモートの Embedded Replica として自動同期できます（詳細は README の「Turso Embedded Replicas (Syncs) の利用」）。
     *   これらの環境変数は `.env` から読み込まれます。direnv を使う場合は `copy.envrc` を `.envrc` にコピーしてください（`.env` の `dotenv` 読み込みが含まれています）。読み込みがないと `TURSO_*` 未設定となり接続エラーになります。
     *   複数端末から書き込む場合は `TURSO_WRITE_REMOTE=true` で write をリモートプライマリへ直接行い、read はローカルレプリカ（接続時に `conn.sync()`）を使う。`TURSO_SYNC_ON_CONNECT` は read 側の最新化用（既定 `true`）。`TURSO_WRITE_REMOTE=true` の場合、write エンジンは `https://...?secure=true` 形式の remote URL を使用します（`libsql://` のままだと 308 リダイレクトエラーになります）。
-*   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
+    *   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
+*   **WAL 競合の自動リトライ**: ローカルレプリカは複数プロセス（CLI の並列起動・常駐 auth-server・hwda 等）で共有されるため、SQLite WAL の単一ライター制約により稀に `wal_insert_begin failed` が発生します。同一プロセス内では接続時 `sync()` と書き込みトランザクションが共有ロック（RLock）で直列化されるため競合しません。プロセス間の競合は指数バックオフ付きで自動リトライされるため通常は無害ですが、頻発する場合は `TURSO_READ_REMOTE=true` / `TURSO_WRITE_REMOTE=true` でローカルファイルを使わない完全リモート構成に切り替えられます。**`TURSO_SYNC_INTERVAL` は設定しないこと**: 設定すると libSQL が接続オープン直後にバックグラウンド sync を走らせ、複数接続を並列に使うコマンド（`auth --list --fresh` 等）で WAL 競合を毎回招きます（新鮮さは接続時 sync が担保）。長時間稼働の hwda/hwsa コンテナ用にのみ docker-compose.yml で個別指定しています。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
 
