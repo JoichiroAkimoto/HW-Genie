@@ -16,7 +16,7 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
 ### 便利なオプション
 - `--info`, `-i`: 現在のセッション情報を再取得して最新の状態に更新します。
   ```bash
-  uv run hw-genie auth --info -a Joe
+  uv run hw-genie auth --info -a sub1
   ```
   > **注意**: `--account` 未指定時はエイリアス `default` を探します。複数アカウント運用では必ず `-a` で対象アカウントを指定してください。
 - `--account`, `-a`: アカウントに別名を付けて保存します（例: `--account sub1`）。
@@ -43,7 +43,7 @@ uv run hw-genie auth --list --fresh
 ```
 
 - 全アカウントを並列でゲーム API に問い合わせ、DB を更新した後に一覧を表示します。
-- 特定アカウントのみ最新化する場合は `-a` を併用: `uv run hw-genie auth --list --fresh -a Joe`
+- 特定アカウントのみ最新化する場合は `-a` を併用: `uv run hw-genie auth --list --fresh -a sub1`
 - セッション失効等で取得に失敗したアカウントは旧値のまま表示され、警告が出力されます。
 
 ## 方法2: 自動認証キャプチャ (推奨)

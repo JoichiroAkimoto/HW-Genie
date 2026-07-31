@@ -118,13 +118,13 @@ def test_player_status_is_valid():
     assert not PlayerStatus(name="Unknown", level=0).is_valid
 
     # name は有効だが level が 0 → 無効
-    assert not PlayerStatus(name="Joe", level=0).is_valid
+    assert not PlayerStatus(name="Alice", level=0).is_valid
 
     # level は有効だが name が Unknown → 無効
     assert not PlayerStatus(name="Unknown", level=130).is_valid
 
     # 両方有効 → 有効
-    assert PlayerStatus(name="Joe", level=130).is_valid
+    assert PlayerStatus(name="Alice", level=130).is_valid
 
 
 @pytest.mark.parametrize(
