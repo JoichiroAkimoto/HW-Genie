@@ -371,9 +371,10 @@ def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
     out = capsys.readouterr().out
     # 全文が欠落なく表示される（50 文字すべて）
     assert out.replace(" ", "").count("x") == 50
-    # Memo 列幅は HWGENIE_TZ=Asia/Tokyo 時 120-93=27 で折り返され、
-    # 27 文字を超える行は存在しない
-    assert "x" * 28 not in out
+    # どの行も Memo 列幅（ヘッダーから導出）を超えない＝折り返し境界が正しい
+    header = out.splitlines()[1]
+    memo_col_width = len(header) - header.rindex(" | ") - 3
+    assert "x" * (memo_col_width + 1) not in out
     assert "..." not in out
 
 
@@ -388,8 +389,8 @@ def test_cmd_auth_list_continuation_rows_blank_fixed_columns(capsys, monkeypatch
     for fragment in ("first line", "second line", "third line"):
         assert fragment in out
     assert out.count("Alice") == 1
-    # 継続行は Name 列が空（10 スペース）で始まる
-    assert "\n" + " " * 10 + " |" in out
+    # 継続行は Name 列が空（"Alice" の5幅ぶん）で始まる
+    assert "\n" + " " * 5 + " |" in out
 
 
 def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
@@ -413,14 +414,37 @@ def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": memo})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
 
-    # Asia/Tokyo 時は固定列合計 93 なので COLUMNS=103 でちょうど memo_width=10
-    monkeypatch.setenv("COLUMNS", "103")
+    # Asia/Tokyo 時は固定列合計 53 + 区切り 24 = 77 なので、
+    # COLUMNS=86 でちょうど memo_width=10（フロア）になる境界
+    monkeypatch.setenv("COLUMNS", "86")
     cmd_auth(args)
-    out_103 = capsys.readouterr().out
+    out_86 = capsys.readouterr().out
 
     monkeypatch.setenv("COLUMNS", "60")  # フロア 10 に張り付く
     cmd_auth(args)
     out_60 = capsys.readouterr().out
 
-    assert out_103 == out_60
+    assert out_86 == out_60
     assert out_60.replace(" ", "").count("x") == 50
+
+
+def test_cmd_auth_list_columns_are_content_driven(capsys, monkeypatch):
+    """固定列幅は最長セルに合わせて調整され、名前は省略されない。"""
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+
+    SessionManager.save("Al", {"player": {"id": "a1", "name": "Al"}})
+    cmd_auth(args)
+    short = capsys.readouterr().out
+    # Name 列 = max(ヘッダー "Name"=4, "Al"=2) = 4 → 最初の「 | 」は 4 文字目
+    assert short.splitlines()[1].index(" | ") == 4
+
+    SessionManager.save(
+        "AQuiteLongAccountName",
+        {"player": {"id": "a2", "name": "AQuiteLongAccountName"}},
+    )
+    cmd_auth(args)
+    long = capsys.readouterr().out
+    # 長い名前は省略されず全文表示され、Name 列が内容に合わせて伸びる
+    assert "AQuiteLongAccountName" in long
+    assert long.splitlines()[1].index(" | ") >= 20

@@ -106,37 +106,25 @@ def cmd_auth(args):
 
         tz_label = display_timezone_name()
         updated_col = f"Updated ({tz_label})"
-        # Body timestamps are 19 chars ("YYYY-MM-DD HH:MM:SS"); widen the column
-        # to the header label when the tz name makes it longer (e.g. Asia/Tokyo).
-        updated_width = max(19, len(updated_col))
 
-        # Fixed columns (Memo is the flexible last column).
+        # 固定列（Memo は端末幅の残りを取る最終列）。
         fixed_headers = [
             "Name",
             "Arena",
             "GA",
             "Gold",
             "Gems",
-            "Last Mission",
+            "Mission",
             "Energy",
             updated_col,
         ]
-        fixed_widths = [10, 5, 4, 6, 6, 12, 6, updated_width]
-        # 固定列8つと末尾の Memo 列を区切る「 | 」は8個
-        separators_width = len(fixed_headers) * len(" | ")
-        # Fill the remaining terminal width with the Memo column, never
-        # truncating: anything longer is wrapped onto continuation rows.
-        memo_width = max(
-            10, terminal_columns() - sum(fixed_widths) - separators_width
-        )
 
-        rows = []
+        # まず全アカウントの固定セルを収集する
+        row_data = []
         for alias in sorted(accounts):
             data = SessionManager.load(alias)
             player = data.get("player", {})
             p_name = player.get("name", "Unknown")
-            # 10文字を超える場合は「...」で省略
-            p_name_display = (p_name[:7] + "...") if len(p_name) > 10 else p_name
 
             p_energy = player.get("energy", "-")
             p_arena = player.get("arena_rank", "-")
@@ -148,12 +136,34 @@ def cmd_auth(args):
             updated = data.get("last_updated", "Never")
             updated_short = format_timestamp_for_display(updated)
 
-            memo = data.get("memo", "-")
-            rows.append(
-                [str(p_name_display), str(p_arena), str(p_grand), str(p_gold),
-                 str(p_gems), str(p_last_id), str(p_energy), updated_short]
-                + wrap_display(memo, memo_width)
+            row_data.append(
+                (
+                    [str(p_name), str(p_arena), str(p_grand), str(p_gold),
+                     str(p_gems), str(p_last_id), str(p_energy), updated_short],
+                    data.get("memo", "-"),
+                )
             )
+
+        # 固定列幅は「ヘッダーラベルと最長セルのどちらか長い方」に内容駆動で調整
+        # （runner のサマリーテーブルと同じ方式。名前の長いアカウントにも追従する）
+        fixed_widths = [
+            max(
+                display_width(header),
+                *(display_width(cells[i]) for cells, _ in row_data),
+            )
+            for i, header in enumerate(fixed_headers)
+        ]
+        # 固定列と末尾の Memo 列を区切る「 | 」は固定列数と同じ個数
+        separators_width = len(fixed_headers) * len(" | ")
+        # Fill the remaining terminal width with the Memo column, never
+        # truncating: anything longer is wrapped onto continuation rows.
+        memo_width = max(
+            10, terminal_columns() - sum(fixed_widths) - separators_width
+        )
+
+        rows = [
+            cells + wrap_display(memo, memo_width) for cells, memo in row_data
+        ]
 
         header_cells = fixed_headers + ["Memo"]
         header_widths = fixed_widths + [memo_width]
