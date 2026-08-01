@@ -7,8 +7,8 @@ from hw_genie.core.session_manager import SessionManager
 def test_daily_raid_soul_shop_purchase(mock_client, mock_sleep):
     """Phase 3 のソウルショップ購入が正しくフィルタリング・実行されるか検証"""
     client, mock_call = mock_client
-    # DB初期化
-    SessionManager.repo.save_data("default", {"headers": {}, "player": {"id": "def_id", "name": "Default"}})
+    # DB初期化（実名の単一アカウント）
+    SessionManager.repo.save_data("DailyUser", {"headers": {}, "player": {"id": "daily_id", "name": "DailyUser"}})
     
     mock_responses = []
     

@@ -7,8 +7,8 @@ from hw_genie.core.client import ResponseStatus, ApiAction, ErrorName
 def test_daily_raid_phase1_stamina_stops_phase2(mock_client, mock_sleep):
     """Phase 1 でスタミナ切れが発生した際、Phase 2 がスキップされることを検証"""
     client, mock_call = mock_client
-    # DB初期化
-    SessionManager.repo.save_data("default", {"headers": {}, "player": {"id": "def_id", "name": "Default"}})
+    # DB初期化（実名の単一アカウント）
+    SessionManager.repo.save_data("DailyUser", {"headers": {}, "player": {"id": "daily_id", "name": "DailyUser"}})
     
     mock_responses = []
     
@@ -73,7 +73,8 @@ def test_daily_raid_item_payload_from_calls(mock_hero_raid, mock_item_raid, mock
         ]
     }
     
-    run_daily_raid(client, item_payload=item_payload)
+    with patch("hw_genie.commands.daily_raid.resolve_account", return_value="daily_user"):
+        run_daily_raid(client, item_payload=item_payload)
     
     # run_item_raid が呼ばれたこと、および mission_id が正しくセットされていることを検証
     mock_item_raid.assert_called_once()

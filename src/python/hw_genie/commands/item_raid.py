@@ -1,27 +1,22 @@
-from hw_genie.core.client import Emojis
+from hw_genie.core.client import Emojis, HWClient, resolve_account
 from hw_genie.core.utils import print_player_status
 from hw_genie.core.session_manager import SessionManager
 
 
 def run_item_raid(client_or_headers, payload_template, max_iterations=9999, account=None):
     if isinstance(client_or_headers, dict):
-        from hw_genie.core.client import HWClient
-
         client = HWClient(client_or_headers)
         # プレイヤー名を取得してアカウント名として使用
         try:
             status = client.fetch_player_status()
             actual_account = status.name
         except Exception:
-            actual_account = "default"
+            actual_account = None
         
-        if account:
-            account = account
-        else:
-            account = actual_account
+        account = account or actual_account or resolve_account(None)
     else:
         client = client_or_headers
-        account = account or "default"
+        account = account or resolve_account(None)
 
 
     # ミッションIDの決定: payload_template > SessionManager

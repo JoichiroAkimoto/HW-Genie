@@ -3,6 +3,34 @@ from hw_genie.main import cmd_daily
 from hw_genie.core.session_manager import SessionManager
 
 
+def test_daily_curl_propagates_real_name_as_account():
+    """daily --curl（-a なし）で登録した実名が run_daily_raid の account に伝播する。"""
+    from hw_genie.core.client import PlayerStatus
+
+    args = MagicMock()
+    args.curl = 'curl -H "x-auth-token: t" https://example.com'
+    args.account = None
+
+    mock_info = {
+        "status": "success",
+        "headers": {"x-auth-token": "t"},
+        "player": PlayerStatus(id="p1", name="CurlPlayer", level=100),
+    }
+
+    with (
+        patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}),
+        patch("hw_genie.main.extract_payload_from_curl", return_value={"calls": []}),
+        patch("hw_genie.core.auth.get_user_info", return_value=mock_info),
+        patch("hw_genie.main.HWClient"),
+        patch("hw_genie.main.run_daily_raid") as mock_run_daily,
+    ):
+        cmd_daily(args)
+
+    mock_run_daily.assert_called_once()
+    # -a 未指定でも curl 登録した実名が account として渡される
+    assert mock_run_daily.call_args.kwargs["account_alias"] == "CurlPlayer"
+
+
 def test_daily_raid_uses_last_mission_id():
     # Setup
     account = "daily_test_user"
@@ -75,6 +103,7 @@ def test_run_daily_raid_skips_when_no_mission_id():
         patch("hw_genie.commands.daily_raid.run_hero_raid") as mock_hero,
         patch("hw_genie.commands.daily_raid.run_item_raid") as mock_item,
         patch("hw_genie.commands.daily_raid.run_hero_shopping") as mock_shop,
+        patch("hw_genie.commands.daily_raid.resolve_account", return_value=account),
         patch("hw_genie.commands.daily_raid.print_player_status"),
     ):
         mock_hero.return_value = ([], 0, {})

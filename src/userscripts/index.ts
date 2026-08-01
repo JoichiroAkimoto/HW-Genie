@@ -52,7 +52,7 @@
       const res = await fetch(`${AUTH_SERVER_URL}/auth`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nonce, headers, account: "default" }),
+        body: JSON.stringify({ nonce, headers }),
       });
 
       const data = await res.json();

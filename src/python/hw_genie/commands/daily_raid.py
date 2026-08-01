@@ -1,4 +1,4 @@
-from hw_genie.core.client import Emojis
+from hw_genie.core.client import Emojis, resolve_account
 from hw_genie.commands.hero_raid import run_hero_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.item_raid import run_item_raid
@@ -14,13 +14,10 @@ def run_daily_raid(client_or_headers, item_payload=None, account_alias=None):
         from hw_genie.core.client import HWClient
 
         client = HWClient(client_or_headers)
-        # Use provided alias or fallback to player ID
-        account = account_alias or client.headers.get("x-auth-user-id", "default")
     else:
         client = client_or_headers
-        # Use provided alias or fallback to player ID
-        account = account_alias or getattr(client, "headers", {}).get("x-auth-user-id", "default")
-
+    # --account 未指定時は自動解決（単一なら自動選択、複数ならエラー）
+    account = resolve_account(account_alias)
 
     print(f"\n{Emojis.START}Starting Daily Routine...", flush=True)
 

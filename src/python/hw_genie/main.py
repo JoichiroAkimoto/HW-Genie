@@ -3,7 +3,11 @@ import logging
 import os
 import sys
 import json
-from hw_genie.core.client import HWClient, load_session_headers
+from hw_genie.core.client import (
+    HWClient,
+    AccountResolutionError,
+    resolve_account,
+)
 from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl, extract_payload_from_curl
 from hw_genie.core.utils import format_number_with_suffix
 from hw_genie.commands.hero_raid import run_hero_raid
@@ -25,10 +29,13 @@ def _prepare_info_for_json(info: dict) -> dict:
 
 def _ensure_session(args) -> dict[str, str]:
     """セッションヘッダーを検証し、なければエラーを出して終了する"""
-    headers = load_session_headers(args.account)
+    from hw_genie.core.session_manager import SessionManager
+
+    resolved = resolve_account(args.account)
+    data = SessionManager.load(resolved)
+    headers = data.get("headers") if data else None
     if not headers:
-        account_name = args.account or "default"
-        print(f"Error: Session not found for account '{account_name}'. Please provide a valid curl with --curl.")
+        print(f"Error: Session not found for account '{resolved}'. Please provide a valid curl with --curl.")
         sys.exit(1)
     return headers
 
@@ -126,19 +133,21 @@ def cmd_auth(args):
         print()
         return
 
-    account_alias = args.account or "default"
+    account_alias = args.account or None
 
     # curl等による更新前に、単体でmemoが指定された場合
     if args.memo is not None:
         from hw_genie.core.session_manager import SessionManager
-        session_data = SessionManager.load(account_alias)
+        # memo 更新は既存アカウントが対象のため、未指定時は自動解決する
+        resolved_account = resolve_account(account_alias)
+        session_data = SessionManager.load(resolved_account)
         if not session_data:
-            print(f"Error: Account '{account_alias}' not found in database. Please register the account first using --curl.")
+            print(f"Error: Account '{resolved_account}' not found in database. Please register the account first using --curl.")
             sys.exit(1)
         
         session_data["memo"] = args.memo
-        SessionManager.save(account_alias, session_data)
-        print(f"Successfully updated memo for account '{account_alias}' to: '{args.memo}'")
+        SessionManager.save(resolved_account, session_data)
+        print(f"Successfully updated memo for account '{resolved_account}' to: '{args.memo}'")
         return
 
     # curlコマンドからヘッダーを抽出する場合
@@ -174,9 +183,11 @@ def cmd_auth(args):
         return
 
     # 単に情報を表示する場合
-    session_data = load_session(account_alias)
+    # 既存アカウントが対象のため、未指定時は自動解決する
+    resolved_account = resolve_account(account_alias)
+    session_data = load_session(resolved_account)
     if not session_data:
-        print(f"Error: Session not found for account '{account_alias}'")
+        print(f"Error: Session not found for account '{resolved_account}'")
         sys.exit(1)
 
     if args.info:
@@ -199,7 +210,7 @@ def cmd_auth_server(args):
 def cmd_raid_hero(args):
     """ヒーローレイド実行"""
     headers = None
-    account_alias = args.account or "default"
+    account_alias = args.account or None
 
     # curlコマンドから認証情報を抽出
     if args.curl:
@@ -222,7 +233,9 @@ def cmd_raid_item(args):
     """アイテムレイド実行"""
     headers = None
     payload = None
-    account_alias = args.account or "default"
+    account_alias = args.account or None
+    # curl 登録で確定した実名（-a 未指定時に account として伝播させる）
+    curl_player_name = None
 
     # curlコマンドから情報を抽出
     if args.curl:
@@ -232,6 +245,7 @@ def cmd_raid_item(args):
             info = update_session_with_headers(auth_headers, account_alias)
             if info["status"] == "success":
                 headers = info["headers"]
+                curl_player_name = info["player"].name
                 print(f"Successfully updated session for {info['player'].name} from curl.")
 
         # 2. ペイロードを抽出
@@ -259,7 +273,7 @@ def cmd_raid_item(args):
         sys.exit(1)
 
     client = HWClient(headers)
-    run_item_raid(client, payload, args.times)
+    run_item_raid(client, payload, max_iterations=args.times, account=account_alias or curl_player_name)
 
 
 def cmd_shop(args):
@@ -277,15 +291,18 @@ def cmd_daily(args):
     """デイリーレイド実行"""
     headers = None
     item_payload = {}
+    # curl 登録で確定した実名（-a 未指定時に account として伝播させる）
+    curl_player_name = None
 
     # curlコマンドから情報を抽出
     if args.curl:
         # 1. 認証ヘッダーを抽出してセッションを更新
         auth_headers = extract_headers_from_curl(args.curl)
         if auth_headers:
-            info = update_session_with_headers(auth_headers, args.account or "default")
+            info = update_session_with_headers(auth_headers, args.account or None)
             if info["status"] == "success":
                 headers = info["headers"]
+                curl_player_name = info["player"].name
                 print(f"Successfully updated session for {info['player'].name} from curl.")
             else:
                 print(f"Warning: Could not update session from curl: {info.get('message')}")
@@ -302,7 +319,11 @@ def cmd_daily(args):
         headers = _ensure_session(args)
 
     client = HWClient(headers)
-    run_daily_raid(client, item_payload=item_payload, account_alias=args.account or "default")
+    run_daily_raid(
+        client,
+        item_payload=item_payload,
+        account_alias=args.account or curl_player_name,
+    )
 
 
 def cmd_sync(args):
@@ -482,6 +503,11 @@ def main():
         from hw_genie.core.client import Emojis
 
         print(f"\n{Emojis.ERROR}Authentication Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except AccountResolutionError as e:
+        from hw_genie.core.client import Emojis
+
+        print(f"\n{Emojis.ERROR}{e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         from hw_genie.core.client import Emojis
