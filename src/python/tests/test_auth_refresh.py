@@ -361,6 +361,8 @@ def test_cmd_auth_fresh_reflects_new_values_in_table(capsys):
 
 def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
     """幅が広い端末では長い Memo が「...」なしで全文表示される。"""
+    # 列幅は HWGENIE_TZ に依存するため、.env 有無に関わらず決定的にする
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
     monkeypatch.setenv("COLUMNS", "120")
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "x" * 50})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
@@ -369,7 +371,8 @@ def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
     out = capsys.readouterr().out
     # 全文が欠落なく表示される（50 文字すべて）
     assert out.replace(" ", "").count("x") == 50
-    # Memo 列幅 (120-93=27) で折り返され、27 文字を超える行は存在しない
+    # Memo 列幅は HWGENIE_TZ=Asia/Tokyo 時 120-93=27 で折り返され、
+    # 27 文字を超える行は存在しない
     assert "x" * 28 not in out
     assert "..." not in out
 
@@ -404,11 +407,14 @@ def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
 
 def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
     """Memo 列は最小 10 幅でクランプされ、それより狭い端末でも同じ描画になる。"""
+    # 列幅は HWGENIE_TZ に依存するため、.env 有無に関わらず決定的にする
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
     memo = "x" * 50
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": memo})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
 
-    monkeypatch.setenv("COLUMNS", "103")  # ちょうど memo_width=10 になる境界
+    # Asia/Tokyo 時は固定列合計 93 なので COLUMNS=103 でちょうど memo_width=10
+    monkeypatch.setenv("COLUMNS", "103")
     cmd_auth(args)
     out_103 = capsys.readouterr().out
 

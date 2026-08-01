@@ -73,8 +73,8 @@ def _char_width(ch: str) -> int:
 
     - Wide/full-width East Asian (W/F: Japanese, most emoji) -> 2 columns.
     - Combining marks (Mn/Me) and format chars (Cf: ZWJ U+200D, LRM, BOM) -> 0.
-    - Ambiguous (A) characters (``±``, ``・``, ``→`` ...) -> 2, matching CJK
-      terminals where they render full-width (and the user-facing default
+    - Ambiguous (A) characters (``±``, ``→`` ...) -> 2, matching CJK terminals
+      where they render full-width (the user-facing default
       ``HWGENIE_TZ=Asia/Tokyo`` context). ``wcwidth`` counts them as 1, so on
       Western terminals long runs of A chars wrap one column early; this is a
       deliberate, documented trade-off.
@@ -99,11 +99,12 @@ def pad(text: str, width: int) -> str:
 def wrap_display(text: str, width: int) -> list[str]:
     """Wrap ``text`` to ``width`` display columns, preserving existing newlines.
 
-    Words are broken at whitespace (so CR/LF/tab separators vanish); tokens
-    longer than the column are hard-broken so nothing is ever lost. Trailing
-    blank lines (from a trailing newline) are dropped. Always returns at least
-    one line.
+    CR/LF/tab are normalized away (CRLF -> LF, tabs are word separators);
+    tokens longer than the column are hard-broken so nothing is ever lost.
+    Trailing blank lines (from a trailing newline) are dropped. Always
+    returns at least one line.
     """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     if width < 1:
         lines = text.split("\n")
         _drop_trailing_empty_lines(lines)

@@ -93,6 +93,7 @@ def test_wrap_display_handles_crlf_and_tab():
     # CR/LF/Tab は空白として語の区切りになり、出力から除去される
     assert wrap_display("a\r\nb", 20) == ["a", "b"]
     assert wrap_display("a\tb", 20) == ["a b"]
+    assert wrap_display("a\r\nb", 0) == ["a", "b"]
 
 
 def test_wrap_display_hard_breaks_long_tokens():
