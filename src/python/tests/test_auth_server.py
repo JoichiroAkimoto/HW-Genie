@@ -101,7 +101,6 @@ class TestAuthServerEndpoints:
 
         response = client.post("/auth", json={
             "nonce": nonce,
-            "account": "default",
             "headers": VALID_HEADERS
         })
 
@@ -109,6 +108,8 @@ class TestAuthServerEndpoints:
         data = response.json()
         assert data["status"] == "success"
         assert data["player"]["name"] == "TestPlayer"
+        # userscript は account を送らないため None が渡され、実名で保存される
+        mock_update.assert_called_once_with(VALID_HEADERS, None)
 
     @patch("hw_genie.commands.auth_server.update_session_with_headers")
     def test_post_auth_api_error(self, mock_update, client):

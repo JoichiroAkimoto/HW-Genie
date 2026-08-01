@@ -48,7 +48,7 @@ REQUIRED_HEADERS = [
 class AuthRequest(BaseModel):
     nonce: str
     headers: dict[str, str]
-    account: Optional[str] = "default"
+    account: Optional[str] = None
 
 
 class NonceResponse(BaseModel):
@@ -127,7 +127,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Missing required headers. Required: {REQUIRED_HEADERS}")
 
         # Update session
-        account = request.account or "default"
+        account = request.account
         result = update_session_with_headers(request.headers, account)
 
         if result["status"] == "success":

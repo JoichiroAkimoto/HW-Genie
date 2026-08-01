@@ -11,14 +11,13 @@ class SessionManager:
     def save(cls, account: str, data: AccountData):
         account = account.strip()
         resolved_account = account
-        if account != "default":
-            accounts = cls.list_accounts()
-            # 大文字小文字・前後の空白を区別せずに一致するものを探す。
-            # 一致した既存エイリアスに空白が含まれていても、保存時はトリム済みの
-            # account を優先して使う（DB への空白混入を防ぐ）。
-            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
-            if match and match.strip() != account.strip():
-                resolved_account = account.strip()
+        accounts = cls.list_accounts()
+        # 大文字小文字・前後の空白を区別せずに一致するものを探す。
+        # 一致した既存エイリアスに空白が含まれていても、保存時はトリム済みの
+        # account を優先して使う（DB への空白混入を防ぐ）。
+        match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
+        if match and match.strip() != account.strip():
+            resolved_account = account.strip()
 
         # PlayerStatus などのオブジェクトを辞書に変換して JSON シリアライズ可能にする
         save_data = data.copy()
@@ -38,7 +37,7 @@ class SessionManager:
         data = cls.repo.get_data(account)
 
         # もし見つからず、かつ大文字小文字の違いがある可能性を考慮して再検索
-        if not data and account != "default":
+        if not data:
             accounts = cls.list_accounts()
             # 大文字小文字および前後の空白を区別せずに一致するものを探す
             match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
@@ -81,11 +80,10 @@ class SessionManager:
             return
         # 大文字小文字および前後の空白を区別せずに正しいエイリアスを特定する
         resolved_account = account
-        if account != "default":
-            accounts = cls.list_accounts()
-            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
-            if match:
-                resolved_account = match
+        accounts = cls.list_accounts()
+        match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
+        if match:
+            resolved_account = match
         
         cls.repo.update_config(resolved_account, {"last_item_raid_mission_id": mission_id})
 

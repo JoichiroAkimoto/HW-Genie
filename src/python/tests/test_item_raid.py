@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from hw_genie.core.client import HWAuthError
 from hw_genie.commands.item_raid import run_item_raid
 
@@ -16,7 +16,8 @@ def test_item_raid_max_iterations(mock_client, mock_sleep):
     mock_call.side_effect = [res_success, res_success, res_success]
 
     # 最大 3 回で実行
-    run_item_raid(client, {"calls": []}, max_iterations=3)
+    with patch("hw_genie.commands.item_raid.resolve_account", return_value="TestUser"):
+        run_item_raid(client, {"calls": []}, max_iterations=3)
 
     # 検証: 3 回呼ばれるはず
     assert mock_call.call_count == 3
@@ -37,7 +38,8 @@ def test_item_raid_stops_on_stamina_error(mock_client, mock_sleep):
 
     mock_call.side_effect = [res_success, res_error]
 
-    run_item_raid(client, {"calls": []})
+    with patch("hw_genie.commands.item_raid.resolve_account", return_value="TestUser"):
+        run_item_raid(client, {"calls": []})
 
     # 検証: 2 回で止まる
     assert mock_call.call_count == 2
@@ -55,7 +57,8 @@ def test_item_raid_auth_error_abort(mock_client, mock_sleep):
     mock_call.side_effect = [res_success, HWAuthError("Session expired")]
 
     with pytest.raises(HWAuthError):
-        run_item_raid(client, {"calls": []})
+        with patch("hw_genie.commands.item_raid.resolve_account", return_value="TestUser"):
+            run_item_raid(client, {"calls": []})
 
 
 def test_item_raid_stops_on_limit_reached(mock_client, mock_sleep):
@@ -73,7 +76,8 @@ def test_item_raid_stops_on_limit_reached(mock_client, mock_sleep):
 
     mock_call.side_effect = [res_success, res_limit]
 
-    run_item_raid(client, {"calls": []})
+    with patch("hw_genie.commands.item_raid.resolve_account", return_value="TestUser"):
+        run_item_raid(client, {"calls": []})
 
     # 検証: 2 回で止まる
     assert mock_call.call_count == 2

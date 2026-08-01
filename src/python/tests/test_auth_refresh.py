@@ -42,11 +42,11 @@ def test_refresh_all_accounts_success():
     assert mock_save.call_args[0][1] == "Alice"
 
 
-def test_refresh_all_accounts_default_alias_saves_only_default():
-    """alias=default でも対象エイリアスへ 1 書き込みのみ（実名エイリアスは作らない）。
+def test_refresh_all_accounts_default_alias_renames_to_player_name():
+    """alias=default でも対象は実名へリネームされる（旧 default エイリアスの解消）。
 
-    player_id は UNIQUE 制約のため、同一プレイヤーを実名でも保存すると
-    同じ行の alias がリネームされ "default" が消滅してしまう。
+    player_id は UNIQUE 制約のため、実名で保存すると同じ行の alias が
+    実名に更新され "default" が消滅する。
     """
     info = _success_info("Alice")
     with patch.object(
@@ -59,16 +59,14 @@ def test_refresh_all_accounts_default_alias_saves_only_default():
     assert results == [("default", None)]
     mock_fetch.assert_called_once()
     assert mock_save.call_count == 1
-    assert mock_save.call_args[0] == (info, "default")
+    assert mock_save.call_args[0] == (info, "Alice")  # 実名で保存され default は解消
 
 
-def test_refresh_one_default_keeps_alias_in_db():
-    """実 DB で _refresh_one("default") が alias をリネームしない（回帰防止）。
+def test_refresh_one_default_renames_alias_to_player_name():
+    """実 DB で _refresh_one("default") が alias を実名へリネームする（回帰防止）。
 
-    player_id が UNIQUE のため、実名への追加保存は "default" 行のリネームに
-    なり、load_session_headers の既定エイリアスが消滅する。更新は対象
-    エイリアスのみに行い、実名エイリアスは作られないことを検証する。
-    （インメモリ DB はスレッドごとに別物になるため _refresh_one を直接呼ぶ）
+    旧 "default" エイリアスは実名保存により player_id の UNIQUE 制約で
+    同じ行の alias が実名に更新される。
     """
     SessionManager.save("default", {"player": {"id": "d1", "name": "Old", "level": 100}})
     assert "default" in SessionManager.list_accounts()
@@ -80,9 +78,9 @@ def test_refresh_one_default_keeps_alias_in_db():
 
     assert err is None
     accounts = SessionManager.list_accounts()
-    assert "default" in accounts  # "default" エイリアスは保持される
-    assert "Alice" not in accounts  # 実名エイリアスは作られない
-    assert SessionManager.load("default")["player"]["name"] == "Alice"  # 値は更新される
+    assert "default" not in accounts  # default エイリアスは解消される
+    assert "Alice" in accounts  # 実名エイリアスになる
+    assert SessionManager.load("Alice")["player"]["name"] == "Alice"  # 値は更新される
 
 
 def test_refresh_all_accounts_missing_session():
@@ -170,6 +168,95 @@ def test_wal_writes_share_single_process_lock():
     lock.acquire()  # リエントラント: 素の Lock だとここでデッドロック
     lock.release()
     lock.release()
+
+
+def test_update_session_with_headers_none_alias_uses_real_name():
+    """account_alias=None（-a なし / auth server 経由）でもクラッシュせず実名で保存される。"""
+    info = _success_info("Alice", "a1")
+    with patch.object(auth_module, "get_user_info", return_value=info) as mock_fetch, patch.object(
+        auth_module, "save_session"
+    ) as mock_save:
+        result = auth_module.update_session_with_headers({"x-auth-token": "t"}, None)
+
+    assert result["status"] == "success"
+    # 実名 1 回のみ保存（None エイリアスでは追加保存しない）
+    mock_fetch.assert_called_once()
+    assert mock_save.call_count == 1
+    assert mock_save.call_args[0] == (info, "Alice")
+
+
+def test_update_session_with_headers_explicit_alias_saves_both_or_alias():
+    """-a で別名を指定すると実名と別名の両方を保存する。"""
+    info = _success_info("Alice", "a1")
+    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(
+        auth_module, "save_session"
+    ) as mock_save:
+        auth_module.update_session_with_headers({"x-auth-token": "t"}, "sub1")
+
+    saved_accounts = [call.args[1] for call in mock_save.call_args_list]
+    assert saved_accounts == ["Alice", "sub1"]
+
+
+def test_update_session_with_headers_default_alias_does_not_save_default():
+    """account_alias="default"（旧エイリアス）は実名のみ保存され、default 行は作られない。"""
+    info = _success_info("Alice", "a1")
+    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(
+        auth_module, "save_session"
+    ) as mock_save:
+        auth_module.update_session_with_headers({"x-auth-token": "t"}, "default")
+
+    saved_accounts = [call.args[1] for call in mock_save.call_args_list]
+    assert saved_accounts == ["Alice"]  # default は保存されない
+
+
+def test_cmd_auth_multi_account_no_arg_raises_ambiguity(capsys):
+    """複数アカウント登録済みで -a なしの情報表示は AccountAmbiguityError になる。"""
+    from hw_genie.core.client import AccountAmbiguityError
+
+    _save_accounts()
+    args = SimpleNamespace(
+        account=None, curl=None, update=None, memo=None, info=True,
+        list=False, list_names=False, fresh=False,
+    )
+    with pytest.raises(AccountAmbiguityError):
+        cmd_auth(args)
+
+
+def test_cmd_auth_curl_first_registration_no_account_arg(capsys):
+    """DB 空の状態で --curl（-a なし）を実行すると、実名で登録できる（初回登録がブロックされない）。"""
+    args = SimpleNamespace(
+        account=None, curl='curl -H "x-auth-token: t" https://example.com',
+        update=None, memo=None, info=False, list=False, list_names=False, fresh=False,
+    )
+    with patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}), patch(
+        "hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")
+    ):
+        cmd_auth(args)
+
+    # 実名で DB に保存される（default エイリアスは作られない）
+    accounts = SessionManager.list_accounts()
+    assert "NewPlayer" in accounts
+    assert "default" not in accounts
+    out = capsys.readouterr().out
+    assert "Successfully updated session for NewPlayer" in out
+
+
+def test_cmd_auth_curl_with_explicit_alias(capsys):
+    """--curl に -a を付けると、実名と別名の両方ではなく別名で保存される。"""
+    args = SimpleNamespace(
+        account="sub1", curl='curl -H "x-auth-token: t" https://example.com',
+        update=None, memo=None, info=False, list=False, list_names=False, fresh=False,
+    )
+    with patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}), patch(
+        "hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")
+    ):
+        cmd_auth(args)
+
+    # player_id の UNIQUE 制約により別名 1 行だけになる（実名行は作られない）
+    accounts = SessionManager.list_accounts()
+    assert "sub1" in accounts
+    assert "NewPlayer" not in accounts
+    assert "default" not in accounts
 
 
 def test_cmd_auth_fresh_requires_list(capsys):

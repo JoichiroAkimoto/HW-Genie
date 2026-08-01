@@ -114,13 +114,14 @@ def load_session(account: str = "default") -> Optional[SessionData]:
     return data
 
 
-def update_session_with_headers(headers: dict[str, str], account_alias: str = "default") -> SessionData:
+def update_session_with_headers(headers: dict[str, str], account_alias: str | None = None) -> SessionData:
     info = get_user_info(headers)
     if info["status"] == "success":
         player_name = info["player"].name
-        save_session(info, "default")
         save_session(info, player_name)
-        if account_alias != "default" and account_alias != player_name:
+        # 別名（-a）が明示されていて実名と異なる場合のみ追加保存する。
+        # None / "default"（旧エイリアス）は「別名なし＝実名のみ」として扱う。
+        if account_alias and account_alias != "default" and account_alias != player_name:
             save_session(info, account_alias)
     return info
 
@@ -136,12 +137,12 @@ def _refresh_one(account: str) -> str | None:
     # 対象アカウントへ 1 書き込みのみ（--fresh の並列更新ではアカウント 1 件
     # につき 1 書き込みに抑え、WAL 競合の機会と途中終了時のアカウント名
     # 書き換えを防ぐ）。
-    # 実名エイリアスへは追加保存しない: player_id は UNIQUE 制約のため、
-    # 同一プレイヤーを 2 つの alias に保存すると 2 回目の保存が同じ行の
-    # alias をリネームし、"default" エイリアスが消滅してしまう。
-    # （--curl の再登録フロー（update_session_with_headers）とは異なり、
-    # ここは既存アカウントの更新のみを目的とする。）
-    save_session(info, account)
+    # 旧 "default" エイリアスは実名へリネームする: player_id は UNIQUE 制約の
+    # ため、実名で保存すると同じ行の alias が実名に更新される。
+    if account == "default":
+        save_session(info, info["player"].name)
+    else:
+        save_session(info, account)
     return None
 
 
