@@ -357,3 +357,42 @@ def test_cmd_auth_fresh_reflects_new_values_in_table(capsys):
 
     out = capsys.readouterr().out
     assert "31.4M" in out
+
+
+def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
+    """幅が広い端末では長い Memo が「...」なしで全文表示される。"""
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "x" * 50})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "x" * 27 in out
+    assert "x" * 23 in out
+    assert "..." not in out
+
+
+def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
+    """狭い端末では Memo が複数行に折り返され、内容が欠落しない。"""
+    monkeypatch.setenv("COLUMNS", "60")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "ABC DEF GHI JKL MNO"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    for fragment in ("ABC DEF", "GHI JKL", "MNO"):
+        assert fragment in out
+    assert "..." not in out
+
+
+def test_cmd_auth_list_multiline_memo_preserves_newlines(capsys, monkeypatch):
+    """改行入り Memo は継続行として表示され、アカウント名は1行目のみ。"""
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line\nthird line"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    for fragment in ("first line", "second line", "third line"):
+        assert fragment in out
+    assert out.count("Alice") == 1

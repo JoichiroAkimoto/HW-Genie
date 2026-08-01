@@ -19,6 +19,7 @@ from typing import Callable, Iterable, Sequence
 
 from hw_genie.core.client import HWClient, load_session_headers
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.utils import display_width, pad
 
 logger = logging.getLogger(__name__)
 
@@ -190,19 +191,12 @@ def _status_cells(account: str, result: object) -> list[str] | None:
 # Column headers (emoji-prefixed so each column is self-labeling and compact).
 _SUMMARY_HEADERS = ["Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "💎Gems"]
 
-# Emoji rendered double-width by most terminals. ``len()`` counts them as one
-# code point, so we correct the display width to keep columns aligned.
-_WIDE_CHARS = frozenset("⚡🏆👑💰💎")
-
-
-def _display_width(text: str) -> int:
-    """Terminal display width of ``text`` (double-width emoji count as 2)."""
-    return sum(2 if ch in _WIDE_CHARS else 1 for ch in text)
-
-
-def _pad(text: str, width: int) -> str:
-    """Left-justify ``text`` to ``width`` display columns (emoji-aware)."""
-    return text + " " * max(0, width - _display_width(text))
+# Display-width-aware padding shared with ``auth --list`` (utils.py). The
+# previous fixed emoji set (_WIDE_CHARS) is subsumed by the East Asian Width
+# classification used there; these aliases keep the renderer and its tests
+# source-compatible.
+_display_width = display_width
+_pad = pad
 
 
 def _render_summary_table(rows: list[list[str]]) -> str:

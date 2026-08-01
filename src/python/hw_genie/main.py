@@ -97,7 +97,11 @@ def cmd_auth(args):
 
         from hw_genie.core.utils import (
             display_timezone_name,
+            display_width,
             format_timestamp_for_display,
+            pad,
+            terminal_columns,
+            wrap_display,
         )
 
         tz_label = display_timezone_name()
@@ -106,9 +110,26 @@ def cmd_auth(args):
         # to the header label when the tz name makes it longer (e.g. Asia/Tokyo).
         updated_width = max(19, len(updated_col))
 
-        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {updated_col:<{updated_width}} | {'Memo':<20}"
-        print(header)
-        print("-" * len(header))
+        # Fixed columns (Memo is the flexible last column).
+        fixed_headers = [
+            "Name",
+            "Arena",
+            "GA",
+            "Gold",
+            "Gems",
+            "Last Mission",
+            "Energy",
+            updated_col,
+        ]
+        fixed_widths = [10, 5, 4, 6, 6, 12, 6, updated_width]
+        separators_width = 8 * len(" | ")
+        # Fill the remaining terminal width with the Memo column, never
+        # truncating: anything longer is wrapped onto continuation rows.
+        memo_width = max(
+            10, terminal_columns() - sum(fixed_widths) - separators_width
+        )
+
+        rows = []
         for alias in sorted(accounts):
             data = SessionManager.load(alias)
             player = data.get("player", {})
@@ -127,9 +148,24 @@ def cmd_auth(args):
             updated_short = format_timestamp_for_display(updated)
 
             memo = data.get("memo", "-")
-            memo_display = (memo[:17] + "...") if len(memo) > 20 else memo
+            rows.append(
+                [str(p_name_display), str(p_arena), str(p_grand), str(p_gold),
+                 str(p_gems), str(p_last_id), str(p_energy), updated_short]
+                + wrap_display(memo, memo_width)
+            )
 
-            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<{updated_width}} | {memo_display:<20}")
+        header_cells = fixed_headers + ["Memo"]
+        header_widths = fixed_widths + [memo_width]
+        header = " | ".join(pad(h, w) for h, w in zip(header_cells, header_widths))
+        print("\n" + header)
+        print("-" * display_width(header))
+        for cells in rows:
+            fixed_cells = cells[: len(fixed_widths)]
+            memo_lines = cells[len(fixed_widths):] or [""]
+            for i, memo_line in enumerate(memo_lines):
+                left = fixed_cells if i == 0 else [""] * len(fixed_cells)
+                line_cells = left + [memo_line]
+                print(" | ".join(pad(c, w) for c, w in zip(line_cells, header_widths)))
         print()
         return
 
