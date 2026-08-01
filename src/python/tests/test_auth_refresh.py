@@ -403,6 +403,11 @@ def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
     out = capsys.readouterr().out
     for fragment in ("ABC DEF", "GHI JKL", "MNO"):
         assert fragment in out
+    # メモ全体は 19 幅あるため、列幅 ≤10 なら必ず折り返しが発生する
+    # （ヘッダーから導出し、列幅が広がって空回りするのを防ぐ）
+    hdr = out.splitlines()[1]
+    memo_col = len(hdr) - hdr.rindex(" | ") - 3
+    assert memo_col <= 10
     assert "..." not in out
 
 
@@ -414,17 +419,17 @@ def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": memo})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
 
-    # Asia/Tokyo 時は固定列合計 53 + 区切り 24 = 77 なので、
-    # COLUMNS=86 でちょうど memo_width=10（フロア）になる境界
-    monkeypatch.setenv("COLUMNS", "86")
+    # 固定列合計はヘッダーだけで 45 幅を超えるため、COLUMNS=40/60 はどちらも
+    # フロア 10 に張り付く（ヘッダー改名等で固定列が多少変わっても成立する堅牢な値）
+    monkeypatch.setenv("COLUMNS", "40")
     cmd_auth(args)
-    out_86 = capsys.readouterr().out
+    out_40 = capsys.readouterr().out
 
     monkeypatch.setenv("COLUMNS", "60")  # フロア 10 に張り付く
     cmd_auth(args)
     out_60 = capsys.readouterr().out
 
-    assert out_86 == out_60
+    assert out_40 == out_60
     assert out_60.replace(" ", "").count("x") == 50
 
 
