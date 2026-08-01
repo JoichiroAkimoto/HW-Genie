@@ -82,8 +82,26 @@ def test_wrap_display_preserves_newlines():
     assert wrap_display("a\n\nb", 10) == ["a", "", "b"]
 
 
+def test_wrap_display_drops_trailing_blank_lines():
+    assert wrap_display("note\n", 20) == ["note"]
+    assert wrap_display("a\n\n", 10) == ["a"]
+    assert wrap_display("\n", 10) == [""]
+    assert wrap_display("", 10) == [""]
+
+
+def test_wrap_display_handles_crlf_and_tab():
+    # CR/LF/Tab は空白として語の区切りになり、出力から除去される
+    assert wrap_display("a\r\nb", 20) == ["a", "b"]
+    assert wrap_display("a\tb", 20) == ["a b"]
+
+
 def test_wrap_display_hard_breaks_long_tokens():
     assert wrap_display("a" * 10, 4) == ["aaaa", "aaaa", "aa"]
+
+
+def test_wrap_display_single_char_wider_than_width_does_not_loop():
+    # 1 文字が列幅より広い（全角 + 幅1）ケースでも無限ループしない
+    assert wrap_display("あ", 1) == ["あ"]
 
 
 def test_wrap_display_never_loses_content():
@@ -101,6 +119,14 @@ def test_wrap_display_empty_and_narrow():
 def test_terminal_columns_honors_columns_env(monkeypatch):
     monkeypatch.setenv("COLUMNS", "150")
     assert terminal_columns() == 150
+
+
+@pytest.mark.parametrize("value", ["0", "abc", ""])
+def test_terminal_columns_ignores_invalid_columns_env(monkeypatch, value):
+    """不正な COLUMNS は無視され、shutil の実測へフォールバックする。"""
+    monkeypatch.setenv("COLUMNS", value)
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda size=(80, 24): os.terminal_size((120, 24)))
+    assert terminal_columns() == 120
 
 
 def test_terminal_columns_falls_back_to_shutil(monkeypatch):

@@ -367,9 +367,26 @@ def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
     cmd_auth(args)
 
     out = capsys.readouterr().out
-    assert "x" * 27 in out
-    assert "x" * 23 in out
+    # 全文が欠落なく表示される（50 文字すべて）
+    assert out.replace(" ", "").count("x") == 50
+    # Memo 列幅 (120-93=27) で折り返され、27 文字を超える行は存在しない
+    assert "x" * 28 not in out
     assert "..." not in out
+
+
+def test_cmd_auth_list_continuation_rows_blank_fixed_columns(capsys, monkeypatch):
+    """継続行は固定列が空白埋めになり、アカウント名は1行目のみ。"""
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line\nthird line"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    for fragment in ("first line", "second line", "third line"):
+        assert fragment in out
+    assert out.count("Alice") == 1
+    # 継続行は Name 列が空（10 スペース）で始まる
+    assert "\n" + " " * 10 + " |" in out
 
 
 def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
@@ -385,14 +402,19 @@ def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
     assert "..." not in out
 
 
-def test_cmd_auth_list_multiline_memo_preserves_newlines(capsys, monkeypatch):
-    """改行入り Memo は継続行として表示され、アカウント名は1行目のみ。"""
-    monkeypatch.setenv("COLUMNS", "120")
-    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line\nthird line"})
+def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
+    """Memo 列は最小 10 幅でクランプされ、それより狭い端末でも同じ描画になる。"""
+    memo = "x" * 50
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": memo})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
-    cmd_auth(args)
 
-    out = capsys.readouterr().out
-    for fragment in ("first line", "second line", "third line"):
-        assert fragment in out
-    assert out.count("Alice") == 1
+    monkeypatch.setenv("COLUMNS", "103")  # ちょうど memo_width=10 になる境界
+    cmd_auth(args)
+    out_103 = capsys.readouterr().out
+
+    monkeypatch.setenv("COLUMNS", "60")  # フロア 10 に張り付く
+    cmd_auth(args)
+    out_60 = capsys.readouterr().out
+
+    assert out_103 == out_60
+    assert out_60.replace(" ", "").count("x") == 50

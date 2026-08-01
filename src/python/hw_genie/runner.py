@@ -191,10 +191,11 @@ def _status_cells(account: str, result: object) -> list[str] | None:
 # Column headers (emoji-prefixed so each column is self-labeling and compact).
 _SUMMARY_HEADERS = ["Account", "⚡Energy", "🏆Arena", "👑GA", "💰Gold", "💎Gems"]
 
-# Display-width-aware padding shared with ``auth --list`` (utils.py). The
-# previous fixed emoji set (_WIDE_CHARS) is subsumed by the East Asian Width
-# classification used there; these aliases keep the renderer and its tests
-# source-compatible.
+# Display-width-aware padding shared with ``auth --list`` (utils.py). The old
+# fixed emoji set (_WIDE_CHARS, all EAW-wide) is replaced by the East Asian
+# Width classification, which additionally counts Japanese full-width as 2 and
+# combining/format chars (VS16, ZWJ) as 0 instead of 1 — those aliases keep the
+# renderer and its tests source-compatible.
 _display_width = display_width
 _pad = pad
 

@@ -71,11 +71,15 @@ def format_timestamp_for_display(iso: str) -> str:
 def _char_width(ch: str) -> int:
     """Terminal display width of a single character.
 
-    Wide/full-width East Asian characters (Japanese, most emoji) occupy 2
-    columns; combining marks (e.g. the variation selector U+FE0F) occupy 0;
-    ambiguous characters are treated as wide so emoji sequences stay aligned.
+    - Wide/full-width East Asian (W/F: Japanese, most emoji) -> 2 columns.
+    - Combining marks (Mn/Me) and format chars (Cf: ZWJ U+200D, LRM, BOM) -> 0.
+    - Ambiguous (A) characters (``±``, ``・``, ``→`` ...) -> 2, matching CJK
+      terminals where they render full-width (and the user-facing default
+      ``HWGENIE_TZ=Asia/Tokyo`` context). ``wcwidth`` counts them as 1, so on
+      Western terminals long runs of A chars wrap one column early; this is a
+      deliberate, documented trade-off.
     """
-    if unicodedata.category(ch) in ("Mn", "Me"):
+    if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
         return 0
     if unicodedata.east_asian_width(ch) in ("W", "F", "A"):
         return 2
@@ -95,11 +99,15 @@ def pad(text: str, width: int) -> str:
 def wrap_display(text: str, width: int) -> list[str]:
     """Wrap ``text`` to ``width`` display columns, preserving existing newlines.
 
-    Words are broken at whitespace; tokens longer than the column are
-    hard-broken so nothing is ever lost. Returns one string per output line.
+    Words are broken at whitespace (so CR/LF/tab separators vanish); tokens
+    longer than the column are hard-broken so nothing is ever lost. Trailing
+    blank lines (from a trailing newline) are dropped. Always returns at least
+    one line.
     """
     if width < 1:
-        return text.split("\n")
+        lines = text.split("\n")
+        _drop_trailing_empty_lines(lines)
+        return lines
     out: list[str] = []
     for para in text.split("\n"):
         line = ""
@@ -113,7 +121,14 @@ def wrap_display(text: str, width: int) -> list[str]:
                 chunk, line = _cut(line, width)
                 out.append(chunk)
         out.append(line)
+    _drop_trailing_empty_lines(out)
     return out
+
+
+def _drop_trailing_empty_lines(lines: list[str]) -> None:
+    """Remove trailing empty entries, always keeping at least one line."""
+    while len(lines) > 1 and lines[-1] == "":
+        lines.pop()
 
 
 def _cut(text: str, width: int) -> tuple[str, str]:

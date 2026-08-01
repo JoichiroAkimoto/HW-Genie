@@ -122,7 +122,8 @@ def cmd_auth(args):
             updated_col,
         ]
         fixed_widths = [10, 5, 4, 6, 6, 12, 6, updated_width]
-        separators_width = 8 * len(" | ")
+        # 固定列8つと末尾の Memo 列を区切る「 | 」は8個
+        separators_width = len(fixed_headers) * len(" | ")
         # Fill the remaining terminal width with the Memo column, never
         # truncating: anything longer is wrapped onto continuation rows.
         memo_width = max(
@@ -161,7 +162,8 @@ def cmd_auth(args):
         print("-" * display_width(header))
         for cells in rows:
             fixed_cells = cells[: len(fixed_widths)]
-            memo_lines = cells[len(fixed_widths):] or [""]
+            # wrap_display は常に 1 行以上を返す
+            memo_lines = cells[len(fixed_widths):]
             for i, memo_line in enumerate(memo_lines):
                 left = fixed_cells if i == 0 else [""] * len(fixed_cells)
                 line_cells = left + [memo_line]
