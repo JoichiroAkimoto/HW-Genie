@@ -10,9 +10,14 @@ trap 'rm -f "$DIST_DIR/bundle.tmp.js"' EXIT
 
 INJECT_DOWNLOAD_URL=""
 INJECT_UPDATE_URL=""
+BUN_MINIFY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --minify)
+      BUN_MINIFY="--minify"
+      shift
+      ;;
     --inject-url)
       if [[ $# -lt 2 ]]; then
         echo "ERROR: --inject-url requires a value" >&2
@@ -64,7 +69,8 @@ bun x tsc --noEmit -p "$SCRIPT_DIR/tsconfig.json"
 # modules) in a single IIFE so no declarations leak onto the page's global
 # scope — important because other userscripts share the page (e.g. HW
 # Goodwin) and the userscript runs with @grant none.
-bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser
+# --minify を渡すと 1 行圧縮される（IIFE 構造検証はどちらでも通る）。
+bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser $BUN_MINIFY
 
 # Combine metadata + bundle
 {

@@ -57,21 +57,22 @@ jobs:
         id: release
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
-          
+          # 既存ユーザー（v1.0.3 以前）の移行案内をリリースノートに含める。
+          # シングルクォートで囲み、${{ }} がローカルシェルで再展開されない
+          # ようにする（${{ }} は YAML 補間で先に置換済み）。
+          NOTES='Userscript release v${{ steps.version.outputs.version }}
+
+          ## 移行案内（v1.0.3 以前から更新するユーザー）
+          自動更新を有効化するため再インストールが必要です:
+          https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js'
+
           # Check if release exists
           if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
-            echo "Release exists, uploading asset..."
+            echo "Release exists, uploading asset and updating notes..."
             gh release upload "v${{ steps.version.outputs.version }}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
+            gh release edit "v${{ steps.version.outputs.version }}" --notes "$NOTES"
           else
             echo "Creating new release..."
-            # 既存ユーザー（v1.0.3 以前）の移行案内をリリースノートに含める。
-            # シングルクォートで囲み、${{ }} がローカルシェルで再展開されない
-            # ようにする（${{ }} は YAML 補間で先に置換済み）。
-            NOTES='Userscript release v${{ steps.version.outputs.version }}
-
-## 移行案内（v1.0.3 以前から更新するユーザー）
-自動更新を有効化するため再インストールが必要です:
-https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js'
             gh release create "v${{ steps.version.outputs.version }}" \
               --title "v${{ steps.version.outputs.version }}" \
               --notes "$NOTES" \
