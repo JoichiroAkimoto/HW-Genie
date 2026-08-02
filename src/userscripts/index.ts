@@ -9,6 +9,7 @@
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
+// @run-at       document-idle
 // @downloadURL  __DOWNLOAD_URL__
 // @updateURL    __UPDATE_URL__
 // ==/UserScript==
@@ -172,6 +173,10 @@
 
   function interceptXHR() {
     const originalOpen = XMLHttpRequest.prototype.open;
+    // XHR オブジェクトごとにラップ済みか追跡する。同じ XHR を再 open しても
+    // setRequestHeader のラッパーを積み重ねない（多重ラップで捕捉喪失や
+    // 無限再帰を防ぐ）。新規 XHR は最初の open で必ずラップされる。
+    const wrapped = new WeakSet<XMLHttpRequest>();
 
     XMLHttpRequest.prototype.open = function (
       method: string,
@@ -194,15 +199,19 @@
         return originalOpen.call(this, method, url, async ?? true, username, password);
       }
 
-      // Capture the CURRENT setRequestHeader at open() time. Other userscripts
-      // (e.g. HW Goodwin) may wrap prototype.setRequestHeader AFTER this script
-      // installs; resolving the reference per-call (instead of capturing the
-      // prototype once at install time) lets their wrapper stay in the chain.
-      const setRequestHeaderRef = this.setRequestHeader.bind(this);
-      this.setRequestHeader = function (name: string, value: string): void {
-        captureHeaders(name, value);
-        setRequestHeaderRef(name, value);
-      };
+      if (!wrapped.has(this)) {
+        wrapped.add(this);
+        // Capture the CURRENT setRequestHeader at first open() time. Other
+        // userscripts (e.g. HW Goodwin) may wrap prototype.setRequestHeader
+        // AFTER this script installs; resolving the reference per-call
+        // (instead of capturing the prototype once at install time) lets
+        // their wrapper stay in the chain.
+        const setRequestHeaderRef = this.setRequestHeader.bind(this);
+        this.setRequestHeader = function (name: string, value: string): void {
+          captureHeaders(name, value);
+          setRequestHeaderRef(name, value);
+        };
+      }
 
       return originalOpen.call(this, method, url, async ?? true, username, password);
     };
@@ -289,8 +298,8 @@
     setInterval(trySend, POLL_INTERVAL_MS);
   }
 
-  // Install the XHR interceptor at DOMContentLoaded (document-idle). Running
-  // at document-start would replace XMLHttpRequest.prototype.open before other
+  // Install the XHR interceptor at document-idle (see @run-at). Running at
+  // document-start would replace XMLHttpRequest.prototype.open before other
   // userscripts (e.g. HW Goodwin) install their own XHR wrappers, breaking
   // their request/response hooks and hiding their UI. At document-idle the
   // other scripts have already wrapped the prototypes, and resolving
