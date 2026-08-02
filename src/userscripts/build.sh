@@ -72,6 +72,13 @@ for key in name namespace version run-at match grant; do
   fi
 done
 
+# @run-at は document-idle でなければならない（document-start は他ユーザー
+# スクリプトと競合し、HW Goodwin の UI を壊す回帰を防ぐ）
+if ! grep -q '^// @run-at       document-idle$' <<< "$METADATA"; then
+  echo "ERROR: @run-at must be document-idle (document-start conflicts with other userscripts)" >&2
+  exit 1
+fi
+
 # Inject URL if provided
 if [[ -n "$INJECT_URL" ]]; then
   if [[ "$OSTYPE" == "darwin"* ]]; then

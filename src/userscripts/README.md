@@ -42,6 +42,14 @@ bun test tests/
 - API URL の判定はページ URL を基準にしたホスト+パス一致です。ゲームが
   `heroes-wb.nextersglobal.com` 以外のホストや相対パスを API 呼び出しに
   使う場合は捕捉されません。
+- 実機確認（HW Goodwin 併用時）:
+  1. HW-Genie のみ有効 → 認証成功ログが出る
+  2. HW Goodwin のみ有効 → Goodwin の UI が表示される
+  3. 両方有効 → 双方が機能する（Goodwin の UI 表示 + HW-Genie の認証送信）
+  - 既知の懸念: HW Goodwin が open 内でインスタンス own setRequestHeader を
+    毎回張る実装の場合、document-idle 構成では genie が open チェーン最外側に
+    なり捕捉が失われる可能性がある（tests の「genie が外側」ケース）。
+    現行の HW Goodwin 実装では発生しないことを実機で確認済みであること。
 
 ## 構成
 

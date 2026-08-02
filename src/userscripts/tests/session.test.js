@@ -1,0 +1,154 @@
+// Regression tests for the session send state machine (session.ts).
+//
+// These drive the PRODUCTION code directly and pin the behavior that fixes
+// the v1.0.3 stale-session bug: after a re-login, old header keys must not be
+// merged into the new session, mixed old/new payloads must not be sent, and
+// dedupe/backoff must behave correctly.
+
+import { test } from "node:test";
+import assert from "node:assert";
+import {
+  evaluateSend,
+  markSendFailure,
+  markSendSuccess,
+  pruneStaleKeys,
+} from "../session.ts";
+
+const REQUIRED_KEYS = [
+  "x-auth-application-id",
+  "x-auth-network-ident",
+  "x-auth-session-id",
+  "x-auth-signature",
+  "x-auth-token",
+  "x-auth-user-id",
+];
+const POLL_MS = 500;
+const STALE_TTL_MS = 5000;
+const FRESH_WINDOW_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+
+function fullState(now = 1000000, overrides = {}) {
+  const headersCaptured = {
+    "x-auth-application-id": "3",
+    "x-auth-network-ident": "web",
+    "x-auth-session-id": "sid1",
+    "x-auth-signature": "sig1",
+    "x-auth-token": "tok1",
+    "x-auth-user-id": "u1",
+  };
+  const lastSeenAt = {};
+  for (const k of Object.keys(headersCaptured)) {
+    lastSeenAt[k] = now;
+  }
+  return {
+    headersCaptured,
+    lastSeenAt,
+    lastSentJson: null,
+    lastAttemptedJson: null,
+    backoffMs: POLL_MS,
+    lastAttemptAt: 0,
+    ...overrides,
+  };
+}
+
+test("古いセッションのキーが TTL 超過で prune され、新セッションと混ざらない", () => {
+  const s = fullState();
+  // 古いキー x-auth-player-id を追加（TTL 超過）
+  s.headersCaptured["x-auth-player-id"] = "old";
+  s.lastSeenAt["x-auth-player-id"] = 0; // 古い
+  pruneStaleKeys(s.headersCaptured, s.lastSeenAt, 1000000, STALE_TTL_MS);
+  assert.ok(!("x-auth-player-id" in s.headersCaptured));
+  assert.ok(!("x-auth-player-id" in s.lastSeenAt));
+  // 必須キーは残る
+  for (const k of REQUIRED_KEYS) {
+    assert.ok(k in s.headersCaptured);
+  }
+});
+
+test("6 キー中 1 キーのみ古い（FRESH_WINDOW 超過）場合は送信しない", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  s.lastSeenAt["x-auth-token"] = now - FRESH_WINDOW_MS - 1; // 古い
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, false);
+});
+
+test("必須キーが揃っていない場合は送信しない", () => {
+  const s = fullState();
+  delete s.headersCaptured["x-auth-token"];
+  const d = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, false);
+});
+
+test("同一値は lastSentJson と一致し再送されない（dedupe）", () => {
+  const s = fullState();
+  const d1 = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, true);
+  assert.ok(d1.serialized);
+  markSendSuccess(s, d1.serialized, POLL_MS);
+  // 同じ状態で再評価 → 再送しない
+  const d2 = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, false);
+});
+
+test("値が変われば backoff がリセットされ即送信される（再ログイン検知）", () => {
+  const s = fullState();
+  // 失敗でバックオフが伸びた状態にする
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 2000);
+  // ヘッダー更新（再ログイン）
+  s.headersCaptured["x-auth-token"] = "tok2";
+  s.headersCaptured["x-auth-signature"] = "sig2";
+  const now = 1000000;
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now;
+  }
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, true);
+  assert.strictEqual(s.backoffMs, POLL_MS); // リセットされた
+});
+
+test("失敗継続で backoff が 2 倍され、MAX_BACKOFF_MS で頭打ちになる", () => {
+  const s = fullState();
+  s.backoffMs = POLL_MS;
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 1000);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 2000);
+  // 何度も失敗して上限に達する
+  for (let i = 0; i < 10; i++) {
+    markSendFailure(s, MAX_BACKOFF_MS);
+  }
+  assert.strictEqual(s.backoffMs, MAX_BACKOFF_MS);
+});
+
+test("backoff 中の同一ヘッダーは送信しない", () => {
+  const s = fullState();
+  const d1 = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, true);
+  assert.ok(d1.serialized);
+  // 送信試行: lastAttemptedJson と lastAttemptAt を記録（呼び出し側の責務）
+  s.lastAttemptedJson = d1.serialized;
+  s.lastAttemptAt = 1000000;
+  // 失敗 → バックオフ 1000ms
+  markSendFailure(s, MAX_BACKOFF_MS);
+  // 500ms 後に再評価 → backoff 中（同一ヘッダーなので lastSentJson 不一致でも
+  // backoff がリセットされない）
+  const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, false);
+  // バックオフ経過後は送信
+  const d3 = evaluateSend(s, 1001000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d3.shouldSend, true);
+});
+
+test("snapshot は既知キーのみでキー順が正規化される", () => {
+  const s = fullState();
+  // 未知キーを混入
+  s.headersCaptured["x-auth-unknown"] = "extra";
+  s.lastSeenAt["x-auth-unknown"] = 1000000;
+  const d = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.ok(d.snapshot);
+  assert.ok(!("x-auth-unknown" in d.snapshot)); // 未知キーは転送しない
+  assert.deepStrictEqual(Object.keys(d.snapshot).sort(), [...REQUIRED_KEYS].sort());
+});

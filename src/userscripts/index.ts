@@ -31,6 +31,12 @@
 // XHR インターセプタは共有モジュールに分離し、テストから本番コードを
 // 直接検証できるようにする（詳細は xhr-interceptor.ts を参照）。
 import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
+// セッション送信の状態機械も純関数モジュールに分離（詳細は session.ts）。
+import {
+  evaluateSend,
+  markSendFailure,
+  markSendSuccess,
+} from "./session";
 
 (() => {
   "use strict";
@@ -92,21 +98,6 @@ import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
     }
     headersCaptured[lowerName] = value;
     lastSeenAt[lowerName] = Date.now();
-  }
-
-  // Prune header keys that have not been observed for STALE_KEY_TTL_MS. Called
-  // before every send so a changed key set cannot silently accumulate stale
-  // entries that would break the signature validation.
-  function pruneStaleKeys(now: number): void {
-    if (!headersCaptured) {
-      return;
-    }
-    for (const key of Object.keys(headersCaptured)) {
-      if (now - (lastSeenAt[key] ?? 0) > STALE_KEY_TTL_MS) {
-        delete headersCaptured[key];
-        delete lastSeenAt[key];
-      }
-    }
   }
 
   // Timeout wrapper compatible with older browsers / WebViews that lack
@@ -172,72 +163,59 @@ import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
       return;
     }
     const now = Date.now();
-    pruneStaleKeys(now);
-    if (!headersCaptured) {
+    // セッション状態の判定は純関数 evaluateSend に委譲（session.ts）。
+    // pruneStaleKeys / 新旧混在ガード / dedupe / バックオフ判定をテストから
+    // 直接検証できるようにするため。
+    const state = {
+      headersCaptured,
+      lastSeenAt,
+      lastSentJson,
+      lastAttemptedJson,
+      backoffMs,
+      lastAttemptAt,
+    };
+    const decision = evaluateSend(
+      state,
+      now,
+      REQUIRED_HEADER_KEYS,
+      STALE_KEY_TTL_MS,
+      FRESH_WINDOW_MS,
+      POLL_INTERVAL_MS,
+    );
+    if (!decision.shouldSend || !decision.snapshot || !decision.serialized) {
       return;
     }
-    // All required keys must be present AND observed within the freshness
-    // window. The freshness check prevents a mid-transition mix of old and
-    // new session keys (count >= 6 alone would pass) from being pushed.
-    if (!REQUIRED_HEADER_KEYS.every((key) => key in headersCaptured!)) {
-      return;
-    }
-    if (
-      !REQUIRED_HEADER_KEYS.every(
-        (key) => now - (lastSeenAt[key] ?? 0) <= FRESH_WINDOW_MS,
-      )
-    ) {
-      return;
-    }
-
-    // Send a snapshot of only the known headers, not the live object: an
-    // in-flight re-login must not mutate the payload after it was serialized
-    // for dedupe/backoff, and unknown x-auth-* keys are not forwarded.
-    const snapshot: Record<string, string> = {};
-    for (const key of REQUIRED_HEADER_KEYS) {
-      snapshot[key] = headersCaptured[key];
-    }
-    // Normalize key order so dedupe/backoff are order-independent even after
-    // prune -> re-capture reorders the underlying object.
-    const serialized = JSON.stringify(snapshot, Object.keys(snapshot).sort());
-    if (serialized === lastSentJson) {
-      // Already sent and accepted; nothing changed.
-      return;
-    }
-
-    // Headers changed since the last attempt (re-login) -> reset backoff so a
-    // fresh session is pushed immediately. The serialized value of the last
-    // attempt (not the last success) is the correct baseline: while the same
-    // stale headers keep failing, the backoff must keep growing.
-    if (serialized !== lastAttemptedJson) {
-      backoffMs = POLL_INTERVAL_MS;
-    }
-    if (now - lastAttemptAt < backoffMs) {
-      return;
-    }
-
-    sending = true;
+    // evaluateSend は state オブジェクトの参照を直接変更する（prune 等）。
+    // クロージャ変数へ反映する。
+    headersCaptured = state.headersCaptured;
+    lastSeenAt = state.lastSeenAt;
+    lastAttemptedJson = state.lastAttemptedJson;
+    backoffMs = state.backoffMs;
     lastAttemptAt = now;
-    lastAttemptedJson = serialized;
-    sendHeaders(snapshot).then(
+    sending = true;
+
+    sendHeaders(decision.snapshot).then(
       (success) => {
         sending = false;
         if (success) {
-          lastSentJson = serialized;
-          backoffMs = POLL_INTERVAL_MS;
+          markSendSuccess(state, decision.serialized!, POLL_INTERVAL_MS);
+          lastSentJson = state.lastSentJson;
+          backoffMs = state.backoffMs;
           log("Auth capture complete.");
         } else {
           // The send failed (stale session, server down, ...). Keep the
           // backoff growing so we do not spam the server, but still retry; a
           // re-login will change the headers and reset the backoff above.
-          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+          markSendFailure(state, MAX_BACKOFF_MS);
+          backoffMs = state.backoffMs;
         }
       },
       (err) => {
         // sendHeaders normally never rejects (all awaits are guarded), but if
         // it ever does, keep the poll alive instead of wedging `sending`.
         sending = false;
-        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+        markSendFailure(state, MAX_BACKOFF_MS);
+        backoffMs = state.backoffMs;
         log(`sendHeaders rejected: ${err}`);
       },
     );
