@@ -77,11 +77,12 @@ export function evaluateSend(
   ) {
     return { shouldSend: false, serialized: null, snapshot: null };
   }
-  // コヒーレント集合チェック: 全キーの観測時刻が freshWindowMs 以内に収まって
-  // いること。再ログイン遷移中に旧セッションのキーが「直近観測」のまま残って
-  // いると、新旧混在ペイロードを送信し得るため、キー間の時刻差も検証する。
+  // per-key fresh チェック（now 基準）を通過しても、個別には fresh なまま
+  // 新旧のキーが混ざる遷移は防げない。キー間の観測時刻差を pollInterval 以下
+  // に制限する（1 回のバーストで全キーが設定された、コヒーレントな集合のみ送信）。
+  const coherentWindowMs = Math.min(freshWindowMs, pollIntervalMs);
   const times = requiredKeys.map((key) => s.lastSeenAt[key] ?? 0);
-  if (Math.max(...times) - Math.min(...times) > freshWindowMs) {
+  if (Math.max(...times) - Math.min(...times) > coherentWindowMs) {
     return { shouldSend: false, serialized: null, snapshot: null };
   }
 

@@ -103,15 +103,17 @@ import type { SessionState } from "./session";
   }
 
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {
-    const ok = await sendHeadersToServer(
+    const result = await sendHeadersToServer(
       AUTH_SERVER_URL,
       headers,
       FETCH_TIMEOUT_MS,
     );
-    if (!ok) {
+    if (!result.ok) {
       log("Failed to send auth headers to server.");
+    } else {
+      log(`Auth headers sent (Player: ${result.playerName ?? "unknown"})`);
     }
-    return ok;
+    return result.ok;
   }
 
   function trySend(): void {

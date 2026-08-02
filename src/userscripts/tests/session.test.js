@@ -118,6 +118,9 @@ test("値が変われば 2 連続観測後に backoff がリセットされ即�
 
 test("リクエスト毎に値が変わる（署名ローテーション）場合、バックオフはリセットされない", () => {
   const s = fullState();
+  // 初回送信で lastAttemptAt を設定してから失敗でバックオフを伸ばす
+  const d0 = pollAndMaybeSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
   markSendFailure(s, MAX_BACKOFF_MS);
   markSendFailure(s, MAX_BACKOFF_MS);
   assert.strictEqual(s.backoffMs, 2000);
@@ -130,13 +133,15 @@ test("リクエスト毎に値が変わる（署名ローテーション）場�
     for (const k of Object.keys(s.headersCaptured)) {
       s.lastSeenAt[k] = now + counter * POLL_MS;
     }
-    return evaluateSend(s, now + counter * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+    return pollAndMaybeSend(s, now + counter * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   };
-  evaluateWithRotatingSignature();
-  evaluateWithRotatingSignature();
-  evaluateWithRotatingSignature();
+  const results = [];
+  results.push(evaluateWithRotatingSignature());
+  results.push(evaluateWithRotatingSignature());
+  results.push(evaluateWithRotatingSignature());
   // 値が毎回変わるため pendingChangeJson は確定せず、バックオフは
-  // リセットされない（ホットリトライに戻らない）
+  // リセットされない（ホットリトライに戻らない）。ゲートは閉じたまま。
+  results.forEach((r) => assert.strictEqual(r.shouldSend, false));
   assert.strictEqual(s.backoffMs, 2000); // リセットされていない
   // pendingChangeJson は最後の評価の値（未確定のまま）
   assert.ok(s.pendingChangeJson !== null);
@@ -175,13 +180,14 @@ test("backoff 中の同一ヘッダーは送信しない", () => {
   assert.strictEqual(d3.shouldSend, true);
 });
 
-test("新旧混在: 一部キーの観測時刻が他より古い場合は送信しない（コヒーレント集合）", () => {
+test("新旧混在: 全キーが個別には FRESH 内でも観測時刻差が大きく送信しない（コヒーレント集合）", () => {
   const now = 1000000;
   const s = fullState(now);
-  // 4 キーのみ新しい観測時刻、残り 2 キーは 2 秒前（FRESH_WINDOW 内だが差が大きい）
   let i = 0;
   for (const k of REQUIRED_KEYS) {
-    s.lastSeenAt[k] = i < 4 ? now : now - 2000;
+    // fresh=1000 内（個別には per-key チェックを通る）だが、
+    // スプレッド 750 > coherent(500=pollInterval) で reject
+    s.lastSeenAt[k] = i < 4 ? now : now - 750;
     i++;
   }
   const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);

@@ -42,17 +42,18 @@ test("非 2xx + 非 JSON ボディで例外を投げず false を返す（res.ok
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
     authResponse: makeResponse(500, "Internal Server Error", false),
   });
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, false);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
 });
 
-test("200 + status:success で true を返す", async () => {
+test("200 + status:success で true を返し、player 名も返す", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
     authResponse: makeResponse(200, JSON.stringify({ status: "success", player: { name: "Joe" } })),
   });
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, true);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.playerName, "Joe");
 });
 
 test("200 + status:error で false を返す", async () => {
@@ -60,25 +61,32 @@ test("200 + status:error で false を返す", async () => {
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
     authResponse: makeResponse(200, JSON.stringify({ status: "error", message: "Invalid signature" })),
   });
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, false);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
 });
 
-test("200 + 不正 JSON で例外なく false を返す", async () => {
+test("200 + 不正 JSON（json() が throw）で例外なく false を返す", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
-    authResponse: makeResponse(200, "not json", false),
+    authResponse: {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token");
+      },
+      text: async () => "not json",
+    },
   });
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, false);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
 });
 
 test("fetch 拒否（サーバー停止）で false を返す", async () => {
   const fetchImpl = async () => {
     throw new Error("connection refused");
   };
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, false);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
 });
 
 test("nonce 取得失敗で false を返す", async () => {
@@ -86,6 +94,31 @@ test("nonce 取得失敗で false を返す", async () => {
     nonceBody: makeResponse(500, "boom", false),
     authResponse: null,
   });
-  const ok = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
-  assert.strictEqual(ok, false);
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+});
+
+test("AbortController タイムアウトで promise が settle する（ハングしない）", async () => {
+  // signal を尊重する fake fetch: abort 発火で reject する
+  const fetchImpl = async (url, init) => {
+    return new Promise((resolve, reject) => {
+      const signal = init?.signal;
+      if (signal) {
+        if (signal.aborted) {
+          reject(new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      }
+      // 解決しない（タイムアウト abort のみ）
+    });
+  };
+  // タイムアウト 50ms で settle することを確認
+  const start = Date.now();
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 50, fetchImpl);
+  const elapsed = Date.now() - start;
+  assert.strictEqual(result.ok, false);
+  assert.ok(elapsed < 2000, `expected timeout abort, took ${elapsed}ms`);
 });

@@ -13,6 +13,10 @@ INJECT_URL=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --inject-url)
+      if [[ $# -lt 2 ]]; then
+        echo "ERROR: --inject-url requires a value" >&2
+        exit 1
+      fi
       INJECT_URL="$2"
       shift 2
       ;;
