@@ -60,9 +60,8 @@ jobs:
         id: release
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
-          # printf で改行を明示する（$'...' はワークフロー YAML で問題を
-          # 起こすことがあるため使用しない）。${{ }} は YAML 補間で先に置換済み。
-          NOTES=$(printf 'Userscript release v%s\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。' '${{ steps.version.outputs.version }}')
+          # printf で改行を明示する。${{ }} は YAML 補間で先に置換済み。
+          NOTES=$(printf 'Userscript release v%s\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。' "$VERSION")
 
           # Check if release exists
           if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
