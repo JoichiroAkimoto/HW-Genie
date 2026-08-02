@@ -67,14 +67,43 @@ def get_session_path(account="default"):
     return os.path.join(PKG_ROOT, f"session.{account}.json")
 
 
+AUTH_EXPIRED_MESSAGE = "Session expired or invalid signature. Please update your curl or run auth-server."
+
+
+def _unexpected_response_message(response) -> str:
+    """JSON でない API レスポンスからユーザー向けエラーメッセージを組み立てる。"""
+    text = (response.text or "").strip()
+    if "Invalid signature" in text:
+        return AUTH_EXPIRED_MESSAGE
+    if text:
+        return f"Unexpected response from API: {text[:200]}"
+    return "Empty response from API"
+
+
 def get_user_info(headers: dict[str, str]) -> SessionData:
+    """ゲーム API からプレイヤー情報を取得する。
+
+    失敗時は ``{"status": "error", "message": ...}`` を返す。セッション失効
+    （HTTP 401 / "Invalid signature" / ``InvalidSession`` エラー）は原因が
+    特定できるメッセージで報告し、JSON でない応答は本文の一部を表示する。
+    """
     url = "https://heroes-wb.nextersglobal.com/api/"
     headers["x-request-id"] = str(int(headers.get("x-request-id", 100)) + 1)
     payload = {"calls": [{"name": "userGetInfo", "args": {}, "ident": "body"}, {"name": "arenaGetAll", "args": {}, "ident": "arena"}]}
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 401:
+            return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
         response.raise_for_status()
-        res_data = response.json()
+        try:
+            res_data = response.json()
+        except ValueError:
+            return {"status": "error", "message": _unexpected_response_message(response)}
+        if isinstance(res_data, dict):
+            error = res_data.get("error")
+            error_name = error.get("name") if isinstance(error, dict) else error
+            if error_name in ("auth", "InvalidSession"):
+                return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
         if "results" in res_data:
             user_info = {}
             arena_info = {}
