@@ -202,6 +202,17 @@ def test_rank_color(rank, expected):
     (130, 39, False),    # 低スタミナは色付けなし
     (None, 500, False),  # レベル不明は判定不能
     (130, None, False),
+    ("130", "191", True),  # 数値文字列も正規化して判定
+    ("abc", 191, False),   # 非数値は False
 ])
 def test_energy_over_cap(level, energy, expected):
     assert energy_over_cap(level, energy) == expected
+
+
+def test_max_energy_single_source_matches_player_status():
+    """上限式（level + 60）は utils と PlayerStatus で同一ソース。"""
+    from hw_genie.core.utils import max_energy_for_level
+    from hw_genie.core.client import PlayerStatus
+
+    for level in (1, 60, 130, 250):
+        assert PlayerStatus(level=level).max_energy == max_energy_for_level(level)

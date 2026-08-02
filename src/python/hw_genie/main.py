@@ -178,13 +178,11 @@ def cmd_auth(args):
 
         header_cells = fixed_headers + ["Memo"]
         header_widths = fixed_widths + [memo_width]
-        # パディング済みのプレーン文字列に後付けで色を付ける（幅計算に影響させない）
-        header = " | ".join(
-            style(pad(h, w), bold=True, fg="cyan")
-            for h, w in zip(header_cells, header_widths)
-        )
+        # 幅計算はプレーン文字列で行い、パディング後にスタイルを後付けする
+        plain_header = " | ".join(pad(h, w) for h, w in zip(header_cells, header_widths))
+        header = style(plain_header, bold=True, fg="cyan")
         print("\n" + header)
-        print(style("-" * display_width(header), dim=True))
+        print(style("-" * display_width(plain_header), dim=True))
         for fixed_cells, memo_lines, player in rows:
             for i, memo_line in enumerate(memo_lines):
                 left = fixed_cells if i == 0 else [""] * len(fixed_cells)

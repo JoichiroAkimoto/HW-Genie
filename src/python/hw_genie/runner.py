@@ -13,6 +13,7 @@ for good concurrency and keeps each account's work isolated behind its own
 """
 
 import logging
+import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence
@@ -202,8 +203,6 @@ _pad = pad
 
 def _energy_over_max(cell: str) -> bool:
     """True when an ``E / MAX`` energy cell shows energy above the cap."""
-    import re
-
     m = re.match(r"(\d+)\s*/\s*(\d+)", cell)
     return bool(m) and int(m.group(1)) > int(m.group(2))
 

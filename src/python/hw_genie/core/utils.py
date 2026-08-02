@@ -65,16 +65,27 @@ def rank_color(rank: int | None) -> str | None:
     return None
 
 
-def energy_over_cap(level: int | None, energy: int | None) -> bool:
-    """True when ``energy`` exceeds the auto-regen cap (``level + 60``).
+def max_energy_for_level(level) -> int:
+    """Auto-regen energy cap (``level + 60``) — the single source of truth.
+
+    ``PlayerStatus.max_energy`` (client.py) and ``energy_over_cap`` both
+    derive from this helper so the formula never drifts between modules.
+    """
+    return int(level) + 60
+
+
+def energy_over_cap(level, energy) -> bool:
+    """True when ``energy`` exceeds the auto-regen cap (``max_energy_for_level``).
 
     Auto-recovery stops once energy is above the cap, so this is a "stuck"
-    state worth highlighting red. Mirrors ``PlayerStatus.max_energy``.
-    Unknown level/energy → False.
+    state worth highlighting red. Unknown/non-numeric level or energy → False.
     """
-    if level is None or energy is None:
+    try:
+        level = int(level)
+        energy = int(energy)
+    except (TypeError, ValueError):
         return False
-    return energy > int(level) + 60
+    return energy > max_energy_for_level(level)
 
 
 def format_number_with_suffix(num: int) -> str:

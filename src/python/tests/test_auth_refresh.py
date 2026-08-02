@@ -479,6 +479,24 @@ def test_cmd_auth_list_colors_when_supported(capsys, monkeypatch):
     assert "\033[31m" in out  # Energy 5000 > 上限 190 = 赤
 
 
+def test_cmd_auth_list_rule_width_matches_plain_header(capsys, monkeypatch):
+    """罫線はプレーンなヘッダー幅と一致する（ANSI コードを幅に数えない）。"""
+    import re
+
+    from hw_genie.core.utils import display_width
+
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    header_line = next(line for line in lines if "\033[1;36m" in line)
+    rule_line = next(line for line in lines if line.startswith("\033[2m"))
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    assert display_width(ansi.sub("", header_line)) == display_width(ansi.sub("", rule_line))
+
+
 def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
     """上限以下の Energy は赤にならない（低スタミナは無色）。"""
     monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
