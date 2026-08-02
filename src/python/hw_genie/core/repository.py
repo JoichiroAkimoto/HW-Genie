@@ -7,6 +7,7 @@ from .database import (
     get_session_local,
     get_write_engine,
     get_write_session_local,
+    is_transient_db_error,
     retry_on_wal_contention,
 )
 
@@ -156,12 +157,16 @@ class SessionRepository:
         def _attempt() -> None:
             try:
                 return self._update_config_locked(account, data)
-            except Exception:
-                # The connection used by this attempt may be dead (Hrana
-                # stream closed, WAL contention). Dispose the pool so the next
-                # retry checks out a fresh connection (new stream) instead of
-                # reusing the poisoned one.
-                self._dispose_write_pool()
+            except Exception as exc:
+                # Dispose the pool only on transient failures (dead Hrana
+                # stream, WAL contention). Validation errors (missing player_id,
+                # bad config key) are non-transient: disposing would be a no-op
+                # churn, and in the default config the write pool IS the shared
+                # read pool, so a needless dispose would force every other
+                # account's next checkout to re-sync and could re-trigger WAL
+                # contention during parallel `multi` runs.
+                if is_transient_db_error(exc):
+                    self._dispose_write_pool()
                 raise
 
         retry_on_wal_contention(_attempt, logger=logger)
@@ -174,6 +179,11 @@ class SessionRepository:
         the next attempt. Disposing the pool forces SQLAlchemy to open a new
         connection (new stream) on the next checkout. Best-effort: a failure
         here must not mask the original error.
+
+        NOTE: in the default configuration (``TURSO_WRITE_REMOTE`` unset) the
+        write engine IS the read engine, so disposing also empties the shared
+        read pool. Callers should therefore gate this on transient errors only
+        (see ``_attempt`` in :meth:`update_config`).
         """
         try:
             engine = get_write_engine()

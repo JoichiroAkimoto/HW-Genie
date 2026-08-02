@@ -74,13 +74,15 @@ def retry_on_wal_contention(
 ):
     """Call ``fn`` (no args), retrying transient DB errors with backoff.
 
-    Retried errors are WAL single-writer contention (``wal_insert_begin
-    failed`` / ``database is locked``) and Turso Hrana stream death
-    (``stream not found``). Backoff is ``base_delay * 2 ** (attempt - 1)``
-    with random jitter (0.5x-1.5x) so multiple processes sharing the replica
-    do not retry in lockstep and re-collide. Non-transient exceptions
-    propagate immediately; the last exception is re-raised when all attempts
-    are exhausted. Returns ``fn()``'s value on success.
+    NOTE: the name is historical — this helper no longer retries only WAL
+    contention. It retries any transient DB error: WAL single-writer
+    contention (``wal_insert_begin failed`` / ``database is locked``) and
+    Turso Hrana stream death (``stream not found`` / server-initiated
+    closes). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
+    jitter (0.5x-1.5x) so multiple processes sharing the replica do not
+    retry in lockstep and re-collide. Non-transient exceptions propagate
+    immediately; the last exception is re-raised when all attempts are
+    exhausted. Returns ``fn()``'s value on success.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
@@ -99,6 +101,11 @@ def retry_on_wal_contention(
                 )
             jittered = base_delay * (2 ** (attempt - 1)) * random.uniform(0.5, 1.5)
             time.sleep(jittered)
+
+
+# Backwards-compatible alias for the historical name (the helper now retries
+# any transient DB error, not just WAL contention).
+retry_on_transient_db_error = retry_on_wal_contention
 
 # Reentrant lock serialising every operation that WRITES frames into the
 # shared local replica WAL: the on-connect ``sync()`` (see
