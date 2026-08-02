@@ -137,13 +137,13 @@ if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
   fi
 
   # 未置換のプレースホルダが残っていないことを検証
-  if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
+  if grep -qE '__DOWNLOAD_URL__|__UPDATE_URL__' "$OUTPUT"; then
     echo "ERROR: __DOWNLOAD_URL__/__UPDATE_URL__ not substituted" >&2
     exit 1
   fi
 else
   # --inject-url 系なしのローカルビルド: プレースホルダが残るため警告
-  if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
+  if grep -qE '__DOWNLOAD_URL__|__UPDATE_URL__' "$OUTPUT"; then
     echo "WARNING: __DOWNLOAD_URL__/__UPDATE_URL__ placeholders remain (pass --inject-url, or --inject-download-url/--inject-update-url, for release)" >&2
   fi
 fi

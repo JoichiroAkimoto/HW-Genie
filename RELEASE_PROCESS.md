@@ -25,12 +25,13 @@ git push --tags
 - Tampermonkey は `@updateURL` を定期的に確認し、新しいバージョンがあれば
   自動更新します。`@updateURL` をバージョン固定にすると新リリースを検知
   できないため、常に `latest` を指す URL を使用してください。
-- 注: `releases/latest` は「非 prerelease / 非 draft のうち、タグのコミット日時
-  （`created_at`）が最も新しいリリース」を指します（semver 順ではありません）。
-  **prerelease / draft は除外**されるため、prerelease としてリリースすると
-  自動更新がそのバージョンをスキップします。また、過去コミットにタグを打って
-  リリースすると `created_at` が過去になり、`latest` に反映されない場合が
-  あります。リリース手順は「必ず最新コミットにタグを打つ」こと。
+- 注: `releases/latest` は「非 prerelease / 非 draft のうち、リリースの
+  `created_at`（実質的にはタグが指すコミット日時）が最も新しいリリース」を
+  指します（semver 順ではありません）。**prerelease / draft は除外**される
+  ため、prerelease としてリリースすると自動更新がそのバージョンをスキップ
+  します。また、過去コミットにタグを打ってリリースすると `created_at` が
+  過去になり、`latest` に反映されない場合があります。リリース手順は「必ず
+  最新コミットにタグを打つ」こと。
 
 ### 既存ユーザーの移行（重要）
 
