@@ -3,9 +3,13 @@
 import json
 import os
 import sys
+from unittest import mock
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import ai_review  # noqa: E402
 from ai_review import (  # noqa: E402
     _extract_details_blocks,
     resolve_model,
@@ -191,3 +195,353 @@ def test_models_json_valid():
         assert "output_cost_per_1m" in info
         assert "max_diff_chars" in info
         assert isinstance(info.get("aliases", []), list)
+
+
+class _FakeResponse:
+    def __init__(self, text="ok"):
+        self.text = text
+
+
+class _CodeError(Exception):
+    """HTTP ステータスコード（e.code）を持つ例外のフェイク。"""
+
+    def __init__(self, code):
+        super().__init__("some message")
+        self.code = code
+
+
+def _fake_client(*exceptions):
+    """指定した順に例外を送出し、その後 _FakeResponse を返す fake client。"""
+    return mock.Mock(
+        models=mock.Mock(
+            generate_content=mock.Mock(side_effect=[*exceptions, _FakeResponse()])
+        )
+    )
+
+
+def test_generate_with_retry_succeeds_first_try():
+    client = _fake_client()
+    resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    assert client.models.generate_content.call_count == 1
+
+
+def test_generate_with_retry_retries_429():
+    client = _fake_client(Exception("429 Too Many Requests"))
+    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
+        "ai_review.random.uniform", return_value=0.5
+    ):
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    # 1 回目の失敗で 30s + ジッター 0.5s → 2 回目で成功
+    assert client.models.generate_content.call_count == 2
+    mock_sleep.assert_called_once_with(30.5)
+
+
+def test_generate_with_retry_429_exponential_backoff_and_jitter():
+    client = _fake_client(
+        Exception("429 Too Many Requests"),
+        Exception("429 Too Many Requests"),
+        Exception("429 Too Many Requests"),
+    )
+    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
+        "ai_review.random.uniform", return_value=1.0
+    ):
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    assert client.models.generate_content.call_count == 4
+    # 30s → 60s → 120s（各 + ジッター 1.0s）
+    assert mock_sleep.call_args_list == [
+        mock.call(31.0),
+        mock.call(61.0),
+        mock.call(121.0),
+    ]
+
+
+def test_generate_with_retry_retries_5xx():
+    client = _fake_client(Exception("503 Service Unavailable"))
+    with mock.patch("ai_review.time.sleep") as mock_sleep:
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    assert client.models.generate_content.call_count == 2
+    mock_sleep.assert_called_once_with(5)
+
+
+def test_generate_with_retry_5xx_exponential_backoff():
+    client = _fake_client(
+        Exception("502 Bad Gateway"),
+        Exception("503 Service Unavailable"),
+    )
+    with mock.patch("ai_review.time.sleep") as mock_sleep:
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    assert client.models.generate_content.call_count == 3
+    # 5s → 10s
+    assert mock_sleep.call_args_list == [mock.call(5), mock.call(10)]
+
+
+def test_generate_with_retry_raises_on_non_retryable():
+    client = _fake_client(Exception("400 Bad Request"))
+    with mock.patch("ai_review.time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="400 Bad Request"):
+            ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert client.models.generate_content.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+def test_generate_with_retry_raises_after_max_retries():
+    client = mock.Mock(
+        models=mock.Mock(
+            generate_content=mock.Mock(
+                side_effect=Exception("503 Service Unavailable")
+            )
+        )
+    )
+    with mock.patch("ai_review.time.sleep"):
+        with pytest.raises(Exception, match="503 Service Unavailable"):
+            ai_review._generate_with_retry(client, "model", "prompt", None)
+    # 初回 + 5 回リトライの計 6 試行で打ち切る
+    assert client.models.generate_content.call_count == ai_review.MAX_ATTEMPTS
+
+
+def test_is_retryable_api_error_by_code():
+    """HTTP ステータスコード（e.code）でリトライ可否を判定する。"""
+    assert ai_review._is_retryable_api_error(_CodeError(429)) == (True, 429)
+    assert ai_review._is_retryable_api_error(_CodeError(500)) == (True, 500)
+    assert ai_review._is_retryable_api_error(_CodeError(503)) == (True, 503)
+    assert ai_review._is_retryable_api_error(_CodeError(400)) == (False, None)
+
+
+def test_generate_with_retry_uses_error_code():
+    """e.code 属性を持つ例外はコードで判定してリトライする。"""
+    client = _fake_client(_CodeError(429))
+    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
+        "ai_review.random.uniform", return_value=0.0
+    ):
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    assert client.models.generate_content.call_count == 2
+    mock_sleep.assert_called_once_with(30)
+
+
+def test_is_retryable_api_error_message_fallback():
+    """code 属性を持たない例外はメッセージ文字列で判定する（フォールバック）。"""
+    assert ai_review._is_retryable_api_error(Exception("429 Too Many Requests")) == (
+        True,
+        429,
+    )
+    assert ai_review._is_retryable_api_error(Exception("503 Service Unavailable")) == (
+        True,
+        503,
+    )
+    # 本文に "500" を含む非リトライエラーはフォールバックでも誤判定しない
+    assert ai_review._is_retryable_api_error(
+        Exception("quota 5000 exceeded")
+    ) == (False, None)
+
+
+def test_is_retryable_api_error_non_retryable():
+    assert ai_review._is_retryable_api_error(Exception("400 Bad Request")) == (
+        False,
+        None,
+    )
+    assert ai_review._is_retryable_api_error(ValueError("boom")) == (False, None)
+
+
+def test_fetch_pr_metadata_returns_title_and_body():
+    payload = json.dumps({"title": "feat: 新機能", "body": "概要です"})
+    with mock.patch(
+        "ai_review.subprocess.check_output", return_value=payload.encode()
+    ) as mock_run:
+        result = ai_review._fetch_pr_metadata("owner/repo", "42")
+    mock_run.assert_called_once_with(
+        [
+            "gh",
+            "pr",
+            "view",
+            "42",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "title,body",
+        ]
+    )
+    assert "タイトル: feat: 新機能" in result
+    assert "概要です" in result
+
+
+def test_fetch_pr_metadata_empty_on_error():
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=Exception("gh error")
+    ):
+        assert ai_review._fetch_pr_metadata("owner/repo", "42") == ""
+
+
+def test_fetch_pr_comments_skips_bot_marker():
+    payload = json.dumps(
+        [
+            {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+            {"user": {"login": "alice"}, "body": "修正しました"},
+            {"user": {"login": "bob"}, "body": "   "},
+        ]
+    )
+    with mock.patch(
+        "ai_review.subprocess.check_output", return_value=payload.encode()
+    ) as mock_run:
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "bot" not in result
+    assert "既存レビュー" not in result
+    assert "alice" in result
+    assert "修正しました" in result
+    # bot のマーカーコメントは更新対象として返す
+    assert existing is not None
+    assert existing["user"]["login"] == "bot"
+    # ページネーションで全コメントを取得する
+    assert "--paginate" in mock_run.call_args[0][0]
+
+
+def test_fetch_pr_comments_returns_existing_comment():
+    """bot のマーカーコメントを existing_comment として返す。"""
+    payload = json.dumps(
+        [
+            {"id": 1, "user": {"login": "alice"}, "body": "確認します"},
+            {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"},
+        ]
+    )
+    with mock.patch(
+        "ai_review.subprocess.check_output", return_value=payload.encode()
+    ):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "確認します" in result
+    assert "前回レビュー" not in result
+    assert existing == {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"}
+
+
+def test_fetch_pr_comments_empty_on_error():
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=Exception("gh error")
+    ):
+        assert ai_review._fetch_pr_comments("owner/repo", "42") == ("", None)
+
+
+def test_fetch_file_contents_includes_all_within_limit():
+    paths = ["a.py", "b.py"]
+    contents = {
+        "repos/owner/repo/contents/a.py?ref=refs/pull/42/head": "print('a')",
+        "repos/owner/repo/contents/b.py?ref=refs/pull/42/head": "print('b')",
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=100000)
+    assert "### a.py" in result
+    assert "print('a')" in result
+    assert "### b.py" in result
+    assert "print('b')" in result
+    assert mock_run.call_count == 2
+
+
+def test_fetch_file_contents_truncates_when_over_limit():
+    paths = ["big.py", "small.py"]
+    contents = {
+        "repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300,
+        "repos/owner/repo/contents/small.py?ref=refs/pull/42/head": "y",
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=400)
+    # big.py (300) + small.py (1) = 301 < 400 なので両方含まれる
+    assert "### big.py" in result
+    assert "### small.py" in result
+    assert "省略" not in result
+    assert mock_run.call_count == 2
+
+
+def test_fetch_file_contents_budget_exceeded_marks_omitted():
+    paths = ["big.py", "small.py"]
+    contents = {
+        "repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300,
+        "repos/owner/repo/contents/small.py?ref=refs/pull/42/head": "y",
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
+    # big.py (300) は 250 を超えるため省略される
+    assert "### big.py" in result
+    assert "省略" in result
+    assert "### small.py" not in result
+    assert mock_run.call_count == 1
+
+
+def test_fetch_file_contents_skips_missing_and_empty():
+    paths = ["missing.py", "empty.py"]
+    contents = {"repos/owner/repo/contents/empty.py?ref=refs/pull/42/head": "   "}
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=1000)
+    assert "### missing.py" not in result
+    assert "### empty.py" not in result
+    assert result == ""
+    assert mock_run.call_count == 2
+
+
+def test_fetch_file_contents_url_encodes_special_chars():
+    """パスに URL エスケープが必要な文字が含まれていても正しく取得できる。"""
+    paths = ["my file.py", "foo#1.py"]
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        # エスケープされた URL で呼ばれていることを確認
+        if url == "repos/owner/repo/contents/my%20file.py?ref=refs/pull/42/head":
+            return b"content a"
+        if url == "repos/owner/repo/contents/foo%231.py?ref=refs/pull/42/head":
+            return b"content b"
+        raise Exception(f"unexpected url: {url}")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=10000)
+    assert "### my file.py" in result
+    assert "content a" in result
+    assert "### foo#1.py" in result
+    assert "content b" in result
+
+
+def test_fetch_file_contents_counts_header_in_budget():
+    """ヘッダ行・区切り文字もバッファ上限に計上される。"""
+    paths = ["big.py"]
+    contents = {"repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300}
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    # 本文 300 + ヘッダ "### big.py\n" (11) = 311 > 250 なので省略される
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
+    assert "省略" in result
+    assert "xxx" not in result
