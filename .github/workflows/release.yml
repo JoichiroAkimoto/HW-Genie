@@ -1,6 +1,8 @@
 name: Release Build
 
-on:
+# "on" をダブルクォートで囲む（YAML 1.1 では on が boolean として解釈される
+# 問題があり、タグ以外の push でも誤ってトリガーされることがあるため）
+"on":
   push:
     tags:
       - 'v*'
