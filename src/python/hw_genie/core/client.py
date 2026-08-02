@@ -212,7 +212,7 @@ class Emojis:
 
 
 class Messages:
-    AUTH_ERROR = "Session expired. Please update your curl or run auth_manager."
+    AUTH_ERROR = "Session expired or invalid signature. Please update your curl or run auth-server."
 
 
 class HWAuthError(Exception):

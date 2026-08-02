@@ -141,8 +141,8 @@ def test_get_user_info_http_401(mock_post):
 @pytest.mark.parametrize(
     "error_body",
     [
-        {"error": {"name": "InvalidSession"}},
-        {"error": "auth"},
+        dummy.INVALID_SESSION_RESPONSE,
+        dummy.AUTH_ERROR_RESPONSE,
     ],
 )
 def test_get_user_info_json_auth_error_shape(mock_post, error_body):
@@ -156,6 +156,20 @@ def test_get_user_info_json_auth_error_shape(mock_post, error_body):
 
     assert info["status"] == "error"
     assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+def test_get_user_info_non_auth_error_shape_falls_through(mock_post):
+    """認証以外のエラー形状（例: notEnoughStamina）は認証失効と誤分類しない"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"error": {"name": "notEnoughStamina"}}
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == "API error"
 
 
 @patch("os.path.exists")
