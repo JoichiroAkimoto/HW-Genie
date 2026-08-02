@@ -198,12 +198,12 @@ def cmd_auth(args):
                     if j == 0:
                         styled.append(style(padded, bold=True, dim=dim_row))
                     elif j in rank_keys:
-                        styled.append(
-                            style(padded, fg=rank_color(player.get(rank_keys[j])), dim=dim_row)
-                        )
+                        color = rank_color(player.get(rank_keys[j]))
+                        # 色付きセルはゼブラでも dim しない（色を保つ）
+                        styled.append(style(padded, fg=color, dim=dim_row and not color))
                     elif j == energy_col:
                         if energy_over_cap(player.get("level"), player.get("energy")):
-                            styled.append(style(padded, fg="red", dim=dim_row))
+                            styled.append(style(padded, fg="red"))
                         else:
                             styled.append(style(padded, dim=dim_row))
                     else:

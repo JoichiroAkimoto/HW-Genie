@@ -555,7 +555,10 @@ def test_render_summary_table_colors_when_supported(monkeypatch):
     assert "\033[1m" in table  # 1行目アカウント名太字
     assert "\033[33m" in table  # Arena 1位 = 金
     assert "\033[32m" in table  # GA 8位 = 緑
-    assert "\033[2;31m" in table  # 2行目 Energy 200/190 超過 = 赤（ゼブラ行なので dim 合成）
+    assert "\033[31m" in table  # 2行目 Energy 200/190 超過 = 赤
+    # ゼブラ行でも色付きセルは dim されない
+    assert "\033[2;31m" not in table
+    assert "\033[2;32m" not in table
 
 
 def test_render_summary_table_zebra_dims_even_rows(monkeypatch):

@@ -240,12 +240,14 @@ def _render_summary_table(rows: list[list[str]]) -> str:
                 padded = style(padded, bold=True, dim=dim_row)
             elif i == 1:
                 padded = (
-                    style(padded, fg="red", dim=dim_row)
+                    style(padded, fg="red")
                     if _energy_over_max(cell)
                     else style(padded, dim=dim_row)
                 )
             elif i in (2, 3):
-                padded = style(padded, fg=rank_color(_cell_int(cell)), dim=dim_row)
+                color = rank_color(_cell_int(cell))
+                # 色付きセルはゼブラでも dim しない（色を保つ）
+                padded = style(padded, fg=color, dim=dim_row and not color)
             else:
                 padded = style(padded, dim=dim_row)
             cells.append(padded)

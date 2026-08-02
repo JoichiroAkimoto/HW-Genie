@@ -511,10 +511,10 @@ def test_cmd_auth_list_continuation_same_color_as_first_line(capsys, monkeypatch
 
 
 def test_cmd_auth_list_zebra_dims_even_rows(capsys, monkeypatch):
-    """偶数番目のアカウント行は全体が dim され、行の区別がつく。"""
+    """偶数番目のアカウント行は dim されるが、色付きセルは色を保つ。"""
     monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
-    SessionManager.save("Bob", {"player": {"id": "b1", "name": "Bob", "level": 130, "energy": 39, "arena_rank": 3}})
+    SessionManager.save("Bob", {"player": {"id": "b1", "name": "Bob", "level": 130, "energy": 5000, "arena_rank": 1}})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
     cmd_auth(args)
 
@@ -522,7 +522,13 @@ def test_cmd_auth_list_zebra_dims_even_rows(capsys, monkeypatch):
     first = next(line for line in lines if "Alice" in line)
     second = next(line for line in lines if "Bob" in line)
     assert first.startswith("\033[1m") and not first.startswith("\033[1;2m")
+    # ゼブラ行: 名前は dim されるが、Arena 1位=金 と Energy 超過=赤 は dim されない
     assert second.startswith("\033[1;2m")
+    assert "\033[2m" in second  # 無色セル（Gold 等）は dim
+    assert "\033[33m" in second
+    assert "\033[2;33m" not in second
+    assert "\033[31m" in second
+    assert "\033[2;31m" not in second
 
 
 def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
