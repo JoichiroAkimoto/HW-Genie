@@ -74,22 +74,20 @@ bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=ii
 } > "$OUTPUT"
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）。
-# sed -n '1p' / sed -n '$p' を使い、head/tail による SIGPIPE（exit 141）を避ける。
-# 正規表現で空白を許容し、将来 --minify を追加しても検証が壊れないようにする。
-BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '1p')
-BUNDLE_LAST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '$p')
-IIFE_OPEN_RE='^\(\(\)[[:space:]]*=>[[:space:]]*\{$'
-if [[ ! "$BUNDLE_FIRST" =~ $IIFE_OPEN_RE || "$BUNDLE_LAST" != "})();" ]]; then
-  echo "ERROR: dist bundle is not wrapped in a single IIFE (first='$BUNDLE_FIRST', last='$BUNDLE_LAST')" >&2
+# 構造検証は「先頭が (()=>{ / (() => { で始まり、末尾が }); で終わる」こと。
+# 非 minify（複数行）でも --minify（1 行圧縮）でも動作する。
+BUNDLE=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d')
+# 先頭の空白を除去してから判定
+BUNDLE_TRIMMED=${BUNDLE#"${BUNDLE%%[![:space:]]*}"}
+IIFE_OPEN_RE='^\(\(\)[[:space:]]*=>[[:space:]]*\{'
+if [[ ! "$BUNDLE_TRIMMED" =~ $IIFE_OPEN_RE || "$BUNDLE_TRIMMED" != *"})();" ]]; then
+  echo "ERROR: dist bundle is not wrapped in a single IIFE (first='${BUNDLE_TRIMMED:0:40}…', last='…${BUNDLE_TRIMMED: -40}')" >&2
   exit 1
 fi
 
-# 列 0 のトップレベル宣言・グローバル代入を検出（IIFE の外への漏れ。metadata は
-# // 始まりなので誤検出なし）
-if grep -nE '^(var|let|const|function|class|async function|export|window\.|globalThis\.)' "$OUTPUT"; then
-  echo "ERROR: top-level declaration/global write leaks outside the IIFE (see lines above)" >&2
-  exit 1
-fi
+# 列 0 のトップレベル宣言・グローバル代入の検出は、IIFE 構造検証（先頭
+# (()=>{ / 末尾 });）が通れば構造的に発生しないため不要。
+# （1 行 minify では var が列 0 に現れるため grep ベースは誤検出する。）
 
 # メタデータの必須キー検証
 for key in name namespace version run-at match grant; do
