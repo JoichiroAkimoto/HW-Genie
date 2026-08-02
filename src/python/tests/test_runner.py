@@ -157,6 +157,47 @@ def test_summarize_counts_unknown_player_status_as_failed(capsys):
     assert "Bob (status unavailable)" in out
 
 
+def test_run_all_accounts_orders_results_by_submission(monkeypatch):
+    """完了順が投入順と異なっても、結果は投入順（登録順）で返る。"""
+    accounts = ["zulu", "alpha", "mike"]
+    monkeypatch.setattr("hw_genie.runner.SessionManager.list_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "hw_genie.runner.run_for_account",
+        lambda acc, routine: (acc, f"{acc}-ok", None),
+    )
+    # 完了順が投入順の逆になるよう as_completed をモックする
+    monkeypatch.setattr(
+        "hw_genie.runner.as_completed", lambda futures: reversed(list(futures))
+    )
+    results = run_all_accounts(lambda c, a: None, accounts=accounts)
+    assert list(results) == ["zulu", "alpha", "mike"]
+    assert results["zulu"] == ("zulu-ok", None)
+
+
+def test_summarize_heading_width_matches_table(capsys):
+    """見出し・失敗一覧の罫線幅はテーブルの罫線幅と一致する。"""
+    from hw_genie.core.client import PlayerStatus
+    from hw_genie.core.utils import display_width
+
+    results = [
+        ("alpha", (PlayerStatus(name="Alpha", level=130, gold=1000000, gems=5000, energy=80, arena_rank=3, grand_rank=2), None)),
+        ("beta", (None, ValueError("x"))),
+    ]
+    summarize(results)
+    lines = capsys.readouterr().out.splitlines()
+    # \n の直後の見出し上罫線（= のみで構成される全罫線の代表）
+    eq_lines = [line for line in lines if line and set(line) == {"="}]
+    dash_lines = [line for line in lines if line and set(line) == {"-"}]
+    assert eq_lines, "見出し/テーブルの罫線が存在する"
+    assert dash_lines, "失敗一覧の罫線が存在する"
+    widths = {len(line) for line in eq_lines + dash_lines}
+    assert len(widths) == 1, f"全罫線が同幅であること（{widths}）"
+    rule_width = widths.pop()
+    # ヘッダー行の表示幅も罫線幅に一致する
+    header_line = next(line for line in lines if "Account" in line)
+    assert display_width(header_line) == rule_width
+
+
 def test_cmd_multi_dispatch_daily(monkeypatch):
     from hw_genie import main
 

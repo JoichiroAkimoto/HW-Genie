@@ -128,7 +128,9 @@ def run_all_accounts(
             acc, res, err = fut.result()
             results[acc] = (res, err)
 
-    return results
+    # 完了順ではなく投入順（= 登録順）で返す。dict は挿入順を保持するため、
+    # summarize などの呼び出し側はそのまま並び順を表示に使える。
+    return {acc: results[acc] for acc in accounts}
 
 
 # --- Convenience routines usable with run_all_accounts / run_for_account ---
@@ -219,19 +221,30 @@ def _cell_int(cell: str) -> int | None:
         return None
 
 
-def _render_summary_table(rows: list[list[str]]) -> str:
-    """Render the per-account table with widths derived from the actual content."""
+def _summary_table_layout(rows: list[list[str]]) -> tuple[list[int], int]:
+    """Shared column layout: ``(widths, rule_width)`` for the summary table.
+
+    Widths are display-width based (emoji double-width, combining chars 0).
+    ``summarize`` uses ``rule_width`` to align its own separator lines with
+    the table borders.
+    """
     headers = _SUMMARY_HEADERS
-    if not rows:
-        return ""
-    # Width of each column = max(header label, longest cell) in DISPLAY columns.
     widths = [
         max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
         for i in range(len(headers))
     ]
+    plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
+    return widths, _display_width(plain_header)
+
+
+def _render_summary_table(rows: list[list[str]]) -> str:
+    """Render the per-account table with widths derived from the actual content."""
+    if not rows:
+        return ""
+    headers = _SUMMARY_HEADERS
+    widths, rule_width = _summary_table_layout(rows)
     # 幅計算はプレーン文字列で行い、パディング後にスタイルを後付けする
     plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
-    rule_width = _display_width(plain_header)
     header_line = style(plain_header, bold=True, fg="cyan")
     body_lines = []
     for row_idx, row in enumerate(rows):
@@ -277,15 +290,18 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
         else:
             failed.append(account)
 
+    # テーブルと同じ幅で見出し・失敗一覧の罫線を引く（rows が無い場合は固定幅）
+    width = _summary_table_layout(rows)[1] if rows else 48
+
     # Separator so the table stands out from the per-account progress logs.
-    print("\n" + "=" * 48)
+    print("\n" + "=" * width)
     print("📊 --- Multi-account summary ---")
     if rows:
         print(_render_summary_table(rows))
     if failed:
-        print("-" * 48)
+        print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
-    print("=" * 48)
+    print("=" * width)
     print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
     return len(failed)
 
