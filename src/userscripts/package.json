@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "./build.sh",
-    "test": "node --test tests/*.test.js"
+    "test": "bun test tests/"
   },
   "devDependencies": {
     "@types/bun": "latest"

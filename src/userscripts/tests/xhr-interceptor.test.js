@@ -1,34 +1,15 @@
 // Regression tests for the XHR interceptor's coexistence with other
 // userscripts (e.g. HW Goodwin) that also wrap XMLHttpRequest.
 //
-// The interceptor must:
-//  1. capture x-auth-* headers from API XHRs
-//  2. not break other scripts' setRequestHeader wrappers (resolve the
-//     reference at open() time, not at install time)
-//  3. not stack multiple wrappers when the same XHR object is re-opened
-//     (per-instance Symbol marker) — otherwise capture is lost or infinite
-//     recursion occurs
-//  4. keep working in both install orders (before / after the other script)
-//  5. match the production isApiUrl() (host + path), not substring matching
+// These tests drive the PRODUCTION code (xhr-interceptor.ts) directly —
+// not a copy — by installing it on a fake XMLHttpRequest class.
 
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert";
+import { isApiUrl, installXhrInterceptor, HW_GENIE_WRAPPED } from "../xhr-interceptor.ts";
 
 const API_URL = "https://heroes-wb.nextersglobal.com/api/";
 const PAGE_URL = "https://www.hero-wars.com/";
-
-// index.ts の isApiUrl と同じ実装（テスト対象を本番ロジックと 1:1 にする）
-function isApiUrl(urlString) {
-  try {
-    const url = new URL(urlString, PAGE_URL);
-    return (
-      url.hostname === "heroes-wb.nextersglobal.com" &&
-      (url.pathname === "/api" || url.pathname.startsWith("/api/"))
-    );
-  } catch {
-    return false;
-  }
-}
 
 class NativeXHR {
   constructor() {
@@ -43,34 +24,22 @@ class NativeXHR {
   send() {}
 }
 
-/** テスト間でプロトタイプのパッチが残らないよう、新しい XHR クラスを生成する。 */
+// テスト間でプロトタイプのパッチが残らないよう、新しい XHR クラスを生成する。
 function freshXHRClass() {
   return class extends NativeXHR {};
 }
 
-/** HW-Genie の interceptXHR と同じパッチを適用する。 */
 function installGenieInterceptor(XHRClass, captured) {
-  const originalOpen = XHRClass.prototype.open;
-  const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
-
-  XHRClass.prototype.open = function (method, url, async, username, password) {
-    const urlString = url.toString();
-    if (isApiUrl(urlString)) {
-      const currentSetRequestHeader = this.setRequestHeader;
-      if (currentSetRequestHeader !== this[HW_GENIE_WRAPPED]) {
-        const setRequestHeaderRef = currentSetRequestHeader.bind(this);
-        const wrapper = function (name, value) {
-          if (name.toLowerCase().startsWith("x-auth-")) {
-            captured.push([name, value]);
-          }
-          setRequestHeaderRef(name, value);
-        };
-        this[HW_GENIE_WRAPPED] = wrapper;
-        this.setRequestHeader = wrapper;
-      }
-    }
-    return originalOpen.call(this, method, url, async ?? true, username, password);
-  };
+  const originalXHR = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = XHRClass;
+  try {
+    installXhrInterceptor(
+      (u) => isApiUrl(u, PAGE_URL),
+      (name, value) => captured.push([name, value]),
+    );
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
 }
 
 /** 他ユーザースクリプト（HW Goodwin 相当）の setRequestHeader ラッパーを適用する。 */
@@ -89,11 +58,11 @@ function setAuthHeaders(xhr, token) {
 }
 
 test("isApiUrl はホスト+パスで判定し、部分文字列一致にしない", () => {
-  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api/"), true);
-  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api"), true);
-  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api/../api/"), true);
-  assert.strictEqual(isApiUrl("https://attacker.example.com/heroes-wb.nextersglobal.com/api/"), false);
-  assert.strictEqual(isApiUrl("not a url"), false);
+  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api/", PAGE_URL), true);
+  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api", PAGE_URL), true);
+  assert.strictEqual(isApiUrl("https://heroes-wb.nextersglobal.com/api/../api/", PAGE_URL), true);
+  assert.strictEqual(isApiUrl("https://attacker.example.com/heroes-wb.nextersglobal.com/api/", PAGE_URL), false);
+  assert.strictEqual(isApiUrl("not a url", PAGE_URL), false);
 });
 
 test("HW-Genie が先にインストール: 捕捉と他スクリプトのラッパーが共存する", () => {
@@ -136,6 +105,52 @@ test("他スクリプトが先にインストール: 捕捉とラッパーが共
   ]);
 });
 
+test("他スクリプトが後から open をラップしてもチェーンが維持される", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  const openCalls = [];
+  installGenieInterceptor(XHRClass, captured);
+  // HW Goodwin が後から open をラップ
+  const origOpen = XHRClass.prototype.open;
+  XHRClass.prototype.open = function (...args) {
+    openCalls.push(args[1]);
+    return origOpen.apply(this, args);
+  };
+  installOtherScriptWrapper(XHRClass, seen);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  setAuthHeaders(xhr, "tok1");
+
+  assert.strictEqual(captured.length, 3);
+  assert.strictEqual(seen.length, 3);
+  assert.strictEqual(openCalls.length, 1);
+});
+
+test("他スクリプトが先に open をラップしていてもチェーンが維持される", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  const openCalls = [];
+  // HW Goodwin が先に open をラップ
+  const origOpen0 = XHRClass.prototype.open;
+  XHRClass.prototype.open = function (...args) {
+    openCalls.push(args[1]);
+    return origOpen0.apply(this, args);
+  };
+  installOtherScriptWrapper(XHRClass, seen);
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  setAuthHeaders(xhr, "tok1");
+
+  assert.strictEqual(captured.length, 3);
+  assert.strictEqual(seen.length, 3);
+  assert.strictEqual(openCalls.length, 1);
+});
+
 test("同一 XHR の再オープンでも捕捉が継続し、ラッパーが積み重ならない", () => {
   const XHRClass = freshXHRClass();
   const captured = [];
@@ -156,6 +171,12 @@ test("同一 XHR の再オープンでも捕捉が継続し、ラッパーが積
   assert.strictEqual(seen.length, 5);
   assert.strictEqual(xhr._headers["x-auth-token"], "tok2");
   assert.strictEqual(xhr._headers["x-auth-network-ident"], "web");
+
+  // ラッパー参照が同一のまま（スタックしていない）
+  const wrapper1 = xhr[HW_GENIE_WRAPPED];
+  xhr.open("POST", API_URL);
+  assert.strictEqual(xhr[HW_GENIE_WRAPPED], wrapper1);
+  assert.strictEqual(xhr.setRequestHeader, wrapper1);
 });
 
 test("非 API の open 後に再オープンで API になっても捕捉される", () => {
@@ -174,6 +195,26 @@ test("非 API の open 後に再オープンで API になっても捕捉され�
   assert.strictEqual(captured.length, 1);
   assert.strictEqual(captured[0][1], "tok1");
   assert.strictEqual(xhr._headers["x-auth-token"], "tok1");
+});
+
+test("他スクリプトがインスタンスの setRequestHeader を差し替えても再ラップで捕捉継続", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  const orig = xhr.setRequestHeader;
+  xhr.setRequestHeader = function (n, v) {
+    return orig.call(this, n, v);
+  }; // 他スクリプトが差し替え（元のラッパーを呼ぶ）
+  xhr.open("POST", API_URL); // marker 不一致 → 再ラップ
+  xhr.setRequestHeader("x-auth-token", "tok2");
+
+  // 再ラップにより捕捉は継続する（差し替え関数が元ラッパーを呼ぶため
+  // 二重に捕捉されることもあるが、捕捉が失われてはならない）
+  assert.ok(captured.length >= 1);
+  assert.strictEqual(xhr._headers["x-auth-token"], "tok2");
 });
 
 test("API 以外の XHR は捕捉されない", () => {

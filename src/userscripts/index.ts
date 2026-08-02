@@ -28,6 +28,10 @@
  * 認証サーバーへの送信は行われない（v1.0.2 と同じ挙動）。
  */
 
+// XHR インターセプタは共有モジュールに分離し、テストから本番コードを
+// 直接検証できるようにする（詳細は xhr-interceptor.ts を参照）。
+import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
+
 (() => {
   "use strict";
 
@@ -105,21 +109,6 @@
     }
   }
 
-  function isApiUrl(urlString: string): boolean {
-    // Resolve relative URLs against the current page so the filter works even
-    // if the game switches to relative API paths. Never throw: a malformed URL
-    // must not break the game's own XHR/fetch calls.
-    try {
-      const url = new URL(urlString, window.location.href);
-      return (
-        url.hostname === "heroes-wb.nextersglobal.com" &&
-        (url.pathname === "/api" || url.pathname.startsWith("/api/"))
-      );
-    } catch {
-      return false;
-    }
-  }
-
   // Timeout wrapper compatible with older browsers / WebViews that lack
   // AbortSignal.timeout(). Aborts via an AbortController after timeoutMs.
   function fetchWithTimeout(
@@ -176,55 +165,6 @@
       log(`Error sending auth: ${e}`);
       return false;
     }
-  }
-
-  // Symbol used to mark an XHR instance whose setRequestHeader we already
-  // wrapped, so re-opening the same object (or re-entering the open wrapper)
-  // never stacks another capture wrapper on top of the previous one.
-  const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
-
-  function interceptXHR() {
-    const originalOpen = XMLHttpRequest.prototype.open;
-
-    XMLHttpRequest.prototype.open = function (
-      method: string,
-      url: string | URL,
-      async?: boolean,
-      username?: string | null,
-      password?: string | null,
-    ) {
-      let urlString: string;
-      try {
-        urlString = url.toString();
-      } catch {
-        // Never let capture interfere with the game's own requests.
-        return originalOpen.call(this, method, url, async ?? true, username, password);
-      }
-
-      if (isApiUrl(urlString)) {
-        // Wrap setRequestHeader on every open unless this instance is already
-        // wrapped. Resolving `this.setRequestHeader` now (not at install time)
-        // keeps wrappers installed later by other userscripts (e.g. HW
-        // Goodwin) in the chain; the per-instance marker prevents stacking.
-        const self = this as XMLHttpRequest & {
-          [HW_GENIE_WRAPPED]?: (name: string, value: string) => void;
-        };
-        const currentSetRequestHeader = self.setRequestHeader;
-        if (currentSetRequestHeader !== self[HW_GENIE_WRAPPED]) {
-          const setRequestHeaderRef = currentSetRequestHeader.bind(self);
-          const wrapper = function (name: string, value: string): void {
-            captureHeaders(name, value);
-            setRequestHeaderRef(name, value);
-          };
-          self[HW_GENIE_WRAPPED] = wrapper;
-          self.setRequestHeader = wrapper;
-        }
-      }
-
-      // The native default for a missing `async` argument is true
-      // (asynchronous); preserve it so XHRs keep their semantics.
-      return originalOpen.call(this, method, url, async ?? true, username, password);
-    };
   }
 
   function trySend(): void {
@@ -314,13 +254,24 @@
   // their request/response hooks and hiding their UI. At document-idle the
   // other scripts have already wrapped the prototypes, and resolving
   // setRequestHeader per-call keeps their wrappers in the chain.
+  //
+  // 既知の制限: document-idle より前のゲーム初期 API 呼び出しは捕捉されない
+  // が、以降の API 呼び出しで同一の x-auth-* ヘッダーが再設定されるため、
+  // ポーリングが拾って実用上回復する。
+  function installInterceptor() {
+    installXhrInterceptor(
+      (urlString: string) => isApiUrl(urlString, window.location.href),
+      captureHeaders,
+    );
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
-      interceptXHR();
+      installInterceptor();
       startPolling();
     });
   } else {
-    interceptXHR();
+    installInterceptor();
     startPolling();
   }
 })();
