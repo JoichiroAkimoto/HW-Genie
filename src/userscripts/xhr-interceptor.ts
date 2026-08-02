@@ -90,8 +90,10 @@ export function installXhrInterceptor(
           if (self[HW_GENIE_ACTIVE]) {
             try {
               capture(name, value);
-            } catch {
+            } catch (e) {
               // capture の例外はゲームのリクエストを壊さないよう握りつぶす。
+              // デバッグ用にログは残す。
+              console.debug("[HW-Genie] capture error (ignored):", e);
             }
           }
           // ヘッダー設定は常に元の setRequestHeader へ委譲する。

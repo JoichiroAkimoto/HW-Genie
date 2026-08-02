@@ -36,8 +36,9 @@ fi
 # Goodwin) and the userscript runs with @grant none.
 bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser
 
-# 型チェック（bun は型を無視してビルドするため、CI で型エラーを検出する）
-bun x tsc --noEmit --skipLibCheck
+# 型チェック（bun は型を無視してビルドするため、CI で型エラーを検出する）。
+# カレントディレクトリに依存しないよう tsconfig を明示指定する。
+bun x tsc --noEmit -p "$SCRIPT_DIR/tsconfig.json"
 
 # Combine metadata + bundle
 {
@@ -64,7 +65,7 @@ if grep -nE '^(var|let|const|function|class|async function|export|window\.|globa
 fi
 
 # メタデータの必須キー検証
-for key in name version run-at match grant; do
+for key in name namespace version run-at match grant; do
   if ! grep -q "^// @$key " <<< "$METADATA"; then
     echo "ERROR: metadata missing @$key" >&2
     exit 1
@@ -79,6 +80,12 @@ if [[ -n "$INJECT_URL" ]]; then
   else
     sed -i "s@__DOWNLOAD_URL__@$INJECT_URL@g" "$OUTPUT"
     sed -i "s@__UPDATE_URL__@$INJECT_URL@g" "$OUTPUT"
+  fi
+
+  # 未置換のプレースホルダが残っていないことを検証
+  if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
+    echo "ERROR: __DOWNLOAD_URL__/__UPDATE_URL__ not substituted" >&2
+    exit 1
   fi
 fi
 
