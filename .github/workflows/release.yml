@@ -50,36 +50,40 @@ jobs:
         # downloadURL はバージョン固定、updateURL は常に最新リリースを指す
         # （releases/latest/download/...）。updateURL がバージョン固定だと
         # Tampermonkey は常に同じ URL を確認し、新しいリリースを検知できない。
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/hw-genie-auth-capture.user.js"
           UPDATE_URL="https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js"
           bash ./build.sh --inject-download-url "$DOWNLOAD_URL" --inject-update-url "$UPDATE_URL"
         working-directory: src/userscripts
 
       - name: Create or Update Release
         id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           # printf で改行を明示する。${{ }} は YAML 補間で先に置換済み。
           NOTES=$(printf 'Userscript release v%s\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。' "$VERSION")
 
           # Check if release exists
-          if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
+          if gh release view "v${VERSION}" --repo "${{ github.repository }}" 2>/dev/null; then
             echo "Release exists, uploading asset and updating notes..."
-            gh release upload "v${{ steps.version.outputs.version }}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
-            gh release edit "v${{ steps.version.outputs.version }}" --notes "$NOTES"
+            gh release upload "v${VERSION}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
+            gh release edit "v${VERSION}" --notes "$NOTES"
           else
             echo "Creating new release..."
-            gh release create "v${{ steps.version.outputs.version }}" \
-              --title "v${{ steps.version.outputs.version }}" \
+            gh release create "v${VERSION}" \
+              --title "v${VERSION}" \
               --notes "$NOTES" \
               "src/userscripts/dist/hw-genie-auth-capture.user.js"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Verify Release
-        run: |
-          gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" --json name,url,assets
         env:
+          VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v${VERSION}" --repo "${{ github.repository }}" --json name,url,assets
