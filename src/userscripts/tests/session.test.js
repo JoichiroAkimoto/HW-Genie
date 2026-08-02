@@ -71,10 +71,20 @@ test("古いセッションのキーが TTL 超過で prune され、新セッ�
   }
 });
 
-test("6 キー中 1 キーのみ古い（FRESH_WINDOW 超過）場合は送信しない", () => {
+test("spread 超過かつ捕捉進行中（transitioning）で送信しない", () => {
   const now = 1000000;
   const s = fullState(now);
-  s.lastSeenAt["x-auth-token"] = now - FRESH_WINDOW_MS - 1; // 古い
+  s.lastSeenAt["x-auth-token"] = now - 750; // スプレッド 750 > coherent(500)
+  s.lastCaptureAt = now; // 捕捉進行中
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, false);
+});
+
+test("settled 時に古いキーが TTL 超過なら送信しない", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  s.lastSeenAt["x-auth-token"] = now - STALE_TTL_MS - 1; // TTL 超過
+  s.lastCaptureAt = now - 2000; // 捕捉停止（settled）
   const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d.shouldSend, false);
 });
@@ -148,8 +158,8 @@ test("リクエスト毎に値が変わる（署名ローテーション）場�
   // バックオフはリセットされない（ホットリトライに戻らない）。ゲートは閉じたまま。
   results.forEach((r) => assert.strictEqual(r.shouldSend, false));
   assert.strictEqual(s.backoffMs, 2000); // リセットされていない
-  // pendingIdentityJson は未確定のまま（同一性キーは不変だが 1 回目の観測が残る）
-  assert.ok(s.pendingIdentityJson === null || s.pendingIdentityJson !== null);
+  // 同一性キーは不変なので pendingIdentityJson は確定しない（null のまま）
+  assert.strictEqual(s.pendingIdentityJson, null);
 });
 
 test("失敗継続で backoff が 2 倍され、MAX_BACKOFF_MS で頭打ちになる", () => {
@@ -322,6 +332,54 @@ test("成功でバックオフがリセットされる（サーバー復旧パ�
   // dedupe: 同じ値を再送しない
   const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d2.shouldSend, false);
+});
+
+test("identity フリッカー（sid1→sid2→sid1→sid2）で 2 連続観測が成立せずリセットされない", () => {
+  const s = fullState();
+  const d0 = pollAndMaybeSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 2000);
+  // フリッカー: session-id が毎回変わる
+  const now = 1000000;
+  for (let i = 0; i < 4; i++) {
+    s.headersCaptured["x-auth-session-id"] = i % 2 === 0 ? "sidA" : "sidB";
+    for (const k of Object.keys(s.headersCaptured)) {
+      s.lastSeenAt[k] = now + i * POLL_MS;
+    }
+    const d = pollAndMaybeSend(s, now + i * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+    assert.strictEqual(d.shouldSend, false); // ゲート閉のまま
+  }
+  // 2 連続同一観測が成立しないためバックオフはリセットされない
+  assert.strictEqual(s.backoffMs, 2000);
+});
+
+test("継続トラフィック + 遅延署名でも同一セッションなら送信が継続する", () => {
+  const s = fullState();
+  const now = 1000000;
+  // 初回送信
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendSuccess(s, d0.serialized, POLL_MS);
+  // 継続トラフィック: 2 秒間隔で捕捉が続き、署名が 600ms 遅延する
+  // （lastCaptureAt が常に直近 = capturing だが、identity は不変なので
+  //   新旧混在ガードは発動しない）
+  let t = now + 2000;
+  // fullState の初期署名は sig1 なので、それと異なる sig2 から開始
+  for (let i = 2; i <= 4; i++) {
+    for (const k of REQUIRED_KEYS) {
+      s.lastSeenAt[k] = t;
+    }
+    // 署名は 600ms 遅延（スプレッド 600 > coherent 500）
+    s.lastSeenAt["x-auth-signature"] = t + 600;
+    s.lastCaptureAt = t + 600;
+    s.headersCaptured["x-auth-signature"] = "sig" + i; // d0 の sig1 と異なる値
+    const d = pollAndMaybeSend(s, t + 600, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+    // identity 不変なので新旧混在ガードは発動せず、送信は継続される
+    assert.strictEqual(d.shouldSend, true);
+    t += 2000;
+  }
 });
 
 test("snapshot は既知キーのみでキー順が正規化される", () => {

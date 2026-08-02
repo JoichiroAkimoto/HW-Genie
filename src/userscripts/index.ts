@@ -62,7 +62,7 @@ import type { SessionState } from "./session";
   const MAX_BACKOFF_MS = 30000;
   // 成功時の最小送信間隔。ゲームがリクエスト毎に署名をローテーションする
   // 場合、値が安定せず dedupe が効かないため、この間隔で連続送信を抑える
-  // （再ログイン直後の即送信は pendingChangeJson 確定パスで維持される）。
+  // （再ログイン直後の即送信は pendingIdentityJson 確定パスで維持される）。
   const MIN_SEND_INTERVAL_MS = 2000;
   // x-auth-* keys not seen for this long are pruned. A re-login changes the
   // header key set (and values); without pruning, keys from an old session
@@ -149,7 +149,7 @@ import type { SessionState } from "./session";
         sending = false;
         if (success) {
           // ローテーション時の連続送信を抑えるため、成功後のバックオフは
-          // MIN_SEND_INTERVAL_MS にする（再ログイン検知は pendingChangeJson
+          // MIN_SEND_INTERVAL_MS にする（再ログイン検知は pendingIdentityJson
           // 確定パスで 500ms に戻るため、即送信は維持される）。
           markSendSuccess(state, decision.serialized!, MIN_SEND_INTERVAL_MS);
           // 成功ログは sendHeaders 内で出力済み（Player 名入り）

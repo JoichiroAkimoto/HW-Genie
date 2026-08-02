@@ -17,6 +17,31 @@ export function fetchWithTimeout(
   );
 }
 
+/**
+ * レスポンスボディの読み取りにタイムアウトを適用する。
+ *
+ * fetchWithTimeout はヘッダー到着時点で resolve しタイマーが破棄されるため、
+ * ボディを返さない（stall する）サーバーでは res.text() / res.json() が
+ * 永久に pending になり、呼び出し側の sending フラグが固まり得る。これを防ぐ。
+ */
+async function readBodyWithTimeout(
+  res: Response,
+  timeoutMs: number,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new DOMException("Aborted", "AbortError")),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([res.text(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fetchNonce(
   baseUrl: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
@@ -32,7 +57,8 @@ export async function fetchNonce(
     if (!res.ok) {
       return null;
     }
-    const data = await res.json();
+    const body = await readBodyWithTimeout(res, timeoutMs);
+    const data = JSON.parse(body);
     return data.nonce;
   } catch {
     return null;
@@ -76,10 +102,11 @@ export async function sendHeadersToServer(
     );
     if (!res.ok) {
       // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
-      await res.text();
+      await readBodyWithTimeout(res, timeoutMs);
       return { ok: false, playerName: null, reason: `http-${res.status}` };
     }
-    const data = await res.json();
+    const body = await readBodyWithTimeout(res, timeoutMs);
+    const data = JSON.parse(body);
     if (data.status === "success") {
       return { ok: true, playerName: data.player?.name ?? null };
     }

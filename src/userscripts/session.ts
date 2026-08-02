@@ -76,17 +76,24 @@ export function evaluateSend(
   if (!requiredKeys.every((key) => key in s.headersCaptured!)) {
     return { shouldSend: false, serialized: null, snapshot: null };
   }
+
+  // セッション同一性キー（session-id / user-id）のシリアライズ。
+  // 再ログイン検知と新旧混在ガードの両方で使う（署名は除外）。
+  const identitySerialized = serializeIdentity(s.headersCaptured, requiredKeys);
+  const identityChanged =
+    identitySerialized !== s.lastAttemptedIdentityJson &&
+    s.pendingIdentityJson !== identitySerialized;
+
   // コヒーレント集合チェック: キー間の観測時刻差が coherentWindowMs を超え、
-  // かつ捕捉が進行中（遷移中）の場合は新旧混在として送信しない。
-  // 捕捉が止まっていれば「落ち着いた完全セット」とみなし、per-key 鮮度は
-  // TTL 基準（staleKeyTtlMs）で判定する（並行 XHR / 非同期署名計算による
-  // 恒久抑止を回避。FRESH_WINDOW 基準だと settled 前に最古キーが窓を超える）。
+  // かつ捕捉が進行中（遷移中）かつセッション同一性が変化している場合は新旧
+  // 混在として送信しない。同一セッション内の遅延キー（非同期署名計算等）は
+  // 混在ではなく、identity が不変なら抑止しない（継続トラフィック下の恒久
+  // 抑止を回避）。
   const coherentWindowMs = Math.min(freshWindowMs, pollIntervalMs);
   const times = requiredKeys.map((key) => s.lastSeenAt[key] ?? 0);
   const spread = Math.max(...times) - Math.min(...times);
-  const transitioning =
-    spread > coherentWindowMs && now - (s.lastCaptureAt ?? 0) < coherentWindowMs;
-  if (transitioning) {
+  const capturing = now - (s.lastCaptureAt ?? 0) < coherentWindowMs;
+  if (spread > coherentWindowMs && capturing && identityChanged) {
     return { shouldSend: false, serialized: null, snapshot: null };
   }
   // settled（またはコヒーレント）: 全キーが TTL 内に観測されていること
@@ -112,17 +119,6 @@ export function evaluateSend(
   // バックオフをリセットする。署名はリクエスト毎にローテーションされうるため
   // リセット対象にしない（サーバー障害時のホットリトライを防ぐ）。
   // 同一性キーが 2 連続ポーリングで同じ新値を観測した場合のみ確定する。
-  const identityKeys = requiredKeys.filter(
-    (key) => key === "x-auth-session-id" || key === "x-auth-user-id",
-  );
-  const identitySnapshot: Record<string, string> = {};
-  for (const key of identityKeys) {
-    identitySnapshot[key] = s.headersCaptured[key];
-  }
-  const identitySerialized = JSON.stringify(
-    identitySnapshot,
-    Object.keys(identitySnapshot).sort(),
-  );
   if (identitySerialized !== s.lastAttemptedIdentityJson) {
     if (s.pendingIdentityJson === identitySerialized) {
       // 同一の新値が 2 連続観測 → 本物の再ログイン
@@ -173,9 +169,8 @@ export function serializeIdentity(
 /**
  * ポーリング 1 回分の「判定 + 送信準備」をまとめたオーケストレーション。
  *
- * evaluateSend の state 変更（pendingChangeJson / pendingIdentityJson /
- * backoffMs / lastSeenAt の prune 等）は s に残るため、呼び出し側は常に s を
- * クロージャへ反映するだけでよい。shouldSend=false（バックオフ抑止・確定待ち）
+ * evaluateSend の state 変更（pendingIdentityJson / backoffMs / lastSeenAt の
+ * prune 等）は s に残るため、呼び出し側は常に s をクロージャへ反映するだけでよい。shouldSend=false（バックオフ抑止・確定待ち）
  * でも確定待ちがポーリング間で失われない。
  */
 export function pollAndMaybeSend(

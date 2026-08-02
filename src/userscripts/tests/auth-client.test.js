@@ -129,3 +129,27 @@ test("AbortController タイムアウトで promise が settle する（ハン�
   assert.strictEqual(result.reason, "timeout"); // タイムアウトは network と区別する
   assert.ok(elapsed < 2000, `expected timeout abort, took ${elapsed}ms`);
 });
+
+test("ボディ読み取りがハングしてもタイムアウトで settle する（sending が固まらない）", async () => {
+  // /nonce は成功、/auth のボディが決して settle しない（stall するサーバー）
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/nonce")) {
+      return makeResponse(200, JSON.stringify({ nonce: "n1" }));
+    }
+    if (url.endsWith("/auth")) {
+      return {
+        ok: true,
+        status: 200,
+        // ボディ読み取りが永久に pending になる（res.text() が解決しない）
+        text: () => new Promise(() => {}),
+      };
+    }
+    throw new Error("unexpected url: " + url);
+  };
+  const start = Date.now();
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 50, fetchImpl);
+  const elapsed = Date.now() - start;
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "timeout"); // ボディ読み取りタイムアウト
+  assert.ok(elapsed < 2000, `expected body-read timeout, took ${elapsed}ms`);
+});
