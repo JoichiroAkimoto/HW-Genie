@@ -174,8 +174,9 @@ def test_run_all_accounts_orders_results_by_submission(monkeypatch):
     assert results["zulu"] == ("zulu-ok", None)
 
 
-def test_summarize_heading_width_matches_table(capsys):
+def test_summarize_heading_width_matches_table(capsys, monkeypatch):
     """見出し・失敗一覧の罫線幅はテーブルの罫線幅と一致する。"""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     from hw_genie.core.client import PlayerStatus
     from hw_genie.core.utils import display_width
 
@@ -574,13 +575,14 @@ def test_render_summary_table_widths_are_dynamic_and_have_no_lv():
         assert label in table
 
 
-def test_render_summary_table_is_display_aligned_with_emoji():
+def test_render_summary_table_is_display_aligned_with_emoji(monkeypatch):
     """Every rendered line must share the same DISPLAY width (emoji-aware).
 
     Emoji are double-width in terminals but one code point, so naive len()
     padding misaligns the ``|`` separators. This asserts the emoji-aware
     padding keeps all rows (separators, header, body) the same visual width.
     """
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     rows = [
         ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
         ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],

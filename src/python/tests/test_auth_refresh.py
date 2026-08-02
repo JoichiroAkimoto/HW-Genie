@@ -395,6 +395,7 @@ def test_cmd_auth_list_continuation_rows_blank_fixed_columns(capsys, monkeypatch
 
 def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
     """狭い端末では Memo が複数行に折り返され、内容が欠落しない。"""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("COLUMNS", "60")
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "ABC DEF GHI JKL MNO"})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
@@ -435,6 +436,7 @@ def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
 
 def test_cmd_auth_list_columns_are_content_driven(capsys, monkeypatch):
     """固定列幅は最長セルに合わせて調整され、名前は省略されない。"""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
 
@@ -455,8 +457,9 @@ def test_cmd_auth_list_columns_are_content_driven(capsys, monkeypatch):
     assert long.splitlines()[1].index(" | ") >= 20
 
 
-def test_cmd_auth_list_plain_when_not_tty(capsys):
+def test_cmd_auth_list_plain_when_not_tty(capsys, monkeypatch):
     """非 TTY（パイプ・ログ）では ANSI コードが出力されない。"""
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 5000, "arena_rank": 1}})
     args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
     cmd_auth(args)
