@@ -73,9 +73,10 @@ bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=ii
   cat "$DIST_DIR/bundle.tmp.js"
 } > "$OUTPUT"
 
-# バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
-BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)
-BUNDLE_LAST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | tail -1)
+# バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）。
+# sed -n '1p' / sed -n '$p' を使い、head/tail による SIGPIPE（exit 141）を避ける。
+BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '1p')
+BUNDLE_LAST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '$p')
 if [[ "$BUNDLE_FIRST" != "(() => {" || "$BUNDLE_LAST" != "})();" ]]; then
   echo "ERROR: dist bundle is not wrapped in a single IIFE (first='$BUNDLE_FIRST', last='$BUNDLE_LAST')" >&2
   exit 1

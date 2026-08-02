@@ -23,6 +23,13 @@ jobs:
         run: |
           VERSION=$(grep '@version' src/userscripts/index.ts | sed 's/.* //')
           TAG_NAME=${GITHUB_REF#refs/tags/}
+          # X.Y.Z 形式の検証（v1.0 / v1.0.4.1 等の不正形式を先に弾く。
+          # 不正なバージョンは存在しない download URL を生成し、
+          # releases/latest の自動更新を静かに壊す）。
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: @version '$VERSION' is not a valid semver (X.Y.Z)" >&2
+            exit 1
+          fi
           # タグと @version の不一致を防ぐ。不一致だと既存リリースを
           # --clobber で上書きし、releases/latest の自動更新が静かに壊れる。
           if [[ "v$VERSION" != "$TAG_NAME" ]]; then
