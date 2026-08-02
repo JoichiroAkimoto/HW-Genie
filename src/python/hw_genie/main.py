@@ -142,7 +142,7 @@ def cmd_auth(args):
             row_data.append(
                 (
                     [str(p_name), str(p_arena), str(p_grand), str(p_gold),
-                     str(p_gems), str(p_last_id), str(p_energy), updated_short],
+                     str(p_gems), str(p_last_id), str(p_energy), str(updated_short)],
                     data.get("memo", "-"),
                     player,
                 )
