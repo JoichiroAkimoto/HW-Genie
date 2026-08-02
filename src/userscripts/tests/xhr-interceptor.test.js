@@ -279,6 +279,55 @@ test("capture が例外を投げてもゲームの setRequestHeader は壊れな
   assert.strictEqual(xhr._headers["x-auth-token"], "tok");
 });
 
+test("open の async/username/password 引数が素通しされる", () => {
+  class RecordingXHR extends NativeXHR {
+    open(method, url, async, username, password) {
+      this._openArgs = { method, url, async, username, password };
+      super.open(method, url);
+    }
+  }
+  const captured = [];
+  const originalXHR = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = RecordingXHR;
+  try {
+    installXhrInterceptor(
+      (u) => isApiUrl(u, PAGE_URL),
+      (n, v) => captured.push([n, v]),
+    );
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+
+  const xhr = new RecordingXHR();
+  // 明示指定: null は WebIDL で同期リクエストになるため、変換されず届くこと
+  xhr.open("POST", API_URL, false, "user", "pass");
+  assert.deepStrictEqual(xhr._openArgs, {
+    method: "POST", url: API_URL, async: false, username: "user", password: "pass",
+  });
+
+  // 省略時: undefined がそのまま届き、native の既定値 (async=true) に任せること
+  xhr.open("GET", API_URL);
+  assert.strictEqual(xhr._openArgs.async, undefined);
+});
+
+test("API open 後に非 API へ再オープンするとラッパーが外れ、以後捕捉しない", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok1"); // 捕捉される
+  xhr.open("POST", "https://other.example.com/");
+  xhr.setRequestHeader("x-auth-token", "tok2"); // 捕捉されない
+  assert.strictEqual(captured.length, 1);
+
+  // 再び API open すれば再ラップされ捕捉が復帰する
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok3");
+  assert.strictEqual(captured.length, 2);
+});
+
 test("API 以外の XHR は捕捉されない", () => {
   const XHRClass = freshXHRClass();
   const captured = [];

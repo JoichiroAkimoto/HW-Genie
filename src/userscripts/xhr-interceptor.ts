@@ -2,12 +2,18 @@
 // tests/ からも直接 import される（本番コードをそのまま検証するため）。
 //
 // 設計メモ:
-// - setRequestHeader の参照は open() 時点で解決する。他ユーザースクリプト
-//   （例: HW Goodwin）が後から prototype.setRequestHeader をラップしても、
-//   そのラッパーが連鎖に残る。
+// - setRequestHeader の参照は open() 時点で解決する。未ラップのインスタンス
+//   では、他ユーザースクリプト（例: HW Goodwin）が後から
+//   prototype.setRequestHeader をラップしても、そのラッパーが連鎖に残る。
+//   ただし、既にラップ済みのインスタンスでは own プロパティが優先される
+//   ため、その後に追加された prototype ラッパーは影に隠れる（この方式の
+//   既知の制約。document-idle では他のスクリプトが先にラップ済みのため
+//   実質発生しない）。
 // - インスタンスごとに Symbol マーカーでラップ済みを追跡し、open 毎に
 //   「未ラップならラップ」する。再オープンでラッパーが積み重ならず、
 //   初回 open が非 API だった XHR を再オープンで API にした場合も捕捉できる。
+// - 非 API への再オープンでは自分自身のラッパーを外す（非 API は捕捉しない
+//   契約を維持）。
 // - この方式は「他スクリプトが open 毎に再ラップしない」前提に依存する。
 //   両者が open 毎に再ラップする方式を取るとチェーンが成長しうるが、
 //   無限再帰にはならない。
@@ -82,6 +88,19 @@ export function installXhrInterceptor(
         };
         self[HW_GENIE_WRAPPED] = wrapper;
         self.setRequestHeader = wrapper;
+      }
+    } else {
+      // 非 API への再オープン: 自分自身のラッパーだけを外し、プロトタイプ
+      // 解決に戻す（非 API リクエストは捕捉しない契約を維持）。他スクリプト
+      // が own プロパティで上書きした場合は触らない（連鎖を壊さない）。
+      // 次の API open で最新チェーンに対して再ラップされる。
+      const self = this as XMLHttpRequest & {
+        [HW_GENIE_WRAPPED]?: (name: string, value: string) => void;
+      };
+      if (self[HW_GENIE_WRAPPED] && self.setRequestHeader === self[HW_GENIE_WRAPPED]) {
+        delete self[HW_GENIE_WRAPPED];
+        // 自前の own プロパティとして張ったラッパーを外し、プロトタイプ解決に戻す。
+        delete (self as unknown as { setRequestHeader?: unknown }).setRequestHeader;
       }
     }
 

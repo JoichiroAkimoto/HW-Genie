@@ -24,6 +24,12 @@ mkdir -p "$DIST_DIR"
 # Extract metadata comments from source
 METADATA=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' "$SCRIPT_DIR/index.ts")
 
+# Metadata が抽出できていることを検証（空のまま成功させない）
+if [[ "$METADATA" != *"==UserScript=="* ]]; then
+  echo "ERROR: metadata block not found in index.ts" >&2
+  exit 1
+fi
+
 # Build with bun. --format=iife wraps the bundle (including any imported
 # modules) in a single IIFE so no declarations leak onto the page's global
 # scope — important because other userscripts share the page (e.g. HW
@@ -38,6 +44,13 @@ bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=ii
 } > "$OUTPUT"
 
 rm -f "$DIST_DIR/bundle.tmp.js"
+
+# バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
+BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)
+if [[ "$BUNDLE_FIRST" != "(() => {" ]]; then
+  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk): $BUNDLE_FIRST" >&2
+  exit 1
+fi
 
 # Inject URL if provided
 if [[ -n "$INJECT_URL" ]]; then

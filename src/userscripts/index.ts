@@ -265,6 +265,9 @@ import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
     );
   }
 
+  // @run-at document-idle により、通常は readyState === "complete" で到達する。
+  // document-start 相当への変更があった場合に備えて readyState を確認し、
+  // まだ読み込み中なら DOMContentLoaded まで遅延する（安全側に倒す）。
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
       installInterceptor();
