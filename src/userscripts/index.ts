@@ -60,6 +60,10 @@ import type { SessionState } from "./session";
   // After a failed send, retry with exponential backoff (x2 per failure) so a
   // temporarily unreachable auth server does not cause a hot retry loop.
   const MAX_BACKOFF_MS = 30000;
+  // 成功時の最小送信間隔。ゲームがリクエスト毎に署名をローテーションする
+  // 場合、値が安定せず dedupe が効かないため、この間隔で連続送信を抑える
+  // （再ログイン直後の即送信は pendingChangeJson 確定パスで維持される）。
+  const MIN_SEND_INTERVAL_MS = 2000;
   // x-auth-* keys not seen for this long are pruned. A re-login changes the
   // header key set (and values); without pruning, keys from an old session
   // would be merged into the new one forever and every send would fail.
@@ -78,6 +82,7 @@ import type { SessionState } from "./session";
   const state: SessionState = {
     headersCaptured: null,
     lastSeenAt: {},
+    lastCaptureAt: 0,
     lastSentJson: null,
     lastAttemptedJson: null,
     pendingChangeJson: null,
@@ -100,6 +105,7 @@ import type { SessionState } from "./session";
     }
     state.headersCaptured[lowerName] = value;
     state.lastSeenAt[lowerName] = Date.now();
+    state.lastCaptureAt = Date.now();
   }
 
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {
@@ -109,7 +115,7 @@ import type { SessionState } from "./session";
       FETCH_TIMEOUT_MS,
     );
     if (!result.ok) {
-      log("Failed to send auth headers to server.");
+      log(`Failed to send auth headers to server (${result.reason ?? "unknown"}).`);
     } else {
       log(`Auth headers sent (Player: ${result.playerName ?? "unknown"})`);
     }
@@ -141,7 +147,10 @@ import type { SessionState } from "./session";
       (success) => {
         sending = false;
         if (success) {
-          markSendSuccess(state, decision.serialized!, POLL_INTERVAL_MS);
+          // ローテーション時の連続送信を抑えるため、成功後のバックオフは
+          // MIN_SEND_INTERVAL_MS にする（再ログイン検知は pendingChangeJson
+          // 確定パスで 500ms に戻るため、即送信は維持される）。
+          markSendSuccess(state, decision.serialized!, MIN_SEND_INTERVAL_MS);
           // 成功ログは sendHeaders 内で出力済み（Player 名入り）
         } else {
           // The send failed (stale session, server down, ...). Keep the

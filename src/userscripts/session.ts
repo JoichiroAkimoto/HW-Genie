@@ -5,6 +5,10 @@
 export interface SessionState {
   headersCaptured: Record<string, string> | null;
   lastSeenAt: Record<string, number>;
+  // 最後に必須キーのいずれかを捕捉した時刻。コヒーレント集合チェックで
+  // 「捕捉が進行中か」を判定するために使う（落ち着いた完全セットの恒久
+  // 抑止を防ぐ）。
+  lastCaptureAt: number;
   lastSentJson: string | null;
   lastAttemptedJson: string | null;
   // 再ログイン検知の確定待ち: 値が変わったとき 1 回目はここに記録し、
@@ -79,11 +83,17 @@ export function evaluateSend(
   }
   // per-key fresh チェック（now 基準）を通過しても、個別には fresh なまま
   // 新旧のキーが混ざる遷移は防げない。キー間の観測時刻差を pollInterval 以下
-  // に制限する（1 回のバーストで全キーが設定された、コヒーレントな集合のみ送信）。
+  // に制限するが、捕捉が coherentWindowMs 以内に進行中（遷移中）の場合のみ
+  // reject する。捕捉が止まっていれば「落ち着いた完全セット」とみなし送信を
+  // 許す（並行 XHR / 非同期署名計算による恒久抑止を回避）。
   const coherentWindowMs = Math.min(freshWindowMs, pollIntervalMs);
   const times = requiredKeys.map((key) => s.lastSeenAt[key] ?? 0);
-  if (Math.max(...times) - Math.min(...times) > coherentWindowMs) {
-    return { shouldSend: false, serialized: null, snapshot: null };
+  const spread = Math.max(...times) - Math.min(...times);
+  if (spread > coherentWindowMs) {
+    const transitioning = now - (s.lastCaptureAt ?? 0) < coherentWindowMs;
+    if (transitioning) {
+      return { shouldSend: false, serialized: null, snapshot: null };
+    }
   }
 
   // 既知キーのみの snapshot + キー順正規化

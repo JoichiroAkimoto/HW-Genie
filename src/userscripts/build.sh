@@ -99,6 +99,11 @@ if [[ -n "$INJECT_URL" ]]; then
     echo "ERROR: __DOWNLOAD_URL__/__UPDATE_URL__ not substituted" >&2
     exit 1
   fi
+else
+  # --inject-url なしのローカルビルド: プレースホルダが残るため警告
+  if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
+    echo "WARNING: __DOWNLOAD_URL__/__UPDATE_URL__ placeholders remain (pass --inject-url for release)" >&2
+  fi
 fi
 
 echo "Built: $OUTPUT"

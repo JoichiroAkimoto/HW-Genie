@@ -79,7 +79,15 @@ export function installXhrInterceptor(
       return originalOpen.call(this, method, url, async, username, password);
     }
 
-    if (isApi(urlString)) {
+    let isApiUrlResult: boolean;
+    try {
+      isApiUrlResult = isApi(urlString);
+    } catch {
+      // isApi コールバックの例外はゲームのリクエストを壊さないよう false 扱い
+      isApiUrlResult = false;
+    }
+
+    if (isApiUrlResult) {
       // Wrap setRequestHeader on every open unless this instance is already
       // wrapped. Resolving `this.setRequestHeader` now (not at install time)
       // keeps wrappers installed later by other userscripts (e.g. HW Goodwin)

@@ -42,6 +42,7 @@ export async function fetchNonce(
 export interface SendResult {
   ok: boolean;
   playerName: string | null;
+  reason?: "nonce-failed" | `http-${number}` | "status-error" | "network" | "timeout";
 }
 
 /**
@@ -60,7 +61,7 @@ export async function sendHeadersToServer(
 ): Promise<SendResult> {
   const nonce = await fetchNonce(baseUrl, timeoutMs, fetchImpl);
   if (!nonce) {
-    return { ok: false, playerName: null };
+    return { ok: false, playerName: null, reason: "nonce-failed" };
   }
   try {
     const res = await fetchWithTimeout(
@@ -76,14 +77,14 @@ export async function sendHeadersToServer(
     if (!res.ok) {
       // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
       await res.text();
-      return { ok: false, playerName: null };
+      return { ok: false, playerName: null, reason: `http-${res.status}` };
     }
     const data = await res.json();
-    return {
-      ok: data.status === "success",
-      playerName: data.status === "success" ? (data.player?.name ?? null) : null,
-    };
+    if (data.status === "success") {
+      return { ok: true, playerName: data.player?.name ?? null };
+    }
+    return { ok: false, playerName: null, reason: "status-error" };
   } catch {
-    return { ok: false, playerName: null };
+    return { ok: false, playerName: null, reason: "network" };
   }
 }

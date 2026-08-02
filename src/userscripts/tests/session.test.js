@@ -45,6 +45,7 @@ function fullState(now = 1000000, overrides = {}) {
   return {
     headersCaptured,
     lastSeenAt,
+    lastCaptureAt: now,
     lastSentJson: null,
     lastAttemptedJson: null,
     pendingChangeJson: null,
@@ -180,7 +181,7 @@ test("backoff 中の同一ヘッダーは送信しない", () => {
   assert.strictEqual(d3.shouldSend, true);
 });
 
-test("新旧混在: 全キーが個別には FRESH 内でも観測時刻差が大きく送信しない（コヒーレント集合）", () => {
+test("新旧混在: 捕捉が進行中（transitioning）で観測時刻差が大きい場合は送信しない", () => {
   const now = 1000000;
   const s = fullState(now);
   let i = 0;
@@ -190,8 +191,35 @@ test("新旧混在: 全キーが個別には FRESH 内でも観測時刻差が�
     s.lastSeenAt[k] = i < 4 ? now : now - 750;
     i++;
   }
+  // 捕捉進行中（lastCaptureAt が直近）
+  s.lastCaptureAt = now;
   const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d.shouldSend, false);
+});
+
+test("コヒーレント: 観測時刻差が大きくても捕捉が止まっていれば（settled）送信する", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  let i = 0;
+  for (const k of REQUIRED_KEYS) {
+    s.lastSeenAt[k] = i < 4 ? now : now - 750;
+    i++;
+  }
+  // 捕捉が止まっている（lastCaptureAt が coherent 窓より前）
+  s.lastCaptureAt = now - 2000;
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, true);
+});
+
+test("コヒーレント境界値: spread === coherentWindowMs では reject しない", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  // スプレッドが pollIntervalMs ちょうど（reject しない境界）
+  s.lastSeenAt[REQUIRED_KEYS[0]] = now;
+  s.lastSeenAt[REQUIRED_KEYS[1]] = now - POLL_MS;
+  s.lastCaptureAt = now;
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, true);
 });
 
 test("統合: beginSendAttempt により同一値のバックオフがリセットされない（P0 回帰）", () => {
