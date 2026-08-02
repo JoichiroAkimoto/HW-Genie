@@ -84,7 +84,10 @@ export async function sendHeadersToServer(
       return { ok: true, playerName: data.player?.name ?? null };
     }
     return { ok: false, playerName: null, reason: "status-error" };
-  } catch {
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      return { ok: false, playerName: null, reason: "timeout" };
+    }
     return { ok: false, playerName: null, reason: "network" };
   }
 }

@@ -85,7 +85,8 @@ import type { SessionState } from "./session";
     lastCaptureAt: 0,
     lastSentJson: null,
     lastAttemptedJson: null,
-    pendingChangeJson: null,
+    pendingIdentityJson: null,
+    lastAttemptedIdentityJson: null,
     backoffMs: POLL_INTERVAL_MS,
     lastAttemptAt: 0,
   };

@@ -99,26 +99,33 @@ test("nonce 取得失敗で false を返す", async () => {
 });
 
 test("AbortController タイムアウトで promise が settle する（ハングしない）", async () => {
-  // signal を尊重する fake fetch: abort 発火で reject する
+  // /nonce は成功、/auth がハングしてタイムアウト abort する
   const fetchImpl = async (url, init) => {
-    return new Promise((resolve, reject) => {
-      const signal = init?.signal;
-      if (signal) {
-        if (signal.aborted) {
-          reject(new DOMException("Aborted", "AbortError"));
-          return;
+    if (url.endsWith("/nonce")) {
+      return makeResponse(200, JSON.stringify({ nonce: "n1" }));
+    }
+    if (url.endsWith("/auth")) {
+      return new Promise((resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          if (signal.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
         }
-        signal.addEventListener("abort", () => {
-          reject(new DOMException("Aborted", "AbortError"));
-        });
-      }
-      // 解決しない（タイムアウト abort のみ）
-    });
+        // 解決しない（タイムアウト abort のみ）
+      });
+    }
+    throw new Error("unexpected url: " + url);
   };
   // タイムアウト 50ms で settle することを確認
   const start = Date.now();
   const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 50, fetchImpl);
   const elapsed = Date.now() - start;
   assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "timeout"); // タイムアウトは network と区別する
   assert.ok(elapsed < 2000, `expected timeout abort, took ${elapsed}ms`);
 });

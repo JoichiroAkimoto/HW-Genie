@@ -87,11 +87,11 @@ fi
 # Inject URL if provided
 if [[ -n "$INJECT_URL" ]]; then
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s@__DOWNLOAD_URL__@$INJECT_URL@g" "$OUTPUT"
-    sed -i '' "s@__UPDATE_URL__@$INJECT_URL@g" "$OUTPUT"
+    sed -i '' "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
+    sed -i '' "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
   else
-    sed -i "s@__DOWNLOAD_URL__@$INJECT_URL@g" "$OUTPUT"
-    sed -i "s@__UPDATE_URL__@$INJECT_URL@g" "$OUTPUT"
+    sed -i "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
+    sed -i "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
   fi
 
   # 未置換のプレースホルダが残っていないことを検証
