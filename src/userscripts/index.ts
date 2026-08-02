@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.3
+// @version      1.0.4
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -9,7 +9,6 @@
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
-// @run-at       document-start
 // @downloadURL  __DOWNLOAD_URL__
 // @updateURL    __UPDATE_URL__
 // ==/UserScript==
@@ -171,21 +170,8 @@
     }
   }
 
-  function collectHeaders(source: HeadersInit | Headers | undefined): void {
-    if (!source) {
-      return;
-    }
-    const headers = source instanceof Headers ? source : new Headers(source);
-    headers.forEach((value, key) => {
-      captureHeaders(key, value);
-    });
-  }
-
   function interceptXHR() {
     const originalOpen = XMLHttpRequest.prototype.open;
-    // Bound once to the prototype so re-opening the same XHR object does not
-    // stack multiple capture wrappers on top of each other.
-    const protoSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
     XMLHttpRequest.prototype.open = function (
       method: string,
@@ -208,47 +194,17 @@
         return originalOpen.call(this, method, url, async ?? true, username, password);
       }
 
+      // Capture the CURRENT setRequestHeader at open() time. Other userscripts
+      // (e.g. HW Goodwin) may wrap prototype.setRequestHeader AFTER this script
+      // installs; resolving the reference per-call (instead of capturing the
+      // prototype once at install time) lets their wrapper stay in the chain.
+      const setRequestHeaderRef = this.setRequestHeader.bind(this);
       this.setRequestHeader = function (name: string, value: string): void {
         captureHeaders(name, value);
-        protoSetRequestHeader.call(this, name, value);
+        setRequestHeaderRef(name, value);
       };
 
       return originalOpen.call(this, method, url, async ?? true, username, password);
-    };
-  }
-
-  function interceptFetch() {
-    if (typeof fetch !== "function") {
-      return;
-    }
-    const originalFetch = window.fetch.bind(window);
-
-    window.fetch = function (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ): Promise<Response> {
-      try {
-        let urlString: string;
-        if (typeof input === "string") {
-          urlString = input;
-        } else if (input instanceof URL) {
-          urlString = input.toString();
-        } else {
-          urlString = input.url;
-        }
-        if (isApiUrl(urlString)) {
-          // Effective headers = input.headers merged with init.headers (init
-          // wins for duplicate names), so collect both and let captureHeaders
-          // overwrite on duplicate names.
-          if (input instanceof Request) {
-            collectHeaders(input.headers);
-          }
-          collectHeaders(init?.headers);
-        }
-      } catch {
-        // Never let capture interfere with the game's own requests.
-      }
-      return originalFetch(input, init);
     };
   }
 
@@ -328,24 +284,24 @@
     );
   }
 
-  function installInterceptors() {
-    interceptXHR();
-    interceptFetch();
-  }
-
   function startPolling() {
     log("Starting auth capture...");
     setInterval(trySend, POLL_INTERVAL_MS);
   }
 
-  // Install the interceptors immediately (document_start equivalent): if the
-  // game bundle captures window.fetch / XHR prototypes before DOMContentLoaded,
-  // late installation would silently miss every API call. Only the polling
-  // (which does not depend on the DOM) waits for DOMContentLoaded.
-  installInterceptors();
+  // Install the XHR interceptor at DOMContentLoaded (document-idle). Running
+  // at document-start would replace XMLHttpRequest.prototype.open before other
+  // userscripts (e.g. HW Goodwin) install their own XHR wrappers, breaking
+  // their request/response hooks and hiding their UI. At document-idle the
+  // other scripts have already wrapped the prototypes, and resolving
+  // setRequestHeader per-call keeps their wrappers in the chain.
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", startPolling);
+    document.addEventListener("DOMContentLoaded", () => {
+      interceptXHR();
+      startPolling();
+    });
   } else {
+    interceptXHR();
     startPolling();
   }
 })();
