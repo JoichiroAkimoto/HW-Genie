@@ -130,6 +130,38 @@ export function beginSendAttempt(
   s.pendingChangeJson = null;
 }
 
+/**
+ * ポーリング 1 回分の「判定 + 送信準備」をまとめたオーケストレーション。
+ *
+ * evaluateSend の state 変更（pendingChangeJson / backoffMs / lastSeenAt の
+ * prune 等）は s に残るため、呼び出し側は常に s をクロージャへ反映する
+ * だけでよい。shouldSend=false（バックオフ抑止・確定待ち）でも pending
+ * ChangeJson が保持されるため、2 連続観測による再ログイン検知がポーリング
+ * 間で失われない。
+ */
+export function pollAndMaybeSend(
+  s: SessionState,
+  now: number,
+  requiredKeys: string[],
+  staleKeyTtlMs: number,
+  freshWindowMs: number,
+  pollIntervalMs: number,
+): SendDecision {
+  const decision = evaluateSend(
+    s,
+    now,
+    requiredKeys,
+    staleKeyTtlMs,
+    freshWindowMs,
+    pollIntervalMs,
+  );
+  if (!decision.shouldSend || !decision.serialized || !decision.snapshot) {
+    return decision;
+  }
+  beginSendAttempt(s, decision.serialized, now);
+  return decision;
+}
+
 /** send 成功時に呼ぶ: lastSentJson 更新とバックオフリセット。 */
 export function markSendSuccess(s: SessionState, serialized: string, pollIntervalMs: number): void {
   s.lastSentJson = serialized;

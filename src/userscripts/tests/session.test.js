@@ -12,6 +12,7 @@ import {
   evaluateSend,
   markSendFailure,
   markSendSuccess,
+  pollAndMaybeSend,
   pruneStaleKeys,
 } from "../session.ts";
 
@@ -204,6 +205,31 @@ test("統合: beginSendAttempt により同一値のバックオフがリセッ�
   // バックオフ経過後は送信される
   const d3 = evaluateSend(s, 1001000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d3.shouldSend, true);
+});
+
+test("統合: ゲート閉中に値が変化し、2 連続観測でバックオフがリセットされ送信される", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  // 初回送信
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  assert.ok(d0.serialized);
+  // 失敗でバックオフを伸ばす
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS); // backoff = 2000
+  // 再ログイン（値変更）
+  s.headersCaptured["x-auth-token"] = "tok2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + POLL_MS;
+  }
+  // 1 回目: ゲート閉 → 送信せず、確定待ちを保持
+  const d1 = pollAndMaybeSend(s, now + POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, false);
+  assert.strictEqual(s.pendingChangeJson, d1.serialized); // 保持されないと P1 バグ
+  // 2 回目: 同一値で確定 → リセット → 即送信
+  const d2 = pollAndMaybeSend(s, now + 2 * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, true);
+  assert.strictEqual(s.backoffMs, POLL_MS);
 });
 
 test("成功でバックオフがリセットされる（サーバー復旧パス）", () => {

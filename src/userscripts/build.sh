@@ -74,7 +74,7 @@ done
 
 # @run-at は document-idle でなければならない（document-start は他ユーザー
 # スクリプトと競合し、HW Goodwin の UI を壊す回帰を防ぐ）
-if ! grep -q '^// @run-at       document-idle$' <<< "$METADATA"; then
+if ! grep -qE '^// @run-at[[:space:]]+document-idle[[:space:]]*$' <<< "$METADATA"; then
   echo "ERROR: @run-at must be document-idle (document-start conflicts with other userscripts)" >&2
   exit 1
 fi

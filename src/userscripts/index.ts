@@ -33,10 +33,9 @@
 import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
 // セッション送信の状態機械も純関数モジュールに分離（詳細は session.ts）。
 import {
-  beginSendAttempt,
-  evaluateSend,
   markSendFailure,
   markSendSuccess,
+  pollAndMaybeSend,
 } from "./session";
 
 (() => {
@@ -166,9 +165,9 @@ import {
       return;
     }
     const now = Date.now();
-    // セッション状態の判定は純関数 evaluateSend に委譲（session.ts）。
-    // pruneStaleKeys / 新旧混在ガード / dedupe / バックオフ判定をテストから
-    // 直接検証できるようにするため。
+    // セッション状態の判定と送信準備は pollAndMaybeSend に委譲（session.ts）。
+    // pruneStaleKeys / 新旧混在ガード / dedupe / バックオフ判定 / 確定待ち
+    // （pendingChangeJson）をテストから直接検証できるようにするため。
     const state = {
       headersCaptured,
       lastSeenAt,
@@ -178,7 +177,7 @@ import {
       backoffMs,
       lastAttemptAt,
     };
-    const decision = evaluateSend(
+    const decision = pollAndMaybeSend(
       state,
       now,
       REQUIRED_HEADER_KEYS,
@@ -186,20 +185,19 @@ import {
       FRESH_WINDOW_MS,
       POLL_INTERVAL_MS,
     );
-    if (!decision.shouldSend || !decision.snapshot || !decision.serialized) {
-      return;
-    }
-    // 送信試行の開始を記録（lastAttemptedJson / lastAttemptAt）。
-    // これにより再ログイン検知（値変化でバックオフリセット）と
-    // 同一値の再送抑止が正しく機能する。
-    beginSendAttempt(state, decision.serialized, now);
-    // state の変更をクロージャ変数へ反映する。
+    // pollAndMaybeSend は state を破壊的に更新する（prune / pendingChangeJson /
+    // backoffMs / lastAttemptedJson / lastAttemptAt）。shouldSend=false でも
+    // 確定待ちやバックオフがポーリング間で失われないよう、必ずクロージャへ
+    // 反映する。
     headersCaptured = state.headersCaptured;
     lastSeenAt = state.lastSeenAt;
     lastAttemptedJson = state.lastAttemptedJson;
     pendingChangeJson = state.pendingChangeJson;
     backoffMs = state.backoffMs;
     lastAttemptAt = state.lastAttemptAt;
+    if (!decision.shouldSend || !decision.snapshot || !decision.serialized) {
+      return;
+    }
     sending = true;
 
     sendHeaders(decision.snapshot).then(
