@@ -29,7 +29,10 @@ fi
 
 echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
 code=0
-uv run --locked hw-genie multi full "$@" 2>&1 | tee -a "$LOG_FILE" || code=$?
+# 端末直結実行時のみカラーを有効化（tee パイプで TTY 判定が false になるため FORCE_COLOR で強制）。
+# ログには ANSI コードを除去したプレーンな出力を保存する（BSD sed は \x1b 非対応のため perl を使用）。
+if [ -t 1 ]; then export FORCE_COLOR=1; fi
+uv run --locked hw-genie multi full "$@" 2>&1 | tee >(perl -pe 's/\e\[[0-9;]*m//g' >> "$LOG_FILE") || code=$?
 echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
 echo "Log saved to $LOG_FILE"
 exit $code

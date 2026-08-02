@@ -21,11 +21,15 @@ def supports_color(stream=None) -> bool:
 
     Disabled when the stream is not a TTY (e.g. piped into hwda logs), when
     ``NO_COLOR`` is set (industry convention), or when ``TERM=dumb``.
+    ``FORCE_COLOR`` overrides the TTY check (opt-in for piped output, e.g.
+    hwda/hwsa) but loses to ``NO_COLOR``.
     """
     if stream is None:
         stream = sys.stdout
     if os.environ.get("NO_COLOR"):
         return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
     if os.environ.get("TERM") == "dumb":
         return False
     try:
