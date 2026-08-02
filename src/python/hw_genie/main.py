@@ -98,8 +98,11 @@ def cmd_auth(args):
         from hw_genie.core.utils import (
             display_timezone_name,
             display_width,
+            energy_over_cap,
             format_timestamp_for_display,
             pad,
+            rank_color,
+            style,
             terminal_columns,
             wrap_display,
         )
@@ -141,6 +144,7 @@ def cmd_auth(args):
                     [str(p_name), str(p_arena), str(p_grand), str(p_gold),
                      str(p_gems), str(p_last_id), str(p_energy), updated_short],
                     data.get("memo", "-"),
+                    player,
                 )
             )
 
@@ -149,7 +153,7 @@ def cmd_auth(args):
         fixed_widths = [
             max(
                 display_width(header),
-                *(display_width(cells[i]) for cells, _ in row_data),
+                *(display_width(cells[i]) for cells, _, _ in row_data),
             )
             for i, header in enumerate(fixed_headers)
         ]
@@ -162,22 +166,52 @@ def cmd_auth(args):
         )
 
         rows = [
-            cells + wrap_display(memo, memo_width) for cells, memo in row_data
+            (cells, wrap_display(memo, memo_width), player)
+            for cells, memo, player in row_data
         ]
+
+        rank_keys = {
+            fixed_headers.index("Arena"): "arena_rank",
+            fixed_headers.index("GA"): "grand_rank",
+        }
+        energy_col = fixed_headers.index("Energy")
 
         header_cells = fixed_headers + ["Memo"]
         header_widths = fixed_widths + [memo_width]
-        header = " | ".join(pad(h, w) for h, w in zip(header_cells, header_widths))
+        # パディング済みのプレーン文字列に後付けで色を付ける（幅計算に影響させない）
+        header = " | ".join(
+            style(pad(h, w), bold=True, fg="cyan")
+            for h, w in zip(header_cells, header_widths)
+        )
         print("\n" + header)
-        print("-" * display_width(header))
-        for cells in rows:
-            fixed_cells = cells[: len(fixed_widths)]
-            # wrap_display は常に 1 行以上を返す
-            memo_lines = cells[len(fixed_widths):]
+        print(style("-" * display_width(header), dim=True))
+        for fixed_cells, memo_lines, player in rows:
             for i, memo_line in enumerate(memo_lines):
                 left = fixed_cells if i == 0 else [""] * len(fixed_cells)
-                line_cells = left + [memo_line]
-                print(" | ".join(pad(c, w) for c, w in zip(line_cells, header_widths)))
+                styled = []
+                for j, (cell, w) in enumerate(zip(left, fixed_widths)):
+                    padded = pad(cell, w)
+                    if i > 0:
+                        # 継続行の固定列は空なのでスタイル不要
+                        styled.append(padded)
+                        continue
+                    if j == 0:
+                        styled.append(style(padded, bold=True))
+                    elif j in rank_keys:
+                        styled.append(style(padded, fg=rank_color(player.get(rank_keys[j]))))
+                    elif j == energy_col:
+                        if energy_over_cap(player.get("level"), player.get("energy")):
+                            styled.append(style(padded, fg="red"))
+                        else:
+                            styled.append(padded)
+                    else:
+                        styled.append(padded)
+                memo_padded = pad(memo_line, memo_width)
+                if i > 0:
+                    # 継続行は本体行との区別のため薄くする
+                    memo_padded = style(memo_padded, dim=True)
+                styled.append(memo_padded)
+                print(" | ".join(styled))
         print()
         return
 

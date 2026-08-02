@@ -19,7 +19,7 @@ from typing import Callable, Iterable, Sequence
 
 from hw_genie.core.client import HWClient, load_session_headers
 from hw_genie.core.session_manager import SessionManager
-from hw_genie.core.utils import display_width, pad
+from hw_genie.core.utils import display_width, pad, rank_color, style
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,22 @@ _display_width = display_width
 _pad = pad
 
 
+def _energy_over_max(cell: str) -> bool:
+    """True when an ``E / MAX`` energy cell shows energy above the cap."""
+    import re
+
+    m = re.match(r"(\d+)\s*/\s*(\d+)", cell)
+    return bool(m) and int(m.group(1)) > int(m.group(2))
+
+
+def _cell_int(cell: str) -> int | None:
+    """Parse an int cell; None for placeholder cells like ``-``."""
+    try:
+        return int(cell)
+    except ValueError:
+        return None
+
+
 def _render_summary_table(rows: list[list[str]]) -> str:
     """Render the per-account table with widths derived from the actual content."""
     headers = _SUMMARY_HEADERS
@@ -210,14 +226,28 @@ def _render_summary_table(rows: list[list[str]]) -> str:
         max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
         for i in range(len(headers))
     ]
-    header_line = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
-    rule_width = _display_width(header_line)
-    body_lines = [
-        " | ".join(_pad(cell, widths[i]) for i, cell in enumerate(row))
-        for row in rows
-    ]
-    sep = "=" * rule_width
-    return "\n".join([sep, header_line, "-" * rule_width, *body_lines, sep])
+    # 幅計算はプレーン文字列で行い、パディング後にスタイルを後付けする
+    plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
+    rule_width = _display_width(plain_header)
+    header_line = style(plain_header, bold=True, fg="cyan")
+    body_lines = []
+    for row in rows:
+        cells = []
+        for i, cell in enumerate(row):
+            padded = _pad(cell, widths[i])
+            if i == 0:
+                padded = style(padded, bold=True)
+            elif i == 1:
+                padded = (
+                    style(padded, fg="red") if _energy_over_max(cell) else padded
+                )
+            elif i in (2, 3):
+                padded = style(padded, fg=rank_color(_cell_int(cell)))
+            cells.append(padded)
+        body_lines.append(" | ".join(cells))
+    sep = style("=" * rule_width, dim=True)
+    rule = style("-" * rule_width, dim=True)
+    return "\n".join([sep, header_line, rule, *body_lines, sep])
 
 
 def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | None]]]) -> int:

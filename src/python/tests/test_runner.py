@@ -544,6 +544,27 @@ def test_render_summary_table_is_display_aligned_with_emoji():
     assert _display_width(header) > len(header)
 
 
+def test_render_summary_table_colors_when_supported(monkeypatch):
+    """TTY ではヘッダー・アカウント・順位・エネルギー超過が色付けされる。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([
+        ["Alice", "76/190", "1", "8", "900.8M", "570.1K"],
+        ["Test Account", "200/190", "53", "3", "2.3B", "180.2K"],
+    ])
+    assert "\033[1;36m" in table  # ヘッダー
+    assert "\033[1m" in table  # アカウント名太字
+    assert "\033[33m" in table  # Arena 1位 = 金
+    assert "\033[32m" in table  # GA 3位 = 緑
+    assert "\033[31m" in table  # Energy 200/190 超過 = 赤
+
+
+def test_render_summary_table_no_red_when_energy_within_cap(monkeypatch):
+    """上限内の Energy は赤にならない。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([["Alice", "76/190", "11", "17", "900.8M", "570.1K"]])
+    assert "\033[31m" not in table
+
+
 def test_format_timestamp_for_display_respects_hwgenie_tz(monkeypatch):
     """Stored UTC timestamps are converted to HWGENIE_TZ for display (UX fix)."""
     from hw_genie.core.utils import format_timestamp_for_display

@@ -1,10 +1,80 @@
 import os
 import shutil
+import sys
 import unicodedata
 
 from datetime import datetime, timezone
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+# ANSI SGR 基本色（旧端末でも安全な 8 色のみ使用）
+_FG_CODES = {
+    "red": 31,
+    "green": 32,
+    "yellow": 33,
+    "cyan": 36,
+}
+
+
+def supports_color(stream=None) -> bool:
+    """Whether ANSI color codes should be emitted for ``stream`` (default stdout).
+
+    Disabled when the stream is not a TTY (e.g. piped into hwda logs), when
+    ``NO_COLOR`` is set (industry convention), or when ``TERM=dumb``.
+    """
+    if stream is None:
+        stream = sys.stdout
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def style(text: str, *, bold: bool = False, dim: bool = False, fg: str | None = None) -> str:
+    """Wrap ``text`` in ANSI SGR codes, composing all flags into one sequence.
+
+    Returns ``text`` unchanged when color is disabled, so callers can apply
+    styling unconditionally. Style the PADDED plain string (as the renderers
+    do) so the width helpers never see escape codes.
+    """
+    if not supports_color():
+        return text
+    codes = []
+    if bold:
+        codes.append("1")
+    if dim:
+        codes.append("2")
+    if fg:
+        codes.append(str(_FG_CODES[fg]))
+    if not codes:
+        return text
+    return f"\033[{';'.join(codes)}m{text}\033[0m"
+
+
+def rank_color(rank: int | None) -> str | None:
+    """Color for an arena/GA rank: 1 → gold(yellow), 2-14 → green, else None."""
+    if isinstance(rank, int) and rank > 0:
+        if rank == 1:
+            return "yellow"
+        if rank <= 14:
+            return "green"
+    return None
+
+
+def energy_over_cap(level: int | None, energy: int | None) -> bool:
+    """True when ``energy`` exceeds the auto-regen cap (``level + 60``).
+
+    Auto-recovery stops once energy is above the cap, so this is a "stuck"
+    state worth highlighting red. Mirrors ``PlayerStatus.max_energy``.
+    Unknown level/energy → False.
+    """
+    if level is None or energy is None:
+        return False
+    return energy > int(level) + 60
 
 
 def format_number_with_suffix(num: int) -> str:

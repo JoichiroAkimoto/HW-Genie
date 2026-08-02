@@ -453,3 +453,39 @@ def test_cmd_auth_list_columns_are_content_driven(capsys, monkeypatch):
     # 長い名前は省略されず全文表示され、Name 列が内容に合わせて伸びる
     assert "AQuiteLongAccountName" in long
     assert long.splitlines()[1].index(" | ") >= 20
+
+
+def test_cmd_auth_list_plain_when_not_tty(capsys):
+    """非 TTY（パイプ・ログ）では ANSI コードが出力されない。"""
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 5000, "arena_rank": 1}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+    assert "\033[" not in capsys.readouterr().out
+
+
+def test_cmd_auth_list_colors_when_supported(capsys, monkeypatch):
+    """TTY ではヘッダー・名前・順位・エネルギー超過が意味別に色付けされる。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 5000, "arena_rank": 1, "grand_rank": 5}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "\033[1;36m" in out  # ヘッダー太字+シアン
+    assert "\033[1m" in out  # 名前太字
+    assert "\033[33m" in out  # Arena 1位 = 金
+    assert "\033[32m" in out  # GA 5位 = 緑
+    assert "\033[31m" in out  # Energy 5000 > 上限 190 = 赤
+
+
+def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
+    """上限以下の Energy は赤にならない（低スタミナは無色）。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "\033[31m" not in out
+    assert "\033[32m" in out  # Arena 2位 = 緑 は付く

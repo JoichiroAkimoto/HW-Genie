@@ -4,9 +4,13 @@ import shutil
 import pytest
 from hw_genie.core.utils import (
     display_width,
+    energy_over_cap,
     format_number_with_suffix,
     pad,
     print_player_status,
+    rank_color,
+    style,
+    supports_color,
     terminal_columns,
     wrap_display,
 )
@@ -140,3 +144,64 @@ def test_terminal_columns_fallback_on_error(monkeypatch):
     monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setattr(shutil, "get_terminal_size", lambda size=(80, 24): (_ for _ in ()).throw(OSError()))
     assert terminal_columns(fallback=100) == 100
+
+
+class _FakeStream:
+    def __init__(self, isatty_value):
+        self._isatty = isatty_value
+
+    def isatty(self):
+        return self._isatty
+
+
+def test_supports_color_requires_tty(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+    assert not supports_color(_FakeStream(False))
+    assert supports_color(_FakeStream(True))
+
+
+def test_supports_color_disabled_by_no_color(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not supports_color(_FakeStream(True))
+
+
+def test_supports_color_disabled_by_dumb_term(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "dumb")
+    assert not supports_color(_FakeStream(True))
+
+
+def test_style_is_noop_when_color_disabled(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert style("abc", bold=True, fg="cyan") == "abc"
+
+
+def test_style_composes_codes(monkeypatch):
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    assert style("abc", bold=True, fg="cyan") == "\033[1;36mabc\033[0m"
+    assert style("abc", dim=True) == "\033[2mabc\033[0m"
+    assert style("abc") == "abc"
+
+
+@pytest.mark.parametrize("rank, expected", [
+    (1, "yellow"),
+    (2, "green"),
+    (14, "green"),
+    (15, None),
+    (0, None),
+    (None, None),
+])
+def test_rank_color(rank, expected):
+    assert rank_color(rank) == expected
+
+
+@pytest.mark.parametrize("level, energy, expected", [
+    (130, 190, False),   # 上限ちょうどは赤ではない
+    (130, 191, True),    # 上限超過（自動回復停止）で赤
+    (130, 39, False),    # 低スタミナは色付けなし
+    (None, 500, False),  # レベル不明は判定不能
+    (130, None, False),
+])
+def test_energy_over_cap(level, energy, expected):
+    assert energy_over_cap(level, energy) == expected
