@@ -58,10 +58,9 @@ jobs:
         id: release
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
-          # 既存ユーザー（v1.0.3 以前）の移行案内をリリースノートに含める。
           # $'...' で改行を明示し、YAML 折り返しでノートが崩れないようにする。
           # ${{ }} は YAML 補間で先に置換済み。
-          NOTES=$'Userscript release v${{ steps.version.outputs.version }}\n\n## 移行案内（v1.0.3 以前から更新するユーザー）\n自動更新を有効化するため再インストールが必要です:\nhttps://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js'
+          NOTES=$'Userscript release v${{ steps.version.outputs.version }}\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。'
 
           # Check if release exists
           if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
