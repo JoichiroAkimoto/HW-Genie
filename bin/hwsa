@@ -29,7 +29,15 @@ fi
 
 echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
 code=0
-uv run --locked hw-genie multi full "$@" 2>&1 | tee -a "$LOG_FILE" || code=$?
-echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
+# 端末直結実行時のみカラーを有効化（tee パイプで TTY 判定が false になるため FORCE_COLOR で強制）。
+# 未設定時のみ設定し、ユーザーの明示的な FORCE_COLOR=0 / 空文字は尊重する（NO_COLOR は Python 側が優先）。
+# ログには ANSI コードを除去したプレーンな出力を保存する（BSD sed は \x1b 非対応のため perl を使用）。
+# パイプラインの終了コード伝播は冒頭の `set -euo pipefail` により有効: 左側の異常終了は
+# tee の成功で隠蔽されず `|| code=$?` に正しく捕捉される。
+# Finished 行は同じパイプラインに通し、perl の出力順を保証する（process substitution は
+# 非同期のため、別途 tee -a で追記すると順序競合が起こる）。
+if [ -t 1 ] && [ -z "${FORCE_COLOR+x}" ]; then export FORCE_COLOR=1; fi
+(uv run --locked hw-genie multi full "$@" 2>&1; rc=$?; echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="; exit $rc) \
+  | tee >(perl -pe 'BEGIN{$|=1} s/\e\[[0-9;]*m//g' >> "$LOG_FILE") || code=$?
 echo "Log saved to $LOG_FILE"
 exit $code
