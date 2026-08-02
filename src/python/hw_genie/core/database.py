@@ -27,6 +27,52 @@ _WAL_CONTENTION_MARKERS = (
     "database is locked",
 )
 
+# Substrings that identify a dead/closed Turso Hrana stream (the libsql client
+# emits several variants: HTTP 404 "stream not found", server-initiated stream
+# close, closed/broken HTTP connection). All are resolved by opening a fresh
+# connection, so they are retried like WAL contention. Matches are
+# case-insensitive on the lowercased message; keep markers lowercase.
+_HRANA_STREAM_MARKERS = (
+    # Hrana v1/v2 HTTP API: stream unknown to the server (long-idle death)
+    "stream not found",
+    "client stream has been closed by the server",
+    "unexpected empty response from server",
+    "unexpected multiple responses from server",
+    "stream closed",
+    "streamclosed",  # HranaError::StreamClosed variant (e.g. "StreamClosed")
+    "baton not found",
+    "connection closed because of a broken pipe",
+    # HTTP/2 connection death that takes the Hrana stream down with it
+    # (extracted from the libsql client's own message strings)
+    "connection was not ready",
+    "connection keep-alive timed out",
+    "connection closed",
+    "no result has been returned",
+    "connection error protocol_error",
+    "stream error protocol_error",
+)
+
+
+def is_hrana_stream_error(exc: BaseException) -> bool:
+    """True when ``exc`` indicates a dead/closed Turso Hrana stream.
+
+    A stream that died while idle cannot be revived in place: the pooled
+    connection must be discarded so the next checkout opens a fresh stream.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _HRANA_STREAM_MARKERS)
+
+
+def is_transient_db_error(exc: BaseException) -> bool:
+    """True when ``exc`` is a transient DB error worth retrying.
+
+    Covers SQLite WAL single-writer contention (``wal_insert_begin failed`` /
+    ``database is locked``) and Turso Hrana stream death (``stream not
+    found`` / server-initiated closes). Both are resolved by re-opening a
+    fresh connection.
+    """
+    return is_wal_contention(exc) or is_hrana_stream_error(exc)
+
 
 def is_wal_contention(exc: BaseException) -> bool:
     """True when ``exc`` indicates SQLite WAL single-writer contention."""
@@ -41,13 +87,17 @@ def retry_on_wal_contention(
     base_delay: float = 0.2,
     logger: logging.Logger | None = None,
 ):
-    """Call ``fn`` (no args), retrying transient WAL-contention errors.
+    """Call ``fn`` (no args), retrying transient DB errors with backoff.
 
-    Backoff is ``base_delay * 2 ** (attempt - 1)`` between attempts, with
-    random jitter (0.5x-1.5x) so multiple processes sharing the replica do not
-    retry in lockstep and re-collide. Non-WAL exceptions propagate immediately;
-    the last exception is re-raised when all attempts are exhausted. Returns
-    ``fn()``'s value on success.
+    NOTE: the name is historical — this helper no longer retries only WAL
+    contention. It retries any transient DB error: WAL single-writer
+    contention (``wal_insert_begin failed`` / ``database is locked``) and
+    Turso Hrana stream death (``stream not found`` / server-initiated
+    closes). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
+    jitter (0.5x-1.5x) so multiple processes sharing the replica do not
+    retry in lockstep and re-collide. Non-transient exceptions propagate
+    immediately; the last exception is re-raised when all attempts are
+    exhausted. Returns ``fn()``'s value on success.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
@@ -55,17 +105,22 @@ def retry_on_wal_contention(
         try:
             return fn()
         except Exception as exc:
-            if not is_wal_contention(exc) or attempt == attempts:
+            if not is_transient_db_error(exc) or attempt == attempts:
                 raise
             if logger is not None:
                 logger.warning(
-                    "DB WAL contention (attempt %d/%d): %s",
+                    "DB transient error (attempt %d/%d): %s",
                     attempt,
                     attempts,
                     exc,
                 )
             jittered = base_delay * (2 ** (attempt - 1)) * random.uniform(0.5, 1.5)
             time.sleep(jittered)
+
+
+# Backwards-compatible alias for the historical name (the helper now retries
+# any transient DB error, not just WAL contention).
+retry_on_transient_db_error = retry_on_wal_contention
 
 # Reentrant lock serialising every operation that WRITES frames into the
 # shared local replica WAL: the on-connect ``sync()`` (see

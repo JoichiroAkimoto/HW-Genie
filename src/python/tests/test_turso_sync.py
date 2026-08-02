@@ -781,6 +781,94 @@ def test_is_wal_contention_markers():
     assert not is_wal_contention(ValueError("no such table: accounts"))
 
 
+def test_is_transient_db_error_includes_hrana_stream():
+    """Hrana ストリーム切断（stream not found）は再試行対象として判定される。"""
+    from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
+
+    assert is_transient_db_error(ValueError("stream not found: 49580f7d:ad779"))
+    assert is_transient_db_error(ValueError("wal_insert_begin failed"))
+    assert is_transient_db_error(ValueError("database is locked"))
+    assert not is_transient_db_error(RuntimeError("connection refused"))
+    assert not is_transient_db_error(ValueError("no such table: accounts"))
+    # Hrana 判定は WAL 競合を包含しない（dispose ゲート用）
+    assert is_hrana_stream_error(ValueError("stream not found: 49580f7d:ad779"))
+    assert not is_hrana_stream_error(ValueError("wal_insert_begin failed"))
+    assert not is_hrana_stream_error(ValueError("database is locked"))
+
+
+def test_is_transient_db_error_hrana_variants():
+    """実サーバーが返しうる Hrana 切断系の全形式を捕捉する。"""
+    from hw_genie.core.database import is_transient_db_error
+
+    variants = [
+        'Hrana: api error: status=404 Not Found, body={"error":"stream not found: 49580f7d:ad779"}',
+        "client stream has been closed by the server",
+        "Unexpected empty response from server: ...",
+        "Unexpected multiple responses from server: ...",
+        "StreamClosed",
+        "stream closed",
+        "baton not found - skipping finalize for stream 49580f7d",
+        "connection closed because of a broken pipe",
+        "connection error PROTOCOL_ERROR -- recv_data: stream not found; id=7",
+    ]
+    for v in variants:
+        assert is_transient_db_error(ValueError(v)), v
+
+
+def test_is_hrana_stream_error_covers_real_client_strings():
+    """libsql クライアントが送出しうる切断系メッセージを捕捉する。"""
+    from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
+
+    for v in [
+        "connection was not ready",
+        "connection keep-alive timed out",
+        "connection closed",
+        "connection error PROTOCOL_ERROR -- recv_headers: trailers frame was not EOS",
+        "stream error PROTOCOL_ERROR -- recv_headers: trailers frame was not EOS",
+        "no result has been returned",
+    ]:
+        assert is_transient_db_error(ValueError(v)), v
+        assert is_hrana_stream_error(ValueError(v)), v
+
+
+def test_retry_on_transient_db_error_alias(mock_sleep):
+    """retry_on_transient_db_error は retry_on_wal_contention のエイリアスとして動作する。"""
+    from hw_genie.core.database import (
+        retry_on_transient_db_error,
+        retry_on_wal_contention,
+    )
+
+    assert retry_on_transient_db_error is retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ValueError("stream not found: x:y")
+        return "ok"
+
+    assert retry_on_transient_db_error(flaky, attempts=3) == "ok"
+    assert calls["n"] == 2
+
+
+def test_retry_on_wal_contention_recovers_from_hrana_stream(mock_sleep):
+    """Hrana ストリーム切断でも再試行で成功する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("stream not found: 49580f7d:ad779")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+
 def test_retry_on_wal_contention_recovers(mock_sleep):
     """WAL 競合で一時失敗しても再試行で成功する。"""
     from hw_genie.core.database import retry_on_wal_contention

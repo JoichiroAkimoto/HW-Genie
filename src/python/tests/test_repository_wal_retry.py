@@ -26,6 +26,11 @@ def test_update_config_retries_wal_contention(monkeypatch, mock_sleep):
             return session
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module,
+        "get_write_engine",
+        lambda: type("E", (), {"pool": type("P", (), {"dispose": lambda self: None})()})(),
+    )
 
     repo_module.SessionRepository().update_config(
         "wal_retry_alias", {"player": {"id": "player-1", "name": "RetryTest"}}
@@ -53,6 +58,11 @@ def test_update_config_raises_when_wal_contention_persists(monkeypatch, mock_sle
             return session
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module,
+        "get_write_engine",
+        lambda: type("E", (), {"pool": type("P", (), {"dispose": lambda self: None})()})(),
+    )
 
     with pytest.raises(ValueError, match="wal_insert_begin failed"):
         repo_module.SessionRepository().update_config(
@@ -60,3 +70,247 @@ def test_update_config_raises_when_wal_contention_persists(monkeypatch, mock_sle
         )
     # attempts=5 のうち 4 回バックオフ待ちする
     assert mock_sleep.call_count == 4
+
+
+def test_update_config_retries_hrana_stream_and_disposes_pool(monkeypatch, mock_sleep):
+    """Hrana ストリーム切断でも再試行し、プールを dispose して新規接続を張る。"""
+    attempts = {"n": 0}
+    real_sm = get_session_local()
+    disposed = {"count": 0}
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+            orig_commit = session.commit
+
+            def commit():
+                if attempts["n"] == 0:
+                    attempts["n"] += 1
+                    raise ValueError("stream not found: 49580f7d:ad779")
+                return orig_commit()
+
+            session.commit = commit
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module, "get_write_engine", lambda: FakeEngine()
+    )
+
+    repo_module.SessionRepository().update_config(
+        "hrana_retry_alias", {"player": {"id": "player-3", "name": "HranaRetry"}}
+    )
+
+    assert attempts["n"] == 1
+    assert disposed["count"] == 1
+    with get_session_local()() as db:
+        rec = db.query(Account).filter(Account.alias == "hrana_retry_alias").first()
+        assert rec is not None
+        assert rec.player_name == "HranaRetry"
+
+
+def test_update_config_does_not_dispose_on_validation_error(monkeypatch, mock_sleep):
+    """非一時的エラー（バリデーション失敗）ではプールを dispose しない。"""
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class ValidationErrorFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+
+            def commit():
+                raise ValueError("player_id is required for new account alias")
+
+            session.commit = commit
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(
+        repo_module, "get_write_session_local", lambda: ValidationErrorFactory()
+    )
+    monkeypatch.setattr(
+        repo_module, "get_write_engine", lambda: FakeEngine()
+    )
+
+    with pytest.raises(ValueError, match="player_id is required"):
+        repo_module.SessionRepository().update_config(
+            "no_dispose_alias", {"player": {"name": "NoId"}}
+        )
+    assert disposed["count"] == 0
+
+
+def test_update_config_does_not_dispose_on_wal_contention(monkeypatch, mock_sleep):
+    """WAL 競合はコネクション健全のため dispose しない（再 sync で競合を増幅させない）。"""
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+
+            def commit():
+                raise ValueError("wal_insert_begin failed")
+
+            session.commit = commit
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(repo_module, "get_write_engine", lambda: FakeEngine())
+
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        repo_module.SessionRepository().update_config(
+            "wal_no_dispose_alias", {"player": {"id": "p", "name": "N"}}
+        )
+    assert disposed["count"] == 0
+
+
+def test_update_config_dispose_failure_does_not_mask_original(monkeypatch, mock_sleep):
+    """dispose 自体が失敗しても元の例外（stream not found）をマスクしない。"""
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+
+            def commit():
+                raise ValueError("stream not found: 49580f7d:ad779")
+
+            session.commit = commit
+            return session
+
+    class ExplodingPool:
+        def dispose(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module, "get_write_engine", lambda: type("E", (), {"pool": ExplodingPool()})()
+    )
+
+    with pytest.raises(ValueError, match="stream not found"):
+        repo_module.SessionRepository().update_config(
+            "mask_alias", {"player": {"id": "p", "name": "M"}}
+        )
+
+
+def test_list_accounts_retries_hrana_stream_and_disposes_read_pool(monkeypatch, mock_sleep):
+    """READ パス（list_accounts）も Hrana ストリーム切断で再試行し read プールを dispose する。"""
+    attempts = {"n": 0}
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+            orig_execute = session.execute
+
+            def execute(*a, **kw):
+                if attempts["n"] == 0:
+                    attempts["n"] += 1
+                    raise ValueError("stream not found: 49580f7d:ad779")
+                return orig_execute(*a, **kw)
+
+            session.execute = execute
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(repo_module, "get_engine", lambda: FakeEngine())
+
+    result = repo_module.SessionRepository().list_accounts()
+
+    assert attempts["n"] == 1
+    assert disposed["count"] == 1
+    assert isinstance(result, list)
+
+
+def test_get_data_retries_hrana_stream_and_disposes_read_pool(monkeypatch, mock_sleep):
+    """READ パス（get_data）も Hrana ストリーム切断で再試行し read プールを dispose する。"""
+    attempts = {"n": 0}
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+            orig_execute = session.execute
+
+            def execute(*a, **kw):
+                if attempts["n"] == 0:
+                    attempts["n"] += 1
+                    raise ValueError("stream not found: 49580f7d:ad779")
+                return orig_execute(*a, **kw)
+
+            session.execute = execute
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(repo_module, "get_engine", lambda: FakeEngine())
+
+    repo_module.SessionRepository().get_data("some_alias")
+
+    assert attempts["n"] == 1
+    assert disposed["count"] == 1
+
+
+def test_list_accounts_does_not_dispose_on_wal_contention(monkeypatch, mock_sleep):
+    """READ パスの WAL 競合では dispose しない。"""
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+
+            def execute(*a, **kw):
+                raise ValueError("wal_insert_begin failed")
+
+            session.execute = execute
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(repo_module, "get_engine", lambda: FakeEngine())
+
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        repo_module.SessionRepository().list_accounts()
+    assert disposed["count"] == 0
