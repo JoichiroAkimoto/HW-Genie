@@ -1,8 +1,6 @@
 name: Release Build
 
-# "on" をダブルクォートで囲む（YAML 1.1 では on が boolean として解釈される
-# 問題があり、タグ以外の push でも誤ってトリガーされることがあるため）
-"on":
+on:
   push:
     tags:
       - 'v*'
@@ -53,8 +51,8 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/hw-genie-auth-capture.user.js"
-          UPDATE_URL="https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js"
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/hw-genie-auth-capture.user.js"
+          UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/hw-genie-auth-capture.user.js"
           bash ./build.sh --inject-download-url "$DOWNLOAD_URL" --inject-update-url "$UPDATE_URL"
         working-directory: src/userscripts
 
@@ -69,7 +67,7 @@ jobs:
           NOTES=$(printf 'Userscript release v%s\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。' "$VERSION")
 
           # Check if release exists
-          if gh release view "v${VERSION}" --repo "${{ github.repository }}" 2>/dev/null; then
+          if gh release view "v${VERSION}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null; then
             echo "Release exists, uploading asset and updating notes..."
             gh release upload "v${VERSION}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
             gh release edit "v${VERSION}" --notes "$NOTES"
@@ -86,4 +84,4 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "v${VERSION}" --repo "${{ github.repository }}" --json name,url,assets
+          gh release view "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --json name,url,assets
