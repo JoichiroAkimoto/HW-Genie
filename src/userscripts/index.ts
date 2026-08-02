@@ -81,6 +81,8 @@ import {
   // Used to detect that the headers actually changed (re-login) and reset the
   // backoff, without conflating "changed" with "never sent yet".
   let lastAttemptedJson: string | null = null;
+  // 再ログイン検知の確定待ち（session.ts の pendingChangeJson に対応）
+  let pendingChangeJson: string | null = null;
   let sending = false;
   let backoffMs = POLL_INTERVAL_MS;
   let lastAttemptAt = 0;
@@ -172,6 +174,7 @@ import {
       lastSeenAt,
       lastSentJson,
       lastAttemptedJson,
+      pendingChangeJson,
       backoffMs,
       lastAttemptAt,
     };
@@ -194,6 +197,7 @@ import {
     headersCaptured = state.headersCaptured;
     lastSeenAt = state.lastSeenAt;
     lastAttemptedJson = state.lastAttemptedJson;
+    pendingChangeJson = state.pendingChangeJson;
     backoffMs = state.backoffMs;
     lastAttemptAt = state.lastAttemptAt;
     sending = true;
@@ -205,7 +209,7 @@ import {
           markSendSuccess(state, decision.serialized!, POLL_INTERVAL_MS);
           lastSentJson = state.lastSentJson;
           backoffMs = state.backoffMs;
-          log("Auth capture complete.");
+          // 成功ログは sendHeaders 内で出力済み（Player 名入り）
         } else {
           // The send failed (stale session, server down, ...). Keep the
           // backoff growing so we do not spam the server, but still retry; a

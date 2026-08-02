@@ -7,6 +7,11 @@ export interface SessionState {
   lastSeenAt: Record<string, number>;
   lastSentJson: string | null;
   lastAttemptedJson: string | null;
+  // 再ログイン検知の確定待ち: 値が変わったとき 1 回目はここに記録し、
+  // 2 連続ポーリングで同じ新値が観測された場合のみバックオフをリセットする。
+  // ゲームがリクエスト毎に署名をローテーションする場合など、毎回値が変わる
+  // ケースでホットリトライに戻るのを防ぐ。
+  pendingChangeJson: string | null;
   backoffMs: number;
   lastAttemptAt: number;
 }
@@ -90,9 +95,22 @@ export function evaluateSend(
     return { shouldSend: false, serialized, snapshot };
   }
 
-  // ヘッダーが前回試行と変わったらバックオフをリセット（再ログイン検知）
+  // ヘッダー変化の検知（再ログイン）: 同じ新値が 2 連続ポーリングで観測
+  // された場合のみバックオフをリセットする。リクエスト毎に署名を
+  // ローテーションするゲーム実装でも、毎回変化する値でバックオフが
+  // リセットされ続けてホットリトライに戻るのを防ぐ。
   if (serialized !== s.lastAttemptedJson) {
-    s.backoffMs = pollIntervalMs;
+    if (s.pendingChangeJson === serialized) {
+      // 同一の新値が 2 連続観測 → 本物の変化（再ログイン等）
+      s.backoffMs = pollIntervalMs;
+      s.pendingChangeJson = null;
+    } else {
+      // 1 回目の観測: 確定待ち
+      s.pendingChangeJson = serialized;
+    }
+  } else {
+    // 前回試行と同一 → 変化なし
+    s.pendingChangeJson = null;
   }
   if (now - s.lastAttemptAt < s.backoffMs) {
     return { shouldSend: false, serialized, snapshot };
@@ -109,6 +127,7 @@ export function beginSendAttempt(
 ): void {
   s.lastAttemptedJson = serialized;
   s.lastAttemptAt = now;
+  s.pendingChangeJson = null;
 }
 
 /** send 成功時に呼ぶ: lastSentJson 更新とバックオフリセット。 */

@@ -53,7 +53,7 @@ dedupe、再ログインのバックオフリセット、バックオフ上限�
   - 既知の懸念: HW Goodwin が open 内でインスタンス own setRequestHeader を
     毎回張る実装の場合、document-idle 構成では genie が open チェーン最外側に
     なり捕捉が失われる可能性がある（tests の「genie が外側」ケース）。
-    現行の HW Goodwin 実装では発生しないことを実機で確認済みであること。
+    現行の HW Goodwin 実装では発生しないことを実機で確認済み。
 
 ## 構成
 

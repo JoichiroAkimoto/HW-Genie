@@ -46,6 +46,7 @@ function fullState(now = 1000000, overrides = {}) {
     lastSeenAt,
     lastSentJson: null,
     lastAttemptedJson: null,
+    pendingChangeJson: null,
     backoffMs: POLL_MS,
     lastAttemptAt: 0,
     ...overrides,
@@ -92,7 +93,7 @@ test("同一値は lastSentJson と一致し再送されない（dedupe）", () 
   assert.strictEqual(d2.shouldSend, false);
 });
 
-test("値が変われば backoff がリセットされ即送信される（再ログイン検知）", () => {
+test("値が変われば 2 連続観測後に backoff がリセットされ即送信される（再ログイン検知）", () => {
   const s = fullState();
   // 失敗でバックオフが伸びた状態にする
   markSendFailure(s, MAX_BACKOFF_MS);
@@ -105,9 +106,39 @@ test("値が変われば backoff がリセットされ即送信される（再�
   for (const k of Object.keys(s.headersCaptured)) {
     s.lastSeenAt[k] = now;
   }
-  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
-  assert.strictEqual(d.shouldSend, true);
+  // 1 回目の観測: pendingChangeJson に記録（未確定）
+  const d1 = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(s.pendingChangeJson, d1.serialized);
+  // 2 回目の観測（同一値）: 確定 → バックオフリセット
+  const d2 = evaluateSend(s, now + POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, true);
   assert.strictEqual(s.backoffMs, POLL_MS); // リセットされた
+});
+
+test("リクエスト毎に値が変わる（署名ローテーション）場合、バックオフはリセットされない", () => {
+  const s = fullState();
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 2000);
+  const now = 1000000;
+  // 毎ポーリング値が変わる（ローテーション）
+  let counter = 0;
+  const evaluateWithRotatingSignature = () => {
+    counter++;
+    s.headersCaptured["x-auth-signature"] = "sig" + counter;
+    for (const k of Object.keys(s.headersCaptured)) {
+      s.lastSeenAt[k] = now + counter * POLL_MS;
+    }
+    return evaluateSend(s, now + counter * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  };
+  evaluateWithRotatingSignature();
+  evaluateWithRotatingSignature();
+  evaluateWithRotatingSignature();
+  // 値が毎回変わるため pendingChangeJson は確定せず、バックオフは
+  // リセットされない（ホットリトライに戻らない）
+  assert.strictEqual(s.backoffMs, 2000); // リセットされていない
+  // pendingChangeJson は最後の評価の値（未確定のまま）
+  assert.ok(s.pendingChangeJson !== null);
 });
 
 test("失敗継続で backoff が 2 倍され、MAX_BACKOFF_MS で頭打ちになる", () => {
@@ -173,6 +204,22 @@ test("統合: beginSendAttempt により同一値のバックオフがリセッ�
   // バックオフ経過後は送信される
   const d3 = evaluateSend(s, 1001000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d3.shouldSend, true);
+});
+
+test("成功でバックオフがリセットされる（サーバー復旧パス）", () => {
+  const s = fullState();
+  markSendFailure(s, MAX_BACKOFF_MS); // 1000
+  markSendFailure(s, MAX_BACKOFF_MS); // 2000
+  const d = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, true);
+  assert.ok(d.serialized);
+  beginSendAttempt(s, d.serialized, 1000000);
+  markSendSuccess(s, d.serialized, POLL_MS);
+  assert.strictEqual(s.backoffMs, POLL_MS);
+  assert.strictEqual(s.lastSentJson, d.serialized);
+  // dedupe: 同じ値を再送しない
+  const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, false);
 });
 
 test("snapshot は既知キーのみでキー順が正規化される", () => {
