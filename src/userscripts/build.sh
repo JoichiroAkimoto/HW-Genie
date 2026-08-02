@@ -103,6 +103,12 @@ if ! grep -qE '^// @run-at[[:space:]]+document-idle[[:space:]]*$' <<< "$METADATA
   exit 1
 fi
 
+# sed の replacement 部で特殊な文字（& はマッチ全体、\ はエスケープ、| は
+# 区切り文字）をエスケープしてから注入する。
+escape_sed_replacement() {
+  printf '%s' "$1" | sed 's/[&\\|]/\\&/g'
+}
+
 # Inject URLs if provided. downloadURL と updateURL を別々に設定できる
 # （自動更新のため updateURL は常に最新リリースを指す URL を使う）。
 # 引数解析は「最後に指定した値が有効」（後勝ち）。
@@ -113,12 +119,14 @@ if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
     echo "ERROR: --inject-download-url and --inject-update-url must be specified together (or use --inject-url for both)" >&2
     exit 1
   fi
+  DOWNLOAD_SAFE=$(escape_sed_replacement "$INJECT_DOWNLOAD_URL")
+  UPDATE_SAFE=$(escape_sed_replacement "$INJECT_UPDATE_URL")
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
-    sed -i '' "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
+    sed -i '' "s|__DOWNLOAD_URL__|$DOWNLOAD_SAFE|g" "$OUTPUT"
+    sed -i '' "s|__UPDATE_URL__|$UPDATE_SAFE|g" "$OUTPUT"
   else
-    sed -i "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
-    sed -i "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
+    sed -i "s|__DOWNLOAD_URL__|$DOWNLOAD_SAFE|g" "$OUTPUT"
+    sed -i "s|__UPDATE_URL__|$UPDATE_SAFE|g" "$OUTPUT"
   fi
 
   # 未置換のプレースホルダが残っていないことを検証

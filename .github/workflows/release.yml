@@ -22,6 +22,13 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '@version' src/userscripts/index.ts | sed 's/.* //')
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # タグと @version の不一致を防ぐ。不一致だと既存リリースを
+          # --clobber で上書きし、releases/latest の自動更新が静かに壊れる。
+          if [[ "v$VERSION" != "$TAG_NAME" ]]; then
+            echo "ERROR: tag $TAG_NAME does not match @version v$VERSION in index.ts" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
@@ -62,4 +69,4 @@ jobs:
         run: |
           gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" --json name,url,assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
