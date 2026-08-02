@@ -21,7 +21,22 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VERSION=$(grep '@version' src/userscripts/index.ts | sed 's/.* //')
+          # メタデータブロック内の @version のみを抽出（コメント等の後方一致を避ける）
+          VERSION=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' src/userscripts/index.ts | sed -n 's/^\/\/ @version[[:space:]]*//p')
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # X.Y.Z 形式の検証（v1.0 / v1.0.4.1 等の不正形式を先に弾く。
+          # 不正なバージョンは存在しない download URL を生成し、
+          # releases/latest の自動更新を静かに壊す）。
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: @version '$VERSION' is not a valid semver (X.Y.Z)" >&2
+            exit 1
+          fi
+          # タグと @version の不一致を防ぐ。不一致だと既存リリースを
+          # --clobber で上書きし、releases/latest の自動更新が静かに壊れる。
+          if [[ "v$VERSION" != "$TAG_NAME" ]]; then
+            echo "ERROR: tag $TAG_NAME does not match @version v$VERSION in index.ts" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
@@ -30,23 +45,33 @@ jobs:
         working-directory: src/userscripts
 
       - name: Build userscript
-        run: bash ./build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+        # downloadURL はバージョン固定、updateURL は常に最新リリースを指す
+        # （releases/latest/download/...）。updateURL がバージョン固定だと
+        # Tampermonkey は常に同じ URL を確認し、新しいリリースを検知できない。
+        run: |
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+          UPDATE_URL="https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js"
+          bash ./build.sh --inject-download-url "$DOWNLOAD_URL" --inject-update-url "$UPDATE_URL"
         working-directory: src/userscripts
 
       - name: Create or Update Release
         id: release
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
-          
+          # $'...' で改行を明示し、YAML 折り返しでノートが崩れないようにする。
+          # ${{ }} は YAML 補間で先に置換済み。
+          NOTES=$'Userscript release v${{ steps.version.outputs.version }}\n\nこのリリースから @updateURL が常に最新リリースを指すようになり、\nTampermonkey の自動更新が機能します。'
+
           # Check if release exists
           if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
-            echo "Release exists, uploading asset..."
+            echo "Release exists, uploading asset and updating notes..."
             gh release upload "v${{ steps.version.outputs.version }}" "src/userscripts/dist/hw-genie-auth-capture.user.js" --clobber
+            gh release edit "v${{ steps.version.outputs.version }}" --notes "$NOTES"
           else
             echo "Creating new release..."
             gh release create "v${{ steps.version.outputs.version }}" \
               --title "v${{ steps.version.outputs.version }}" \
-              --notes "Userscript release v${{ steps.version.outputs.version }}" \
+              --notes "$NOTES" \
               "src/userscripts/dist/hw-genie-auth-capture.user.js"
           fi
         env:
@@ -56,4 +81,4 @@ jobs:
         run: |
           gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" --json name,url,assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

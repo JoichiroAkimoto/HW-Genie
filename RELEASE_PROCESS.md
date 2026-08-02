@@ -16,7 +16,29 @@ git push --tags
 - `git push --tags` で `.github/workflows/release.yml` がトリガー
 - `index.ts` の `@version` からバージョンを抽出してビルド
 - GitHub Release に `.user.js` をアセットとして自動アップロード
-- Tampermonkey が `@updateURL` / `@downloadURL` に基づいて自動更新を検知
+- Tampermonkey が `@updateURL` に基づいて自動更新を検知
+
+### 自動更新の仕組み
+
+- `@downloadURL` はバージョン固定の URL（`releases/download/vX.Y.Z/...`）
+- `@updateURL` は常に最新リリースを指す URL（`releases/latest/download/...`）
+- Tampermonkey は `@updateURL` を定期的に確認し、新しいバージョンがあれば
+  自動更新します。`@updateURL` をバージョン固定にすると新リリースを検知
+  できないため、常に `latest` を指す URL を使用してください。
+- 注: `releases/latest` は「非 prerelease / 非 draft のうち、リリースの
+  `created_at`（実質的にはタグが指すコミット日時）が最も新しいリリース」を
+  指します（semver 順ではありません）。**prerelease / draft は除外**される
+  ため、prerelease としてリリースすると自動更新がそのバージョンをスキップ
+  します。また、過去コミットにタグを打ってリリースすると `created_at` が
+  過去になり、`latest` に反映されない場合があります。リリース手順は「必ず
+  最新コミットにタグを打つ」こと。
+
+### 既存ユーザーの移行（参考）
+
+- v1.0.3 以前にインストールしたユーザーの `@updateURL` はバージョン固定のため、
+  自動更新では新バージョンを検知できません。**手動での再インストールが必要**です。
+- 再インストール後は `@updateURL` が `releases/latest/download/...` に置き換わり、
+  以降の自動更新が機能します。
 
 ### バージョンルール
 
