@@ -14,6 +14,7 @@ import {
   markSendSuccess,
   pollAndMaybeSend,
   pruneStaleKeys,
+  reflectState,
 } from "../session.ts";
 
 const REQUIRED_KEYS = [
@@ -230,6 +231,30 @@ test("統合: ゲート閉中に値が変化し、2 連続観測でバックオ�
   const d2 = pollAndMaybeSend(s, now + 2 * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d2.shouldSend, true);
   assert.strictEqual(s.backoffMs, POLL_MS);
+});
+
+test("reflectState: shouldSend=false でも state の変更（pendingChangeJson 等）が反映される", () => {
+  const source = fullState();
+  const target = fullState();
+  target.pendingChangeJson = null;
+  // ソース側で pendingChangeJson を設定（ゲート閉中の 1 回目観測）
+  source.pendingChangeJson = "new-serialized";
+  source.backoffMs = 2000;
+  reflectState(target, source);
+  // 反映漏れがあると 2 連続観測の確定がポーリング間で失われる（P1 バグ）
+  assert.strictEqual(target.pendingChangeJson, "new-serialized");
+  assert.strictEqual(target.backoffMs, 2000);
+});
+
+test("統合: pollAndMaybeSend → 成功 → dedupe で再送しない", () => {
+  const s = fullState();
+  const d0 = pollAndMaybeSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  assert.ok(d0.serialized);
+  markSendSuccess(s, d0.serialized, POLL_MS);
+  assert.strictEqual(s.pendingChangeJson, null); // beginSendAttempt でクリア済み
+  const d1 = pollAndMaybeSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, false); // dedupe
 });
 
 test("成功でバックオフがリセットされる（サーバー復旧パス）", () => {

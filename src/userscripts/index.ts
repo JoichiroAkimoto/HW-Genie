@@ -143,9 +143,16 @@ import {
         body: JSON.stringify({ nonce, headers }),
       });
 
+      if (!res.ok) {
+        // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
+        const text = await res.text();
+        log(`Auth failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
+        return false;
+      }
+
       const data = await res.json();
 
-      if (res.ok && data.status === "success") {
+      if (data.status === "success") {
         log(
           `Auth captured successfully! Player: ${data.player?.name} (Lv.${data.player?.level})`,
         );
