@@ -7,7 +7,7 @@ from .database import (
     get_session_local,
     get_write_engine,
     get_write_session_local,
-    is_transient_db_error,
+    is_hrana_stream_error,
     retry_on_wal_contention,
 )
 
@@ -158,14 +158,18 @@ class SessionRepository:
             try:
                 return self._update_config_locked(account, data)
             except Exception as exc:
-                # Dispose the pool only on transient failures (dead Hrana
-                # stream, WAL contention). Validation errors (missing player_id,
-                # bad config key) are non-transient: disposing would be a no-op
-                # churn, and in the default config the write pool IS the shared
-                # read pool, so a needless dispose would force every other
-                # account's next checkout to re-sync and could re-trigger WAL
-                # contention during parallel `multi` runs.
-                if is_transient_db_error(exc):
+                # Dispose ONLY on dead Hrana streams. WAL contention
+                # (wal_insert_begin failed / database is locked) leaves the
+                # connection healthy: disposing would discard warm connections
+                # and force a new on-connect sync() into the very WAL that is
+                # already contended, amplifying the problem. Validation errors
+                # are non-transient and need no dispose either.
+                if is_hrana_stream_error(exc):
+                    logger.warning(
+                        "Transient Hrana stream error; disposing write pool "
+                        "before retry: %s",
+                        exc,
+                    )
                     self._dispose_write_pool()
                 raise
 
@@ -182,8 +186,10 @@ class SessionRepository:
 
         NOTE: in the default configuration (``TURSO_WRITE_REMOTE`` unset) the
         write engine IS the read engine, so disposing also empties the shared
-        read pool. Callers should therefore gate this on transient errors only
-        (see ``_attempt`` in :meth:`update_config`).
+        read pool. Callers must therefore gate this on dead Hrana streams
+        only (see ``_attempt`` in :meth:`update_config`): WAL contention
+        leaves connections healthy and disposing would re-trigger sync() into
+        the contended WAL.
         """
         try:
             engine = get_write_engine()

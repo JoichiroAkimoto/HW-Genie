@@ -152,6 +152,38 @@ def test_update_config_does_not_dispose_on_validation_error(monkeypatch, mock_sl
     assert disposed["count"] == 0
 
 
+def test_update_config_does_not_dispose_on_wal_contention(monkeypatch, mock_sleep):
+    """WAL 競合はコネクション健全のため dispose しない（再 sync で競合を増幅させない）。"""
+    disposed = {"count": 0}
+    real_sm = get_session_local()
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+
+            def commit():
+                raise ValueError("wal_insert_begin failed")
+
+            session.commit = commit
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(repo_module, "get_write_engine", lambda: FakeEngine())
+
+    with pytest.raises(ValueError, match="wal_insert_begin failed"):
+        repo_module.SessionRepository().update_config(
+            "wal_no_dispose_alias", {"player": {"id": "p", "name": "N"}}
+        )
+    assert disposed["count"] == 0
+
+
 def test_update_config_dispose_failure_does_not_mask_original(monkeypatch, mock_sleep):
     """dispose 自体が失敗しても元の例外（stream not found）をマスクしない。"""
     real_sm = get_session_local()

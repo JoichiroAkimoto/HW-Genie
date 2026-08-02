@@ -783,13 +783,17 @@ def test_is_wal_contention_markers():
 
 def test_is_transient_db_error_includes_hrana_stream():
     """Hrana ストリーム切断（stream not found）は再試行対象として判定される。"""
-    from hw_genie.core.database import is_transient_db_error
+    from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
 
     assert is_transient_db_error(ValueError("stream not found: 49580f7d:ad779"))
     assert is_transient_db_error(ValueError("wal_insert_begin failed"))
     assert is_transient_db_error(ValueError("database is locked"))
     assert not is_transient_db_error(RuntimeError("connection refused"))
     assert not is_transient_db_error(ValueError("no such table: accounts"))
+    # Hrana 判定は WAL 競合を包含しない（dispose ゲート用）
+    assert is_hrana_stream_error(ValueError("stream not found: 49580f7d:ad779"))
+    assert not is_hrana_stream_error(ValueError("wal_insert_begin failed"))
+    assert not is_hrana_stream_error(ValueError("database is locked"))
 
 
 def test_is_transient_db_error_hrana_variants():

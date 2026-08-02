@@ -45,6 +45,16 @@ _HRANA_STREAM_MARKERS = (
 )
 
 
+def is_hrana_stream_error(exc: BaseException) -> bool:
+    """True when ``exc`` indicates a dead/closed Turso Hrana stream.
+
+    A stream that died while idle cannot be revived in place: the pooled
+    connection must be discarded so the next checkout opens a fresh stream.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _HRANA_STREAM_MARKERS)
+
+
 def is_transient_db_error(exc: BaseException) -> bool:
     """True when ``exc`` is a transient DB error worth retrying.
 
@@ -53,10 +63,7 @@ def is_transient_db_error(exc: BaseException) -> bool:
     found`` / server-initiated closes). Both are resolved by re-opening a
     fresh connection.
     """
-    msg = str(exc).lower()
-    return is_wal_contention(exc) or any(
-        marker in msg for marker in _HRANA_STREAM_MARKERS
-    )
+    return is_wal_contention(exc) or is_hrana_stream_error(exc)
 
 
 def is_wal_contention(exc: BaseException) -> bool:
