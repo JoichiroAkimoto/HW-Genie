@@ -265,10 +265,13 @@ test("capture が例外を投げてもゲームの setRequestHeader は壊れな
   };
   const originalXHR = globalThis.XMLHttpRequest;
   globalThis.XMLHttpRequest = XHRClass;
+  const origDebug = console.debug;
+  console.debug = () => {}; // 本番のデバッグログをテスト出力に流さない
   try {
     installXhrInterceptor((u) => isApiUrl(u, PAGE_URL), capturing);
   } finally {
     globalThis.XMLHttpRequest = originalXHR;
+    console.debug = origDebug;
   }
 
   const xhr = new XHRClass();
@@ -417,6 +420,22 @@ test("同パターンで genie が外側のとき（他スクリプト先行）"
   // 他スクリプト側は常に動く。genie 側は open 内で own sRH が毎回上書きされる
   // ため捕捉が失われる可能性がある（将来の改善の足がかりとして固定）。
   assert.ok(seen.length >= 1);
+});
+
+test("open 後に setRequestHeader を複数回呼んでも最後の値が捕捉される（stale しない）", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "A");
+  xhr.setRequestHeader("x-auth-token", "B"); // 上書き
+  xhr.setRequestHeader("x-auth-token", "C"); // 最終値
+
+  assert.strictEqual(captured.length, 3);
+  assert.strictEqual(captured[2][1], "C"); // 最後の値が捕捉される
+  assert.strictEqual(xhr._headers["x-auth-token"], "C");
 });
 
 test("API 以外の XHR は捕捉されない", () => {
