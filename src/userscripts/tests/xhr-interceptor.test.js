@@ -344,3 +344,56 @@ test("API 以外の XHR は捕捉されない", () => {
     "x-auth-network-ident",
   ]);
 });
+
+test("実ゲーム相当: 同一 XHR を open→setHeader→send→再 open で再利用しても捕捉が継続する", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  installGenieInterceptor(XHRClass, captured);
+  installOtherScriptWrapper(XHRClass, seen);
+
+  const xhr = new XHRClass();
+  // 1 回目のリクエスト
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok1");
+  xhr.setRequestHeader("x-auth-session-id", "tok1_sid");
+  xhr.setRequestHeader("x-auth-network-ident", "web");
+  xhr.send();
+  // 2 回目（同一 XHR 再利用）
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok2");
+  xhr.setRequestHeader("x-auth-session-id", "tok2_sid");
+  xhr.setRequestHeader("x-auth-network-ident", "web");
+  xhr.send();
+  // 3 回目（再ログイン相当でヘッダー更新）
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok3");
+  xhr.setRequestHeader("x-auth-network-ident", "web");
+  xhr.send();
+
+  // すべて捕捉され、ラッパーにも渡る
+  assert.strictEqual(captured.length, 8);
+  assert.strictEqual(seen.length, 8);
+  assert.strictEqual(xhr._headers["x-auth-token"], "tok3");
+});
+
+test("実ゲーム相当: API→非 API→API の 3 連続 open でラッパー解除と再ラップが機能する", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  // API open → ラッパー設置
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok1");
+  assert.strictEqual(captured.length, 1);
+  // 非 API へ再オープン → ラッパー解除され捕捉しない
+  xhr.open("POST", "https://other.example.com/");
+  xhr.setRequestHeader("x-auth-token", "tok2");
+  assert.strictEqual(captured.length, 1);
+  // 再び API open → 再ラップされ捕捉が復帰
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok3");
+  assert.strictEqual(captured.length, 2);
+  assert.strictEqual(xhr._headers["x-auth-token"], "tok3");
+});

@@ -36,6 +36,9 @@ fi
 # Goodwin) and the userscript runs with @grant none.
 bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser
 
+# 型チェック（bun は型を無視してビルドするため、CI で型エラーを検出する）
+bun x tsc --noEmit --skipLibCheck
+
 # Combine metadata + bundle
 {
   echo "$METADATA"
@@ -46,9 +49,8 @@ bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=ii
 rm -f "$DIST_DIR/bundle.tmp.js"
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
-BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)
-if [[ "$BUNDLE_FIRST" != "(() => {" ]]; then
-  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk): $BUNDLE_FIRST" >&2
+if ! grep -q '^(() => {$' "$OUTPUT"; then
+  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk)" >&2
   exit 1
 fi
 
