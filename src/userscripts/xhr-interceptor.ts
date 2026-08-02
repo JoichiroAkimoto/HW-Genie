@@ -18,7 +18,9 @@
 //   両者が open 毎に再ラップする方式を取るとチェーンが成長しうるが、
 //   無限再帰にはならない。
 
-export const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
+// モジュールスコープで一度だけ定義される。テストからは export せず、
+// ラッパー同一性を関数参照の比較で検証する。
+const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
 
 /** API URL かどうかをホスト+パスで判定する（部分文字列一致にしない）。 */
 export function isApiUrl(urlString: string, baseHref: string): boolean {

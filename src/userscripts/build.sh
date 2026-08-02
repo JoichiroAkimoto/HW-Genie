@@ -49,8 +49,16 @@ bun x tsc --noEmit --skipLibCheck
 rm -f "$DIST_DIR/bundle.tmp.js"
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
-if ! grep -q '^(() => {$' "$OUTPUT"; then
-  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk)" >&2
+BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)
+if [[ "$BUNDLE_FIRST" != "(() => {" ]]; then
+  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk): $BUNDLE_FIRST" >&2
+  exit 1
+fi
+
+# バンドル部分に列 0 のトップレベル宣言（var/let/const/function/class）が
+# 無いことを検査する（IIFE の外への宣言漏れを検出）
+if grep -nE '^(var|let|const|function|class) ' "$OUTPUT"; then
+  echo "ERROR: top-level declarations leak outside the IIFE (see lines above)" >&2
   exit 1
 fi
 

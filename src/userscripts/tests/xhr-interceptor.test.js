@@ -4,9 +4,9 @@
 // These tests drive the PRODUCTION code (xhr-interceptor.ts) directly —
 // not a copy — by installing it on a fake XMLHttpRequest class.
 
-import { test, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert";
-import { isApiUrl, installXhrInterceptor, HW_GENIE_WRAPPED } from "../xhr-interceptor.ts";
+import { isApiUrl, installXhrInterceptor } from "../xhr-interceptor.ts";
 
 const API_URL = "https://heroes-wb.nextersglobal.com/api/";
 const PAGE_URL = "https://www.hero-wars.com/";
@@ -173,9 +173,8 @@ test("同一 XHR の再オープンでも捕捉が継続し、ラッパーが積
   assert.strictEqual(xhr._headers["x-auth-network-ident"], "web");
 
   // ラッパー参照が同一のまま（スタックしていない）
-  const wrapper1 = xhr[HW_GENIE_WRAPPED];
+  const wrapper1 = xhr.setRequestHeader;
   xhr.open("POST", API_URL);
-  assert.strictEqual(xhr[HW_GENIE_WRAPPED], wrapper1);
   assert.strictEqual(xhr.setRequestHeader, wrapper1);
 });
 
@@ -326,6 +325,28 @@ test("API open 後に非 API へ再オープンするとラッパーが外れ、
   xhr.open("POST", API_URL);
   xhr.setRequestHeader("x-auth-token", "tok3");
   assert.strictEqual(captured.length, 2);
+});
+
+test("他スクリプト先行インストール時も API→非API→API で解除・再ラップが機能する", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  installOtherScriptWrapper(XHRClass, seen);
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok1"); // 捕捉される
+  xhr.open("POST", "https://other.example.com/");
+  xhr.setRequestHeader("x-auth-token", "tok2"); // 捕捉されない（解除）
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok3"); // 再ラップで捕捉復帰
+
+  assert.deepStrictEqual(captured, [
+    ["x-auth-token", "tok1"],
+    ["x-auth-token", "tok3"],
+  ]);
+  assert.strictEqual(seen.length, 3); // 他スクリプト側は常に通る
 });
 
 test("API 以外の XHR は捕捉されない", () => {
