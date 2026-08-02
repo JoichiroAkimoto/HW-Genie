@@ -107,6 +107,8 @@ def run_all_accounts(
     """
     if accounts is None:
         accounts = list_account_aliases()
+    # 下記の dict comprehension で 2 回反復するため、ジェネレータ混入を防御
+    accounts = list(accounts)
 
     if not accounts:
         logger.warning("No accounts found; nothing to run.")
