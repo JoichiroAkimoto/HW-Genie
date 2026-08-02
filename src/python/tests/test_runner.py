@@ -42,8 +42,18 @@ def test_resolve_max_parallel_reads_env(monkeypatch):
     assert resolve_max_parallel(None, 4) == 4
 
 
-def test_list_account_aliases_sorted(fake_accounts):
+def test_list_account_aliases_registration_order(fake_accounts):
+    """登録順（list_accounts の返り値）をそのまま返す（ソートしない）。"""
     assert list_account_aliases() == ["alpha", "beta", "gamma"]
+
+
+def test_list_account_aliases_not_alphabetically_sorted(monkeypatch):
+    """アルファベット順でない登録順もそのまま維持される。"""
+    monkeypatch.setattr(
+        "hw_genie.runner.SessionManager.list_accounts",
+        lambda: ["zulu", "alpha", "mike"],
+    )
+    assert list_account_aliases() == ["zulu", "alpha", "mike"]
 
 
 def test_run_for_account_missing_session(monkeypatch):
@@ -145,6 +155,47 @@ def test_summarize_counts_unknown_player_status_as_failed(capsys):
     assert failed == 1
     assert "1 account(s) completed, ❌ 1 failed." in out
     assert "Bob (status unavailable)" in out
+
+
+def test_run_all_accounts_orders_results_by_submission(monkeypatch):
+    """完了順が投入順と異なっても、結果は投入順（登録順）で返る。"""
+    accounts = ["zulu", "alpha", "mike"]
+    monkeypatch.setattr("hw_genie.runner.SessionManager.list_accounts", lambda: accounts)
+    monkeypatch.setattr(
+        "hw_genie.runner.run_for_account",
+        lambda acc, routine: (acc, f"{acc}-ok", None),
+    )
+    # 完了順が投入順の逆になるよう as_completed をモックする
+    monkeypatch.setattr(
+        "hw_genie.runner.as_completed", lambda futures: reversed(list(futures))
+    )
+    results = run_all_accounts(lambda c, a: None, accounts=accounts)
+    assert list(results) == ["zulu", "alpha", "mike"]
+    assert results["zulu"] == ("zulu-ok", None)
+
+
+def test_summarize_heading_width_matches_table(capsys):
+    """見出し・失敗一覧の罫線幅はテーブルの罫線幅と一致する。"""
+    from hw_genie.core.client import PlayerStatus
+    from hw_genie.core.utils import display_width
+
+    results = [
+        ("alpha", (PlayerStatus(name="Alpha", level=130, gold=1000000, gems=5000, energy=80, arena_rank=3, grand_rank=2), None)),
+        ("beta", (None, ValueError("x"))),
+    ]
+    summarize(results)
+    lines = capsys.readouterr().out.splitlines()
+    # \n の直後の見出し上罫線（= のみで構成される全罫線の代表）
+    eq_lines = [line for line in lines if line and set(line) == {"="}]
+    dash_lines = [line for line in lines if line and set(line) == {"-"}]
+    assert eq_lines, "見出し/テーブルの罫線が存在する"
+    assert dash_lines, "失敗一覧の罫線が存在する"
+    widths = {len(line) for line in eq_lines + dash_lines}
+    assert len(widths) == 1, f"全罫線が同幅であること（{widths}）"
+    rule_width = widths.pop()
+    # ヘッダー行の表示幅も罫線幅に一致する
+    header_line = next(line for line in lines if "Account" in line)
+    assert display_width(header_line) == rule_width
 
 
 def test_cmd_multi_dispatch_daily(monkeypatch):
@@ -542,6 +593,41 @@ def test_render_summary_table_is_display_aligned_with_emoji():
     # width must exceed the raw code-point length.
     header = lines[1]
     assert _display_width(header) > len(header)
+
+
+def test_render_summary_table_colors_when_supported(monkeypatch):
+    """TTY ではヘッダー・アカウント・順位・エネルギー超過が色付けされる。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([
+        ["Alice", "76/190", "1", "8", "900.8M", "570.1K"],
+        ["Test Account", "200/190", "53", "3", "2.3B", "180.2K"],
+    ])
+    assert "\033[1;36m" in table  # ヘッダー
+    assert "\033[1m" in table  # 1行目アカウント名太字
+    assert "\033[33m" in table  # Arena 1位 = 金
+    assert "\033[32m" in table  # GA 8位 = 緑
+    assert "\033[31m" in table  # 2行目 Energy 200/190 超過 = 赤
+    # ゼブラ行でも色付きセルは dim されない
+    assert "\033[2;31m" not in table
+    assert "\033[2;32m" not in table
+
+
+def test_render_summary_table_zebra_dims_even_rows(monkeypatch):
+    """偶数番目の行は全体 dim され、行の区別がつく。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([
+        ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],
+    ]).splitlines()
+    assert table[3].startswith("\033[1m") and not table[3].startswith("\033[1;2m")
+    assert table[4].startswith("\033[1;2m")
+
+
+def test_render_summary_table_no_red_when_energy_within_cap(monkeypatch):
+    """上限内の Energy は赤にならない。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([["Alice", "76/190", "11", "17", "900.8M", "570.1K"]])
+    assert "\033[31m" not in table
 
 
 def test_format_timestamp_for_display_respects_hwgenie_tz(monkeypatch):

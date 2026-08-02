@@ -63,7 +63,8 @@ def cmd_auth(args):
             if not accounts:
                 print("No accounts found in database.")
                 return
-            for alias in sorted(accounts):
+            # 登録順（list_accounts が id 順で返す）
+            for alias in accounts:
                 print(alias)
             return
 
@@ -97,24 +98,37 @@ def cmd_auth(args):
 
         from hw_genie.core.utils import (
             display_timezone_name,
+            display_width,
+            energy_over_cap,
             format_timestamp_for_display,
+            pad,
+            rank_color,
+            style,
+            terminal_columns,
+            wrap_display,
         )
 
         tz_label = display_timezone_name()
         updated_col = f"Updated ({tz_label})"
-        # Body timestamps are 19 chars ("YYYY-MM-DD HH:MM:SS"); widen the column
-        # to the header label when the tz name makes it longer (e.g. Asia/Tokyo).
-        updated_width = max(19, len(updated_col))
 
-        header = f"\n{'Name':<10} | {'Arena':<5} | {'GA':<4} | {'Gold':<6} | {'Gems':<6} | {'Last Mission':<12} | {'Energy':<6} | {updated_col:<{updated_width}} | {'Memo':<20}"
-        print(header)
-        print("-" * len(header))
-        for alias in sorted(accounts):
+        # 固定列（Memo は端末幅の残りを取る最終列）。
+        fixed_headers = [
+            "Name",
+            "Arena",
+            "GA",
+            "Gold",
+            "Gems",
+            "Mission",
+            "Energy",
+            updated_col,
+        ]
+
+        # まず全アカウントの固定セルを収集する（登録順 = list_accounts の id 順）
+        row_data = []
+        for alias in accounts:
             data = SessionManager.load(alias)
             player = data.get("player", {})
             p_name = player.get("name", "Unknown")
-            # 10文字を超える場合は「...」で省略
-            p_name_display = (p_name[:7] + "...") if len(p_name) > 10 else p_name
 
             p_energy = player.get("energy", "-")
             p_arena = player.get("arena_rank", "-")
@@ -126,10 +140,79 @@ def cmd_auth(args):
             updated = data.get("last_updated", "Never")
             updated_short = format_timestamp_for_display(updated)
 
-            memo = data.get("memo", "-")
-            memo_display = (memo[:17] + "...") if len(memo) > 20 else memo
+            row_data.append(
+                (
+                    [str(p_name), str(p_arena), str(p_grand), str(p_gold),
+                     str(p_gems), str(p_last_id), str(p_energy), str(updated_short)],
+                    data.get("memo", "-"),
+                    player,
+                )
+            )
 
-            print(f"{p_name_display:<10} | {p_arena:<5} | {p_grand:<4} | {p_gold:<6} | {p_gems:<6} | {p_last_id:<12} | {p_energy:<6} | {updated_short:<{updated_width}} | {memo_display:<20}")
+        # 固定列幅は「ヘッダーラベルと最長セルのどちらか長い方」に内容駆動で調整
+        # （runner のサマリーテーブルと同じ方式。名前の長いアカウントにも追従する）
+        fixed_widths = [
+            max(
+                display_width(header),
+                *(display_width(cells[i]) for cells, _, _ in row_data),
+            )
+            for i, header in enumerate(fixed_headers)
+        ]
+        # 固定列と末尾の Memo 列を区切る「 | 」は固定列数と同じ個数
+        separators_width = len(fixed_headers) * len(" | ")
+        # Fill the remaining terminal width with the Memo column, never
+        # truncating: anything longer is wrapped onto continuation rows.
+        memo_width = max(
+            10, terminal_columns() - sum(fixed_widths) - separators_width
+        )
+
+        rows = [
+            (cells, wrap_display(memo, memo_width), player)
+            for cells, memo, player in row_data
+        ]
+
+        rank_keys = {
+            fixed_headers.index("Arena"): "arena_rank",
+            fixed_headers.index("GA"): "grand_rank",
+        }
+        energy_col = fixed_headers.index("Energy")
+
+        header_cells = fixed_headers + ["Memo"]
+        header_widths = fixed_widths + [memo_width]
+        # 幅計算はプレーン文字列で行い、パディング後にスタイルを後付けする
+        plain_header = " | ".join(pad(h, w) for h, w in zip(header_cells, header_widths))
+        header = style(plain_header, bold=True, fg="cyan")
+        print("\n" + header)
+        print(style("-" * display_width(plain_header), dim=True))
+        for row_idx, (fixed_cells, memo_lines, player) in enumerate(rows):
+            # アカウント行のゼブラ: 偶数番目の行を全体 dim にして行を区切る
+            dim_row = row_idx % 2 == 1
+            for i, memo_line in enumerate(memo_lines):
+                left = fixed_cells if i == 0 else [""] * len(fixed_cells)
+                styled = []
+                for j, (cell, w) in enumerate(zip(left, fixed_widths)):
+                    padded = pad(cell, w)
+                    if i > 0:
+                        # 継続行の固定列は空なのでスタイル不要（行のゼブラ dim のみ）
+                        styled.append(style(padded, dim=dim_row))
+                        continue
+                    if j == 0:
+                        styled.append(style(padded, bold=True, dim=dim_row))
+                    elif j in rank_keys:
+                        color = rank_color(player.get(rank_keys[j]))
+                        # 色付きセルはゼブラでも dim しない（色を保つ）
+                        styled.append(style(padded, fg=color, dim=dim_row and not color))
+                    elif j == energy_col:
+                        if energy_over_cap(player.get("level"), player.get("energy")):
+                            styled.append(style(padded, fg="red"))
+                        else:
+                            styled.append(style(padded, dim=dim_row))
+                    else:
+                        styled.append(style(padded, dim=dim_row))
+                memo_padded = pad(memo_line, memo_width)
+                # 継続行も 1 行目と同じ色（ゼブラ行では行ごと dim）
+                styled.append(style(memo_padded, dim=dim_row))
+                print(" | ".join(styled))
         print()
         return
 

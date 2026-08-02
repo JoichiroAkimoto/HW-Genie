@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.utils import max_energy_for_level
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -133,7 +134,7 @@ class PlayerStatus:
     @property
     def max_energy(self) -> int:
         """レベルから上限を自動計算"""
-        return int(self.level) + 60
+        return max_energy_for_level(self.level)
 
     @property
     def energy_text(self) -> str:

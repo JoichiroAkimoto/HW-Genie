@@ -219,6 +219,8 @@ hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
 ```bash
 hw-genie auth --list --fresh
 ```
+`Memo` 列は切り捨てられず、端末幅に応じて複数行に折り返して全文表示されます
+（改行入りメモはそのまま継続行として表示）。幅は `COLUMNS` 環境変数で固定することもできます。
 
 #### 方法2: 自動キャプチャ (推奨)
 1. 認証サーバーを起動:

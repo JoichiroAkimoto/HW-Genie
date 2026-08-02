@@ -357,3 +357,201 @@ def test_cmd_auth_fresh_reflects_new_values_in_table(capsys):
 
     out = capsys.readouterr().out
     assert "31.4M" in out
+
+
+def test_cmd_auth_list_never_truncates_long_memo(capsys, monkeypatch):
+    """幅が広い端末では長い Memo が「...」なしで全文表示される。"""
+    # 列幅は HWGENIE_TZ に依存するため、.env 有無に関わらず決定的にする
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "x" * 50})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    # 全文が欠落なく表示される（50 文字すべて）
+    assert out.replace(" ", "").count("x") == 50
+    # どの行も Memo 列幅（ヘッダーから導出）を超えない＝折り返し境界が正しい
+    header = out.splitlines()[1]
+    memo_col_width = len(header) - header.rindex(" | ") - 3
+    assert "x" * (memo_col_width + 1) not in out
+    assert "..." not in out
+
+
+def test_cmd_auth_list_continuation_rows_blank_fixed_columns(capsys, monkeypatch):
+    """継続行は固定列が空白埋めになり、アカウント名は1行目のみ。"""
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line\nthird line"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    for fragment in ("first line", "second line", "third line"):
+        assert fragment in out
+    assert out.count("Alice") == 1
+    # 継続行は Name 列が空（"Alice" の5幅ぶん）で始まる
+    assert "\n" + " " * 5 + " |" in out
+
+
+def test_cmd_auth_list_wraps_memo_on_narrow_terminal(capsys, monkeypatch):
+    """狭い端末では Memo が複数行に折り返され、内容が欠落しない。"""
+    monkeypatch.setenv("COLUMNS", "60")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "ABC DEF GHI JKL MNO"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    for fragment in ("ABC DEF", "GHI JKL", "MNO"):
+        assert fragment in out
+    # メモ全体は 19 幅あるため、列幅 ≤10 なら必ず折り返しが発生する
+    # （ヘッダーから導出し、列幅が広がって空回りするのを防ぐ）
+    hdr = out.splitlines()[1]
+    memo_col = len(hdr) - hdr.rindex(" | ") - 3
+    assert memo_col <= 10
+    assert "..." not in out
+
+
+def test_cmd_auth_list_memo_width_floors_at_ten(capsys, monkeypatch):
+    """Memo 列は最小 10 幅でクランプされ、それより狭い端末でも同じ描画になる。"""
+    # 列幅は HWGENIE_TZ に依存するため、.env 有無に関わらず決定的にする
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    memo = "x" * 50
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": memo})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+
+    # 固定列合計はヘッダーだけで 45 幅を超えるため、COLUMNS=40/60 はどちらも
+    # フロア 10 に張り付く（ヘッダー改名等で固定列が多少変わっても成立する堅牢な値）
+    monkeypatch.setenv("COLUMNS", "40")
+    cmd_auth(args)
+    out_40 = capsys.readouterr().out
+
+    monkeypatch.setenv("COLUMNS", "60")  # フロア 10 に張り付く
+    cmd_auth(args)
+    out_60 = capsys.readouterr().out
+
+    assert out_40 == out_60
+    assert out_60.replace(" ", "").count("x") == 50
+
+
+def test_cmd_auth_list_columns_are_content_driven(capsys, monkeypatch):
+    """固定列幅は最長セルに合わせて調整され、名前は省略されない。"""
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+
+    SessionManager.save("Al", {"player": {"id": "a1", "name": "Al"}})
+    cmd_auth(args)
+    short = capsys.readouterr().out
+    # Name 列 = max(ヘッダー "Name"=4, "Al"=2) = 4 → 最初の「 | 」は 4 文字目
+    assert short.splitlines()[1].index(" | ") == 4
+
+    SessionManager.save(
+        "AQuiteLongAccountName",
+        {"player": {"id": "a2", "name": "AQuiteLongAccountName"}},
+    )
+    cmd_auth(args)
+    long = capsys.readouterr().out
+    # 長い名前は省略されず全文表示され、Name 列が内容に合わせて伸びる
+    assert "AQuiteLongAccountName" in long
+    assert long.splitlines()[1].index(" | ") >= 20
+
+
+def test_cmd_auth_list_plain_when_not_tty(capsys):
+    """非 TTY（パイプ・ログ）では ANSI コードが出力されない。"""
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 5000, "arena_rank": 1}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+    assert "\033[" not in capsys.readouterr().out
+
+
+def test_cmd_auth_list_colors_when_supported(capsys, monkeypatch):
+    """TTY ではヘッダー・名前・順位・エネルギー超過が意味別に色付けされる。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 5000, "arena_rank": 1, "grand_rank": 5}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "\033[1;36m" in out  # ヘッダー太字+シアン
+    assert "\033[1m" in out  # 名前太字
+    assert "\033[33m" in out  # Arena 1位 = 金
+    assert "\033[32m" in out  # GA 5位 = 緑
+    assert "\033[31m" in out  # Energy 5000 > 上限 190 = 赤
+
+
+def test_cmd_auth_list_rule_width_matches_plain_header(capsys, monkeypatch):
+    """罫線はプレーンなヘッダー幅と一致する（ANSI コードを幅に数えない）。"""
+    import re
+
+    from hw_genie.core.utils import display_width
+
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    header_idx = next(i for i, line in enumerate(lines) if "\033[1;36m" in line)
+    rule_line = lines[header_idx + 1]
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    assert display_width(ansi.sub("", lines[header_idx])) == display_width(ansi.sub("", rule_line))
+
+
+def test_cmd_auth_list_continuation_same_color_as_first_line(capsys, monkeypatch):
+    """継続行は 1 行目と同じ色（非ゼブラ行では dim にならない）。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    continuation = next(line for line in lines if "second line" in line)
+    assert "\033[2m" not in continuation
+
+
+def test_cmd_auth_list_zebra_dims_even_rows(capsys, monkeypatch):
+    """偶数番目のアカウント行は dim されるが、色付きセルは色を保つ。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    SessionManager.save("Bob", {"player": {"id": "b1", "name": "Bob", "level": 130, "energy": 5000, "arena_rank": 1}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    first = next(line for line in lines if "Alice" in line)
+    second = next(line for line in lines if "Bob" in line)
+    assert first.startswith("\033[1m") and not first.startswith("\033[1;2m")
+    # ゼブラ行: 名前は dim されるが、Arena 1位=金 と Energy 超過=赤 は dim されない
+    assert second.startswith("\033[1;2m")
+    assert "\033[2m" in second  # 無色セル（Gold 等）は dim
+    assert "\033[33m" in second
+    assert "\033[2;33m" not in second
+    assert "\033[31m" in second
+    assert "\033[2;31m" not in second
+
+
+def test_cmd_auth_list_registration_order(capsys, monkeypatch):
+    """auth --list は名前順ではなく登録順（id 順）で表示される。"""
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    SessionManager.save("Zulu", {"player": {"id": "z1", "name": "Zulu"}})
+    SessionManager.save("Alpha", {"player": {"id": "a1", "name": "Alpha"}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    zulu_idx = next(i for i, line in enumerate(lines) if "Zulu" in line)
+    alpha_idx = next(i for i, line in enumerate(lines) if "Alpha" in line)
+    assert zulu_idx < alpha_idx
+
+
+def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
+    """上限以下の Energy は赤にならない（低スタミナは無色）。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "\033[31m" not in out
+    assert "\033[32m" in out  # Arena 2位 = 緑 は付く

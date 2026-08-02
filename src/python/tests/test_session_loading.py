@@ -54,6 +54,13 @@ def test_load_session_headers_from_db(temp_session_files):
     headers = load_session_headers("dbuser")
     assert headers["x-auth-token"] == "your-db-token"
 
+def test_list_accounts_registration_order():
+    """list_accounts は登録順（id 順）を返し、アルファベット順にソートしない。"""
+    for alias in ("zulu", "alpha", "mike"):
+        SessionManager.repo.save_data(alias, {"headers": {"x-auth-token": "t"}, "player": {"id": f"{alias}_id", "name": alias}})
+    assert SessionManager.list_accounts() == ["zulu", "alpha", "mike"]
+
+
 def test_resolve_account_migrates_legacy_session_json(tmp_path, monkeypatch):
     """DB空 + session.json 存在時、-a なしの resolve が実名で移行保存して解決する。"""
     from unittest.mock import patch
