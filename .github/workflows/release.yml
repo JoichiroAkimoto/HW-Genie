@@ -21,7 +21,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VERSION=$(grep '@version' src/userscripts/index.ts | sed 's/.* //')
+          # メタデータブロック内の @version のみを抽出（コメント等の後方一致を避ける）
+          VERSION=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' src/userscripts/index.ts | sed -n 's/^\/\/ @version[[:space:]]*//p')
           TAG_NAME=${GITHUB_REF#refs/tags/}
           # X.Y.Z 形式の検証（v1.0 / v1.0.4.1 等の不正形式を先に弾く。
           # 不正なバージョンは存在しない download URL を生成し、
@@ -58,13 +59,9 @@ jobs:
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           # 既存ユーザー（v1.0.3 以前）の移行案内をリリースノートに含める。
-          # シングルクォートで囲み、${{ }} がローカルシェルで再展開されない
-          # ようにする（${{ }} は YAML 補間で先に置換済み）。
-          NOTES='Userscript release v${{ steps.version.outputs.version }}
-
-          ## 移行案内（v1.0.3 以前から更新するユーザー）
-          自動更新を有効化するため再インストールが必要です:
-          https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js'
+          # $'...' で改行を明示し、YAML 折り返しでノートが崩れないようにする。
+          # ${{ }} は YAML 補間で先に置換済み。
+          NOTES=$'Userscript release v${{ steps.version.outputs.version }}\n\n## 移行案内（v1.0.3 以前から更新するユーザー）\n自動更新を有効化するため再インストールが必要です:\nhttps://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js'
 
           # Check if release exists
           if gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" 2>/dev/null; then
