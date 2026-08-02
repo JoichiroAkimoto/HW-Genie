@@ -17,8 +17,10 @@
 /**
  * Build: Run `bash build.sh` in this directory. It extracts the metadata
  * block above, bundles this file with `bun build`, and writes
- * `dist/hw-genie-auth-capture.user.js` (with __DOWNLOAD_URL__/__UPDATE_URL__
- * substituted when --inject-url is passed).
+ * `dist/hw-genie-auth-capture.user.js`. Pass --inject-download-url /
+ * --inject-update-url to set @downloadURL / @updateURL individually (use
+ * releases/latest/download/... for the update URL so Tampermonkey auto-update
+ * detects new releases); --inject-url sets both to the same value.
  *
  * 既知の制限: このスクリプトは XHR (setRequestHeader) 経由のリクエストのみ
  * ヘッダーを捕捉する。v1.0.3 で実装された window.fetch / Request ヘッダー捕捉

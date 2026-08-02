@@ -18,8 +18,12 @@ npm run build
 
 `dist/hw-genie-auth-capture.user.js` が生成されます。ビルドは `bun build`（IIFE
 形式）に加えて `tsc --noEmit` の型チェックを実行し、IIFE ラップとメタデータ
-抽出を自動検証します。`--inject-url` を渡すと `@downloadURL` / `@updateURL` に
-リリース URL を注入します（CI 用）。
+抽出を自動検証します。
+
+`--inject-download-url URL` / `--inject-update-url URL` で `@downloadURL` /
+`@updateURL` を個別に設定します（updateURL には常に最新リリースを指す
+`releases/latest/download/...` を指定）。`--inject-url URL` は両方に同じ値を
+設定します（後方互換。CI 用）。
 
 ## テスト
 

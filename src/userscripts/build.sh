@@ -105,13 +105,20 @@ fi
 
 # Inject URLs if provided. downloadURL と updateURL を別々に設定できる
 # （自動更新のため updateURL は常に最新リリースを指す URL を使う）。
+# 引数解析は「最後に指定した値が有効」（後勝ち）。
 if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
+  # downloadURL / updateURL は対で指定する。片方のみだと未置換プレースホルダが
+  # 残り下の検証で失敗するため、ここで明示的に弾く。
+  if [[ -z "$INJECT_DOWNLOAD_URL" || -z "$INJECT_UPDATE_URL" ]]; then
+    echo "ERROR: --inject-download-url and --inject-update-url must be specified together (or use --inject-url for both)" >&2
+    exit 1
+  fi
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    [[ -n "$INJECT_DOWNLOAD_URL" ]] && sed -i '' "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
-    [[ -n "$INJECT_UPDATE_URL" ]] && sed -i '' "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
+    sed -i '' "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
+    sed -i '' "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
   else
-    [[ -n "$INJECT_DOWNLOAD_URL" ]] && sed -i "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
-    [[ -n "$INJECT_UPDATE_URL" ]] && sed -i "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
+    sed -i "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
+    sed -i "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
   fi
 
   # 未置換のプレースホルダが残っていないことを検証
@@ -122,7 +129,7 @@ if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
 else
   # --inject-url 系なしのローカルビルド: プレースホルダが残るため警告
   if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
-    echo "WARNING: __DOWNLOAD_URL__/__UPDATE_URL__ placeholders remain (pass --inject-url for release)" >&2
+    echo "WARNING: __DOWNLOAD_URL__/__UPDATE_URL__ placeholders remain (pass --inject-url, or --inject-download-url/--inject-update-url, for release)" >&2
   fi
 fi
 
