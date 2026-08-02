@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 OUTPUT="$DIST_DIR/hw-genie-auth-capture.user.js"
 
+# 失敗時（tsc エラー等）に一時ファイルを残さない
+trap 'rm -f "$DIST_DIR/bundle.tmp.js"' EXIT
+
 INJECT_URL=""
 
 while [[ $# -gt 0 ]]; do
@@ -30,15 +33,15 @@ if [[ "$METADATA" != *"==UserScript=="* ]]; then
   exit 1
 fi
 
+# 型チェックを先に実行（bun は型を無視してビルドするため、型エラーを最速で
+# 検出する）。カレントディレクトリに依存しないよう tsconfig を明示指定する。
+bun x tsc --noEmit -p "$SCRIPT_DIR/tsconfig.json"
+
 # Build with bun. --format=iife wraps the bundle (including any imported
 # modules) in a single IIFE so no declarations leak onto the page's global
 # scope — important because other userscripts share the page (e.g. HW
 # Goodwin) and the userscript runs with @grant none.
 bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser
-
-# 型チェック（bun は型を無視してビルドするため、CI で型エラーを検出する）。
-# カレントディレクトリに依存しないよう tsconfig を明示指定する。
-bun x tsc --noEmit -p "$SCRIPT_DIR/tsconfig.json"
 
 # Combine metadata + bundle
 {
@@ -46,8 +49,6 @@ bun x tsc --noEmit -p "$SCRIPT_DIR/tsconfig.json"
   echo ""
   cat "$DIST_DIR/bundle.tmp.js"
 } > "$OUTPUT"
-
-rm -f "$DIST_DIR/bundle.tmp.js"
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
 BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)

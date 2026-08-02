@@ -14,7 +14,6 @@ import {
   markSendSuccess,
   pollAndMaybeSend,
   pruneStaleKeys,
-  reflectState,
 } from "../session.ts";
 
 const REQUIRED_KEYS = [
@@ -233,17 +232,30 @@ test("統合: ゲート閉中に値が変化し、2 連続観測でバックオ�
   assert.strictEqual(s.backoffMs, POLL_MS);
 });
 
-test("reflectState: shouldSend=false でも state の変更（pendingChangeJson 等）が反映される", () => {
-  const source = fullState();
-  const target = fullState();
-  target.pendingChangeJson = null;
-  // ソース側で pendingChangeJson を設定（ゲート閉中の 1 回目観測）
-  source.pendingChangeJson = "new-serialized";
-  source.backoffMs = 2000;
-  reflectState(target, source);
-  // 反映漏れがあると 2 連続観測の確定がポーリング間で失われる（P1 バグ）
-  assert.strictEqual(target.pendingChangeJson, "new-serialized");
-  assert.strictEqual(target.backoffMs, 2000);
+test("単一 state オブジェクト: ゲート閉中も pendingChangeJson が保持される（反映漏れなし）", () => {
+  // index.ts は単一の state オブジェクトを保持し、pollAndMaybeSend がそれを
+  // 破壊的に更新する。クロージャへの手動コピーがないため、反映漏れバグの
+  // クラスが存在しないことを確認する（複数オブジェクト間のコピーが必要ない）。
+  const s = fullState();
+  const now = 1000000;
+  // 初回送信試行を記録してから失敗でバックオフを伸ばす（ゲート閉状態を作る）
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  assert.ok(d0.serialized);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS); // backoff = 2000, lastAttemptAt = now
+  // 値変化（再ログイン）→ ゲート閉中の 1 回目観測
+  s.headersCaptured["x-auth-token"] = "tok2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + POLL_MS;
+  }
+  const d1 = pollAndMaybeSend(s, now + POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, false); // ゲート閉（backoff 2000 中）
+  assert.strictEqual(s.pendingChangeJson, d1.serialized); // 同じオブジェクトに残る
+  // 2 回目: 確定 → リセット → 送信
+  const d2 = pollAndMaybeSend(s, now + 2 * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, true);
+  assert.strictEqual(s.backoffMs, POLL_MS);
 });
 
 test("統合: pollAndMaybeSend → 成功 → dedupe で再送しない", () => {

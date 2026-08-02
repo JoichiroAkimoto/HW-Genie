@@ -162,24 +162,6 @@ export function pollAndMaybeSend(
   return decision;
 }
 
-/**
- * pollAndMaybeSend による state の変更を呼び出し側のクロージャ状態へ反映する。
- *
- * shouldSend=false（バックオフ抑止・確定待ち）でも pendingChangeJson /
- * backoffMs / lastSeenAt の変更は失われてはならない（2 連続観測の確定が
- * ポーリング間で保持されるため）。index.ts の trySend がこの関数を使い、
- * 反映漏れの回帰をテストで防ぐ。
- */
-export function reflectState(target: SessionState, source: SessionState): void {
-  target.headersCaptured = source.headersCaptured;
-  target.lastSeenAt = source.lastSeenAt;
-  target.lastSentJson = source.lastSentJson;
-  target.lastAttemptedJson = source.lastAttemptedJson;
-  target.pendingChangeJson = source.pendingChangeJson;
-  target.backoffMs = source.backoffMs;
-  target.lastAttemptAt = source.lastAttemptAt;
-}
-
 /** send 成功時に呼ぶ: lastSentJson 更新とバックオフリセット。 */
 export function markSendSuccess(s: SessionState, serialized: string, pollIntervalMs: number): void {
   s.lastSentJson = serialized;

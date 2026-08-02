@@ -37,6 +37,9 @@ import {
   markSendSuccess,
   pollAndMaybeSend,
 } from "./session";
+// 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
+import { sendHeadersToServer } from "./auth-client";
+import type { SessionState } from "./session";
 
 (() => {
   "use strict";
@@ -68,23 +71,20 @@ import {
   // never wedge `sending` and block re-captures after a re-login.
   const FETCH_TIMEOUT_MS = 5000;
 
-  let headersCaptured: Record<string, string> | null = null;
-  // Millisecond timestamp of the last time each header key was seen, used to
-  // prune keys that stopped appearing (see STALE_KEY_TTL_MS).
-  let lastSeenAt: Record<string, number> = {};
-  // JSON of the headers that were last accepted by the auth server. New
-  // captures are re-sent only when the serialized value differs, so a fresh
-  // login (new token/signature) is pushed even if the page stays open.
-  let lastSentJson: string | null = null;
-  // JSON of the headers of the most recent send attempt (success or failure).
-  // Used to detect that the headers actually changed (re-login) and reset the
-  // backoff, without conflating "changed" with "never sent yet".
-  let lastAttemptedJson: string | null = null;
-  // 再ログイン検知の確定待ち（session.ts の pendingChangeJson に対応）
-  let pendingChangeJson: string | null = null;
+  // セッション状態は単一の SessionState オブジェクトで管理する。
+  // pollAndMaybeSend / markSendSuccess / markSendFailure はこのオブジェクトを
+  // 破壊的に更新するため、クロージャ変数への手動コピー（反映漏れのバグ源）が
+  // 不要になる。
+  const state: SessionState = {
+    headersCaptured: null,
+    lastSeenAt: {},
+    lastSentJson: null,
+    lastAttemptedJson: null,
+    pendingChangeJson: null,
+    backoffMs: POLL_INTERVAL_MS,
+    lastAttemptAt: 0,
+  };
   let sending = false;
-  let backoffMs = POLL_INTERVAL_MS;
-  let lastAttemptAt = 0;
 
   function log(msg: string, ...args: unknown[]) {
     console.log(`[HW-Genie] ${msg}`, ...args);
@@ -95,76 +95,23 @@ import {
     if (!lowerName.startsWith("x-auth-")) {
       return;
     }
-    if (!headersCaptured) {
-      headersCaptured = {};
+    if (!state.headersCaptured) {
+      state.headersCaptured = {};
     }
-    headersCaptured[lowerName] = value;
-    lastSeenAt[lowerName] = Date.now();
-  }
-
-  // Timeout wrapper compatible with older browsers / WebViews that lack
-  // AbortSignal.timeout(). Aborts via an AbortController after timeoutMs.
-  function fetchWithTimeout(
-    url: string,
-    options: RequestInit = {},
-    timeoutMs: number = FETCH_TIMEOUT_MS,
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-      clearTimeout(timer),
-    );
-  }
-
-  async function fetchNonce(): Promise<string | null> {
-    try {
-      const res = await fetchWithTimeout(`${AUTH_SERVER_URL}/nonce`);
-      if (!res.ok) {
-        return null;
-      }
-      const data = await res.json();
-      return data.nonce;
-    } catch {
-      return null;
-    }
+    state.headersCaptured[lowerName] = value;
+    state.lastSeenAt[lowerName] = Date.now();
   }
 
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {
-    const nonce = await fetchNonce();
-    if (!nonce) {
-      log("Failed to fetch nonce. Is the auth server running?");
-      return false;
+    const ok = await sendHeadersToServer(
+      AUTH_SERVER_URL,
+      headers,
+      FETCH_TIMEOUT_MS,
+    );
+    if (!ok) {
+      log("Failed to send auth headers to server.");
     }
-
-    try {
-      const res = await fetchWithTimeout(`${AUTH_SERVER_URL}/auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nonce, headers }),
-      });
-
-      if (!res.ok) {
-        // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
-        const text = await res.text();
-        log(`Auth failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
-        return false;
-      }
-
-      const data = await res.json();
-
-      if (data.status === "success") {
-        log(
-          `Auth captured successfully! Player: ${data.player?.name} (Lv.${data.player?.level})`,
-        );
-        return true;
-      } else {
-        log(`Auth failed: ${data.message || data.detail || "Unknown error"}`);
-        return false;
-      }
-    } catch (e) {
-      log(`Error sending auth: ${e}`);
-      return false;
-    }
+    return ok;
   }
 
   function trySend(): void {
@@ -173,17 +120,8 @@ import {
     }
     const now = Date.now();
     // セッション状態の判定と送信準備は pollAndMaybeSend に委譲（session.ts）。
-    // pruneStaleKeys / 新旧混在ガード / dedupe / バックオフ判定 / 確定待ち
-    // （pendingChangeJson）をテストから直接検証できるようにするため。
-    const state = {
-      headersCaptured,
-      lastSeenAt,
-      lastSentJson,
-      lastAttemptedJson,
-      pendingChangeJson,
-      backoffMs,
-      lastAttemptAt,
-    };
+    // state オブジェクトは破壊的に更新されるため、クロージャへの手動反映は
+    // 不要（反映漏れバグのクラスが存在しない）。
     const decision = pollAndMaybeSend(
       state,
       now,
@@ -192,16 +130,6 @@ import {
       FRESH_WINDOW_MS,
       POLL_INTERVAL_MS,
     );
-    // pollAndMaybeSend は state を破壊的に更新する（prune / pendingChangeJson /
-    // backoffMs / lastAttemptedJson / lastAttemptAt）。shouldSend=false でも
-    // 確定待ちやバックオフがポーリング間で失われないよう、必ずクロージャへ
-    // 反映する。
-    headersCaptured = state.headersCaptured;
-    lastSeenAt = state.lastSeenAt;
-    lastAttemptedJson = state.lastAttemptedJson;
-    pendingChangeJson = state.pendingChangeJson;
-    backoffMs = state.backoffMs;
-    lastAttemptAt = state.lastAttemptAt;
     if (!decision.shouldSend || !decision.snapshot || !decision.serialized) {
       return;
     }
@@ -212,15 +140,12 @@ import {
         sending = false;
         if (success) {
           markSendSuccess(state, decision.serialized!, POLL_INTERVAL_MS);
-          lastSentJson = state.lastSentJson;
-          backoffMs = state.backoffMs;
           // 成功ログは sendHeaders 内で出力済み（Player 名入り）
         } else {
           // The send failed (stale session, server down, ...). Keep the
           // backoff growing so we do not spam the server, but still retry; a
           // re-login will change the headers and reset the backoff above.
           markSendFailure(state, MAX_BACKOFF_MS);
-          backoffMs = state.backoffMs;
         }
       },
       (err) => {
@@ -228,7 +153,6 @@ import {
         // it ever does, keep the poll alive instead of wedging `sending`.
         sending = false;
         markSendFailure(state, MAX_BACKOFF_MS);
-        backoffMs = state.backoffMs;
         log(`sendHeaders rejected: ${err}`);
       },
     );
