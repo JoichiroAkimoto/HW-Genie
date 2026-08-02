@@ -100,19 +100,36 @@
 
   function isApiUrl(urlString: string): boolean {
     // Resolve relative URLs against the current page so the filter works even
-    // if the game switches to relative API paths.
-    const url = new URL(urlString, window.location.href);
-    return (
-      url.hostname === "heroes-wb.nextersglobal.com" &&
-      (url.pathname === "/api" || url.pathname.startsWith("/api/"))
+    // if the game switches to relative API paths. Never throw: a malformed URL
+    // must not break the game's own XHR/fetch calls.
+    try {
+      const url = new URL(urlString, window.location.href);
+      return (
+        url.hostname === "heroes-wb.nextersglobal.com" &&
+        (url.pathname === "/api" || url.pathname.startsWith("/api/"))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // Timeout wrapper compatible with older browsers / WebViews that lack
+  // AbortSignal.timeout(). Aborts via an AbortController after timeoutMs.
+  function fetchWithTimeout(
+    url: string,
+    options: RequestInit = {},
+    timeoutMs: number = FETCH_TIMEOUT_MS,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+      clearTimeout(timer),
     );
   }
 
   async function fetchNonce(): Promise<string | null> {
     try {
-      const res = await fetch(`${AUTH_SERVER_URL}/nonce`, {
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
+      const res = await fetchWithTimeout(`${AUTH_SERVER_URL}/nonce`);
       if (!res.ok) {
         return null;
       }
@@ -131,11 +148,10 @@
     }
 
     try {
-      const res = await fetch(`${AUTH_SERVER_URL}/auth`, {
+      const res = await fetchWithTimeout(`${AUTH_SERVER_URL}/auth`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nonce, headers }),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
 
       const data = await res.json();
