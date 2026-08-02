@@ -184,6 +184,7 @@ def test_supports_color_no_color_wins_over_force_color(monkeypatch):
 def test_supports_color_force_color_empty_falls_back_to_tty(monkeypatch):
     """FORCE_COLOR が空文字の場合は未設定と同様、TTY 判定へフォールバックする。"""
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "")
     assert not supports_color(_FakeStream(False))
     assert supports_color(_FakeStream(True))
@@ -192,6 +193,7 @@ def test_supports_color_force_color_empty_falls_back_to_tty(monkeypatch):
 def test_supports_color_force_color_zero_disables(monkeypatch):
     """FORCE_COLOR=0 は無効扱い（chalk の慣習に合わせ、TTY 判定へフォールバック）。"""
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setenv("FORCE_COLOR", "0")
     assert not supports_color(_FakeStream(False))
     assert supports_color(_FakeStream(True))
