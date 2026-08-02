@@ -33,6 +33,7 @@
 import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
 // セッション送信の状態機械も純関数モジュールに分離（詳細は session.ts）。
 import {
+  beginSendAttempt,
   evaluateSend,
   markSendFailure,
   markSendSuccess,
@@ -185,13 +186,16 @@ import {
     if (!decision.shouldSend || !decision.snapshot || !decision.serialized) {
       return;
     }
-    // evaluateSend は state オブジェクトの参照を直接変更する（prune 等）。
-    // クロージャ変数へ反映する。
+    // 送信試行の開始を記録（lastAttemptedJson / lastAttemptAt）。
+    // これにより再ログイン検知（値変化でバックオフリセット）と
+    // 同一値の再送抑止が正しく機能する。
+    beginSendAttempt(state, decision.serialized, now);
+    // state の変更をクロージャ変数へ反映する。
     headersCaptured = state.headersCaptured;
     lastSeenAt = state.lastSeenAt;
     lastAttemptedJson = state.lastAttemptedJson;
     backoffMs = state.backoffMs;
-    lastAttemptAt = now;
+    lastAttemptAt = state.lastAttemptAt;
     sending = true;
 
     sendHeaders(decision.snapshot).then(

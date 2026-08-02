@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import {
+  beginSendAttempt,
   evaluateSend,
   markSendFailure,
   markSendSuccess,
@@ -138,6 +139,38 @@ test("backoff 中の同一ヘッダーは送信しない", () => {
   const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d2.shouldSend, false);
   // バックオフ経過後は送信
+  const d3 = evaluateSend(s, 1001000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d3.shouldSend, true);
+});
+
+test("新旧混在: 一部キーの観測時刻が他より古い場合は送信しない（コヒーレント集合）", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  // 4 キーのみ新しい観測時刻、残り 2 キーは 2 秒前（FRESH_WINDOW 内だが差が大きい）
+  let i = 0;
+  for (const k of REQUIRED_KEYS) {
+    s.lastSeenAt[k] = i < 4 ? now : now - 2000;
+    i++;
+  }
+  const d = evaluateSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d.shouldSend, false);
+});
+
+test("統合: beginSendAttempt により同一値のバックオフがリセットされない（P0 回帰）", () => {
+  const s = fullState();
+  const d1 = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, true);
+  assert.ok(d1.serialized);
+  // 本番と同じ手順: 試行開始を記録
+  beginSendAttempt(s, d1.serialized, 1000000);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 1000);
+  // 500ms 後、同一ヘッダーで再評価 → lastAttemptedJson 一致なので
+  // バックオフはリセットされず、送信は抑止される（ホットリトライ防止）
+  const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, false);
+  assert.strictEqual(s.backoffMs, 1000); // リセットされていない
+  // バックオフ経過後は送信される
   const d3 = evaluateSend(s, 1001000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d3.shouldSend, true);
 });
