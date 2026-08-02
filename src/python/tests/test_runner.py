@@ -552,10 +552,21 @@ def test_render_summary_table_colors_when_supported(monkeypatch):
         ["Test Account", "200/190", "53", "3", "2.3B", "180.2K"],
     ])
     assert "\033[1;36m" in table  # ヘッダー
-    assert "\033[1m" in table  # アカウント名太字
+    assert "\033[1m" in table  # 1行目アカウント名太字
     assert "\033[33m" in table  # Arena 1位 = 金
-    assert "\033[32m" in table  # GA 3位 = 緑
-    assert "\033[31m" in table  # Energy 200/190 超過 = 赤
+    assert "\033[32m" in table  # GA 8位 = 緑
+    assert "\033[2;31m" in table  # 2行目 Energy 200/190 超過 = 赤（ゼブラ行なので dim 合成）
+
+
+def test_render_summary_table_zebra_dims_even_rows(monkeypatch):
+    """偶数番目の行は全体 dim され、行の区別がつく。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    table = _render_summary_table([
+        ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
+        ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],
+    ]).splitlines()
+    assert table[3].startswith("\033[1m") and not table[3].startswith("\033[1;2m")
+    assert table[4].startswith("\033[1;2m")
 
 
 def test_render_summary_table_no_red_when_energy_within_cap(monkeypatch):

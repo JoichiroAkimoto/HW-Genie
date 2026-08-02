@@ -183,32 +183,34 @@ def cmd_auth(args):
         header = style(plain_header, bold=True, fg="cyan")
         print("\n" + header)
         print(style("-" * display_width(plain_header), dim=True))
-        for fixed_cells, memo_lines, player in rows:
+        for row_idx, (fixed_cells, memo_lines, player) in enumerate(rows):
+            # アカウント行のゼブラ: 偶数番目の行を全体 dim にして行を区切る
+            dim_row = row_idx % 2 == 1
             for i, memo_line in enumerate(memo_lines):
                 left = fixed_cells if i == 0 else [""] * len(fixed_cells)
                 styled = []
                 for j, (cell, w) in enumerate(zip(left, fixed_widths)):
                     padded = pad(cell, w)
                     if i > 0:
-                        # 継続行の固定列は空なのでスタイル不要
-                        styled.append(padded)
+                        # 継続行の固定列は空なのでスタイル不要（行のゼブラ dim のみ）
+                        styled.append(style(padded, dim=dim_row))
                         continue
                     if j == 0:
-                        styled.append(style(padded, bold=True))
+                        styled.append(style(padded, bold=True, dim=dim_row))
                     elif j in rank_keys:
-                        styled.append(style(padded, fg=rank_color(player.get(rank_keys[j]))))
+                        styled.append(
+                            style(padded, fg=rank_color(player.get(rank_keys[j])), dim=dim_row)
+                        )
                     elif j == energy_col:
                         if energy_over_cap(player.get("level"), player.get("energy")):
-                            styled.append(style(padded, fg="red"))
+                            styled.append(style(padded, fg="red", dim=dim_row))
                         else:
-                            styled.append(padded)
+                            styled.append(style(padded, dim=dim_row))
                     else:
-                        styled.append(padded)
+                        styled.append(style(padded, dim=dim_row))
                 memo_padded = pad(memo_line, memo_width)
-                if i > 0:
-                    # 継続行は本体行との区別のため薄くする
-                    memo_padded = style(memo_padded, dim=True)
-                styled.append(memo_padded)
+                # 継続行も 1 行目と同じ色（ゼブラ行では行ごと dim）
+                styled.append(style(memo_padded, dim=dim_row))
                 print(" | ".join(styled))
         print()
         return

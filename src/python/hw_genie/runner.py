@@ -230,18 +230,24 @@ def _render_summary_table(rows: list[list[str]]) -> str:
     rule_width = _display_width(plain_header)
     header_line = style(plain_header, bold=True, fg="cyan")
     body_lines = []
-    for row in rows:
+    for row_idx, row in enumerate(rows):
+        # アカウント行のゼブラ: 偶数番目の行を全体 dim にして行を区切る
+        dim_row = row_idx % 2 == 1
         cells = []
         for i, cell in enumerate(row):
             padded = _pad(cell, widths[i])
             if i == 0:
-                padded = style(padded, bold=True)
+                padded = style(padded, bold=True, dim=dim_row)
             elif i == 1:
                 padded = (
-                    style(padded, fg="red") if _energy_over_max(cell) else padded
+                    style(padded, fg="red", dim=dim_row)
+                    if _energy_over_max(cell)
+                    else style(padded, dim=dim_row)
                 )
             elif i in (2, 3):
-                padded = style(padded, fg=rank_color(_cell_int(cell)))
+                padded = style(padded, fg=rank_color(_cell_int(cell)), dim=dim_row)
+            else:
+                padded = style(padded, dim=dim_row)
             cells.append(padded)
         body_lines.append(" | ".join(cells))
     sep = style("=" * rule_width, dim=True)

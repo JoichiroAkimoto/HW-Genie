@@ -491,10 +491,38 @@ def test_cmd_auth_list_rule_width_matches_plain_header(capsys, monkeypatch):
     cmd_auth(args)
 
     lines = capsys.readouterr().out.splitlines()
-    header_line = next(line for line in lines if "\033[1;36m" in line)
-    rule_line = next(line for line in lines if line.startswith("\033[2m"))
+    header_idx = next(i for i, line in enumerate(lines) if "\033[1;36m" in line)
+    rule_line = lines[header_idx + 1]
     ansi = re.compile(r"\x1b\[[0-9;]*m")
-    assert display_width(ansi.sub("", header_line)) == display_width(ansi.sub("", rule_line))
+    assert display_width(ansi.sub("", lines[header_idx])) == display_width(ansi.sub("", rule_line))
+
+
+def test_cmd_auth_list_continuation_same_color_as_first_line(capsys, monkeypatch):
+    """継続行は 1 行目と同じ色（非ゼブラ行では dim にならない）。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    monkeypatch.setenv("COLUMNS", "120")
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice"}, "memo": "first line\nsecond line"})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    continuation = next(line for line in lines if "second line" in line)
+    assert "\033[2m" not in continuation
+
+
+def test_cmd_auth_list_zebra_dims_even_rows(capsys, monkeypatch):
+    """偶数番目のアカウント行は全体が dim され、行の区別がつく。"""
+    monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
+    SessionManager.save("Alice", {"player": {"id": "a1", "name": "Alice", "level": 130, "energy": 39, "arena_rank": 2}})
+    SessionManager.save("Bob", {"player": {"id": "b1", "name": "Bob", "level": 130, "energy": 39, "arena_rank": 3}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    first = next(line for line in lines if "Alice" in line)
+    second = next(line for line in lines if "Bob" in line)
+    assert first.startswith("\033[1m") and not first.startswith("\033[1;2m")
+    assert second.startswith("\033[1;2m")
 
 
 def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
