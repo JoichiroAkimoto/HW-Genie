@@ -9,6 +9,7 @@ from hw_genie.core.session_manager import SessionManager
 
 from . import dummy_responses as dummy
 from hw_genie.core.auth import (
+    AUTH_EXPIRED_MESSAGE,
     get_user_info,
     load_session,
     save_session,
@@ -76,6 +77,99 @@ def test_get_user_info_success(mock_post):
         datetime.fromisoformat(info["last_updated"])
     except ValueError:
         pytest.fail("last_updated is not a valid ISO format")
+
+
+@patch("requests.post")
+def test_get_user_info_invalid_signature_body(mock_post):
+    """非 JSON の "Invalid signature" 応答はセッション失効として分類される（回帰防止）"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = "Invalid signature"
+    mock_response.json.side_effect = json.JSONDecodeError("Expecting value: line 1 column 1 (char 0)", "", 0)
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+def test_get_user_info_non_json_body_shows_text(mock_post):
+    """JSON でないその他の応答は本文の一部をメッセージに含める"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = "Internal Server Error"
+    mock_response.json.side_effect = ValueError("not json")
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert "Internal Server Error" in info["message"]
+
+
+@patch("requests.post")
+def test_get_user_info_empty_body(mock_post):
+    """空ボディの応答は "Empty response" として報告される"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = ""
+    mock_response.json.side_effect = json.JSONDecodeError("Expecting value: line 1 column 1 (char 0)", "", 0)
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == "Empty response from API"
+
+
+@patch("requests.post")
+def test_get_user_info_http_401(mock_post):
+    """HTTP 401 はセッション失効として報告される"""
+    mock_response = MagicMock()
+    mock_response.status_code = 401
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+@pytest.mark.parametrize(
+    "error_body",
+    [
+        dummy.INVALID_SESSION_RESPONSE,
+        dummy.AUTH_ERROR_RESPONSE,
+    ],
+)
+def test_get_user_info_json_auth_error_shape(mock_post, error_body):
+    """JSON の認証エラー形状（InvalidSession / "auth"）はセッション失効として報告される"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = error_body
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+def test_get_user_info_non_auth_error_shape_falls_through(mock_post):
+    """認証以外のエラー形状（例: notEnoughStamina）は認証失効と誤分類しない"""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"error": {"name": "notEnoughStamina"}}
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == "API error"
 
 
 @patch("os.path.exists")

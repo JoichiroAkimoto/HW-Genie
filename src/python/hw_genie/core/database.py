@@ -654,7 +654,13 @@ def get_engine():
         with _init_lock:
             if _engine is None:
                 db_url, connect_args = build_database_config()
-                _engine = create_engine(db_url, connect_args=connect_args)
+                # pool_pre_ping: チェックアウト前に疎通確認し、死んだコネクション
+                # （例: Turso 側でアイドル切断された Hrana ストリーム）を自動破棄して
+                # 新規接続に切り替える。これがないと remote モードで
+                # "stream not found" (ValueError) が再発する。
+                _engine = create_engine(
+                    db_url, connect_args=connect_args, pool_pre_ping=True
+                )
                 engine = _engine
     return _engine
 
@@ -686,7 +692,11 @@ def get_write_engine():
                     _write_engine = get_engine()
                 else:
                     db_url, connect_args = build_write_database_config()
-                    _write_engine = create_engine(db_url, connect_args=connect_args)
+                    # get_engine と同じ理由で pool_pre_ping=True（リモート Hrana
+                    # ストリームのアイドル切断対策）
+                    _write_engine = create_engine(
+                        db_url, connect_args=connect_args, pool_pre_ping=True
+                    )
     return _write_engine
 
 

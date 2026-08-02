@@ -11,6 +11,10 @@ from sqlalchemy import create_engine
 from hw_genie.core import database
 from hw_genie.core.database import build_database_config
 
+# conftest の autouse fixture が database.get_engine をテスト用に差し替えるため、
+# 遅延初期化ロジックそのものを検証するテスト用に import 時点の実装を捕捉する。
+_real_get_engine = database.get_engine
+
 
 @pytest.fixture(autouse=True)
 def mock_no_env():
@@ -169,6 +173,49 @@ def test_lazy_engine_initialization(monkeypatch):
     engine2 = database.get_engine()
     assert engine1 is engine2
     assert state["built"] == 1
+
+
+def test_get_engine_uses_pool_pre_ping(monkeypatch):
+    """get_engine() は pool_pre_ping=True で生成される（死んだ接続の自動破棄）。"""
+    mock_engine = object()
+    called = {}
+
+    def fake_create_engine(url, **kwargs):
+        called["url"] = url
+        called["kwargs"] = kwargs
+        return mock_engine
+
+    monkeypatch.setattr(database, "build_database_config", lambda env=None: ("sqlite:///:memory:", {}))
+    monkeypatch.setattr(database, "create_engine", fake_create_engine)
+    monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "_SessionLocal", None)
+    monkeypatch.setattr(database, "engine", None)
+    monkeypatch.setattr(database, "get_engine", _real_get_engine)
+
+    assert database.get_engine() is mock_engine
+    assert called["kwargs"]["pool_pre_ping"] is True
+
+
+def test_get_write_engine_uses_pool_pre_ping(monkeypatch):
+    """リモート書き込みエンジンも pool_pre_ping=True で生成される。"""
+    mock_engine = object()
+    called = {}
+
+    def fake_create_engine(url, **kwargs):
+        called["url"] = url
+        called["kwargs"] = kwargs
+        return mock_engine
+
+    monkeypatch.setenv("TURSO_WRITE_REMOTE", "true")
+    monkeypatch.setenv("TURSO_SYNC_URL", "libsql://dummy.turso.io")
+    monkeypatch.setenv("TURSO_AUTH_TOKEN", "test-token")
+    monkeypatch.setattr(database, "create_engine", fake_create_engine)
+    monkeypatch.setattr(database, "_write_engine", None)
+    monkeypatch.setattr(database, "_WriteSessionLocal", None)
+
+    assert database.get_write_engine() is mock_engine
+    assert called["url"].startswith("sqlite+libsql://dummy.turso.io")
+    assert called["kwargs"]["pool_pre_ping"] is True
 
 
 def test_replica_dialect_forwards_sync_params():
