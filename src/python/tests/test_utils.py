@@ -181,6 +181,30 @@ def test_supports_color_no_color_wins_over_force_color(monkeypatch):
     assert not supports_color(_FakeStream(True))
 
 
+def test_supports_color_force_color_empty_falls_back_to_tty(monkeypatch):
+    """FORCE_COLOR が空文字の場合は未設定と同様、TTY 判定へフォールバックする。"""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "")
+    assert not supports_color(_FakeStream(False))
+    assert supports_color(_FakeStream(True))
+
+
+def test_supports_color_force_color_zero_disables(monkeypatch):
+    """FORCE_COLOR=0 は無効扱い（chalk の慣習に合わせ、TTY 判定へフォールバック）。"""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "0")
+    assert not supports_color(_FakeStream(False))
+    assert supports_color(_FakeStream(True))
+
+
+def test_supports_color_force_color_overrides_dumb_term(monkeypatch):
+    """FORCE_COLOR は TERM=dumb より優先される。"""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    assert supports_color(_FakeStream(False))
+
+
 def test_supports_color_disabled_by_dumb_term(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TERM", "dumb")
