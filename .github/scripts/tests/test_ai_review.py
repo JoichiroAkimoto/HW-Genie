@@ -377,6 +377,29 @@ def test_fetch_pr_metadata_empty_on_error():
         assert ai_review._fetch_pr_metadata("owner/repo", "42") == ""
 
 
+def _comment_api_responses(issue_comments, inline_comments=None, reviews=None):
+    """_fetch_pr_comments 用の API レスポンスモック。
+
+    3 つのエンドポイント（issues comments / pulls comments / pulls reviews）を
+    呼び出し順に返す。コマンドは ["gh", "api", "--paginate", "URL"] なので
+    URL は cmd[3]。
+    """
+    inline_comments = inline_comments or []
+    reviews = reviews or []
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[3]
+        if "issues/" in url:
+            return json.dumps(issue_comments).encode()
+        if "pulls/" in url and "/comments" in url:
+            return json.dumps(inline_comments).encode()
+        if "pulls/" in url and "/reviews" in url:
+            return json.dumps(reviews).encode()
+        raise Exception(f"unexpected url: {url}")
+
+    return fake_run
+
+
 def test_fetch_pr_comments_skips_bot_marker():
     payload = json.dumps(
         [
@@ -386,7 +409,9 @@ def test_fetch_pr_comments_skips_bot_marker():
         ]
     )
     with mock.patch(
-        "ai_review.subprocess.check_output", return_value=payload.encode()
+        "ai_review.subprocess.check_output", side_effect=_comment_api_responses(
+            issue_comments=json.loads(payload)
+        )
     ) as mock_run:
         result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "bot" not in result
@@ -397,19 +422,18 @@ def test_fetch_pr_comments_skips_bot_marker():
     assert existing is not None
     assert existing["user"]["login"] == "bot"
     # ページネーションで全コメントを取得する
-    assert "--paginate" in mock_run.call_args[0][0]
+    assert "--paginate" in mock_run.call_args_list[0][0][0]
 
 
 def test_fetch_pr_comments_returns_existing_comment():
     """bot のマーカーコメントを existing_comment として返す。"""
-    payload = json.dumps(
-        [
-            {"id": 1, "user": {"login": "alice"}, "body": "確認します"},
-            {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"},
-        ]
-    )
+    issue_comments = [
+        {"id": 1, "user": {"login": "alice"}, "body": "確認します"},
+        {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"},
+    ]
     with mock.patch(
-        "ai_review.subprocess.check_output", return_value=payload.encode()
+        "ai_review.subprocess.check_output",
+        side_effect=_comment_api_responses(issue_comments=issue_comments),
     ):
         result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "確認します" in result
@@ -417,11 +441,88 @@ def test_fetch_pr_comments_returns_existing_comment():
     assert existing == {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"}
 
 
+def test_fetch_pr_comments_includes_inline_and_reviews():
+    """インラインコードレビューコメントとレビュー本体も取得する。"""
+    issue_comments = [
+        {"id": 1, "user": {"login": "alice"}, "body": "トップレベルコメント"},
+        {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+    ]
+    inline_comments = [
+        {"user": {"login": "bob"}, "body": "ここが問題", "path": "src/app.py", "line": 42},
+        {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存"},
+    ]
+    reviews = [
+        {"user": {"login": "carol"}, "body": "レビューサマリ", "state": "APPROVED"},
+        {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+    ]
+    with mock.patch(
+        "ai_review.subprocess.check_output",
+        side_effect=_comment_api_responses(
+            issue_comments=issue_comments,
+            inline_comments=inline_comments,
+            reviews=reviews,
+        ),
+    ):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "トップレベルコメント" in result
+    assert "bob" in result
+    assert "src/app.py:42" in result
+    assert "ここが問題" in result
+    assert "carol" in result
+    assert "APPROVED" in result
+    assert "レビューサマリ" in result
+    # bot のマーカーコメントは既存として返す（ユーザーコメントには含めない）
+    assert existing is not None
+    assert existing["id"] == 2
+    assert "既存" not in result
+    assert "既存レビュー" not in result
+
+
+def test_fetch_pr_comments_inline_line_fallback():
+    """インラインコメントの line が None の場合、original_line にフォールバックする。"""
+    issue_comments = []
+    inline_comments = [
+        {"user": {"login": "bob"}, "body": "コメント", "path": "src/app.py", "line": None, "original_line": 10},
+        {"user": {"login": "carol"}, "body": "パスなしコメント", "path": "", "line": None},
+    ]
+    reviews = []
+    with mock.patch(
+        "ai_review.subprocess.check_output",
+        side_effect=_comment_api_responses(
+            issue_comments=issue_comments,
+            inline_comments=inline_comments,
+            reviews=reviews,
+        ),
+    ):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "src/app.py:10" in result
+    assert "インライン" in result
+    assert existing is None
+
+
 def test_fetch_pr_comments_empty_on_error():
     with mock.patch(
         "ai_review.subprocess.check_output", side_effect=Exception("gh error")
     ):
         assert ai_review._fetch_pr_comments("owner/repo", "42") == ("", None)
+
+
+def test_fetch_pr_comments_partial_failure_still_returns_issue_comments():
+    """インライン/レビュー取得が失敗しても、Issue コメントは返す。"""
+    issue_comments = [{"user": {"login": "alice"}, "body": "トップレベル"}]
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(issue_comments).encode()
+        raise Exception("inline fetch failed")
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "トップレベル" in result
+    assert existing is None
 
 
 def test_fetch_file_contents_includes_all_within_limit():
@@ -468,7 +569,7 @@ def test_fetch_file_contents_truncates_when_over_limit():
     assert mock_run.call_count == 2
 
 
-def test_fetch_file_contents_budget_exceeded_marks_omitted():
+def test_fetch_file_contents_budget_exceeded_truncates_head():
     paths = ["big.py", "small.py"]
     contents = {
         "repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300,
@@ -483,11 +584,84 @@ def test_fetch_file_contents_budget_exceeded_marks_omitted():
 
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
         result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
-    # big.py (300) は 250 を超えるため省略される
+    # 合計超過時: ヘッダは全文保持され、big.py は先頭トランケート、small.py は全文含まれる
     assert "### big.py" in result
-    assert "省略" in result
-    assert "### small.py" not in result
-    assert mock_run.call_count == 1
+    assert "省略: バッファ上限超過" in result
+    assert "### small.py" in result
+    assert "y" in result
+    assert "x" * 300 not in result
+    assert mock_run.call_count == 2
+
+
+def test_fetch_file_contents_total_stays_within_budget():
+    """ファイル数が多くても合計出力はバッファ上限を超えない。"""
+    n_files = 50
+    paths = [f"file_{i}.py" for i in range(n_files)]
+    contents = {
+        f"repos/owner/repo/contents/file_{i}.py?ref=refs/pull/42/head": "z" * 1000
+        for i in range(n_files)
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    limit = 2000
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    # 全ファイルのヘッダは保持され、合計は上限以内
+    assert "### file_0.py" in result
+    assert "### file_49.py" in result
+    assert len(result) <= limit
+
+
+def test_fetch_file_contents_tiny_budget_never_exceeds():
+    """本文枠が 0 になる極端なケース（ヘッダだけで上限に近い）でも上限を超えない。"""
+    n_files = 10
+    paths = [f"dir/very/long/path/file_{i}.py" for i in range(n_files)]
+    contents = {
+        f"repos/owner/repo/contents/dir/very/long/path/file_{i}.py?ref=refs/pull/42/head": "x" * 500
+        for i in range(n_files)
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    # ヘッダ（約 30 文字 × 10）で 300 文字。limit=100 では本文枠が 0 になる
+    limit = 100
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    assert len(result) <= limit
+
+
+def test_fetch_file_contents_separator_counted_in_budget():
+    """join セパレータ（\n\n）もバッファ上限に計上される。
+
+    entries 合計 = (11+116) + (11+117) = 255。limit=256 では旧実装（セパレータ未計上、
+    255 <= 256 で高速経路→257 文字返却）なら違反になる境界値。セパレータ計上
+    （257 > 256 → トランケート経路）なら上限内に収まる。
+    """
+    paths = ["a.py", "b.py"]
+    contents = {
+        "repos/owner/repo/contents/a.py?ref=refs/pull/42/head": "x" * 116,
+        "repos/owner/repo/contents/b.py?ref=refs/pull/42/head": "y" * 117,
+    }
+
+    def fake_run(cmd, **kwargs):
+        url = cmd[2]
+        if url in contents:
+            return contents[url].encode()
+        raise Exception(f"not found: {url}")
+
+    limit = 256
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    assert len(result) <= limit
 
 
 def test_fetch_file_contents_skips_missing_and_empty():
@@ -540,8 +714,11 @@ def test_fetch_file_contents_counts_header_in_budget():
             return contents[url].encode()
         raise Exception(f"not found: {url}")
 
-    # 本文 300 + ヘッダ "### big.py\n" (11) = 311 > 250 なので省略される
+    # 本文 300 + ヘッダ "### big.py\n" (11) = 311 > 250 なのでトランケートされる
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
         result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
     assert "省略" in result
-    assert "xxx" not in result
+    # トランケートされるため、元の 300 文字全部は含まれない（先頭部分は残る）
+    assert "x" * 300 not in result
+    assert "x" in result
+    assert len(result) <= 250

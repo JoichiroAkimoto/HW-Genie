@@ -1,6 +1,7 @@
 import os
 import time
 import random
+from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from google.genai import types
 import subprocess
@@ -22,6 +23,8 @@ MAX_ATTEMPTS = 6
 # 5xx 用バックオフ初期値（秒）。リトライごとに倍々になる。
 RETRY_DELAY_5XX = 5
 # 429 用バックオフ初期値（秒）。リトライごとに倍々になり、ジッター（0〜5 秒）を加算する。
+# 元の仕様に「初期 30 秒＋ジッター付きの長めの指数バックオフ」と明記されており、
+# レート制限からの回復には長めの待機が効果的なため 30 秒を維持する。
 RETRY_DELAY_429 = 30
 # 変更ファイル全文の合計バッファ上限（文字数）。モデル別のコンテキスト予算とも連動する。
 FILE_CONTENTS_BUDGET = 200000
@@ -319,16 +322,22 @@ def _fetch_pr_metadata(repo: str, pr_number: str) -> str:
 
 
 def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
-    """PR コメントスレッドを 1 回の API 呼び出し（ページネーション付き）で取得する。
+    """PR のコメント・インラインコメント・レビュー本体を取得する。
 
-    ユーザーの返信（bot のマーカーコメント以外）を「作成者: 本文」形式で
-    結合した文字列と、bot のマーカーコメント（前回レビュー、更新対象）の
-    コメントオブジェクトを返す。
+    - Issue コメント（`issues/{n}/comments`）: PR のトップレベルコメント。
+      ここから bot のマーカーコメント（前回レビュー、更新対象）も特定する。
+    - インラインコードレビューコメント（`pulls/{n}/comments`）: コード行単位の
+      コメント。bot のマーカーコメントは含まれない。
+    - レビュー本体（`pulls/{n}/reviews`）: レビュー全体のサマリコメント。
+
+    ユーザーの返信を「作成者: 本文」形式で結合した文字列と、
+    bot のマーカーコメントのコメントオブジェクトを返す。
 
     Returns:
         (user_comments_text, existing_comment): 失敗時は ("", None)。
     """
     try:
+        # 1) トップレベルコメント（bot の前回レビューもここから特定）
         result = subprocess.check_output(
             [
                 "gh",
@@ -350,10 +359,59 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
                 continue
             author = (c.get("user") or {}).get("login", "unknown")
             lines.append(f"作成者: {author}\n{body}")
-        return "\n\n".join(lines), existing_comment
     except Exception as e:
+        # issues コメントは existing_comment（前回レビュー）の特定元であり、
+        # 取得失敗時に inline/reviews だけ取っても更新対象が不明になる。
+        # 重複投稿を防ぐため、この場合は全体を失敗として扱う。
         print(f"Warning: Could not fetch PR comments: {e}")
         return "", None
+
+    # 2) インラインコードレビューコメント（コード行単位の議論）
+    try:
+        result = subprocess.check_output(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{repo}/pulls/{pr_number}/comments?per_page=100",
+            ]
+        ).decode("utf-8")
+        inline_comments = json.loads(result)
+        for c in inline_comments:
+            body = (c.get("body") or "").strip()
+            if not body or REVIEW_MARKER in body:
+                continue
+            author = (c.get("user") or {}).get("login", "unknown")
+            path = c.get("path", "")
+            line = c.get("line") or c.get("original_line") or ""
+            location = f"{path}:{line}" if path else "インライン"
+            lines.append(f"作成者: {author}（{location}）\n{body}")
+    except Exception as e:
+        print(f"Warning: Could not fetch PR inline comments: {e}")
+
+    # 3) レビュー本体（サマリコメント）
+    try:
+        result = subprocess.check_output(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{repo}/pulls/{pr_number}/reviews?per_page=100",
+            ]
+        ).decode("utf-8")
+        reviews = json.loads(result)
+        for r in reviews:
+            body = (r.get("body") or "").strip()
+            if not body or REVIEW_MARKER in body:
+                continue
+            author = (r.get("user") or {}).get("login", "unknown")
+            state = r.get("state", "")
+            prefix = f"（レビュー: {state}）" if state else ""
+            lines.append(f"作成者: {author}{prefix}\n{body}")
+    except Exception as e:
+        print(f"Warning: Could not fetch PR reviews: {e}")
+
+    return "\n\n".join(lines), existing_comment
 
 
 def _fetch_file_contents(repo: str, pr_number: str, paths: list[str], limit: int) -> str:
@@ -364,12 +422,18 @@ def _fetch_file_contents(repo: str, pr_number: str, paths: list[str], limit: int
     これはフォーク由来の PR でもベースリポジトリに head ブランチが存在しない場合に
     正しく解決できる参照形式である。
 
+    ファイルごとの取得は ThreadPoolExecutor で並列化する。合計バッファ上限を
+    超える場合は、後半のファイルを丸ごと捨てるのではなく、各ファイルに均等な
+    本文枠を割り当てて先頭からトランケートし、全ファイルのコンテキストを提供
+    する（ヘッダは常に全文保持、合計は上限以内に収まる）。
+
     Returns:
-        ファイルパスと内容の連結文字列（上限を超えたファイルは省略マーク付き）。
+        ファイルパスと内容の連結文字列。
     """
-    contents = []
-    total = 0
-    for path in paths:
+    if not paths:
+        return ""
+
+    def fetch_one(path: str) -> str | None:
         try:
             result = subprocess.check_output(
                 [
@@ -382,17 +446,49 @@ def _fetch_file_contents(repo: str, pr_number: str, paths: list[str], limit: int
             ).decode("utf-8", errors="replace")
         except Exception as e:
             print(f"Warning: Could not fetch contents of {path}: {e}")
-            continue
+            return None
         if not result.strip():
-            continue
-        # ヘッダ行・区切り文字もバッファに計上する（実プロンプトサイズを正確に見積もる）
-        entry = f"### {path}\n{result}"
-        total += len(entry)
-        if total > limit:
-            contents.append(f"### {path}\n(省略: 合計バッファ上限超過)")
-            break
-        contents.append(entry)
-    return "\n\n".join(contents)
+            return None
+        return result
+
+    # 並列取得（API 呼び出しは I/O 待ちが支配的。ファイル数が多い PR でも
+    # 逐次より高速に完了し、Actions の実行時間を削減する）
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        fetched = list(zip(paths, executor.map(fetch_one, paths)))
+    fetched = [(p, r) for p, r in fetched if r is not None]
+
+    if not fetched:
+        return ""
+
+    entries = [f"### {path}\n{result}" for path, result in fetched]
+    if sum(len(e) for e in entries) + (len(entries) - 1) * 2 <= limit:
+        return "\n\n".join(entries)
+
+    # 合計上限超過時: 各ファイルに均等に本文枠を割り当て、超過ファイルは本文を
+    # 先頭からトランケートして全ファイルのコンテキストを提供する（後半ファイルを
+    # 丸ごと捨てない）。ヘッダ（### パス）は常に全文保持する。
+    #
+    # マーカー分は「全ファイルがトランケートされる」と仮定して控除する（安全側）。
+    # 実際にマーカーが付かないファイルがあれば合計は上限未満に収まる。
+    # 最後に出力全体を limit でカットするため、どの入力でも絶対に上限を超えない。
+    n = len(fetched)
+    headers = [f"### {path}\n" for path, _ in fetched]
+    marker = "\n\n(省略: バッファ上限超過)"
+    header_total = sum(len(h) for h in headers)
+    separators = (n - 1) * 2  # "\n\n" で結合
+    body_budget = max(0, limit - header_total - separators - n * len(marker))
+    per_file = body_budget // n
+
+    contents = []
+    for i, (path, result) in enumerate(fetched):
+        if per_file > 0 and len(result) <= per_file:
+            contents.append(headers[i] + result)
+        elif per_file > 0:
+            contents.append(headers[i] + result[:per_file] + marker)
+        else:
+            # 本文枠が 0 の極端なケース（ヘッダだけで上限に近い）: 本文は提供しない
+            contents.append(headers[i] + marker)
+    return "\n\n".join(contents)[:limit]
 
 
 def main():
@@ -493,7 +589,8 @@ def main():
         sys.exit(0)
 
     # PR のタイトル・概要・ユーザーコメント・変更ファイル全文を取得してコンテキストを拡充
-    # コメントは 1 回の API 呼び出しで「ユーザー返信」と「前回の bot レビュー」の両方を取得する
+    # _fetch_pr_comments が「ユーザー返信（トップレベル＋インライン＋レビュー本体）」と
+    # 「前回の bot レビュー（更新対象）」をまとめて返す
     pr_metadata = _fetch_pr_metadata(repo, pr_number)
     user_comments, existing_comment = _fetch_pr_comments(repo, pr_number)
     file_contents = _fetch_file_contents(repo, pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET)
