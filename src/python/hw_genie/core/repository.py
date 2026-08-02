@@ -82,22 +82,32 @@ class SessionRepository:
                         "pool before retry: %s",
                         exc,
                     )
-                    self._dispose_read_pool()
+                    self._dispose_pool(get_engine, "read")
                 raise
 
         return retry_on_transient_db_error(_attempt, logger=logger)
 
-    def _dispose_read_pool(self) -> None:
-        """Discard pooled read connections so the next checkout is fresh.
+    def _dispose_pool(self, engine_getter, label: str) -> None:
+        """Discard pooled connections so the next checkout is fresh.
 
-        Best-effort: a failure here must not mask the original error.
+        A Turso Hrana stream that died while idle cannot be revived in place;
+        reusing the pooled connection would fail again with the same error on
+        the next attempt. Disposing the pool forces SQLAlchemy to open a new
+        connection (new stream) on the next checkout. Best-effort: a failure
+        here must not mask the original error.
+
+        NOTE: in the default configuration (``TURSO_WRITE_REMOTE`` unset) the
+        write engine IS the read engine, so disposing the write pool also
+        empties the shared read pool. Callers must therefore gate this on dead
+        Hrana streams only (WAL contention leaves connections healthy and
+        disposing would re-trigger sync() into the contended WAL).
         """
         try:
-            engine = get_engine()
+            engine = engine_getter()
             if hasattr(engine, "pool"):
                 engine.pool.dispose()
         except Exception:
-            logger.warning("Failed to dispose read pool", exc_info=True)
+            logger.warning("Failed to dispose %s pool", label, exc_info=True)
 
     def get_data(self, account: str) -> AccountData:
         """
@@ -217,33 +227,10 @@ class SessionRepository:
                         "before retry: %s",
                         exc,
                     )
-                    self._dispose_write_pool()
+                    self._dispose_pool(get_write_engine, "write")
                 raise
 
         retry_on_wal_contention(_attempt, logger=logger)
-
-    def _dispose_write_pool(self) -> None:
-        """Discard pooled write connections so the next checkout is fresh.
-
-        A Turso Hrana stream that died while idle cannot be revived in place;
-        reusing the pooled connection would fail again with the same error on
-        the next attempt. Disposing the pool forces SQLAlchemy to open a new
-        connection (new stream) on the next checkout. Best-effort: a failure
-        here must not mask the original error.
-
-        NOTE: in the default configuration (``TURSO_WRITE_REMOTE`` unset) the
-        write engine IS the read engine, so disposing also empties the shared
-        read pool. Callers must therefore gate this on dead Hrana streams
-        only (see ``_attempt`` in :meth:`update_config`): WAL contention
-        leaves connections healthy and disposing would re-trigger sync() into
-        the contended WAL.
-        """
-        try:
-            engine = get_write_engine()
-            if hasattr(engine, "pool"):
-                engine.pool.dispose()
-        except Exception:
-            logger.warning("Failed to dispose write pool", exc_info=True)
 
     def _update_config_locked(self, account: str, data: AccountData) -> None:
         """Single locked ``update_config`` attempt (retried on WAL contention)."""

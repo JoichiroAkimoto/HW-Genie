@@ -824,6 +824,7 @@ def test_is_hrana_stream_error_covers_real_client_strings():
         "connection keep-alive timed out",
         "connection closed",
         "connection error PROTOCOL_ERROR -- recv_headers: trailers frame was not EOS",
+        "stream error PROTOCOL_ERROR -- recv_headers: trailers frame was not EOS",
         "no result has been returned",
     ]:
         assert is_transient_db_error(ValueError(v)), v
