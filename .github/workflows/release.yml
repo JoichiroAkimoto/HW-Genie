@@ -30,7 +30,13 @@ jobs:
         working-directory: src/userscripts
 
       - name: Build userscript
-        run: bash ./build.sh --inject-url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+        # downloadURL はバージョン固定、updateURL は常に最新リリースを指す
+        # （releases/latest/download/...）。updateURL がバージョン固定だと
+        # Tampermonkey は常に同じ URL を確認し、新しいリリースを検知できない。
+        run: |
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/hw-genie-auth-capture.user.js"
+          UPDATE_URL="https://github.com/${{ github.repository }}/releases/latest/download/hw-genie-auth-capture.user.js"
+          bash ./build.sh --inject-download-url "$DOWNLOAD_URL" --inject-update-url "$UPDATE_URL"
         working-directory: src/userscripts
 
       - name: Create or Update Release

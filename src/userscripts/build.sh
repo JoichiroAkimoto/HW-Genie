@@ -8,7 +8,8 @@ OUTPUT="$DIST_DIR/hw-genie-auth-capture.user.js"
 # 失敗時（tsc エラー等）に一時ファイルを残さない
 trap 'rm -f "$DIST_DIR/bundle.tmp.js"' EXIT
 
-INJECT_URL=""
+INJECT_DOWNLOAD_URL=""
+INJECT_UPDATE_URL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -17,7 +18,25 @@ while [[ $# -gt 0 ]]; do
         echo "ERROR: --inject-url requires a value" >&2
         exit 1
       fi
-      INJECT_URL="$2"
+      # 後方互換: downloadURL / updateURL の両方に同じ値を設定する
+      INJECT_DOWNLOAD_URL="$2"
+      INJECT_UPDATE_URL="$2"
+      shift 2
+      ;;
+    --inject-download-url)
+      if [[ $# -lt 2 ]]; then
+        echo "ERROR: --inject-download-url requires a value" >&2
+        exit 1
+      fi
+      INJECT_DOWNLOAD_URL="$2"
+      shift 2
+      ;;
+    --inject-update-url)
+      if [[ $# -lt 2 ]]; then
+        echo "ERROR: --inject-update-url requires a value" >&2
+        exit 1
+      fi
+      INJECT_UPDATE_URL="$2"
       shift 2
       ;;
     *)
@@ -84,14 +103,15 @@ if ! grep -qE '^// @run-at[[:space:]]+document-idle[[:space:]]*$' <<< "$METADATA
   exit 1
 fi
 
-# Inject URL if provided
-if [[ -n "$INJECT_URL" ]]; then
+# Inject URLs if provided. downloadURL と updateURL を別々に設定できる
+# （自動更新のため updateURL は常に最新リリースを指す URL を使う）。
+if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
-    sed -i '' "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
+    [[ -n "$INJECT_DOWNLOAD_URL" ]] && sed -i '' "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
+    [[ -n "$INJECT_UPDATE_URL" ]] && sed -i '' "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
   else
-    sed -i "s|__DOWNLOAD_URL__|$INJECT_URL|g" "$OUTPUT"
-    sed -i "s|__UPDATE_URL__|$INJECT_URL|g" "$OUTPUT"
+    [[ -n "$INJECT_DOWNLOAD_URL" ]] && sed -i "s|__DOWNLOAD_URL__|$INJECT_DOWNLOAD_URL|g" "$OUTPUT"
+    [[ -n "$INJECT_UPDATE_URL" ]] && sed -i "s|__UPDATE_URL__|$INJECT_UPDATE_URL|g" "$OUTPUT"
   fi
 
   # 未置換のプレースホルダが残っていないことを検証
@@ -100,7 +120,7 @@ if [[ -n "$INJECT_URL" ]]; then
     exit 1
   fi
 else
-  # --inject-url なしのローカルビルド: プレースホルダが残るため警告
+  # --inject-url 系なしのローカルビルド: プレースホルダが残るため警告
   if grep -q '__DOWNLOAD_URL__\|__UPDATE_URL__' "$OUTPUT"; then
     echo "WARNING: __DOWNLOAD_URL__/__UPDATE_URL__ placeholders remain (pass --inject-url for release)" >&2
   fi

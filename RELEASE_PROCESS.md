@@ -16,7 +16,15 @@ git push --tags
 - `git push --tags` で `.github/workflows/release.yml` がトリガー
 - `index.ts` の `@version` からバージョンを抽出してビルド
 - GitHub Release に `.user.js` をアセットとして自動アップロード
-- Tampermonkey が `@updateURL` / `@downloadURL` に基づいて自動更新を検知
+- Tampermonkey が `@updateURL` に基づいて自動更新を検知
+
+### 自動更新の仕組み
+
+- `@downloadURL` はバージョン固定の URL（`releases/download/vX.Y.Z/...`）
+- `@updateURL` は常に最新リリースを指す URL（`releases/latest/download/...`）
+- Tampermonkey は `@updateURL` を定期的に確認し、新しいバージョンがあれば
+  自動更新します。`@updateURL` をバージョン固定にすると新リリースを検知
+  できないため、常に `latest` を指す URL を使用してください。
 
 ### バージョンルール
 
