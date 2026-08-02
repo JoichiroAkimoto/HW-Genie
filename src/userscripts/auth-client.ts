@@ -112,7 +112,10 @@ export async function sendHeadersToServer(
     }
     return { ok: false, playerName: null, reason: "status-error" };
   } catch (e) {
-    if (e instanceof DOMException && e.name === "AbortError") {
+    // 環境（Bun / Node / Tampermonkey サンドボックス）によっては fetch の
+    // 中断エラーが DOMException の直接インスタンスでないことがあるため、
+    // name ベースで判定する（e?.name === "AbortError"）。
+    if ((e instanceof DOMException || (e as Error)?.name === "AbortError")) {
       return { ok: false, playerName: null, reason: "timeout" };
     }
     return { ok: false, playerName: null, reason: "network" };

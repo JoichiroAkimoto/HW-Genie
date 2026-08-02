@@ -89,19 +89,14 @@ export function evaluateSend(
   // 混在として送信しない。同一セッション内の遅延キー（非同期署名計算等）は
   // 混在ではなく、identity が不変なら抑止しない（継続トラフィック下の恒久
   // 抑止を回避）。
+  // なお、pruneStaleKeys 実行後に必須キーが存在することは、全キーが TTL 内
+  // （lastSeenAt が staleKeyTtlMs 以内）であることを論理的に保証するため、
+  // 追加の TTL チェックは不要。
   const coherentWindowMs = Math.min(freshWindowMs, pollIntervalMs);
   const times = requiredKeys.map((key) => s.lastSeenAt[key] ?? 0);
   const spread = Math.max(...times) - Math.min(...times);
   const capturing = now - (s.lastCaptureAt ?? 0) < coherentWindowMs;
   if (spread > coherentWindowMs && capturing && identityChanged) {
-    return { shouldSend: false, serialized: null, snapshot: null };
-  }
-  // settled（またはコヒーレント）: 全キーが TTL 内に観測されていること
-  if (
-    !requiredKeys.every(
-      (key) => now - (s.lastSeenAt[key] ?? 0) <= staleKeyTtlMs,
-    )
-  ) {
     return { shouldSend: false, serialized: null, snapshot: null };
   }
 
