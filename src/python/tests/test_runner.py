@@ -42,8 +42,18 @@ def test_resolve_max_parallel_reads_env(monkeypatch):
     assert resolve_max_parallel(None, 4) == 4
 
 
-def test_list_account_aliases_sorted(fake_accounts):
+def test_list_account_aliases_registration_order(fake_accounts):
+    """登録順（list_accounts の返り値）をそのまま返す（ソートしない）。"""
     assert list_account_aliases() == ["alpha", "beta", "gamma"]
+
+
+def test_list_account_aliases_not_alphabetically_sorted(monkeypatch):
+    """アルファベット順でない登録順もそのまま維持される。"""
+    monkeypatch.setattr(
+        "hw_genie.runner.SessionManager.list_accounts",
+        lambda: ["zulu", "alpha", "mike"],
+    )
+    assert list_account_aliases() == ["zulu", "alpha", "mike"]
 
 
 def test_run_for_account_missing_session(monkeypatch):

@@ -122,9 +122,14 @@ class SessionRepository:
             return data
 
     def list_accounts(self) -> List[str]:
-        """Returns a list of all account aliases."""
+        """Returns all account aliases in registration order (by ``id``).
+
+        ``id`` is the rowid alias of the accounts table, so ordering by it is
+        deterministic regardless of physical layout or replica rebuilds. All
+        consumers (``auth --list``, ``multi``, hwda/hwsa) rely on this order.
+        """
         with get_session_local()() as db:
-            records = db.query(Account.alias).all()
+            records = db.query(Account.alias).order_by(Account.id).all()
             return [r.alias for r in records]
 
     def save_data(self, account: str, data: AccountData) -> None:

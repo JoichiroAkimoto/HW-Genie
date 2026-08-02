@@ -26,8 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 def list_account_aliases() -> list[str]:
-    """Return all registered account aliases sorted for stable ordering."""
-    return sorted(SessionManager.list_accounts())
+    """Return all registered account aliases in registration order.
+
+    ``list_accounts`` already orders by id (the rowid alias), so multi runs
+    and hwda/hwsa execute accounts in the order they were registered.
+    """
+    return SessionManager.list_accounts()
 
 
 def resolve_max_parallel(

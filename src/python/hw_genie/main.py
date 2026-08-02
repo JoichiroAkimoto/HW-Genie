@@ -63,7 +63,8 @@ def cmd_auth(args):
             if not accounts:
                 print("No accounts found in database.")
                 return
-            for alias in sorted(accounts):
+            # 登録順（list_accounts が id 順で返す）
+            for alias in accounts:
                 print(alias)
             return
 
@@ -122,9 +123,9 @@ def cmd_auth(args):
             updated_col,
         ]
 
-        # まず全アカウントの固定セルを収集する
+        # まず全アカウントの固定セルを収集する（登録順 = list_accounts の id 順）
         row_data = []
-        for alias in sorted(accounts):
+        for alias in accounts:
             data = SessionManager.load(alias)
             player = data.get("player", {})
             p_name = player.get("name", "Unknown")

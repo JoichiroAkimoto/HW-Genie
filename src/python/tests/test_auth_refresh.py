@@ -531,6 +531,20 @@ def test_cmd_auth_list_zebra_dims_even_rows(capsys, monkeypatch):
     assert "\033[2;31m" not in second
 
 
+def test_cmd_auth_list_registration_order(capsys, monkeypatch):
+    """auth --list は名前順ではなく登録順（id 順）で表示される。"""
+    monkeypatch.setenv("HWGENIE_TZ", "Asia/Tokyo")
+    SessionManager.save("Zulu", {"player": {"id": "z1", "name": "Zulu"}})
+    SessionManager.save("Alpha", {"player": {"id": "a1", "name": "Alpha"}})
+    args = SimpleNamespace(fresh=False, list=True, list_names=False, account=None)
+    cmd_auth(args)
+
+    lines = capsys.readouterr().out.splitlines()
+    zulu_idx = next(i for i, line in enumerate(lines) if "Zulu" in line)
+    alpha_idx = next(i for i, line in enumerate(lines) if "Alpha" in line)
+    assert zulu_idx < alpha_idx
+
+
 def test_cmd_auth_list_energy_not_red_below_cap(capsys, monkeypatch):
     """上限以下の Energy は赤にならない（低スタミナは無色）。"""
     monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
