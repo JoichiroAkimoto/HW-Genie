@@ -1,7 +1,8 @@
-"""ai_review.py のメタデータ抽出・モデル解決ロジックのテスト。"""
+"""ai_review.py のヘルパー関数（リトライ・PR コメント取得・ファイル全文取得・メタデータ抽出・モデル解決）のテスト。"""
 
 import json
 import os
+import subprocess
 import sys
 from unittest import mock
 
@@ -312,6 +313,28 @@ def test_is_retryable_api_error_by_code():
     assert ai_review._is_retryable_api_error(_CodeError(400)) == (False, None)
 
 
+def test_generate_with_retry_429_backoff_capped():
+    """429 バックオフは上限（120 秒）で cap される。"""
+    client = _fake_client(
+        Exception("429 Too Many Requests"),
+        Exception("429 Too Many Requests"),
+        Exception("429 Too Many Requests"),
+        Exception("429 Too Many Requests"),
+    )
+    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
+        "ai_review.random.uniform", return_value=0.0
+    ):
+        resp = ai_review._generate_with_retry(client, "model", "prompt", None)
+    assert resp.text == "ok"
+    # 30 → 60 → 120（cap）→ 120（cap）→ 成功
+    assert mock_sleep.call_args_list == [
+        mock.call(30.0),
+        mock.call(60.0),
+        mock.call(120.0),
+        mock.call(120.0),
+    ]
+
+
 def test_generate_with_retry_uses_error_code():
     """e.code 属性を持つ例外はコードで判定してリトライする。"""
     client = _fake_client(_CodeError(429))
@@ -523,94 +546,149 @@ def test_fetch_pr_comments_partial_failure_still_returns_issue_comments():
         result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "トップレベル" in result
     assert existing is None
+    # 部分失敗の注記が含まれる
+    assert "インラインコードレビューコメントの取得に失敗" in result
+    assert "レビュー本体の取得に失敗" in result
+
+
+def test_fetch_pr_comments_partial_failure_notes_only_failed_endpoint():
+    """インラインのみ失敗した場合、レビュー本体の注記は付かない。"""
+    issue_comments = [{"user": {"login": "alice"}, "body": "トップレベル"}]
+    reviews = [{"user": {"login": "carol"}, "body": "サマリ", "state": "APPROVED"}]
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return json.dumps(issue_comments).encode()
+        if call_count == 2:
+            raise Exception("inline fetch failed")
+        return json.dumps(reviews).encode()
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert "インラインコードレビューコメントの取得に失敗" in result
+    assert "レビュー本体の取得に失敗" not in result
+    assert "サマリ" in result
+
+
+def _git_show_responses(contents):
+    """_fetch_file_contents 用の git レスポンスモック。
+
+    - fetch: ["git", "fetch", "origin", "refs/pull/42/head:refs/remotes/pull/42/head"]
+      → 成功を返す
+    - show: ["git", "show", "refs/remotes/pull/42/head:{path}"] → パスに対応する内容
+    """
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git" and cmd[1] == "fetch":
+            return b""
+        spec = cmd[2]
+        for path, data in contents.items():
+            if spec == f"refs/remotes/pull/42/head:{path}":
+                return data.encode()
+        raise Exception(f"not found: {spec}")
+
+    return fake_run
 
 
 def test_fetch_file_contents_includes_all_within_limit():
     paths = ["a.py", "b.py"]
-    contents = {
-        "repos/owner/repo/contents/a.py?ref=refs/pull/42/head": "print('a')",
-        "repos/owner/repo/contents/b.py?ref=refs/pull/42/head": "print('b')",
-    }
+    contents = {"a.py": "print('a')", "b.py": "print('b')"}
 
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
-
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=100000)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ) as mock_run:
+        result = ai_review._fetch_file_contents("42", paths, limit=100000)
     assert "### a.py" in result
     assert "print('a')" in result
     assert "### b.py" in result
     assert "print('b')" in result
-    assert mock_run.call_count == 2
+    assert mock_run.call_count == 3  # fetch 1 + show 2
 
 
 def test_fetch_file_contents_truncates_when_over_limit():
     paths = ["big.py", "small.py"]
-    contents = {
-        "repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300,
-        "repos/owner/repo/contents/small.py?ref=refs/pull/42/head": "y",
-    }
+    contents = {"big.py": "x" * 300, "small.py": "y"}
 
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
-
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=400)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ) as mock_run:
+        result = ai_review._fetch_file_contents("42", paths, limit=400)
     # big.py (300) + small.py (1) = 301 < 400 なので両方含まれる
     assert "### big.py" in result
     assert "### small.py" in result
     assert "省略" not in result
-    assert mock_run.call_count == 2
+    assert mock_run.call_count == 3  # fetch 1 + show 2
 
 
 def test_fetch_file_contents_budget_exceeded_truncates_head():
     paths = ["big.py", "small.py"]
-    contents = {
-        "repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300,
-        "repos/owner/repo/contents/small.py?ref=refs/pull/42/head": "y",
-    }
+    contents = {"big.py": "x" * 300, "small.py": "y"}
 
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
-
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ) as mock_run:
+        result = ai_review._fetch_file_contents("42", paths, limit=250)
     # 合計超過時: ヘッダは全文保持され、big.py は先頭トランケート、small.py は全文含まれる
     assert "### big.py" in result
     assert "省略: バッファ上限超過" in result
     assert "### small.py" in result
     assert "y" in result
     assert "x" * 300 not in result
-    assert mock_run.call_count == 2
+    assert mock_run.call_count == 3  # fetch 1 + show 2
+
+
+def test_fetch_file_contents_greedy_reallocates_to_large_files():
+    """小さいファイルの余剰枠が大きいファイルへ再分配される。
+
+    実測（limit=200）: 均等枠のみなら large.py 本文は 70 文字。
+    greedy 再分配後は large.py 本文が 130 文字になる（出力全体の 'l' 数は
+    small.py パスの 'l' を含めて 133）。閾値 100 で両者を確実に弁別できる。
+    """
+    paths = ["small.py", "large.py"]
+    # small は 10 文字、large は 1000 文字。limit=200 では均等枠は 70 程度。
+    contents = {"small.py": "s" * 10, "large.py": "l" * 1000}
+
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ):
+        result = ai_review._fetch_file_contents("42", paths, limit=200)
+    # small.py は全文採用（10 文字）され、余剰が large.py に再分配される
+    assert "### small.py" in result
+    assert "s" * 10 in result
+    assert "### large.py" in result
+    # 再分配なし（出力全体の 'l' 数は 73）では通らない閾値で、再分配を実証する
+    assert result.count("l") > 100
+    assert len(result) <= 200
+
+
+def test_fetch_file_contents_skips_missing_and_empty():
+    paths = ["missing.py", "empty.py"]
+    contents = {"empty.py": "   "}
+
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ) as mock_run:
+        result = ai_review._fetch_file_contents("42", paths, limit=1000)
+    assert "### missing.py" not in result
+    assert "### empty.py" not in result
+    assert result == ""
+    assert mock_run.call_count == 3  # fetch 1 + show 2
 
 
 def test_fetch_file_contents_total_stays_within_budget():
     """ファイル数が多くても合計出力はバッファ上限を超えない。"""
     n_files = 50
     paths = [f"file_{i}.py" for i in range(n_files)]
-    contents = {
-        f"repos/owner/repo/contents/file_{i}.py?ref=refs/pull/42/head": "z" * 1000
-        for i in range(n_files)
-    }
-
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
+    contents = {f"file_{i}.py": "z" * 1000 for i in range(n_files)}
 
     limit = 2000
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ):
+        result = ai_review._fetch_file_contents("42", paths, limit=limit)
     # 全ファイルのヘッダは保持され、合計は上限以内
     assert "### file_0.py" in result
     assert "### file_49.py" in result
@@ -621,21 +699,14 @@ def test_fetch_file_contents_tiny_budget_never_exceeds():
     """本文枠が 0 になる極端なケース（ヘッダだけで上限に近い）でも上限を超えない。"""
     n_files = 10
     paths = [f"dir/very/long/path/file_{i}.py" for i in range(n_files)]
-    contents = {
-        f"repos/owner/repo/contents/dir/very/long/path/file_{i}.py?ref=refs/pull/42/head": "x" * 500
-        for i in range(n_files)
-    }
-
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
+    contents = {f"dir/very/long/path/file_{i}.py": "x" * 500 for i in range(n_files)}
 
     # ヘッダ（約 30 文字 × 10）で 300 文字。limit=100 では本文枠が 0 になる
     limit = 100
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ):
+        result = ai_review._fetch_file_contents("42", paths, limit=limit)
     assert len(result) <= limit
 
 
@@ -647,76 +718,72 @@ def test_fetch_file_contents_separator_counted_in_budget():
     （257 > 256 → トランケート経路）なら上限内に収まる。
     """
     paths = ["a.py", "b.py"]
-    contents = {
-        "repos/owner/repo/contents/a.py?ref=refs/pull/42/head": "x" * 116,
-        "repos/owner/repo/contents/b.py?ref=refs/pull/42/head": "y" * 117,
-    }
-
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
+    contents = {"a.py": "x" * 116, "b.py": "y" * 117}
 
     limit = 256
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=limit)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ):
+        result = ai_review._fetch_file_contents("42", paths, limit=limit)
     assert len(result) <= limit
 
 
-def test_fetch_file_contents_skips_missing_and_empty():
-    paths = ["missing.py", "empty.py"]
-    contents = {"repos/owner/repo/contents/empty.py?ref=refs/pull/42/head": "   "}
+def test_fetch_file_contents_fetch_failure_falls_back():
+    """fetch 失敗（CalledProcessError）でも警告のみで続行し、show は試みる。"""
+    paths = ["a.py"]
+    contents = {"a.py": "content a"}
+    call_count = 0
 
     def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
+        nonlocal call_count
+        call_count += 1
+        if cmd[0] == "git" and cmd[1] == "fetch":
+            raise subprocess.CalledProcessError(
+                128, cmd, stderr=b"fatal: couldn't find remote ref"
+            )
+        spec = cmd[2]
+        for path, data in contents.items():
+            if spec == f"refs/remotes/pull/42/head:{path}":
+                return data.encode()
+        raise Exception(f"not found: {spec}")
 
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=1000)
-    assert "### missing.py" not in result
-    assert "### empty.py" not in result
-    assert result == ""
-    assert mock_run.call_count == 2
+        result = ai_review._fetch_file_contents("42", paths, limit=1000)
+    assert "### a.py" in result
+    assert "content a" in result
+    assert mock_run.call_count == 2  # fetch 失敗 1 + show 1
 
 
-def test_fetch_file_contents_url_encodes_special_chars():
-    """パスに URL エスケープが必要な文字が含まれていても正しく取得できる。"""
-    paths = ["my file.py", "foo#1.py"]
+def test_fetch_file_contents_fetch_oserror_does_not_abort():
+    """fetch が OSError（git 不在等）でも abort せず show に進む。"""
+    paths = ["a.py"]
+    contents = {"a.py": "content a"}
 
     def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        # エスケープされた URL で呼ばれていることを確認
-        if url == "repos/owner/repo/contents/my%20file.py?ref=refs/pull/42/head":
-            return b"content a"
-        if url == "repos/owner/repo/contents/foo%231.py?ref=refs/pull/42/head":
-            return b"content b"
-        raise Exception(f"unexpected url: {url}")
+        if cmd[0] == "git" and cmd[1] == "fetch":
+            raise OSError("git binary not found")
+        spec = cmd[2]
+        for path, data in contents.items():
+            if spec == f"refs/remotes/pull/42/head:{path}":
+                return data.encode()
+        raise Exception(f"not found: {spec}")
 
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=10000)
-    assert "### my file.py" in result
+        result = ai_review._fetch_file_contents("42", paths, limit=1000)
+    assert "### a.py" in result
     assert "content a" in result
-    assert "### foo#1.py" in result
-    assert "content b" in result
 
 
 def test_fetch_file_contents_counts_header_in_budget():
     """ヘッダ行・区切り文字もバッファ上限に計上される。"""
     paths = ["big.py"]
-    contents = {"repos/owner/repo/contents/big.py?ref=refs/pull/42/head": "x" * 300}
-
-    def fake_run(cmd, **kwargs):
-        url = cmd[2]
-        if url in contents:
-            return contents[url].encode()
-        raise Exception(f"not found: {url}")
+    contents = {"big.py": "x" * 300}
 
     # 本文 300 + ヘッダ "### big.py\n" (11) = 311 > 250 なのでトランケートされる
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result = ai_review._fetch_file_contents("owner/repo", "42", paths, limit=250)
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=_git_show_responses(contents)
+    ):
+        result = ai_review._fetch_file_contents("42", paths, limit=250)
     assert "省略" in result
     # トランケートされるため、元の 300 文字全部は含まれない（先頭部分は残る）
     assert "x" * 300 not in result
