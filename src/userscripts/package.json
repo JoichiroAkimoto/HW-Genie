@@ -3,7 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "build": "./build.sh"
+    "build": "bash build.sh",
+    "test": "bun test tests/"
   },
   "devDependencies": {
     "@types/bun": "latest"
