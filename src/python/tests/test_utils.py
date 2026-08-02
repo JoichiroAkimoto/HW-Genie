@@ -156,6 +156,7 @@ class _FakeStream:
 
 def test_supports_color_requires_tty(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("TERM", raising=False)
     assert not supports_color(_FakeStream(False))
     assert supports_color(_FakeStream(True))
@@ -209,6 +210,7 @@ def test_supports_color_force_color_overrides_dumb_term(monkeypatch):
 
 def test_supports_color_disabled_by_dumb_term(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setenv("TERM", "dumb")
     assert not supports_color(_FakeStream(True))
 
