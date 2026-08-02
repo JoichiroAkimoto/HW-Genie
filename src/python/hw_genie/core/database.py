@@ -42,6 +42,14 @@ _HRANA_STREAM_MARKERS = (
     "streamclosed",  # HranaError::StreamClosed variant (e.g. "StreamClosed")
     "baton not found",
     "connection closed because of a broken pipe",
+    # HTTP/2 connection death that takes the Hrana stream down with it
+    # (extracted from the libsql client's own message strings)
+    "connection was not ready",
+    "connection keep-alive timed out",
+    "connection closed",
+    "no result has been returned",
+    "connection error protocol_error",
+    "stream error protocol_error",
 )
 
 

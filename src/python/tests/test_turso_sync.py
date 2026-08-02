@@ -815,6 +815,42 @@ def test_is_transient_db_error_hrana_variants():
         assert is_transient_db_error(ValueError(v)), v
 
 
+def test_is_hrana_stream_error_covers_real_client_strings():
+    """libsql クライアントが送出しうる切断系メッセージを捕捉する。"""
+    from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
+
+    for v in [
+        "connection was not ready",
+        "connection keep-alive timed out",
+        "connection closed",
+        "connection error PROTOCOL_ERROR -- recv_headers: trailers frame was not EOS",
+        "no result has been returned",
+    ]:
+        assert is_transient_db_error(ValueError(v)), v
+        assert is_hrana_stream_error(ValueError(v)), v
+
+
+def test_retry_on_transient_db_error_alias(mock_sleep):
+    """retry_on_transient_db_error は retry_on_wal_contention のエイリアスとして動作する。"""
+    from hw_genie.core.database import (
+        retry_on_transient_db_error,
+        retry_on_wal_contention,
+    )
+
+    assert retry_on_transient_db_error is retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ValueError("stream not found: x:y")
+        return "ok"
+
+    assert retry_on_transient_db_error(flaky, attempts=3) == "ok"
+    assert calls["n"] == 2
+
+
 def test_retry_on_wal_contention_recovers_from_hrana_stream(mock_sleep):
     """Hrana ストリーム切断でも再試行で成功する。"""
     from hw_genie.core.database import retry_on_wal_contention
