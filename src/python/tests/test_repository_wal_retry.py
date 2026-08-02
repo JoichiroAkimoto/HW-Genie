@@ -26,6 +26,11 @@ def test_update_config_retries_wal_contention(monkeypatch, mock_sleep):
             return session
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module,
+        "get_write_engine",
+        lambda: type("E", (), {"pool": type("P", (), {"dispose": lambda self: None})()})(),
+    )
 
     repo_module.SessionRepository().update_config(
         "wal_retry_alias", {"player": {"id": "player-1", "name": "RetryTest"}}
@@ -53,6 +58,11 @@ def test_update_config_raises_when_wal_contention_persists(monkeypatch, mock_sle
             return session
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module,
+        "get_write_engine",
+        lambda: type("E", (), {"pool": type("P", (), {"dispose": lambda self: None})()})(),
+    )
 
     with pytest.raises(ValueError, match="wal_insert_begin failed"):
         repo_module.SessionRepository().update_config(
@@ -60,3 +70,47 @@ def test_update_config_raises_when_wal_contention_persists(monkeypatch, mock_sle
         )
     # attempts=5 のうち 4 回バックオフ待ちする
     assert mock_sleep.call_count == 4
+
+
+def test_update_config_retries_hrana_stream_and_disposes_pool(monkeypatch, mock_sleep):
+    """Hrana ストリーム切断でも再試行し、プールを dispose して新規接続を張る。"""
+    attempts = {"n": 0}
+    real_sm = get_session_local()
+    disposed = {"count": 0}
+
+    class FlakyFactory:
+        def __call__(self, *args, **kwargs):
+            session = real_sm()
+            orig_commit = session.commit
+
+            def commit():
+                if attempts["n"] == 0:
+                    attempts["n"] += 1
+                    raise ValueError("stream not found: 49580f7d:ad779")
+                return orig_commit()
+
+            session.commit = commit
+            return session
+
+    class FakePool:
+        def dispose(self):
+            disposed["count"] += 1
+
+    class FakeEngine:
+        pool = FakePool()
+
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
+    monkeypatch.setattr(
+        repo_module, "get_write_engine", lambda: FakeEngine()
+    )
+
+    repo_module.SessionRepository().update_config(
+        "hrana_retry_alias", {"player": {"id": "player-3", "name": "HranaRetry"}}
+    )
+
+    assert attempts["n"] == 1
+    assert disposed["count"] == 1
+    with get_session_local()() as db:
+        rec = db.query(Account).filter(Account.alias == "hrana_retry_alias").first()
+        assert rec is not None
+        assert rec.player_name == "HranaRetry"

@@ -5,6 +5,7 @@ from .database import (
     AccountConfig,
     _wal_io_lock,
     get_session_local,
+    get_write_engine,
     get_write_session_local,
     retry_on_wal_contention,
 )
@@ -146,14 +147,40 @@ class SessionRepository:
         """
         # The local replica's SQLite WAL only allows a single writer, and OTHER
         # processes sharing the same replica file (auth-server, a concurrently
-        # launched CLI, ...) can transiently hold it. Retry such races with
-        # exponential backoff instead of aborting the run. The lock is taken
-        # per attempt (NOT around the whole retry loop) so that backoff sleeps
-        # between attempts do not block other threads in this process.
-        retry_on_wal_contention(
-            lambda: self._update_config_locked(account, data),
-            logger=logger,
-        )
+        # launched CLI, ...) can transiently hold it. A remote (Turso) write
+        # can additionally fail because the Hrana stream died while idle. Retry
+        # such transient errors with exponential backoff instead of aborting
+        # the run. The lock is taken per attempt (NOT around the whole retry
+        # loop) so that backoff sleeps between attempts do not block other
+        # threads in this process.
+        def _attempt() -> None:
+            try:
+                return self._update_config_locked(account, data)
+            except Exception:
+                # The connection used by this attempt may be dead (Hrana
+                # stream closed, WAL contention). Dispose the pool so the next
+                # retry checks out a fresh connection (new stream) instead of
+                # reusing the poisoned one.
+                self._dispose_write_pool()
+                raise
+
+        retry_on_wal_contention(_attempt, logger=logger)
+
+    def _dispose_write_pool(self) -> None:
+        """Discard pooled write connections so the next checkout is fresh.
+
+        A Turso Hrana stream that died while idle cannot be revived in place;
+        reusing the pooled connection would fail again with the same error on
+        the next attempt. Disposing the pool forces SQLAlchemy to open a new
+        connection (new stream) on the next checkout. Best-effort: a failure
+        here must not mask the original error.
+        """
+        try:
+            engine = get_write_engine()
+            if hasattr(engine, "pool"):
+                engine.pool.dispose()
+        except Exception:
+            logger.warning("Failed to dispose write pool", exc_info=True)
 
     def _update_config_locked(self, account: str, data: AccountData) -> None:
         """Single locked ``update_config`` attempt (retried on WAL contention)."""

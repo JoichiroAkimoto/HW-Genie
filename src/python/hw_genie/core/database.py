@@ -27,13 +27,21 @@ _WAL_CONTENTION_MARKERS = (
     "database is locked",
 )
 
-# Substrings that identify a dead Turso Hrana stream. A long-idle remote
-# connection is closed by the server; the next query then fails with
-# ``stream not found`` (ValueError). pool_pre_ping checks liveness at checkout,
-# but a stream can die between the ping and the statement, so these errors are
-# retried like WAL contention (the retry opens a fresh connection).
+# Substrings that identify a dead/closed Turso Hrana stream (the libsql client
+# emits several variants: HTTP 404 "stream not found", server-initiated stream
+# close, closed/broken HTTP connection). All are resolved by opening a fresh
+# connection, so they are retried like WAL contention. Matches are
+# case-insensitive on the lowercased message; keep markers lowercase.
 _HRANA_STREAM_MARKERS = (
+    # Hrana v1/v2 HTTP API: stream unknown to the server (long-idle death)
     "stream not found",
+    "client stream has been closed by the server",
+    "unexpected empty response from server",
+    "unexpected multiple responses from server",
+    "stream closed",
+    "streamclosed",  # HranaError::StreamClosed variant (e.g. "StreamClosed")
+    "baton not found",
+    "connection closed because of a broken pipe",
 )
 
 
@@ -42,10 +50,13 @@ def is_transient_db_error(exc: BaseException) -> bool:
 
     Covers SQLite WAL single-writer contention (``wal_insert_begin failed`` /
     ``database is locked``) and Turso Hrana stream death (``stream not
-    found``). Both are resolved by re-opening a fresh connection.
+    found`` / server-initiated closes). Both are resolved by re-opening a
+    fresh connection.
     """
     msg = str(exc).lower()
-    return any(marker in msg for marker in _WAL_CONTENTION_MARKERS + _HRANA_STREAM_MARKERS)
+    return is_wal_contention(exc) or any(
+        marker in msg for marker in _HRANA_STREAM_MARKERS
+    )
 
 
 def is_wal_contention(exc: BaseException) -> bool:

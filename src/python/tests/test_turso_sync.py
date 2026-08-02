@@ -792,6 +792,25 @@ def test_is_transient_db_error_includes_hrana_stream():
     assert not is_transient_db_error(ValueError("no such table: accounts"))
 
 
+def test_is_transient_db_error_hrana_variants():
+    """実サーバーが返しうる Hrana 切断系の全形式を捕捉する。"""
+    from hw_genie.core.database import is_transient_db_error
+
+    variants = [
+        'Hrana: api error: status=404 Not Found, body={"error":"stream not found: 49580f7d:ad779"}',
+        "client stream has been closed by the server",
+        "Unexpected empty response from server: ...",
+        "Unexpected multiple responses from server: ...",
+        "StreamClosed",
+        "stream closed",
+        "baton not found - skipping finalize for stream 49580f7d",
+        "connection closed because of a broken pipe",
+        "connection error PROTOCOL_ERROR -- recv_data: stream not found; id=7",
+    ]
+    for v in variants:
+        assert is_transient_db_error(ValueError(v)), v
+
+
 def test_retry_on_wal_contention_recovers_from_hrana_stream(mock_sleep):
     """Hrana ストリーム切断でも再試行で成功する。"""
     from hw_genie.core.database import retry_on_wal_contention
