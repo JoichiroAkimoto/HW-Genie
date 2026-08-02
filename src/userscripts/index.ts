@@ -19,6 +19,13 @@
  * block above, bundles this file with `bun build`, and writes
  * `dist/hw-genie-auth-capture.user.js` (with __DOWNLOAD_URL__/__UPDATE_URL__
  * substituted when --inject-url is passed).
+ *
+ * 既知の制限: このスクリプトは XHR (setRequestHeader) 経由のリクエストのみ
+ * ヘッダーを捕捉する。v1.0.3 で実装された window.fetch / Request ヘッダー捕捉
+ * (interceptFetch / collectHeaders) は、同じページで動く他ユーザースクリプト
+ * （例: HW Goodwin）の fetch ラッパーと競合して UI を壊すため削除した。
+ * したがってゲームが fetch のみで API を呼ぶ環境では認証ヘッダーを捕捉できず、
+ * 認証サーバーへの送信は行われない（v1.0.2 と同じ挙動）。
  */
 
 (() => {
@@ -171,12 +178,13 @@
     }
   }
 
+  // Symbol used to mark an XHR instance whose setRequestHeader we already
+  // wrapped, so re-opening the same object (or re-entering the open wrapper)
+  // never stacks another capture wrapper on top of the previous one.
+  const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
+
   function interceptXHR() {
     const originalOpen = XMLHttpRequest.prototype.open;
-    // XHR オブジェクトごとにラップ済みか追跡する。同じ XHR を再 open しても
-    // setRequestHeader のラッパーを積み重ねない（多重ラップで捕捉喪失や
-    // 無限再帰を防ぐ）。新規 XHR は最初の open で必ずラップされる。
-    const wrapped = new WeakSet<XMLHttpRequest>();
 
     XMLHttpRequest.prototype.open = function (
       method: string,
@@ -193,26 +201,28 @@
         return originalOpen.call(this, method, url, async ?? true, username, password);
       }
 
-      if (!isApiUrl(urlString)) {
-        // The native default for a missing `async` argument is true
-        // (asynchronous); preserve it so non-API XHRs keep their semantics.
-        return originalOpen.call(this, method, url, async ?? true, username, password);
-      }
-
-      if (!wrapped.has(this)) {
-        wrapped.add(this);
-        // Capture the CURRENT setRequestHeader at first open() time. Other
-        // userscripts (e.g. HW Goodwin) may wrap prototype.setRequestHeader
-        // AFTER this script installs; resolving the reference per-call
-        // (instead of capturing the prototype once at install time) lets
-        // their wrapper stay in the chain.
-        const setRequestHeaderRef = this.setRequestHeader.bind(this);
-        this.setRequestHeader = function (name: string, value: string): void {
-          captureHeaders(name, value);
-          setRequestHeaderRef(name, value);
+      if (isApiUrl(urlString)) {
+        // Wrap setRequestHeader on every open unless this instance is already
+        // wrapped. Resolving `this.setRequestHeader` now (not at install time)
+        // keeps wrappers installed later by other userscripts (e.g. HW
+        // Goodwin) in the chain; the per-instance marker prevents stacking.
+        const self = this as XMLHttpRequest & {
+          [HW_GENIE_WRAPPED]?: (name: string, value: string) => void;
         };
+        const currentSetRequestHeader = self.setRequestHeader;
+        if (currentSetRequestHeader !== self[HW_GENIE_WRAPPED]) {
+          const setRequestHeaderRef = currentSetRequestHeader.bind(self);
+          const wrapper = function (name: string, value: string): void {
+            captureHeaders(name, value);
+            setRequestHeaderRef(name, value);
+          };
+          self[HW_GENIE_WRAPPED] = wrapper;
+          self.setRequestHeader = wrapper;
+        }
       }
 
+      // The native default for a missing `async` argument is true
+      // (asynchronous); preserve it so XHRs keep their semantics.
       return originalOpen.call(this, method, url, async ?? true, username, password);
     };
   }
