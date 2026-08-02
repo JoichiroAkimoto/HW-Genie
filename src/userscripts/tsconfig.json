@@ -23,5 +23,6 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "include": ["index.ts", "xhr-interceptor.ts"]
 }

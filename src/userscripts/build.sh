@@ -50,17 +50,26 @@ rm -f "$DIST_DIR/bundle.tmp.js"
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）
 BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | head -1)
-if [[ "$BUNDLE_FIRST" != "(() => {" ]]; then
-  echo "ERROR: dist bundle is not IIFE-wrapped (global leak risk): $BUNDLE_FIRST" >&2
+BUNDLE_LAST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | tail -1)
+if [[ "$BUNDLE_FIRST" != "(() => {" || "$BUNDLE_LAST" != "})();" ]]; then
+  echo "ERROR: dist bundle is not wrapped in a single IIFE (first='$BUNDLE_FIRST', last='$BUNDLE_LAST')" >&2
   exit 1
 fi
 
-# バンドル部分に列 0 のトップレベル宣言（var/let/const/function/class）が
-# 無いことを検査する（IIFE の外への宣言漏れを検出）
-if grep -nE '^(var|let|const|function|class) ' "$OUTPUT"; then
-  echo "ERROR: top-level declarations leak outside the IIFE (see lines above)" >&2
+# 列 0 のトップレベル宣言・グローバル代入を検出（IIFE の外への漏れ。metadata は
+# // 始まりなので誤検出なし）
+if grep -nE '^(var|let|const|function|class|async function|export|window\.|globalThis\.)' "$OUTPUT"; then
+  echo "ERROR: top-level declaration/global write leaks outside the IIFE (see lines above)" >&2
   exit 1
 fi
+
+# メタデータの必須キー検証
+for key in name version run-at match grant; do
+  if ! grep -q "^// @$key " <<< "$METADATA"; then
+    echo "ERROR: metadata missing @$key" >&2
+    exit 1
+  fi
+done
 
 # Inject URL if provided
 if [[ -n "$INJECT_URL" ]]; then

@@ -216,7 +216,7 @@ test("他スクリプトがインスタンスの setRequestHeader を差し替�
   assert.strictEqual(xhr._headers["x-auth-token"], "tok2");
 });
 
-test("両者が open 毎に再ラップしても無限再帰せずチェーンが有限", () => {
+test("両者が open 毎に再ラップしても無限再帰せず（チェーンは非有界だが有限）", () => {
   const XHRClass = freshXHRClass();
   const captured = [];
   const seen = [];
@@ -307,6 +307,10 @@ test("open の async/username/password 引数が素通しされる", () => {
   // 省略時: undefined がそのまま届き、native の既定値 (async=true) に任せること
   xhr.open("GET", API_URL);
   assert.strictEqual(xhr._openArgs.async, undefined);
+
+  // 明示的な null: WebIDL で ToBoolean(null)=false（同期）になるため、変換されず届くこと
+  xhr.open("POST", API_URL, null);
+  assert.strictEqual(xhr._openArgs.async, null);
 });
 
 test("API open 後に非 API へ再オープンするとラッパーが外れ、以後捕捉しない", () => {
@@ -347,6 +351,72 @@ test("他スクリプト先行インストール時も API→非API→API で解
     ["x-auth-token", "tok3"],
   ]);
   assert.strictEqual(seen.length, 3); // 他スクリプト側は常に通る
+});
+
+test("他スクリプトが own sRH を上書きしたまま非 API へ再オープンしても捕捉は残らない", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL); // W1 設置
+  xhr.setRequestHeader("x-auth-token", "tok1");
+  const orig = xhr.setRequestHeader; // W1
+  xhr.setRequestHeader = function (n, v) {
+    return orig.call(this, n, v);
+  }; // 他スクリプトが own 上書き
+  xhr.open("POST", "https://other.example.com/"); // 非 API
+  xhr.setRequestHeader("x-auth-token", "tok2"); // 契約上 capture されてはならない
+
+  // tok2 が混入しない（ACTIVE=false で捕捉が発火しない）
+  assert.deepStrictEqual(captured.map(([n]) => n), ["x-auth-token"]);
+});
+
+test("他スクリプトが open 内でインスタンス own sRH を毎回張る（genie が内側）", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  installGenieInterceptor(XHRClass, captured); // 先にインストール → open チェーンの内側
+  const origOpen = XHRClass.prototype.open;
+  XHRClass.prototype.open = function (m, u) {
+    const protoSRH = XHRClass.prototype.setRequestHeader;
+    this.setRequestHeader = function (n, v) {
+      seen.push([n, v]);
+      return protoSRH.call(this, n, v);
+    };
+    return origOpen.call(this, m, u);
+  };
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok");
+
+  assert.ok(captured.length >= 1); // 内側なら捕捉継続
+  assert.ok(seen.length >= 1); // 他スクリプト側も生きる
+});
+
+test("同パターンで genie が外側のとき（他スクリプト先行）", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  // 他スクリプトを先にインストール → genie の open が外側
+  const origOpen0 = XHRClass.prototype.open;
+  XHRClass.prototype.open = function (m, u) {
+    const protoSRH = XHRClass.prototype.setRequestHeader;
+    this.setRequestHeader = function (n, v) {
+      seen.push([n, v]);
+      return protoSRH.call(this, n, v);
+    };
+    return origOpen0.call(this, m, u);
+  };
+  installGenieInterceptor(XHRClass, captured);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.setRequestHeader("x-auth-token", "tok");
+
+  // 他スクリプト側は常に動く。genie 側は open 内で own sRH が毎回上書きされる
+  // ため捕捉が失われる可能性がある（将来の改善の足がかりとして固定）。
+  assert.ok(seen.length >= 1);
 });
 
 test("API 以外の XHR は捕捉されない", () => {
