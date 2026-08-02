@@ -24,8 +24,11 @@ mkdir -p "$DIST_DIR"
 # Extract metadata comments from source
 METADATA=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' "$SCRIPT_DIR/index.ts")
 
-# Build with bun
-bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" 2>/dev/null
+# Build with bun. --format=iife wraps the bundle (including any imported
+# modules) in a single IIFE so no declarations leak onto the page's global
+# scope — important because other userscripts share the page (e.g. HW
+# Goodwin) and the userscript runs with @grant none.
+bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser
 
 # Combine metadata + bundle
 {

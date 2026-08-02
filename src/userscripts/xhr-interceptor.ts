@@ -72,7 +72,12 @@ export function installXhrInterceptor(
       if (currentSetRequestHeader !== self[HW_GENIE_WRAPPED]) {
         const setRequestHeaderRef = currentSetRequestHeader.bind(self);
         const wrapper = function (name: string, value: string): void {
-          capture(name, value);
+          try {
+            capture(name, value);
+          } catch {
+            // capture の例外はゲームのリクエストを壊さないよう握りつぶす。
+            // ヘッダー設定は常に元の setRequestHeader へ委譲する。
+          }
           setRequestHeaderRef(name, value);
         };
         self[HW_GENIE_WRAPPED] = wrapper;

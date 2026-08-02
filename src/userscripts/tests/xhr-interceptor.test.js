@@ -217,6 +217,68 @@ test("他スクリプトがインスタンスの setRequestHeader を差し替�
   assert.strictEqual(xhr._headers["x-auth-token"], "tok2");
 });
 
+test("両者が open 毎に再ラップしても無限再帰せずチェーンが有限", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  const seen = [];
+  installGenieInterceptor(XHRClass, captured);
+  installOtherScriptWrapper(XHRClass, seen);
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  for (let i = 0; i < 100; i++) {
+    const cur = xhr.setRequestHeader;
+    xhr.setRequestHeader = function (n, v) {
+      return cur.call(this, n, v);
+    };
+    xhr.open("POST", API_URL); // 毎 open で双方が再ラップ
+  }
+  xhr.setRequestHeader("x-auth-token", "tok");
+
+  // 捕捉が最後の値に到達し、XHR にも設定される（無限再帰しない）
+  assert.strictEqual(captured[captured.length - 1][1], "tok");
+  assert.strictEqual(xhr._headers["x-auth-token"], "tok");
+});
+
+test("installXhrInterceptor が二重実行されても捕捉が壊れない", () => {
+  const XHRClass = freshXHRClass();
+  const captured = [];
+  installGenieInterceptor(XHRClass, captured);
+  installGenieInterceptor(XHRClass, captured); // 2 回目
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  setAuthHeaders(xhr, "tok1");
+
+  // 二重捕捉されず、3 件のみ
+  assert.strictEqual(captured.length, 3);
+  assert.deepStrictEqual(Object.keys(xhr._headers), [
+    "x-auth-token",
+    "x-auth-session-id",
+    "x-auth-network-ident",
+  ]);
+});
+
+test("capture が例外を投げてもゲームの setRequestHeader は壊れない", () => {
+  const XHRClass = freshXHRClass();
+  const capturing = () => {
+    throw new Error("capture boom");
+  };
+  const originalXHR = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = XHRClass;
+  try {
+    installXhrInterceptor((u) => isApiUrl(u, PAGE_URL), capturing);
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  // 例外が投げられても setRequestHeader は成功する（finally で委譲）
+  xhr.setRequestHeader("x-auth-token", "tok");
+  assert.strictEqual(xhr._headers["x-auth-token"], "tok");
+});
+
 test("API 以外の XHR は捕捉されない", () => {
   const XHRClass = freshXHRClass();
   const captured = [];
