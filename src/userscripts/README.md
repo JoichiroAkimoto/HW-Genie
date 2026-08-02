@@ -23,7 +23,9 @@ npm run build
 `--inject-download-url URL` / `--inject-update-url URL` で `@downloadURL` /
 `@updateURL` を個別に設定します（updateURL には常に最新リリースを指す
 `releases/latest/download/...` を指定）。`--inject-url URL` は両方に同じ値を
-設定します（後方互換。CI 用）。
+設定します（旧バージョンとの後方互換用。現在の CI は個別フラグを使用するため
+新規用途では使わないこと。バージョン固定 URL を updateURL に設定すると
+Tampermonkey の自動更新が壊れる）。
 
 ## テスト
 

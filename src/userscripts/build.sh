@@ -75,9 +75,11 @@ bun build "$SCRIPT_DIR/index.ts" --outfile "$DIST_DIR/bundle.tmp.js" --format=ii
 
 # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）。
 # sed -n '1p' / sed -n '$p' を使い、head/tail による SIGPIPE（exit 141）を避ける。
+# 正規表現で空白を許容し、将来 --minify を追加しても検証が壊れないようにする。
 BUNDLE_FIRST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '1p')
 BUNDLE_LAST=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$OUTPUT" | tail -n +2 | sed '/^$/d' | sed -n '$p')
-if [[ "$BUNDLE_FIRST" != "(() => {" || "$BUNDLE_LAST" != "})();" ]]; then
+IIFE_OPEN_RE='^\(\(\)[[:space:]]*=>[[:space:]]*\{$'
+if [[ ! "$BUNDLE_FIRST" =~ $IIFE_OPEN_RE || "$BUNDLE_LAST" != "})();" ]]; then
   echo "ERROR: dist bundle is not wrapped in a single IIFE (first='$BUNDLE_FIRST', last='$BUNDLE_LAST')" >&2
   exit 1
 fi
