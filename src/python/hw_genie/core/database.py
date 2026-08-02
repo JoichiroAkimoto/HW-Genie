@@ -27,6 +27,26 @@ _WAL_CONTENTION_MARKERS = (
     "database is locked",
 )
 
+# Substrings that identify a dead Turso Hrana stream. A long-idle remote
+# connection is closed by the server; the next query then fails with
+# ``stream not found`` (ValueError). pool_pre_ping checks liveness at checkout,
+# but a stream can die between the ping and the statement, so these errors are
+# retried like WAL contention (the retry opens a fresh connection).
+_HRANA_STREAM_MARKERS = (
+    "stream not found",
+)
+
+
+def is_transient_db_error(exc: BaseException) -> bool:
+    """True when ``exc`` is a transient DB error worth retrying.
+
+    Covers SQLite WAL single-writer contention (``wal_insert_begin failed`` /
+    ``database is locked``) and Turso Hrana stream death (``stream not
+    found``). Both are resolved by re-opening a fresh connection.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _WAL_CONTENTION_MARKERS + _HRANA_STREAM_MARKERS)
+
 
 def is_wal_contention(exc: BaseException) -> bool:
     """True when ``exc`` indicates SQLite WAL single-writer contention."""
@@ -41,13 +61,15 @@ def retry_on_wal_contention(
     base_delay: float = 0.2,
     logger: logging.Logger | None = None,
 ):
-    """Call ``fn`` (no args), retrying transient WAL-contention errors.
+    """Call ``fn`` (no args), retrying transient DB errors with backoff.
 
-    Backoff is ``base_delay * 2 ** (attempt - 1)`` between attempts, with
-    random jitter (0.5x-1.5x) so multiple processes sharing the replica do not
-    retry in lockstep and re-collide. Non-WAL exceptions propagate immediately;
-    the last exception is re-raised when all attempts are exhausted. Returns
-    ``fn()``'s value on success.
+    Retried errors are WAL single-writer contention (``wal_insert_begin
+    failed`` / ``database is locked``) and Turso Hrana stream death
+    (``stream not found``). Backoff is ``base_delay * 2 ** (attempt - 1)``
+    with random jitter (0.5x-1.5x) so multiple processes sharing the replica
+    do not retry in lockstep and re-collide. Non-transient exceptions
+    propagate immediately; the last exception is re-raised when all attempts
+    are exhausted. Returns ``fn()``'s value on success.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
@@ -55,11 +77,11 @@ def retry_on_wal_contention(
         try:
             return fn()
         except Exception as exc:
-            if not is_wal_contention(exc) or attempt == attempts:
+            if not is_transient_db_error(exc) or attempt == attempts:
                 raise
             if logger is not None:
                 logger.warning(
-                    "DB WAL contention (attempt %d/%d): %s",
+                    "DB transient error (attempt %d/%d): %s",
                     attempt,
                     attempts,
                     exc,

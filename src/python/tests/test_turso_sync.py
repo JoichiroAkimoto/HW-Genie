@@ -781,6 +781,34 @@ def test_is_wal_contention_markers():
     assert not is_wal_contention(ValueError("no such table: accounts"))
 
 
+def test_is_transient_db_error_includes_hrana_stream():
+    """Hrana ストリーム切断（stream not found）は再試行対象として判定される。"""
+    from hw_genie.core.database import is_transient_db_error
+
+    assert is_transient_db_error(ValueError("stream not found: 49580f7d:ad779"))
+    assert is_transient_db_error(ValueError("wal_insert_begin failed"))
+    assert is_transient_db_error(ValueError("database is locked"))
+    assert not is_transient_db_error(RuntimeError("connection refused"))
+    assert not is_transient_db_error(ValueError("no such table: accounts"))
+
+
+def test_retry_on_wal_contention_recovers_from_hrana_stream(mock_sleep):
+    """Hrana ストリーム切断でも再試行で成功する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("stream not found: 49580f7d:ad779")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert calls["n"] == 3
+    assert mock_sleep.call_count == 2
+
+
 def test_retry_on_wal_contention_recovers(mock_sleep):
     """WAL 競合で一時失敗しても再試行で成功する。"""
     from hw_genie.core.database import retry_on_wal_contention
