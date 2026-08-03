@@ -176,7 +176,7 @@ jobs:
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES=$(printf 'Userscript release %s\n\n注: v1.0.4以前のバージョンをお使いの場合、自動更新を有効にするには一度手動での再インストール（https://github.com/%s/releases/latest/download/hw-genie-auth-capture.user.js）が必要です。' "$TARGET_TAG" "$REPO")
+          NOTES="Userscript release $TARGET_TAG"
 
           if gh release view "$TARGET_TAG" --repo "$REPO" 2>/dev/null; then
             echo "Release '$TARGET_TAG' exists. Uploading asset and updating notes..."

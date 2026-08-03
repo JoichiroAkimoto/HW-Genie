@@ -24,10 +24,8 @@ npm run build
 
 `--inject-download-url URL` / `--inject-update-url URL` で `@downloadURL` /
 `@updateURL` を個別に設定します。**両方とも**常に最新リリースを指す
-`releases/latest/download/...` を指定してください。Tampermonkey は更新時に
-新しいスクリプトの `@downloadURL` を使いますが、Violetmonkey はインストール済み
-スクリプトの `@downloadURL` から再取得するため、`@downloadURL` をバージョン固定に
-すると自動更新が同じバージョンに留まる問題があったためです。
+`releases/latest/download/...` を指定してください（更新適用時に `@downloadURL`
+から再取得するスクリプトマネージャーがあるため）。
 
 ```bash
 VERSION=$(bash ./release-metadata.sh version ./index.ts)

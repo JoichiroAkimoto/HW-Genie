@@ -61,14 +61,8 @@ gh release edit v1.0.5 --latest
 
 - `@downloadURL` / `@updateURL` はどちらも常に最新リリースを指す URL（`releases/latest/download/...`）
 - Tampermonkey は `@updateURL` を定期的に確認し、新しいバージョンがあれば自動更新します。
-- 両方を latest に統一する理由: Tampermonkey は更新時に**新しい**スクリプトの `@downloadURL` を使いますが、Violetmonkey は**インストール済み**スクリプトの `@downloadURL` から再取得するため、`@downloadURL` をバージョン固定（`releases/download/vX.Y.Z/...`）にすると、判定は新バージョンを検出しても実際に適用されるのは旧バージョンのままになります（v1.0.6 で Violetmonkey ユーザーの自動更新が 1.0.5 に留まった事象）。
+- 両方を latest に統一する理由: 更新適用時に `@downloadURL` から再取得するスクリプトマネージャーがあるため、`@downloadURL` も最新リリースを指す必要があります。
 - リリースは `draft=false` かつ `prerelease=false` の安定版として公開されます。
-
-### 既存ユーザーの移行
-
-- **v1.0.6 以前**にインストールしたユーザーの `@updateURL`（v1.0.4 以前）または `@downloadURL`（v1.0.5〜1.0.6）はバージョン固定のため、自動更新だけでは正しく新しいバージョンを適用できません。**手動での再インストールが必要**です。
-- 再インストール URL: [https://github.com/JoichiroAkimoto/HW-Genie/releases/latest/download/hw-genie-auth-capture.user.js](https://github.com/JoichiroAkimoto/HW-Genie/releases/latest/download/hw-genie-auth-capture.user.js)
-- 再インストール後は `@downloadURL` / `@updateURL` がともに `releases/latest/download/...` に置き換わり、以降の自動更新が機能します。
 
 ### バージョンルール
 

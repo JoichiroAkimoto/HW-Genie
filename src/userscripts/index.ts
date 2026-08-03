@@ -21,10 +21,7 @@
  * --inject-update-url to set @downloadURL / @updateURL individually.
  *
  * @downloadURL / @updateURL はどちらも releases/latest/download/... を指す。
- * Tampermonkey は更新時に新しいスクリプトの @downloadURL を使うが、
- * Violetmonkey はインストール済みスクリプトの @downloadURL から再取得するため、
- * @downloadURL をバージョン固定にすると自動更新が同じバージョンに留まる
- * （v1.0.6 で発生）。両方を latest に統一することで全マネージャーで確実に更新される。
+ * （更新適用時に @downloadURL から再取得するスクリプトマネージャーでも確実に更新するため）
  *
  * 既知の制限: このスクリプトは XHR (setRequestHeader) 経由のリクエストのみ
  * ヘッダーを捕捉する。v1.0.3 で実装された window.fetch / Request ヘッダー捕捉
