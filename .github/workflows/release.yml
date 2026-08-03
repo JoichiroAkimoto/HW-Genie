@@ -101,7 +101,7 @@ jobs:
           bash src/userscripts/release-metadata.sh validate-tag src/userscripts/index.ts "$TARGET_TAG"
 
           # Check existing release for target tag
-          EXISTING_TARGET_JSON=$(gh release view "$TARGET_TAG" --repo "$REPO" --json tagName,isDraft,isPrerelease,isLatest 2>/dev/null || true)
+          EXISTING_TARGET_JSON=$(gh release view "$TARGET_TAG" --repo "$REPO" --json tagName,isDraft,isPrerelease 2>/dev/null || true)
 
           if [[ -n "$EXISTING_TARGET_JSON" ]]; then
             IS_DRAFT=$(echo "$EXISTING_TARGET_JSON" | jq -r '.isDraft')
@@ -112,8 +112,8 @@ jobs:
             fi
           fi
 
-          # Get current stable latest release
-          CURRENT_LATEST_JSON=$(gh release view --repo "$REPO" --json tagName,isDraft,isPrerelease,isLatest 2>/dev/null || true)
+          # Get current stable latest release (gh release view with no tag returns latest)
+          CURRENT_LATEST_JSON=$(gh release view --repo "$REPO" --json tagName,isDraft,isPrerelease 2>/dev/null || true)
           CURRENT_LATEST_TAG=""
           if [[ -n "$CURRENT_LATEST_JSON" ]]; then
             CURRENT_LATEST_TAG=$(echo "$CURRENT_LATEST_JSON" | jq -r '.tagName')
@@ -138,8 +138,7 @@ jobs:
               exit 1
             fi
             if [[ -n "$EXISTING_TARGET_JSON" ]]; then
-              IS_TARGET_LATEST=$(echo "$EXISTING_TARGET_JSON" | jq -r '.isLatest')
-              if [[ "$IS_TARGET_LATEST" == "true" && "$TARGET_TAG" != "$EXPECTED_LATEST_TAG" ]]; then
+              if [[ "$TARGET_TAG" == "$CURRENT_LATEST_TAG" && "$TARGET_TAG" != "$EXPECTED_LATEST_TAG" ]]; then
                 echo "ERROR: Target tag '$TARGET_TAG' is currently marked latest, but expected_latest_tag is '$EXPECTED_LATEST_TAG'." >&2
                 exit 1
               fi
