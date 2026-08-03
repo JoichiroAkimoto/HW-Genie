@@ -79,6 +79,14 @@ jobs:
         with:
           ref: ${{ steps.init.outputs.target_tag }}
 
+      - name: Ensure release-metadata.sh is present for past tags
+        run: |
+          if [[ ! -f src/userscripts/release-metadata.sh ]]; then
+            echo "release-metadata.sh not found in target tag, retrieving from origin/main..."
+            git fetch origin main --depth=1
+            git checkout origin/main -- src/userscripts/release-metadata.sh
+          fi
+
       - name: Preflight validation
         id: preflight
         env:
