@@ -40,6 +40,16 @@ gh workflow run release.yml \
 - `release_mode=recovery` では、対象の固定 URL 用アセットを再生成・検証します。
 - `expected_latest_tag` を指定することで、復旧処理によって過去のバージョンが誤って最新安定版 (`releases/latest`) に指し変わるのを防ぎます。
 
+#### 復旧後に latest へ昇格させる場合
+
+recovery モードは `releases/latest` を変更しません。復旧したバージョンが現在の最新安定版として公開されるべき場合は、復旧完了後に手動で昇格させてください。
+
+```bash
+gh release edit v1.0.5 --latest
+```
+
+> **補足:** `releases/latest` はリポジトリ全体で1つだけです。上記コマンドで v1.0.5 が latest に昇格すると、それ以前のバージョンは latest でなくなります。
+
 ### 仕組み
 
 - タグのプッシュ (`v*`) により `.github/workflows/release.yml` が `normal` モードで起動
