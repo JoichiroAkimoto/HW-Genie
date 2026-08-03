@@ -14,6 +14,7 @@ import {
   markSendSuccess,
   pollAndMaybeSend,
   pruneStaleKeys,
+  serializeForDedupe,
   serializeIdentity,
 } from "../session.ts";
 
@@ -48,7 +49,6 @@ function fullState(now = 1000000, overrides = {}) {
     lastSeenAt,
     lastCaptureAt: now,
     lastSentJson: null,
-    lastAttemptedJson: null,
     pendingIdentityJson: null,
     lastAttemptedIdentityJson: null,
     backoffMs: POLL_MS,
@@ -181,8 +181,7 @@ test("backoff 中の同一ヘッダーは送信しない", () => {
   const d1 = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d1.shouldSend, true);
   assert.ok(d1.serialized);
-  // 送信試行: identity も含めて記録（呼び出し側の責務 = beginSendAttempt）
-  s.lastAttemptedJson = d1.serialized;
+  // 送信試行: identity と試行時刻を記録（呼び出し側の責務 = beginSendAttempt）
   s.lastAttemptedIdentityJson = serializeIdentity(s.headersCaptured, REQUIRED_KEYS);
   s.lastAttemptAt = 1000000;
   // 失敗 → バックオフ 1000ms
@@ -243,10 +242,10 @@ test("統合: beginSendAttempt により同一値のバックオフがリセッ�
   assert.strictEqual(d1.shouldSend, true);
   assert.ok(d1.serialized);
   // 本番と同じ手順: 試行開始を記録
-  beginSendAttempt(s, d1.serialized, serializeIdentity(s.headersCaptured, REQUIRED_KEYS), 1000000);
+  beginSendAttempt(s, serializeIdentity(s.headersCaptured, REQUIRED_KEYS), 1000000);
   markSendFailure(s, MAX_BACKOFF_MS);
   assert.strictEqual(s.backoffMs, 1000);
-  // 500ms 後、同一ヘッダーで再評価 → lastAttemptedJson 一致なので
+  // 500ms 後、同一 identity で再評価 → identity 一致なので
   // バックオフはリセットされず、送信は抑止される（ホットリトライ防止）
   const d2 = evaluateSend(s, 1000500, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d2.shouldSend, false);
@@ -325,7 +324,7 @@ test("成功でバックオフがリセットされる（サーバー復旧パ�
   const d = evaluateSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d.shouldSend, true);
   assert.ok(d.serialized);
-  beginSendAttempt(s, d.serialized, serializeIdentity(s.headersCaptured, REQUIRED_KEYS), 1000000);
+  beginSendAttempt(s, serializeIdentity(s.headersCaptured, REQUIRED_KEYS), 1000000);
   markSendSuccess(s, d.serialized, POLL_MS);
   assert.strictEqual(s.backoffMs, POLL_MS);
   assert.strictEqual(s.lastSentJson, d.serialized);
@@ -334,7 +333,97 @@ test("成功でバックオフがリセットされる（サーバー復旧パ�
   assert.strictEqual(d2.shouldSend, false);
 });
 
-test("identity フリッカー（sid1→sid2→sid1→sid2）で 2 連続観測が成立せずリセットされない", () => {
+test("失敗→復旧パス: バックオフ経過後に最新署名で再送される", () => {
+  // 注: lastSentJson が null（未成功）のため旧実装（署名込み dedupe）でも
+  // パスするが、復旧時に snapshot へ最新の署名が載ることを固定する。
+  const now = 1000000;
+  const s = fullState(now);
+  // 初回送信試行 → 失敗でバックオフ 1000ms
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 1000);
+  // バックオフ中に署名だけがローテーションしても pendingIdentityJson は確定しない
+  s.headersCaptured["x-auth-signature"] = "sig2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + 1000;
+  }
+  // バックオフ経過直後 → 再送される（snapshot には最新署名が含まれる）
+  const d1 = pollAndMaybeSend(s, now + 1000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, true);
+  assert.strictEqual(d1.snapshot["x-auth-signature"], "sig2");
+});
+
+test("送信済み identity を通過するフリッカーでも backoff がリセットされない（dedupe 経路の pending 残留防止）", () => {
+  const now = 1000000;
+  const s = fullState(now); // sid1 / u1（送信済みにできる値）
+  // 初回送信成功
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendSuccess(s, d0.serialized, POLL_MS);
+  // 障害中と想定してバックオフを伸長
+  markSendFailure(s, MAX_BACKOFF_MS);
+  markSendFailure(s, MAX_BACKOFF_MS);
+  assert.strictEqual(s.backoffMs, 2000);
+  // 送信済み値（sid1）を通過するフリッカー: sid2 → sid1 → sid2 → sid1
+  // 定常状態の dedupe 経由（sid1 の観測）で pendingIdentityJson が残留する
+  // と、2 連続観測でないのに確定して backoff が巻き戻る。それを禁止する。
+  const seq = ["sid2", "sid1", "sid2", "sid1"];
+  seq.forEach((sid, i) => {
+    s.headersCaptured["x-auth-session-id"] = sid;
+    s.headersCaptured["x-auth-user-id"] = sid === "sid1" ? "u1" : "u2";
+    s.headersCaptured["x-auth-signature"] = "sig" + (i + 2);
+    for (const k of Object.keys(s.headersCaptured)) {
+      s.lastSeenAt[k] = now + i * POLL_MS;
+    }
+    const d = pollAndMaybeSend(s, now + i * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+    assert.strictEqual(d.shouldSend, false); // ゲート閉のまま
+  });
+  // 2 連続観測が成立していないため backoff はリセットされない
+  assert.strictEqual(s.backoffMs, 2000);
+});
+
+test("token 変化の再送は成功後の 2 秒ゲートを尊重する", () => {
+  const now = 1000000;
+  const s = fullState(now);
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  // 本番の markSendSuccess は MIN_SEND_INTERVAL_MS = 2000 を渡す
+  markSendSuccess(s, d0.serialized, 2000);
+  // token のみ変化（署名・session-id は不変）
+  s.headersCaptured["x-auth-token"] = "tok2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + 1000;
+  }
+  // 2 秒未満 → ゲート閉で送信しない
+  const d1 = pollAndMaybeSend(s, now + 1000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, false);
+  // 2 秒経過後 → 再送される
+  const d2 = pollAndMaybeSend(s, now + 2000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d2.shouldSend, true);
+});
+
+test("ゲート開放中は session-id の 1 回目の観測で即送信される（再ログイン即送信）", () => {
+  // 注: markSendSuccess にはテスト用の POLL_MS を渡す（本番は
+  // MIN_SEND_INTERVAL_MS=2000）。目的は「ゲート開放時の 1 回目観測での
+  // 即送信」の pin であり、間隔値自体は token テストで固定している。
+  const now = 1000000;
+  const s = fullState(now);
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendSuccess(s, d0.serialized, POLL_MS);
+  // バックオフ経過後（ゲート開放）に session-id が変化
+  s.headersCaptured["x-auth-session-id"] = "sid2";
+  s.headersCaptured["x-auth-user-id"] = "u2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + 2 * POLL_MS;
+  }
+  const d2 = pollAndMaybeSend(s, now + 2 * POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  // 2 連続観測のガードはバックオフ中のみ有効。ゲート開放時は 1 回目で送信
+  assert.strictEqual(d2.shouldSend, true);
+});
+
+test("identity フリッカー（sidA↔sidB）で 2 連続観測が成立せず backoff がリセットされない", () => {
   const s = fullState();
   const d0 = pollAndMaybeSend(s, 1000000, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d0.shouldSend, true);
@@ -355,31 +444,54 @@ test("identity フリッカー（sid1→sid2→sid1→sid2）で 2 連続観測�
   assert.strictEqual(s.backoffMs, 2000);
 });
 
-test("継続トラフィック + 遅延署名でも同一セッションなら送信が継続する", () => {
+test("署名のみローテーションしても再送されない（dedupe から signature を除外）", () => {
   const s = fullState();
   const now = 1000000;
-  // 初回送信
+  // 初回送信成功
   const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
   assert.strictEqual(d0.shouldSend, true);
   markSendSuccess(s, d0.serialized, POLL_MS);
-  // 継続トラフィック: 2 秒間隔で捕捉が続き、署名が 600ms 遅延する
-  // （lastCaptureAt が常に直近 = capturing だが、identity は不変なので
-  //   新旧混在ガードは発動しない）
+  // 継続トラフィック: 署名だけがローテーションし、署名の捕捉が 600ms 遅延する
+  // （lastCaptureAt が常に直近 = capturing だが、dedupe は署名を除外して
+  //   判定するため再送は発生しない）
   let t = now + 2000;
-  // fullState の初期署名は sig1 なので、それと異なる sig2 から開始
   for (let i = 2; i <= 4; i++) {
     for (const k of REQUIRED_KEYS) {
       s.lastSeenAt[k] = t;
     }
-    // 署名は 600ms 遅延（スプレッド 600 > coherent 500）
     s.lastSeenAt["x-auth-signature"] = t + 600;
     s.lastCaptureAt = t + 600;
     s.headersCaptured["x-auth-signature"] = "sig" + i; // d0 の sig1 と異なる値
     const d = pollAndMaybeSend(s, t + 600, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
-    // identity 不変なので新旧混在ガードは発動せず、送信は継続される
-    assert.strictEqual(d.shouldSend, true);
+    assert.strictEqual(d.shouldSend, false); // dedupe（署名除外）
     t += 2000;
   }
+});
+
+test("署名以外のキー（token）が変われば再送される", () => {
+  const s = fullState();
+  const now = 1000000;
+  const d0 = pollAndMaybeSend(s, now, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d0.shouldSend, true);
+  markSendSuccess(s, d0.serialized, POLL_MS);
+  // token のみ変化（署名・session-id は不変）
+  s.headersCaptured["x-auth-token"] = "tok2";
+  for (const k of Object.keys(s.headersCaptured)) {
+    s.lastSeenAt[k] = now + POLL_MS;
+  }
+  const d1 = pollAndMaybeSend(s, now + POLL_MS, REQUIRED_KEYS, STALE_TTL_MS, FRESH_WINDOW_MS, POLL_MS);
+  assert.strictEqual(d1.shouldSend, true); // dedupe に含まれるキーの変化
+});
+
+test("serializeForDedupe は x-auth-signature を含まない", () => {
+  const s = fullState();
+  const serialized = serializeForDedupe(s.headersCaptured, REQUIRED_KEYS);
+  const parsed = JSON.parse(serialized);
+  assert.ok(!("x-auth-signature" in parsed));
+  assert.deepStrictEqual(
+    Object.keys(parsed).sort(),
+    REQUIRED_KEYS.filter((k) => k !== "x-auth-signature").sort(),
+  );
 });
 
 test("snapshot は既知キーのみでキー順が正規化される", () => {

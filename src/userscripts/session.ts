@@ -10,7 +10,6 @@ export interface SessionState {
   // 抑止を防ぐ）。
   lastCaptureAt: number;
   lastSentJson: string | null;
-  lastAttemptedJson: string | null;
   // 再ログイン検知の確定待ち: セッション同一性キー（session-id / user-id）が
   // 変わったとき 1 回目はここに記録し、2 連続ポーリングで同じ新値が観測された
   // 場合のみバックオフをリセットする。署名のローテーション（毎回変化）では
@@ -22,10 +21,54 @@ export interface SessionState {
   lastAttemptAt: number;
 }
 
+// ゲームがリクエスト毎にローテーションするため、dedupe / バックオフ比較の
+// シリアライズから除外する（送信ペイロードには含め、サーバー側の必須ヘッダー
+// 検証は維持する）。
+export const SIGNATURE_HEADER_KEY = "x-auth-signature";
+// セッション同一性キー（再ログイン検知と新旧混在ガードで使用。session.ts
+// 内のみで使用するため export しない）。
+const IDENTITY_HEADER_KEYS = ["x-auth-session-id", "x-auth-user-id"];
+
 export interface SendDecision {
   shouldSend: boolean;
   serialized: string | null;
   snapshot: Record<string, string> | null;
+}
+
+/**
+ * 指定キーのみで構成した正規化シリアライズ（キー順はソート済み）。
+ *
+ * serializeForDedupe と serializeIdentity の共通実装。
+ */
+function serializeHeaders(
+  headersCaptured: Record<string, string>,
+  keys: string[],
+): string {
+  const sorted = [...keys].sort();
+  const snapshot: Record<string, string> = {};
+  for (const key of sorted) {
+    snapshot[key] = headersCaptured[key];
+  }
+  return JSON.stringify(snapshot);
+}
+
+/**
+ * dedupe / バックオフ比較用の正規化シリアライズ。
+ *
+ * x-auth-signature を除外した必須キーのみで構成する。署名はリクエスト毎に
+ * ローテーションされるため、これを含めると継続トラフィック下で値が常に変化し、
+ * 同一セッションの再送が止まらなくなる。実セッション値（token 等を含む）が
+ * 変わった場合のみ再送が発生する（署名が不変な安静状態ではページロード時に
+ * 1 回の送信で止まる）。
+ */
+export function serializeForDedupe(
+  headersCaptured: Record<string, string>,
+  requiredKeys: string[],
+): string {
+  return serializeHeaders(
+    headersCaptured,
+    requiredKeys.filter((key) => key !== SIGNATURE_HEADER_KEY),
+  );
 }
 
 export function pruneStaleKeys(
@@ -54,9 +97,10 @@ export function pruneStaleKeys(
  *    変更するため、この関数は判定前に実行すること）
  * 2. 必須 6 キーの存在 + FRESH_WINDOW 内であること（新旧混在ガード）+
  *    コヒーレント集合チェック（キー間の観測時刻差）
- * 3. snapshot + キーソート正規化シリアライズ
- * 4. lastSentJson と一致 → 再送しない（dedupe）
- * 5. lastAttemptedJson と不一致 → backoffMs をリセット（再ログイン検知）
+ * 3. snapshot（送信用: 全必須キー）+ dedupe 用シリアライズ（署名除外）
+ * 4. セッション同一性の変化検知 → pendingIdentityJson の確定待ち /
+ *    クリア（再ログインは 2 連続観測で backoffMs をリセット）
+ * 5. dedupe 用シリアライズが lastSentJson と一致 → 再送しない（dedupe）
  * 6. now - lastAttemptAt < backoffMs → 送らない
  */
 export function evaluateSend(
@@ -100,20 +144,22 @@ export function evaluateSend(
     return { shouldSend: false, serialized: null, snapshot: null };
   }
 
-  // 既知キーのみの snapshot + キー順正規化
+  // 既知キーのみの snapshot + キー順正規化。送信ペイロードは全必須キー
+  // （x-auth-signature 含む）を維持し、サーバー側の必須ヘッダー検証を通す。
   const snapshot: Record<string, string> = {};
   for (const key of requiredKeys) {
     snapshot[key] = s.headersCaptured[key];
   }
-  const serialized = JSON.stringify(snapshot, Object.keys(snapshot).sort());
-  if (serialized === s.lastSentJson) {
-    return { shouldSend: false, serialized, snapshot };
-  }
+  // dedupe 用シリアライズは署名を除外（署名ローテーションでは再送しない）。
+  const serialized = serializeForDedupe(s.headersCaptured, requiredKeys);
 
   // 再ログイン検知: セッション同一性キー（session-id / user-id）の変化のみで
   // バックオフをリセットする。署名はリクエスト毎にローテーションされうるため
   // リセット対象にしない（サーバー障害時のホットリトライを防ぐ）。
   // 同一性キーが 2 連続ポーリングで同じ新値を観測した場合のみ確定する。
+  // dedupe チェックより前に置く: 送信済みセッションの定常状態では dedupe が
+  // 毎ポーリング一致するため、ここが実行されないと pendingIdentityJson が
+  // クリーンアップされず、非連続観測で誤確定する（フリッカー耐性が崩れる）。
   if (identitySerialized !== s.lastAttemptedIdentityJson) {
     if (s.pendingIdentityJson === identitySerialized) {
       // 同一の新値が 2 連続観測 → 本物の再ログイン
@@ -127,6 +173,10 @@ export function evaluateSend(
     // 前回試行と同一 → 変化なし
     s.pendingIdentityJson = null;
   }
+
+  if (serialized === s.lastSentJson) {
+    return { shouldSend: false, serialized, snapshot };
+  }
   if (now - s.lastAttemptAt < s.backoffMs) {
     return { shouldSend: false, serialized, snapshot };
   }
@@ -134,14 +184,12 @@ export function evaluateSend(
   return { shouldSend: true, serialized, snapshot };
 }
 
-/** send 試行開始時に呼ぶ: 送信した値とセッション同一性を記録する。 */
+/** send 試行開始時に呼ぶ: セッション同一性と試行時刻を記録する。 */
 export function beginSendAttempt(
   s: SessionState,
-  serialized: string,
   identitySerialized: string,
   now: number,
 ): void {
-  s.lastAttemptedJson = serialized;
   s.lastAttemptedIdentityJson = identitySerialized;
   s.lastAttemptAt = now;
 }
@@ -151,14 +199,10 @@ export function serializeIdentity(
   headersCaptured: Record<string, string>,
   requiredKeys: string[],
 ): string {
-  const identityKeys = requiredKeys.filter(
-    (key) => key === "x-auth-session-id" || key === "x-auth-user-id",
+  return serializeHeaders(
+    headersCaptured,
+    requiredKeys.filter((key) => IDENTITY_HEADER_KEYS.includes(key)),
   );
-  const identitySnapshot: Record<string, string> = {};
-  for (const key of identityKeys) {
-    identitySnapshot[key] = headersCaptured[key];
-  }
-  return JSON.stringify(identitySnapshot, Object.keys(identitySnapshot).sort());
 }
 
 /**
@@ -191,14 +235,19 @@ export function pollAndMaybeSend(
     s.headersCaptured!,
     requiredKeys,
   );
-  beginSendAttempt(s, decision.serialized, identitySerialized, now);
+  beginSendAttempt(s, identitySerialized, now);
   return decision;
 }
 
-/** send 成功時に呼ぶ: lastSentJson 更新とバックオフリセット。 */
-export function markSendSuccess(s: SessionState, serialized: string, pollIntervalMs: number): void {
+/**
+ * send 成功時に呼ぶ: lastSentJson 更新とバックオフの基準間隔へのリセット。
+ *
+ * @param resetBackoffMs 成功後のバックオフ基準間隔（本番では MIN_SEND_INTERVAL_MS
+ * を渡す。再ログイン検知以外ではこの間隔まで連続送信を抑える）
+ */
+export function markSendSuccess(s: SessionState, serialized: string, resetBackoffMs: number): void {
   s.lastSentJson = serialized;
-  s.backoffMs = pollIntervalMs;
+  s.backoffMs = resetBackoffMs;
 }
 
 /** send 失敗時に呼ぶ: バックオフを指数関数的に増加（上限あり）。 */
