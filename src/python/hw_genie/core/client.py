@@ -1,6 +1,4 @@
 import copy
-import json
-import os
 import time
 import random
 from dataclasses import dataclass, asdict
@@ -45,29 +43,6 @@ def resolve_account(account_alias: str | None = None) -> str:
         return accounts[0]
     if len(accounts) > 1:
         raise AccountAmbiguityError(accounts)
-    # DB が空の場合、旧 session.json からの移行を試みる。実名（player.name）で
-    # 移行保存し、その実名で解決する（default エイリアスは作らない）。
-    from hw_genie.core.auth import get_session_path
-
-    legacy_path = get_session_path("default")
-    if os.path.exists(legacy_path):
-        try:
-            with open(legacy_path, "r", encoding="utf-8") as f:
-                old_data = json.load(f)
-        except (json.JSONDecodeError, IOError, ValueError):
-            old_data = None
-        if old_data:
-            player = old_data.get("player") or {}
-            real_name = player.get("name") or "Unknown"
-            # 実名が判明している場合のみ実名で移行保存する。
-            # 名前不明（"Unknown"）のデータは誤上書きリスクがあるため移行しない。
-            if real_name != "Unknown":
-                try:
-                    SessionManager.repo.save_data(real_name, old_data)
-                    return real_name
-                except ValueError:
-                    # 移行データ不正（player.id 欠如等）は移行失敗として扱い、登録を促す
-                    pass
     raise AccountNotFoundError(
         "No accounts found in database. Register one with `auth --curl` first."
     )

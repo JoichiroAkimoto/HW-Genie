@@ -1,5 +1,3 @@
-import os
-import json
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -96,6 +94,19 @@ def test_last_mission_id_persistence():
     assert loaded_data.get("last_item_raid_mission_id") == mission_id
 
 
+def test_save_without_mission_key_preserves_stored_mission_id():
+    """mission_id を含まないデータの保存で、既存の last_item_raid_mission_id が消えないことを検証"""
+    account = "preserve_mission_user"
+    SessionManager.save(account, {"player": {"id": "pm_id", "name": "Preserve"}})
+    SessionManager.set_last_mission_id(123, account=account)
+
+    SessionManager.save(account, {"player": {"id": "pm_id", "name": "Preserve"}, "status": "success"})
+
+    loaded_data = SessionManager.load(account)
+    assert loaded_data.get("last_item_raid_mission_id") == 123
+    assert loaded_data.get("status") == "success"
+
+
 def test_set_last_mission_id_skips_write_when_unchanged(monkeypatch):
     """現在値と同値の set_last_mission_id は update_config を呼ばない"""
     from hw_genie.core.repository import SessionRepository
@@ -151,35 +162,6 @@ def test_set_last_mission_id_normalizes_string_input(monkeypatch):
     SessionManager.set_last_mission_id(456, account=account)
     SessionManager.set_last_mission_id("456", account=account)
     assert len(calls) == 1
-
-
-def test_migration_from_json(tmp_path, monkeypatch):
-    """jsonファイルが存在する場合、初回アクセス時にDBへ自動移行されることを検証"""
-    session_data = {"headers": {"test": "header"}, "player": {"id": "mig_id", "name": "MigratedUser"}}
-    # アカウント名 'migrated' のファイルパスを作成
-    json_file = tmp_path / "session.migrated.json"
-    with open(json_file, "w") as f:
-        json.dump(session_data, f)
-
-    # core.auth.get_session_path を tmp_path を見るように差し替え
-    monkeypatch.setattr("hw_genie.core.auth.get_session_path", lambda acc: str(tmp_path / f"session.{acc}.json"))
-
-    # 初回ロード: JSONから読み込まれ、DBに保存されるはず
-    loaded_data = SessionManager.load("migrated")
-    assert loaded_data["player"]["name"] == "MigratedUser"
-    
-    # loaded_data には ID が含まれている可能性があるため、比較用に除去
-    if "player" in loaded_data and "id" in loaded_data["player"]:
-        loaded_data_no_id = loaded_data.copy()
-        loaded_data_no_id["player"] = loaded_data["player"].copy()
-        del loaded_data_no_id["player"]["id"]
-    else:
-        loaded_data_no_id = loaded_data
-
-    # ファイルを削除しても、DBから読み込めるはず
-    os.remove(json_file)
-    db_data = SessionManager.load("migrated")
-    assert db_data == loaded_data_no_id
 
 
 def test_memo_persistence():
