@@ -12,8 +12,8 @@
    bun test tests/
    VERSION=$(bash ./release-metadata.sh version ./index.ts)
    bash ./build.sh \
-     --inject-download-url "https://example.invalid/releases/download/v${VERSION}/hw-genie-auth-capture.user.js" \
-     --inject-update-url "https://example.invalid/releases/latest/download/hw-genie-auth-capture.user.js"
+     --inject-download-url "https://github.com/example/example/releases/download/v${VERSION}/hw-genie-auth-capture.user.js" \
+     --inject-update-url "https://github.com/example/example/releases/latest/download/hw-genie-auth-capture.user.js"
    bash ./release-metadata.sh validate-artifact ./dist/hw-genie-auth-capture.user.js "$VERSION" "example/example"
    ```
 3. 変更をコミットして `main` へマージ（PR経由）
