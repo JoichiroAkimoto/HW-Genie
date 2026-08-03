@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
         echo "ERROR: --inject-url requires a value" >&2
         exit 1
       fi
-      # 後方互換: downloadURL / updateURL の両方に同じ値を設定する
+      # downloadURL / updateURL の両方に同じ値を設定する
       INJECT_DOWNLOAD_URL="$2"
       INJECT_UPDATE_URL="$2"
       shift 2
