@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.6
+// @version      1.0.7
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -18,9 +18,13 @@
  * Build: Run `bash build.sh` in this directory. It extracts the metadata
  * block above, bundles this file with `bun build`, and writes
  * `dist/hw-genie-auth-capture.user.js`. Pass --inject-download-url /
- * --inject-update-url to set @downloadURL / @updateURL individually (use
- * releases/latest/download/... for the update URL so Tampermonkey auto-update
- * detects new releases); --inject-url sets both to the same value.
+ * --inject-update-url to set @downloadURL / @updateURL individually.
+ *
+ * @downloadURL / @updateURL はどちらも releases/latest/download/... を指す。
+ * Tampermonkey は更新時に新しいスクリプトの @downloadURL を使うが、
+ * Violetmonkey はインストール済みスクリプトの @downloadURL から再取得するため、
+ * @downloadURL をバージョン固定にすると自動更新が同じバージョンに留まる
+ * （v1.0.6 で発生）。両方を latest に統一することで全マネージャーで確実に更新される。
  *
  * 既知の制限: このスクリプトは XHR (setRequestHeader) 経由のリクエストのみ
  * ヘッダーを捕捉する。v1.0.3 で実装された window.fetch / Request ヘッダー捕捉

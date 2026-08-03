@@ -23,13 +23,16 @@ npm run build
 ### リリース用 URL 注入
 
 `--inject-download-url URL` / `--inject-update-url URL` で `@downloadURL` /
-`@updateURL` を個別に設定します（`@downloadURL` はバージョン固定 URL、
-`@updateURL` には常に最新リリースを指す `releases/latest/download/...` を指定）。
+`@updateURL` を個別に設定します。**両方とも**常に最新リリースを指す
+`releases/latest/download/...` を指定してください。Tampermonkey は更新時に
+新しいスクリプトの `@downloadURL` を使いますが、Violetmonkey はインストール済み
+スクリプトの `@downloadURL` から再取得するため、`@downloadURL` をバージョン固定に
+すると自動更新が同じバージョンに留まる問題があったためです。
 
 ```bash
 VERSION=$(bash ./release-metadata.sh version ./index.ts)
 bash ./build.sh \
-  --inject-download-url "https://github.com/JoichiroAkimoto/HW-Genie/releases/download/v${VERSION}/hw-genie-auth-capture.user.js" \
+  --inject-download-url "https://github.com/JoichiroAkimoto/HW-Genie/releases/latest/download/hw-genie-auth-capture.user.js" \
   --inject-update-url "https://github.com/JoichiroAkimoto/HW-Genie/releases/latest/download/hw-genie-auth-capture.user.js"
 ```
 
