@@ -20,12 +20,20 @@ npm run build
 形式）に加えて `tsc --noEmit` の型チェックを実行し、IIFE ラップとメタデータ
 抽出を自動検証します。
 
+### リリース用 URL 注入
+
 `--inject-download-url URL` / `--inject-update-url URL` で `@downloadURL` /
-`@updateURL` を個別に設定します（updateURL には常に最新リリースを指す
-`releases/latest/download/...` を指定）。`--inject-url URL` は両方に同じ値を
-設定します（旧バージョンとの後方互換用。現在の CI は個別フラグを使用するため
-新規用途では使わないこと。バージョン固定 URL を updateURL に設定すると
-Tampermonkey の自動更新が壊れる）。
+`@updateURL` を個別に設定します（`@downloadURL` はバージョン固定 URL、
+`@updateURL` には常に最新リリースを指す `releases/latest/download/...` を指定）。
+
+```bash
+VERSION=$(bash ./release-metadata.sh version ./index.ts)
+bash ./build.sh \
+  --inject-download-url "https://github.com/JoichiroAkimoto/HW-Genie/releases/download/v${VERSION}/hw-genie-auth-capture.user.js" \
+  --inject-update-url "https://github.com/JoichiroAkimoto/HW-Genie/releases/latest/download/hw-genie-auth-capture.user.js"
+```
+
+> **注意:** `--inject-download-url` や `--inject-update-url` を指定しないローカルビルドでは、`__DOWNLOAD_URL__` や `__UPDATE_URL__` のプレースホルダーが残るため、配布物として使用することはできません。
 
 ## テスト
 
@@ -35,15 +43,9 @@ npm test
 bun test tests/
 ```
 
-`tests/xhr-interceptor.test.js` が XHR インターセプタ（本番コード
-`xhr-interceptor.ts` を直接 import）の挙動を検証します。他のユーザースクリプト
-（例: HW Goodwin）と共存できること、同一 XHR の再利用（open→send→再 open）で
-ラッパーが積み重ならないこと、API→非 API→API の遷移で捕捉が正しく解除・
-復帰することなどを回帰テストとして固定しています。
-
-`tests/session.test.js` はセッション送信の状態機械（本番コード `session.ts`
-を直接 import）を検証します。古いセッションキーの prune、新旧混在ガード、
-dedupe、再ログインのバックオフリセット、バックオフ上限などを固定しています。
+- `tests/release-metadata.test.js`: バージョン抽出、タグ照合、生成された成果物のメタデータ（`@version`, `@downloadURL`, `@updateURL`, プレースホルダー残存）の検証契約をテストします。
+- `tests/xhr-interceptor.test.js`: XHR インターセプタの挙動を検証します。他のユーザースクリプト（例: HW Goodwin）と共存できること、同一 XHR の再利用でラッパーが積み重ならないことなどを回帰テストとして固定しています。
+- `tests/session.test.js`: セッション送信の状態機械を検証します。
 
 ## 既知の制限
 
@@ -61,14 +63,11 @@ dedupe、再ログインのバックオフリセット、バックオフ上限�
   1. HW-Genie のみ有効 → 認証成功ログが出る
   2. HW Goodwin のみ有効 → Goodwin の UI が表示される
   3. 両方有効 → 双方が機能する（Goodwin の UI 表示 + HW-Genie の認証送信）
-  - 既知の懸念: HW Goodwin が open 内でインスタンス own setRequestHeader を
-    毎回張る実装の場合、document-idle 構成では genie が open チェーン最外側に
-    なり捕捉が失われる可能性がある（tests の「genie が外側」ケース）。
-    現行の HW Goodwin 実装では発生しないことを実機で確認済み。
 
 ## 構成
 
 - `index.ts` — ユーザースクリプト本体（メタデータ + 起動処理）
+- `release-metadata.sh` — メタデータ抽出・タグ検証・成果物バリデーション用 CLI
 - `xhr-interceptor.ts` — XHR インターセプタ（共有モジュール。テストからも import）
 - `session.ts` — セッション送信の状態機械（共有モジュール。テストからも import）
-- `tests/` — 回帰テスト
+- `tests/` — 回帰テスト・メタデータテスト
