@@ -96,7 +96,7 @@ cmd_validate_artifact() {
     exit 1
   fi
 
-  local expected_download_url="https://github.com/${owner_repo}/releases/download/v${expected_version}/hw-genie-auth-capture.user.js"
+  local expected_download_url="https://github.com/${owner_repo}/releases/latest/download/hw-genie-auth-capture.user.js"
   local actual_download_url
   actual_download_url=$(sed -n 's/^\/\/ @downloadURL[[:space:]]*//p' <<< "$block" | head -n 1 | tr -d ' \r\n')
   if [[ "$actual_download_url" != "$expected_download_url" ]]; then

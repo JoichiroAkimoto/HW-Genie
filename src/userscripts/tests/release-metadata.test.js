@@ -95,7 +95,7 @@ test("validate-artifact: valid generated artifact metadata", () => {
   const content = `// ==UserScript==
 // @name Test
 // @version 1.0.5
-// @downloadURL https://github.com/owner/repo/releases/download/v1.0.5/hw-genie-auth-capture.user.js
+// @downloadURL https://github.com/owner/repo/releases/latest/download/hw-genie-auth-capture.user.js
 // @updateURL https://github.com/owner/repo/releases/latest/download/hw-genie-auth-capture.user.js
 // ==/UserScript==
 (() => {})();
@@ -109,7 +109,7 @@ test("validate-artifact: valid generated artifact metadata", () => {
 test("validate-artifact: version mismatch", () => {
   const content = `// ==UserScript==
 // @version 1.0.4
-// @downloadURL https://github.com/owner/repo/releases/download/v1.0.5/hw-genie-auth-capture.user.js
+// @downloadURL https://github.com/owner/repo/releases/latest/download/hw-genie-auth-capture.user.js
 // @updateURL https://github.com/owner/repo/releases/latest/download/hw-genie-auth-capture.user.js
 // ==/UserScript==
 `;
@@ -120,7 +120,7 @@ test("validate-artifact: version mismatch", () => {
   });
 });
 
-test("validate-artifact: fixed download URL mismatch", () => {
+test("validate-artifact: download URL mismatch", () => {
   const content = `// ==UserScript==
 // @version 1.0.5
 // @downloadURL https://github.com/owner/repo/releases/download/v1.0.4/hw-genie-auth-capture.user.js
@@ -134,10 +134,10 @@ test("validate-artifact: fixed download URL mismatch", () => {
   });
 });
 
-test("validate-artifact: latest update URL mismatch", () => {
+test("validate-artifact: update URL mismatch", () => {
   const content = `// ==UserScript==
 // @version 1.0.5
-// @downloadURL https://github.com/owner/repo/releases/download/v1.0.5/hw-genie-auth-capture.user.js
+// @downloadURL https://github.com/owner/repo/releases/latest/download/hw-genie-auth-capture.user.js
 // @updateURL https://github.com/owner/repo/releases/download/v1.0.5/hw-genie-auth-capture.user.js
 // ==/UserScript==
 `;

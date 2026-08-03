@@ -162,7 +162,7 @@ jobs:
           TARGET_TAG: ${{ steps.init.outputs.target_tag }}
           REPO: ${{ github.repository }}
         run: |
-          DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TARGET_TAG}/hw-genie-auth-capture.user.js"
+          DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/hw-genie-auth-capture.user.js"
           UPDATE_URL="https://github.com/${REPO}/releases/latest/download/hw-genie-auth-capture.user.js"
           bash ./build.sh --inject-download-url "$DOWNLOAD_URL" --inject-update-url "$UPDATE_URL"
           bash ./release-metadata.sh validate-artifact ./dist/hw-genie-auth-capture.user.js "$VERSION" "$REPO"
