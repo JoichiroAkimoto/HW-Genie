@@ -252,8 +252,16 @@ jobs:
               echo "ERROR: Latest release tag is '$API_LATEST_TAG', expected '$EXPECTED_LATEST_TAG' in recovery mode" >&2
               exit 1
             fi
+            # Recovery mode: only verify the @version in the latest artifact.
+            # The @downloadURL/@updateURL of a previously published asset may use
+            # the old version-fixed format, so full validate-artifact is not required.
             EXPECTED_LATEST_VER="${EXPECTED_LATEST_TAG#v}"
-            bash src/userscripts/release-metadata.sh validate-artifact latest-artifact.user.js "$EXPECTED_LATEST_VER" "$REPO"
+            LATEST_VER=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' latest-artifact.user.js | sed -n 's/^\/\/ @version[[:space:]]*//p' | head -n 1 | tr -d ' \r\n')
+            if [[ "$LATEST_VER" != "$EXPECTED_LATEST_VER" ]]; then
+              echo "ERROR: Latest artifact @version is '$LATEST_VER', expected '$EXPECTED_LATEST_VER'" >&2
+              exit 1
+            fi
+            echo "Latest artifact @version confirmed: $LATEST_VER (URL format not validated for pre-existing asset)"
           fi
 
           echo "Release verification successful for $TARGET_TAG (mode: $RELEASE_MODE)."
