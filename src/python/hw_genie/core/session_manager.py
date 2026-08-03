@@ -1,5 +1,3 @@
-import json
-import os
 from typing import Optional, List
 from .repository import SessionRepository, AccountData
 
@@ -44,24 +42,6 @@ class SessionManager:
             if match:
                 data = cls.repo.get_data(match)
 
-        if not data:
-            # 自動移行ロジック: DBにデータがない場合、既存のjsonファイルからの移行を試みる
-            from hw_genie.core.auth import get_session_path
-
-            path = get_session_path(account)
-            if os.path.exists(path):
-                try:
-                    with open(path, "r") as f:
-                        old_data = json.load(f)
-                    if old_data:
-                        cls.repo.save_data(account, old_data)
-                        # 移行成功時は標準エラーに出力（ログ用途）
-                        import sys
-
-                        print(f"INFO: Migrated session for '{account}' from {path} to database.", file=sys.stderr)
-                        return old_data
-                except (json.JSONDecodeError, IOError):
-                    pass
         return data
 
     @classmethod

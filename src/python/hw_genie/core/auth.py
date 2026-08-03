@@ -1,5 +1,4 @@
 import json
-import os
 import re
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
@@ -14,9 +13,6 @@ class SessionData(TypedDict, total=False):
     last_updated: str
     player: PlayerStatus
     message: str
-
-
-PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 
 def extract_headers_from_curl(curl_command):
@@ -59,12 +55,6 @@ def extract_payload_from_curl(curl_command):
         except Exception:
             pass
     return None
-
-
-def get_session_path(account="default"):
-    if account == "default":
-        return os.path.join(PKG_ROOT, "session.json")
-    return os.path.join(PKG_ROOT, f"session.{account}.json")
 
 
 AUTH_EXPIRED_MESSAGE = "Session expired or invalid signature. Please update your curl or run auth-server."
