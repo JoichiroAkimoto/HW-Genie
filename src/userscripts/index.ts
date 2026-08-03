@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.5
+// @version      1.0.6
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -35,10 +35,12 @@
 import { isApiUrl, installXhrInterceptor } from "./xhr-interceptor";
 // セッション送信の状態機械も純関数モジュールに分離（詳細は session.ts）。
 import {
+  SIGNATURE_HEADER_KEY,
   markSendFailure,
   markSendSuccess,
   pollAndMaybeSend,
 } from "./session";
+
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
@@ -54,7 +56,7 @@ import type { SessionState } from "./session";
     "x-auth-application-id",
     "x-auth-network-ident",
     "x-auth-session-id",
-    "x-auth-signature",
+    SIGNATURE_HEADER_KEY,
     "x-auth-token",
     "x-auth-user-id",
   ];
@@ -62,9 +64,13 @@ import type { SessionState } from "./session";
   // After a failed send, retry with exponential backoff (x2 per failure) so a
   // temporarily unreachable auth server does not cause a hot retry loop.
   const MAX_BACKOFF_MS = 30000;
-  // 成功時の最小送信間隔。ゲームがリクエスト毎に署名をローテーションする
-  // 場合、値が安定せず dedupe が効かないため、この間隔で連続送信を抑える
-  // （再ログイン直後の即送信は pendingIdentityJson 確定パスで維持される）。
+  // 成功後のバックオフ基準間隔。dedupe は x-auth-signature を除外した
+  // シリアライズで判定するため、署名のローテーションでは再送されず、実セッション
+  // 値が不変な安静状態ではページロード時に 1 回の送信で止まる。token 等の実
+  // セッション値の変化時は dedupe 不一致で再送される。サーバー障害からの復旧
+  // リトライ自体は指数バックオフ（MAX_BACKOFF_MS まで増加）で制御され、この値は
+  // 成功直後にヘッダー値が変化した場合の次回送信を 2 秒まで抑える最小送信間隔
+  // として機能する（再ログイン直後の即送信は未確定バックオフで 500ms に戻る）。
   const MIN_SEND_INTERVAL_MS = 2000;
   // x-auth-* keys not seen for this long are pruned. A re-login changes the
   // header key set (and values); without pruning, keys from an old session
@@ -86,7 +92,6 @@ import type { SessionState } from "./session";
     lastSeenAt: {},
     lastCaptureAt: 0,
     lastSentJson: null,
-    lastAttemptedJson: null,
     pendingIdentityJson: null,
     lastAttemptedIdentityJson: null,
     backoffMs: POLL_INTERVAL_MS,
