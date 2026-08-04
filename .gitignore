@@ -129,6 +129,12 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Jekyll build artifacts (local verification)
+/_site_alldocs
+/docs/.sass-cache/
+/.sass-cache/
+/docs/_site/
+
 # mypy
 .mypy_cache/
 .dmypy.json

@@ -1,33 +1,36 @@
 ---
-layout: default
-title: Support & Legal
-description: HW-Genie の支援・寄付に関する特定商取引法に基づく表記
+layout: page
+title: HW-Genie
+description: Hero Wars のプレイを強力にサポートする AI エージェント対応の自動化ツールキット
 ---
 
-## ☕️ Support the Project
+**HW-Genie** は、Hero Wars のプレイを強力にサポートする AI エージェント対応の自動化ツールキットです。
+Python による高速な API 自動化 (CLI) と、ブラウザ画面での利便性を高めるユーザースクリプト (Userscript) を統合したハイブリッドな構成を採用しています。
 
-Your contribution helps maintain the project and keeps the tools alive.
-
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=for-the-badge&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/{{ site.github_username | downcase }})
+主な機能は**デイリールーチンの自動実行（レイド＋ショッピング）**・**アイテム収集レイド**・**ヒーローソウルの一括購入**・**複数アカウントの並列実行**などです。詳細な仕様・セットアップ手順はリポジトリの [README](https://github.com/{{ site.github_username }}/{{ site.title }}) をご覧ください。
 
 ---
 
-## ⚖️ 特定商取引法に基づく表記
+## ドキュメント
 
-| 項目 | 内容 |
+| カテゴリ | 内容 |
 | :--- | :--- |
-| **販売事業者** | {{ site.author }} |
-| **所在地** | 請求があった場合に遅滞なく開示します |
-| **電話番号** | 請求があった場合に遅滞なく開示します |
-| **連絡先** | [{{ site.email }}](mailto:{{ site.email }}) |
-| **販売価格** | 各支援ページに記載の金額 |
-| **商品の必要料金** | なし（通信費等は負担） |
-| **支払い方法** | クレジットカード (BMAC / Stripe) |
-| **商品の引渡時期** | 決済完了後、即時 |
-| **返品・キャンセル** | 原則不可 |
-| **サービス内容** | OSS「{{ site.title }}」の開発支援 |
+| [API ドキュメント](./api/INDEX.html) | Hero Wars RPC API のメソッド一覧と仕様 |
+| [DB スキーマ](./db/schema.html) | データベース構成と各テーブルの説明 |
+| [README](https://github.com/{{ site.github_username }}/{{ site.title }}) | インストール・セットアップ・使い方の完全版 |
+
+## ライセンス
+
+[MIT License](https://github.com/{{ site.github_username }}/{{ site.title }}/blob/main/LICENSE)
 
 ---
 
-Project hosted on [GitHub](https://github.com/{{ site.github_username }}/{{ site.title }})  
-&copy; {{ "now" | date: "%Y" }} {{ site.author }}
+## 💜 Support the Project
+
+HW-Genie の開発を応援していただける方は、[Support](./support.html) ページをご覧ください。
+
+<div align="center">
+  <a href="{{ site.sponsor_url }}" target="_blank" rel="noopener">
+    <img src="https://img.shields.io/badge/Sponsor-HW--Genie-ea4aaa.svg?style=for-the-badge&logo=github" alt="Sponsor HW-Genie">
+  </a>
+</div>

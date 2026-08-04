@@ -1,3 +1,8 @@
+---
+layout: page
+title: User API Reference
+---
+
 # User API Reference
 
 ユーザーアカウント、基本設定、サーバー時刻、およびアバターなどの装飾アイテムに関するAPIリファレンスです。

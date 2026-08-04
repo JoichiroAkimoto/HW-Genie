@@ -1,3 +1,9 @@
+---
+layout: page
+title: Hero Wars RPC API Index
+description: Hero Wars RPC API の全体像と機能別ドキュメントへの入り口
+---
+
 # Hero Wars RPC API Index (Start Here)
 
 このドキュメントは、Hero Wars API に関する情報の入り口です。
@@ -17,13 +23,13 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 
 詳細仕様は以下のファイルを参照してください:
 
-- [CHAT_API.md](./CHAT_API.md) (チャット機能)
-- [USER_API.md](./USER_API.md) (ユーザー・アカウント関連)
-- [UNIT_API.md](./UNIT_API.md) (ヒーロー・タイタン・ペット)
-- [GUILD_API.md](./GUILD_API.md) (ギルド・PvP関連)
-- [QUEST_API.md](./QUEST_API.md) (クエスト・ミッション・報酬)
-- [SHOP_API.md](./SHOP_API.md) (ショップ・資産関連)
-- [ADVENTURE_API.md](./ADVENTURE_API.md) (PVE・アドベンチャー)
+- [CHAT_API.md](./CHAT_API.html) (チャット機能)
+- [USER_API.md](./USER_API.html) (ユーザー・アカウント関連)
+- [UNIT_API.md](./UNIT_API.html) (ヒーロー・タイタン・ペット)
+- [GUILD_API.md](./GUILD_API.html) (ギルド・PvP関連)
+- [QUEST_API.md](./QUEST_API.html) (クエスト・ミッション・報酬)
+- [SHOP_API.md](./SHOP_API.html) (ショップ・資産関連)
+- [ADVENTURE_API.md](./ADVENTURE_API.html) (PVE・アドベンチャー)
 
 ## 主なRPCメソッド一覧（概要）
 

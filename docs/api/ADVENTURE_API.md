@@ -1,3 +1,8 @@
+---
+layout: page
+title: Adventure & Story API Reference
+---
+
 # Adventure & Story API Reference
 
 ## 概要
