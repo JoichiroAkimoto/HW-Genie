@@ -73,6 +73,9 @@ def test_build_system_instruction_does_not_assert_and_does_not_miss_repo_evidenc
     instruction = build_system_instruction()
     assert "リポジトリ" in instruction
     assert "差分" in instruction
+    # 例外節の極性も固定する: リポジトリ内の根拠は「通常のレビュー根拠として扱い」
+    # 評価する旨でなければならない（「扱わない」へ逆転した場合に検知できる）
+    assert "通常のレビュー根拠として扱い" in instruction
 
 
 def test_extract_details_nested_is_not_truncated():

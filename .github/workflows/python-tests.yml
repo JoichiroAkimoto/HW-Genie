@@ -12,6 +12,7 @@ on:
     paths:
       - 'src/python/**'
       - '.github/scripts/**'
+      - '.github/workflows/python-tests.yml'
   workflow_dispatch:
 
 concurrency:
