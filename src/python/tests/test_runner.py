@@ -36,9 +36,9 @@ def test_resolve_max_parallel_capped():
 
 
 def test_resolve_max_parallel_reads_env(monkeypatch):
-    monkeypatch.setenv("HWDA_MAX_PARALLEL", "2")
+    monkeypatch.setenv("HW_MAX_PARALLEL", "2")
     assert resolve_max_parallel(None, 10) == 2
-    monkeypatch.setenv("HWDA_MAX_PARALLEL", "not-a-number")
+    monkeypatch.setenv("HW_MAX_PARALLEL", "not-a-number")
     assert resolve_max_parallel(None, 4) == 4
 
 
@@ -404,7 +404,7 @@ def test_cmd_multi_limits_to_named_account(monkeypatch):
 def test_run_all_accounts_respects_max_parallel(monkeypatch):
     """Worker count passed to ThreadPoolExecutor equals the resolved cap (6b).
 
-    The cap is min(HWDA_MAX_PARALLEL, account_count); unbounded (0/unset) means
+    The cap is min(HW_MAX_PARALLEL, account_count); unbounded (0/unset) means
     account_count (i.e. all at once).
     """
     import concurrent.futures
@@ -435,15 +435,15 @@ def test_run_all_accounts_respects_max_parallel(monkeypatch):
     runner.run_all_accounts(lambda c, a: None, accounts=accounts, max_parallel=3)
     assert seen_workers["max_workers"] == 3
 
-    # 2) Unbounded (None / HWDA_MAX_PARALLEL unset) -> all accounts at once.
+    # 2) Unbounded (None / HW_MAX_PARALLEL unset) -> all accounts at once.
     seen_workers.clear()
-    monkeypatch.delenv("HWDA_MAX_PARALLEL", raising=False)
+    monkeypatch.delenv("HW_MAX_PARALLEL", raising=False)
     runner.run_all_accounts(lambda c, a: None, accounts=accounts, max_parallel=None)
     assert seen_workers["max_workers"] == 10
 
-    # 3) HWDA_MAX_PARALLEL env > account count is clamped down.
+    # 3) HW_MAX_PARALLEL env > account count is clamped down.
     seen_workers.clear()
-    monkeypatch.setenv("HWDA_MAX_PARALLEL", "50")
+    monkeypatch.setenv("HW_MAX_PARALLEL", "50")
     runner.run_all_accounts(lambda c, a: None, accounts=accounts, max_parallel=None)
     assert seen_workers["max_workers"] == 10
 

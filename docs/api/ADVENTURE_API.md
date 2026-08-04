@@ -23,7 +23,6 @@ Content-Type: application/json; charset=UTF-8
 ```bash
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"') \
   --data-raw '{"calls":[{"name":"expeditionGet","args":{},"context":{"actionTs":1},"ident":"expedition"}]}'
 ```
 

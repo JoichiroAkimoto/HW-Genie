@@ -30,11 +30,10 @@ Content-Type: application/json; charset=UTF-8
 ### curl 実行例
 
 ```bash
-# session.jsonからヘッダーを自動取得してギルドチャットを取得
+# 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"' 2>/dev/null) \
   --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"clan"},"context":{"actionTs":1},"ident":"chat"}]}'
 ```
 
@@ -150,7 +149,6 @@ WebSocketまたはロングポーリング используется。
 ```bash
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"') \
   --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"clan"},"context":{"actionTs":1},"ident":"chat"}]}' \
 | jq -r '
   .results[0].result.response as $resp |

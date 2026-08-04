@@ -176,7 +176,7 @@ def refresh_all_accounts(
 
     Args:
         max_parallel: 同時実行の上限。既定 4。``cmd_auth`` はこの既定値でなく
-            ``runner.resolve_max_parallel``（``HWDA_MAX_PARALLEL`` を尊重）
+            ``runner.resolve_max_parallel``（``HW_MAX_PARALLEL`` を尊重）
             から導出した値を渡す。
 
     Returns:

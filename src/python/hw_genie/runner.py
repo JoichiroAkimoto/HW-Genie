@@ -39,12 +39,12 @@ def resolve_max_parallel(
 ) -> int:
     """Compute the effective worker count.
 
-    ``HWDA_MAX_PARALLEL`` (and callers passing ``max_parallel``) control the
+    ``HW_MAX_PARALLEL`` (and callers passing ``max_parallel``) control the
     concurrency ceiling. A value <= 0 means "unbounded" (clamped to the number
     of accounts). At least one worker is always returned.
     """
     if max_parallel is None:
-        max_parallel = int(_env_int("HWDA_MAX_PARALLEL", 0))
+        max_parallel = int(_env_int("HW_MAX_PARALLEL", 0))
     if max_parallel <= 0:
         return max(account_count, 1)
     return min(max_parallel, max(account_count, 1))
@@ -98,7 +98,7 @@ def run_all_accounts(
         routine: Callable taking ``(client, account_alias)``.
         accounts: Explicit account list. When ``None`` every registered account
             is used.
-        max_parallel: Concurrency limit. Defaults to ``HWDA_MAX_PARALLEL`` /
+        max_parallel: Concurrency limit. Defaults to ``HW_MAX_PARALLEL`` /
             unbounded.
 
     Returns:

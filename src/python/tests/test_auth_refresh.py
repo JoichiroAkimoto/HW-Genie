@@ -271,7 +271,7 @@ def test_cmd_auth_fresh_requires_list(capsys):
 def test_cmd_auth_fresh_with_account_refreshes_only_that_account(capsys, monkeypatch):
     """--list --fresh -a Alice は Alice のみ最新化して表示する。"""
     _save_accounts()
-    monkeypatch.delenv("HWDA_MAX_PARALLEL", raising=False)
+    monkeypatch.delenv("HW_MAX_PARALLEL", raising=False)
     with patch(
         "hw_genie.core.auth.refresh_all_accounts",
         return_value=[("Alice", None)],

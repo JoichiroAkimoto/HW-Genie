@@ -103,7 +103,7 @@ bin/hwsa
 
 - `hwda` サービス: `hw-genie multi daily`（全アカウントのデイリールーチン）
 - `hwsa` サービス: `hw-genie multi full`（ヒーローレイド + ショップ + デイリー）
-- 同時実行数は環境変数 `HWDA_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
+- 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用
 libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。
