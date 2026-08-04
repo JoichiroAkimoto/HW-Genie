@@ -43,7 +43,7 @@ services:
   #
   # The service `command` already supplies `multi daily` / `multi full`, so
   # pass only ACCOUNT ALIASES and/or --parallel. Do NOT re-pass `multi daily`.
-  # HWDA_MAX_PARALLEL caps concurrency (0/unset = unbounded).
+  # HW_MAX_PARALLEL caps concurrency (0/unset = unbounded).
   hwda:
     build: .
     user: "1000:1000"
@@ -53,7 +53,7 @@ services:
       # （短命なホスト CLI では設定しないこと: 接続オープン直後の
       # バックグラウンド sync が WAL 競合を招く）。
       TURSO_SYNC_INTERVAL: "30"
-      HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
+      HW_MAX_PARALLEL: ${HW_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie
@@ -66,7 +66,7 @@ services:
     environment:
       <<: *db-env
       TURSO_SYNC_INTERVAL: "30"
-      HWDA_MAX_PARALLEL: ${HWDA_MAX_PARALLEL:-}
+      HW_MAX_PARALLEL: ${HW_MAX_PARALLEL:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie

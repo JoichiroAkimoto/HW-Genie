@@ -78,7 +78,7 @@ def cmd_auth(args):
 
             # -a 併用時はそのアカウントのみ最新化する
             targets = [args.account] if args.account else accounts
-            # 並列数は multi と同様 HWDA_MAX_PARALLEL（上限）を尊重する
+            # 並列数は multi と同様 HW_MAX_PARALLEL（上限）を尊重する
             refreshed = refresh_all_accounts(
                 targets, max_parallel=resolve_max_parallel(None, len(targets))
             )
@@ -555,7 +555,7 @@ def main():
         "-p",
         type=int,
         default=None,
-        help="Max concurrent accounts (default: HWDA_MAX_PARALLEL / unbounded)",
+        help="Max concurrent accounts (default: HW_MAX_PARALLEL / unbounded)",
     )
     p_multi.set_defaults(func=cmd_multi)
 

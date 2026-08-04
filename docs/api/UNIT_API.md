@@ -17,11 +17,10 @@ Content-Type: application/json; charset=UTF-8
 
 ### curl 実行例
 ```bash
-# session.jsonからヘッダーを自動取得してヒーロー情報を取得
+# 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"' 2>/dev/null) \
   --data-raw '{"calls":[{"name":"heroGetAll","args":{},"context":{"actionTs":1},"ident":"heroes"}]}'
 ```
 
@@ -62,11 +61,10 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ### curl 実行例
 ```bash
-# session.jsonからヘッダーを自動取得してタイタン情報を取得
+# 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"' 2>/dev/null) \
   --data-raw '{"calls":[{"name":"titanGetAll","args":{},"context":{"actionTs":1},"ident":"titans"}]}'
 ```
 
@@ -97,11 +95,10 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ### curl 実行例
 ```bash
-# session.jsonからヘッダーを自動取得してペット情報を取得
+# 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"' 2>/dev/null) \
   --data-raw '{"calls":[{"name":"pet_getAll","args":{},"context":{"actionTs":1},"ident":"pets"}]}'
 ```
 
@@ -134,11 +131,10 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ### curl 実行例
 ```bash
-# session.jsonからヘッダーを自動取得してインベントリ情報を取得
+# 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' \
   -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"' 2>/dev/null) \
   --data-raw '{"calls":[{"name":"inventoryGet","args":{},"context":{"actionTs":1},"ident":"inventory"}]}'
 ```
 

@@ -24,7 +24,6 @@ Content-Type: application/json; charset=UTF-8
 ```bash
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
-  $(cat session.json | jq -r '.headers | to_entries[] | "-H \(.key): \(.value)"') \
   --data-raw '{"calls":[{"name":"clanGetInfo","args":{},"ident":"body"}]}'
 ```
 
