@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ai_review  # noqa: E402
 from ai_review import (  # noqa: E402
     _extract_details_blocks,
+    build_system_instruction,
     resolve_model,
     strip_review_metadata,
 )
@@ -41,6 +42,40 @@ MODEL_CONFIG = {
         "max_diff_chars": 500000,
     },
 }
+
+
+def test_build_system_instruction_includes_cutoff_rule():
+    """学習カットオフ起因の誤断定を防ぐため、「要確認」化・断定禁止ルールが含まれる。"""
+    instruction = build_system_instruction()
+    assert "知識カットオフ" in instruction
+    assert "断定しない" in instruction
+    assert "要確認" in instruction
+    # 極性を固定して検証する: カットオフ起因の指摘は「クリティカルとして扱わない」旨が
+    # 明記されていなければならない（「扱う」へ逆転した場合に検知できるよう否定語で断言）
+    assert "として扱わないでください" in instruction
+
+
+def test_build_system_instruction_markers_used_by_flow():
+    """レビューの流れで参照される 【COMPLETE】 判定と出力フォーマットが維持されている。"""
+    instruction = build_system_instruction()
+    assert "【COMPLETE】" in instruction
+    assert "**判定**" in instruction
+    assert "**要約**" in instruction
+
+
+def test_build_system_instruction_does_not_assert_and_does_not_miss_repo_evidence():
+    """「断定禁止」がリポジトリ内で確認できる根拠の評価まで無効化しない。
+
+    知識カットオフに影響されない根拠（差分内の import 不整合、他ワークフロー
+    での同一 Action の利用実績など実リポジトリ由来の事実）は、通常のレビュー
+    根拠として扱える旨が明記されていること（過剰な要確認化による偽陰性を防ぐ）。
+    """
+    instruction = build_system_instruction()
+    assert "リポジトリ" in instruction
+    assert "差分" in instruction
+    # 例外節の極性も固定する: リポジトリ内の根拠は「通常のレビュー根拠として扱い」
+    # 評価する旨でなければならない（「扱わない」へ逆転した場合に検知できる）
+    assert "通常のレビュー根拠として扱い" in instruction
 
 
 def test_extract_details_nested_is_not_truncated():

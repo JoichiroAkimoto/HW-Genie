@@ -5,11 +5,14 @@ on:
     branches: [ main ]
     paths:
       - 'src/python/**'
+      - '.github/scripts/**'
       - '.github/workflows/python-tests.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'src/python/**'
+      - '.github/scripts/**'
+      - '.github/workflows/python-tests.yml'
   workflow_dispatch:
 
 concurrency:
@@ -19,7 +22,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v7
 
@@ -34,16 +37,11 @@ jobs:
     - name: Set up Python
       run: uv python install 3.13
 
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config
-
     - name: Install dependencies
-      run: uv sync --locked
+      run: uv sync --locked --group ci
 
     - name: Lint with ruff
-      run: uv run --locked ruff check src/python
+      run: uv run --locked ruff check src/python .github/scripts
 
     - name: Test with pytest
-      run: uv run --locked pytest src/python/tests/
+      run: uv run --locked pytest src/python/tests/ .github/scripts/tests/
