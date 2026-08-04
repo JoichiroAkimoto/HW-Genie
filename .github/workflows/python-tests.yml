@@ -37,11 +37,9 @@ jobs:
     - name: Set up Python
       run: uv python install 3.13
 
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config
-
+    # NOTE: ランナーには gcc/g++/make/cmake/pkg-config が標準搭載されており、
+    #       依存も manylinux wheel で解決されるため apt インストールは不要
+    #       （旧構成では apt-get install が毎回かかっていた）。
     - name: Install dependencies
       run: uv sync --locked --group ci
 
