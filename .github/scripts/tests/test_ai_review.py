@@ -50,8 +50,9 @@ def test_build_system_instruction_includes_cutoff_rule():
     assert "知識カットオフ" in instruction
     assert "断定しない" in instruction
     assert "要確認" in instruction
-    # 判定にクリティカルとして扱わせない旨も明記されている
-    assert "クリティカル" in instruction
+    # 極性を固定して検証する: カットオフ起因の指摘は「クリティカルとして扱わない」旨が
+    # 明記されていなければならない（「扱う」へ逆転した場合に検知できるよう否定語で断言）
+    assert "として扱わないでください" in instruction
 
 
 def test_build_system_instruction_markers_used_by_flow():
@@ -60,6 +61,18 @@ def test_build_system_instruction_markers_used_by_flow():
     assert "【COMPLETE】" in instruction
     assert "**判定**" in instruction
     assert "**要約**" in instruction
+
+
+def test_build_system_instruction_does_not_assert_and_does_not_miss_repo_evidence():
+    """「断定禁止」がリポジトリ内で確認できる根拠の評価まで無効化しない。
+
+    知識カットオフに影響されない根拠（差分内の import 不整合、他ワークフロー
+    での同一 Action の利用実績など実リポジトリ由来の事実）は、通常のレビュー
+    根拠として扱える旨が明記されていること（過剰な要確認化による偽陰性を防ぐ）。
+    """
+    instruction = build_system_instruction()
+    assert "リポジトリ" in instruction
+    assert "差分" in instruction
 
 
 def test_extract_details_nested_is_not_truncated():
