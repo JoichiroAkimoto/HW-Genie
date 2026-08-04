@@ -40,12 +40,19 @@ concurrency:
 
 jobs:
   review:
+    # Skip bot PRs (dependabot, renovate, etc.) - automated dependency bumps
+    # do not benefit from AI review and add meaningless cost.
+    if: |-
+      (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          # Full history is not needed: ai_review.py fetches the PR head ref
+          # itself (git fetch refs/pull/N/head) and uses `gh pr diff` via API.
+          fetch-depth: 1
           ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || github.sha }}
 
       - name: Set up Python
