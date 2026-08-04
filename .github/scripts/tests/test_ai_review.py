@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ai_review  # noqa: E402
 from ai_review import (  # noqa: E402
     _extract_details_blocks,
+    build_system_instruction,
     resolve_model,
     strip_review_metadata,
 )
@@ -41,6 +42,24 @@ MODEL_CONFIG = {
         "max_diff_chars": 500000,
     },
 }
+
+
+def test_build_system_instruction_includes_cutoff_rule():
+    """学習カットオフ起因の誤断定を防ぐため、「要確認」化・断定禁止ルールが含まれる。"""
+    instruction = build_system_instruction()
+    assert "知識カットオフ" in instruction
+    assert "断定しない" in instruction
+    assert "要確認" in instruction
+    # 判定にクリティカルとして扱わせない旨も明記されている
+    assert "クリティカル" in instruction
+
+
+def test_build_system_instruction_markers_used_by_flow():
+    """レビューの流れで参照される 【COMPLETE】 判定と出力フォーマットが維持されている。"""
+    instruction = build_system_instruction()
+    assert "【COMPLETE】" in instruction
+    assert "**判定**" in instruction
+    assert "**要約**" in instruction
 
 
 def test_extract_details_nested_is_not_truncated():
