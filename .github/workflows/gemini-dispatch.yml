@@ -20,7 +20,9 @@ on:
 
 concurrency:
   group: gemini-dispatch-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: true
+  # Do NOT cancel in-progress runs: invoke/plan-execute can run for a long time
+  # and must not be killed by a follow-up comment on the same issue/PR.
+  cancel-in-progress: false
 
 defaults:
   run:
