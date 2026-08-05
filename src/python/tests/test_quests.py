@@ -84,6 +84,9 @@ def test_classify_quest_master_entries():
     category, name = classify_quest(10004)
     assert category == "daily"
     assert "Arena" in name
+    # 召喚 / エメラルド交換の対応（gacha_open のレスポンスで確定済み）
+    assert classify_quest(10007)[1] == "Perform 1 summon in the Soul Atrium"
+    assert classify_quest(10006)[1] == "Use emerald exchange"
 
 
 def test_classify_quest_family_rules():

@@ -50,12 +50,12 @@ QUEST_MASTER: dict[int, dict[str, Any]] = {
     },
     10006: {
         "category": "daily",
-        "name": "Perform 1 summon in the Soul Atrium / Use emerald exchange (順序要確認)",
+        "name": "Use emerald exchange",
         "target": 1,
     },
     10007: {
         "category": "daily",
-        "name": "Use emerald exchange / Perform 1 summon in the Soul Atrium (順序要確認)",
+        "name": "Perform 1 summon in the Soul Atrium",
         "target": 1,
     },
     10024: {

@@ -49,7 +49,7 @@ title: Quest API Reference
 
 `hw-genie quests` コマンドでは 100xx の主要デイリーについて `QUEST_MASTER` テーブルで名前を解決する
 （`src/python/hw_genie/commands/quests.py`）。確定済みデイリー:
-`10004`=Arena/GA 3回、`10006`/`10007`=Soul Atrium 召喚 / エメラルド交換（順序要確認）、
+`10004`=Arena/GA 3回、`10006`=Use emerald exchange、`10007`=Perform 1 summon in the Soul Atrium（召喚・交換の対応は gacha_open / 交換操作のレスポンスで確定）、
 `10024`=Hero's Artifact 1回、`10028`=Titan Artifact、`10030`=Skin 1回、
 `10050`=Earn 1750 Guild Activity points（報酬: consumable 3×10 + gold 10000。target 1750、questGetAll では progress 1858 と超過が含まれる）。
 `10033` は dungeonActivity 報酬だが Daily タブには表示されない未分類。
