@@ -370,6 +370,22 @@ def cmd_shop(args):
     client.exchange_stones()
 
 
+def cmd_quests(args):
+    """クエスト（デイリー等）の取得・表示"""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+
+    from hw_genie.commands.quests import run_quest_status
+
+    run_quest_status(
+        client,
+        account_alias=args.account,
+        show_all=args.show_all,
+        raw=args.raw,
+        category=args.category,
+    )
+
+
 def cmd_daily(args):
     """デイリーレイド実行"""
     headers = None
@@ -524,6 +540,13 @@ def main():
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
+
+    # Quests
+    p_quests = subparsers.add_parser("quests", parents=[parent_parser], help="Quest status (daily quests)")
+    p_quests.add_argument("--show-all", action="store_true", help="Show completed quests too (default: uncompleted only)")
+    p_quests.add_argument("--raw", action="store_true", help="Print the raw questGetAll response as JSON")
+    p_quests.add_argument("--category", choices=["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"], help="Filter by quest category")
+    p_quests.set_defaults(func=cmd_quests)
 
     # Sync
     p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")

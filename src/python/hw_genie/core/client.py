@@ -143,6 +143,7 @@ class ApiAction(str, Enum):
     ARENA_GET_ALL = "arenaGetAll"
     MISSION_GET_ALL = "missionGetAll"
     MISSION_RAID = "missionRaid"
+    QUEST_GET_ALL = "questGetAll"
     CONSUMABLE_USE_STAMINA = "consumableUseStamina"
     INVENTORY_EXCHANGE_STONES = "inventoryExchangeStones"
     SHOP_GET_ALL = "shopGetAll"
@@ -343,6 +344,11 @@ class HWClient:
     def mission_get_all(self) -> HWResponse:
         """キャンペーン（ストーリーモード）の各ステージクリア状況を取得"""
         payload = {"calls": [{"name": ApiAction.MISSION_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def quest_get_all(self) -> HWResponse:
+        """全クエスト（デイリー/メイン/ギルド/イベント/バトルパス等）の進捗を取得"""
+        payload = {"calls": [{"name": ApiAction.QUEST_GET_ALL, "args": {}, "ident": "body"}]}
         return self.call(payload)
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:
