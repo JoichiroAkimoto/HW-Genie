@@ -15,7 +15,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - [主な機能](#主な機能)
 - [クイックスタート](#クイックスタート)
   - [認証方法](#認証方法)
-  - [Gemini CLI 連携](#gemini-cli-連携)
+  - [AI エージェント連携](#ai-エージェント連携)
 - [開発環境](#開発環境)
 - [サポート](#サポート)
 - [FAQ](#faq)
@@ -268,9 +268,18 @@ hw-genie auth-server
 HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
-### Gemini CLI 連携
+**起動方法の使い分け**: 認証サーバーはホスト直接実行（上記 `hw-genie auth-server`）と Docker 実行（`docker compose up --build -d auth-server`）のどちらでも起動できます。
 
-本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI等のツールから自然言語でレイド等を指示できます。
+| 方法 | 推奨ケース | 備考 |
+| --- | --- | --- |
+| ホスト直接実行 (`hw-genie auth-server`) | ローカルでの一時利用・開発時 | ローカルレプリカをそのまま使用 |
+| Docker 実行 (`docker compose up -d auth-server`) | 常駐・長時間運用 | コンテナ内では完全リモート構成（`TURSO_READ_REMOTE` / `TURSO_WRITE_REMOTE=true`）になり、ホスト CLI との WAL 競合を構造的に回避 |
+
+どちらも認証キャプチャ機能に違いはありません。常駐させる場合は Docker 実行がおすすめです。
+
+### AI エージェント連携
+
+本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。各スキル（`daily-raid`・`hero-raid`・`hero-shopping` 等）の説明は [AGENTS.md](AGENTS.md) を参照してください。
 
 ## 開発環境
 
@@ -301,7 +310,7 @@ HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://
 <details>
 <summary><strong>Q. 複数端末から同じ DB を使いたい</strong></summary>
 
-Turso Embedded Replicas を利用してください（`TURSO_SYNC_URL` / `TURSO_WRITE_REMOTE=true`）。詳細は「libSQL (Turso) の利用」を参照してください。
+各端末で同じ Turso リモート URL を `DATABASE_URL`（例: `sqlite+libsql://[your-db].turso.io?auth_token=...`）に指定すれば、そのまま共有できます（デフォルト構成が Turso リモート直結のため追加設定は不要）。ローカルファイルをキャッシュとして高速化したい場合のみ Embedded Replicas（`TURSO_SYNC_URL`）を設定してください。詳細は「libSQL (Turso) の利用」を参照してください。
 
 </details>
 
