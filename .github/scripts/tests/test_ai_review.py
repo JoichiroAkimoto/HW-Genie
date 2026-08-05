@@ -56,10 +56,10 @@ def test_build_system_instruction_includes_cutoff_rule():
 
 
 def test_build_system_instruction_markers_used_by_flow():
-    """レビューの流れで参照される 【APPROVE】/【CHANGES_REQUESTED】 判定と出力フォーマットが維持されている。"""
+    """レビューの流れで参照される 【✅ APPROVE】/【🔴 CHANGES_REQUESTED】 判定と出力フォーマットが維持されている。"""
     instruction = build_system_instruction()
-    assert "【APPROVE】" in instruction
-    assert "【CHANGES_REQUESTED】" in instruction
+    assert "【✅ APPROVE】" in instruction
+    assert "【🔴 CHANGES_REQUESTED】" in instruction
     assert "**判定**" in instruction
     assert "**要約**" in instruction
 
