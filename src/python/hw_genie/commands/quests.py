@@ -18,9 +18,11 @@ from hw_genie.core.utils import format_timestamp_for_display
 logger = logging.getLogger(__name__)
 
 # --- クエスト状態 ---
-# 1 = 進行中 (active/progressing), 2 = 完了 (finished), 3 = その他 (farm 応答等)
+# 1 = 進行中, 2 = 条件達成済み・報酬受取可能（questFarm で受領できる）,
+# 3 = 報酬受領済み（questGetAll には通常現れず、questFarm 応答の quests 配列で見られる）
 STATE_ACTIVE = 1
-STATE_FINISHED = 2
+STATE_CLAIMABLE = 2
+STATE_DONE = 3
 
 # --- カテゴリ定義 ---
 CATEGORIES = ["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"]
@@ -70,6 +72,11 @@ QUEST_MASTER: dict[int, dict[str, Any]] = {
         "category": "daily",
         "name": "Upgrade any hero's skin 1 time",
         "target": 1,
+    },
+    10050: {
+        "category": "daily",
+        "name": "Earn 1750 Guild Activity points",
+        "target": 1750,
     },
     10033: {
         "category": "unknown",
@@ -124,9 +131,14 @@ class Quest:
     target: int | None = None
 
     @property
-    def is_completed(self) -> bool:
-        """完了済み（state=2）かどうか。"""
-        return self.state == STATE_FINISHED
+    def is_claimable(self) -> bool:
+        """報酬受取可能（条件達成済み・未受領）かどうか。"""
+        return self.state == STATE_CLAIMABLE
+
+    @property
+    def is_done(self) -> bool:
+        """報酬受領済みかどうか。"""
+        return self.state == STATE_DONE
 
 
 def parse_quests(raw: Any) -> list[Quest]:
@@ -219,13 +231,15 @@ def run_quest_status(
             print(f"ℹ️  No quests in category '{category}'.")
             return []
 
-    visible = quests if show_all else [q for q in quests if not q.is_completed]
+    # state==3（受領済み）は questGetAll に通常現れないが、保険で除外
+    visible = quests if show_all else [q for q in quests if not q.is_done]
 
     if show_all:
-        completed = sum(1 for q in quests if q.is_completed)
-        uncompleted = len(quests) - completed
+        done = sum(1 for q in quests if q.is_done)
+        claimable = sum(1 for q in quests if q.is_claimable)
+        active = len(quests) - done - claimable
         print(f"\n📋 Quest status for {account} "
-              f"(total {len(quests)}, {completed} completed, {uncompleted} uncompleted):")
+              f"(total {len(quests)}, {claimable} claimable, {active} active, {done} done):")
     else:
         print(f"\n📋 Quest status for {account} "
               f"(total {len(quests)}, uncompleted {len(visible)}):")
@@ -236,13 +250,13 @@ def run_quest_status(
         if not items:
             continue
         shown_any = True
-        done = sum(1 for q in items if q.is_completed)
+        claimable = sum(1 for q in items if q.is_claimable)
         label = CATEGORY_LABELS[cat]
-        suffix = f" ({done} completed)" if show_all and done else ""
+        suffix = f" ({claimable} claimable)" if show_all and claimable else ""
         print(f"\n🔹 {label}{suffix}")
         for q in items:
             target = q.target if q.target is not None else "?"
-            mark = "✅" if q.is_completed else ("⏳" if q.progress > 0 else "⬜")
+            mark = "🎁" if q.is_claimable else ("⏳" if q.progress > 0 else "⬜")
             print(
                 f"  {mark} {q.id!s:>8}  {q.name:<55} "
                 f"{q.progress}/{target}  [{format_reward(q.reward)}]  ({format_create_time(q.create_time)})"

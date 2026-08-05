@@ -30,7 +30,8 @@ title: Quest API Reference
 ]
 ```
 
-*   **Tips**: `state` 1 = active/progressing, 2 = finished.
+*   **Tips**: `state` 1 = active/progressing, 2 = 条件達成済み・**報酬受取可能**（`questFarm` で受領できる。受領前は questGetAll に残る）, 3 = 報酬受領済み（questGetAll からは**消える**。questFarm 応答の `quests` 配列でのみ見られる）。
+*   **Tips**: UI の「未完了」表示には state=2（受取待ち）も含まれる。UI の表示値と `progress` は一致しない場合がある（例: 10050 は UI 上 1750/1750 だが API は progress=1858）。
 *   **Tips**: レスポンスにクエスト名・カテゴリは含まれない。カテゴリと名前は ID から特定する（下記参照）。
 *   **Tips**: `id` ・`progress` ・`reward` の数値は int / str が混在する（例: `"id": "2609007064"`、`"coin": {"24": "500"}`）。
 *   **Tips**: クエスト ID はアカウント共通。`createTime` がデイリーリセット時刻（アカウント設定に依存）。
@@ -49,7 +50,8 @@ title: Quest API Reference
 `hw-genie quests` コマンドでは 100xx の主要デイリーについて `QUEST_MASTER` テーブルで名前を解決する
 （`src/python/hw_genie/commands/quests.py`）。確定済みデイリー:
 `10004`=Arena/GA 3回、`10006`/`10007`=Soul Atrium 召喚 / エメラルド交換（順序要確認）、
-`10024`=Hero's Artifact 1回、`10028`=Titan Artifact、`10030`=Skin 1回。
+`10024`=Hero's Artifact 1回、`10028`=Titan Artifact、`10030`=Skin 1回、
+`10050`=Earn 1750 Guild Activity points（報酬: consumable 3×10 + gold 10000。target 1750、questGetAll では progress 1858 と超過が含まれる）。
 `10033` は dungeonActivity 報酬だが Daily タブには表示されない未分類。
 
 ---

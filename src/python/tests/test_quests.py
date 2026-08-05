@@ -25,9 +25,10 @@ MOCK_QUESTS = [
     {"id": 10024, "state": 2, "progress": 1, "reward": {"consumable": {"45": 1}}, "createTime": 1783046661, "farmCount": 0},
     {"id": 10028, "state": 2, "progress": 1, "reward": {"consumable": {"53": 400}}, "createTime": 1783046661, "farmCount": 0},
     {"id": 10030, "state": 2, "progress": 1, "reward": {"coin": {"4": 100}}, "createTime": 1783046661, "farmCount": 0},
+    {"id": 10050, "state": 2, "progress": 1858, "reward": {"consumable": {"3": 10}, "gold": 10000}, "createTime": 1783046661, "farmCount": 0, "order": 4},
     {"id": 10033, "state": 1, "progress": 0, "reward": {"consumable": {"81": 15}, "dungeonActivity": 150}, "createTime": 1783046661, "farmCount": 0},
     {"id": 20000010, "state": 1, "progress": 12, "reward": {"clanQuestsPoints": 4, "prestige": 20}, "createTime": 1783046661, "farmCount": 0},
-    {"id": 20010002, "state": 2, "progress": 948, "reward": {"stamina": 200}, "createTime": 1783046661, "farmCount": 0},
+    {"id": 20010002, "state": 3, "progress": 948, "reward": {"stamina": 200}, "createTime": 1783046661, "farmCount": 0},
     {"id": 232010, "state": 1, "progress": 1900, "reward": {"coin": {"24": "500"}}, "createTime": 1783046661, "farmCount": 0},
     {"id": 398703, "state": 1, "progress": 0, "reward": {"consumable": {"215": "3"}}, "createTime": 1783046661, "farmCount": 0},
     {"id": "2609007064", "state": 1, "progress": 1, "reward": {"battlePassExp": {"2608000109": 350}}, "createTime": 1783046661, "farmCount": 0},
@@ -51,14 +52,20 @@ def _make_client(quests: list[dict] | None = None) -> HWClient:
 
 def test_parse_quests_normalizes_fields():
     quests = parse_quests(MOCK_QUESTS)
-    assert len(quests) == 14
+    assert len(quests) == 15
 
     by_id = {q.id: q for q in quests}
     # id が int/str 混在でも int に正規化される
     assert by_id[2609007064].name.startswith("Battle Pass")
     assert by_id[10004].progress == 2
     assert by_id[10004].state == 1
-    assert by_id[10024].is_completed
+    # state=2 は「報酬受取可能（未受領）」であり完了ではない
+    assert by_id[10050].is_claimable
+    assert not by_id[10050].is_done
+    assert by_id[10050].target == 1750
+    # state=3 は受領済み
+    assert by_id[20010002].is_done
+    assert not by_id[20010002].is_claimable
     assert by_id[10004].reward == {"consumable": {"56": 1}, "gold": 6400}
     # マスタから target が引き継がれる
     assert by_id[10004].target == 3
@@ -124,9 +131,11 @@ def test_run_quest_status_default_shows_only_uncompleted(capsys):
     # 未完了デイリーが名称付きで表示される
     assert "Fight 3 times in the Arena or Grand Arena" in out
     assert "10004" in out
-    # 完了済み（state=2）はデフォルトで非表示
-    assert "Level up any Hero's Artifact 1 time" not in out
-    assert "10024" not in out
+    # 報酬受取可能（state=2）も未完了として表示される（🎁 マーク）
+    assert "Earn 1750 Guild Activity points" in out
+    assert "🎁" in out
+    # 受領済み（state=3）はデフォルトで非表示
+    assert "20010002" not in out
     # カテゴリ別表示
     assert "Daily Quests" in out
     assert "Guild Quests" in out
@@ -134,12 +143,12 @@ def test_run_quest_status_default_shows_only_uncompleted(capsys):
     assert len(quests) == len(MOCK_QUESTS)
 
 
-def test_run_quest_status_show_all_includes_completed(capsys):
+def test_run_quest_status_show_all_includes_state3(capsys):
     client = _make_client()
     run_quest_status(client, account_alias="VitaminD", show_all=True)
     out = capsys.readouterr().out
-    assert "Level up any Hero's Artifact 1 time" in out
-    assert "✅" in out
+    assert "20010002" in out
+    assert "claimable" in out
 
 
 def test_run_quest_status_category_filter(capsys):
