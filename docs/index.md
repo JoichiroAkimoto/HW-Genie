@@ -19,6 +19,10 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 | [DB スキーマ](./db/schema.html) | データベース構成と各テーブルの説明 |
 | [README](https://github.com/{{ site.github_username }}/{{ site.title }}) | インストール・セットアップ・使い方の完全版 |
 
+## 免責事項
+
+HW-Genie は **非公式** の自動化ツールであり、Hero Wars の開発・運営元（Nexters 等）とは一切関係ありません。ゲームの利用規約に反する可能性があるため、**自己責任** でご利用ください。本ツールの使用により生じたいかなる損害・不利益についても、作者は責任を負いません。
+
 ## ライセンス
 
 [MIT License](https://github.com/{{ site.github_username }}/{{ site.title }}/blob/main/LICENSE)
