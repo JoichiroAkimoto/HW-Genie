@@ -1,3 +1,8 @@
+---
+layout: page
+title: Quest API Reference
+---
+
 # Quest API Reference
 
 ## 概要

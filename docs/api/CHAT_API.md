@@ -1,3 +1,8 @@
+---
+layout: page
+title: Chat API Reference
+---
+
 # Chat API Reference
 
 ## chatGetAll - チャット履歴取得

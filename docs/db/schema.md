@@ -1,3 +1,9 @@
+---
+layout: page
+title: Database Schema
+description: HW-Genie のデータベース構成と各テーブルの説明
+---
+
 # Database Schema
 
 HW-Genie のデータベース構成と各テーブルの説明です。

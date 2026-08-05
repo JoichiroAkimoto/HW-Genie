@@ -1,3 +1,8 @@
+---
+layout: page
+title: Guild API Reference
+---
+
 # Guild API Reference
 
 ## 概要

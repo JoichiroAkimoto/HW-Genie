@@ -9,9 +9,15 @@ lang: ja
 author: Akimoto Joichiro
 email: b1013066@gmail.com
 github_username: JoichiroAkimoto
+sponsor_url: "https://github.com/sponsors/JoichiroAkimoto"
 
 # Plugins
 plugins:
   - jekyll-remote-theme
   - jekyll-seo-tag
   - jekyll-sitemap
+
+# Build
+exclude:
+  - db_analysis.md
+  - superpowers

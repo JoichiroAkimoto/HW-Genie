@@ -1,3 +1,8 @@
+---
+layout: page
+title: Shop & Reward API Reference
+---
+
 # Shop & Reward API Reference
 
 ## 概要
