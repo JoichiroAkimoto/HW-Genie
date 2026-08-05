@@ -1,4 +1,4 @@
-.PHONY: test test-cov lint format docker-build clean clean-logs
+.PHONY: sync test test-cov lint format docker-build clean clean-logs
 
 test:
 	uv run pytest
@@ -11,6 +11,10 @@ lint:
 
 format:
 	uv run ruff format .
+
+# 依存関係の同期（pyproject.toml / uv.lock 更新後・クローン直後に 1 回実行）
+sync:
+	uv sync --locked
 
 docker-build:
 	docker build -t hw-genie .

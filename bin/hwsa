@@ -38,6 +38,19 @@ if [ -d "$LOG_DIR" ] && [ "$KEEP_DAYS" -gt 0 ] 2>/dev/null; then
 fi
 
 echo "=== Starting parallel full routine for all accounts at $(date '+%Y-%m-%d %H:%M:%S') ===" | tee "$LOG_FILE"
+
+# 依存の鮮度警告: uv に問い合わせて仮想環境が uv.lock と同期済みか確認する。
+# （--dry-run はローカル検証のみでダウンロードしない。--no-sync 起動のため、
+# 依存更新後は事前に `uv sync --locked` が必要。判定は uv の出力文言
+# "Would make no changes" に依存し、dev 込みで同期された環境を前提とする）。
+# ※ログ追記は上記 tee（上書き）より後に置くこと。警告は stderr とログの両方に残す。
+state=$(uv sync --dry-run --locked 2>&1) || state=""
+if [[ "$state" != *"Would make no changes"* ]]; then
+  msg="Warning: 依存関係が仮想環境と未同期の可能性があります:"
+  printf '%s\n  %s\n' "$msg" "uv sync --locked" >&2
+  printf '%s\n  %s\n' "$msg" "uv sync --locked" >> "$LOG_FILE"
+fi
+
 code=0
 # 端末直結実行時のみカラーを有効化（tee パイプで TTY 判定が false になるため FORCE_COLOR で強制）。
 # 未設定時のみ設定し、ユーザーの明示的な FORCE_COLOR=0 / 空文字は尊重する（NO_COLOR は Python 側が優先）。

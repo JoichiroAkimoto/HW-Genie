@@ -288,6 +288,17 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 - **Backend**: Python 3.13 (Ruff, pytest)
 - **Frontend**: TypeScript (Bun, Vite)
 
+### 依存関係の更新
+
+依存関係は Dependabot が週次で更新 PR を出します。マージ後に `git pull` したら `uv sync --locked`（または `make sync`）を 1 回実行してください。
+
+```bash
+git pull
+make sync   # = uv sync --locked（依存のダウンロードはこの時だけ）
+```
+
+`hwda` / `hwsa` は `uv run --no-sync` で起動するため、未同期のまま実行すると実行時エラーになります（起動時に未同期を検出して警告を表示します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
+
 ## サポート
 
 HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://github.com/sponsors/JoichiroAkimoto) でのご支援を受け付けています（README 冒頭の **[Sponsor]** バッジから）。

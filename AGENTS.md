@@ -82,6 +82,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **`src/python/pyproject.toml` (`dependencies`)**: ツールの実行に必要なライブラリ。
 *   **ルートディレクトリの `pyproject.toml` (`dependency-groups`)**: `pytest` や `ruff` など、開発・テストに必要なツール（`dev` グループ）。
 
+**依存更新の運用**: 依存関係の更新 PR は Dependabot（週次、`python-dependencies` グループ）が作成します。マージ後に `git pull` したら、`uv sync --locked`（または `make sync`）を一度実行してください。`bin/hwda` / `bin/hwsa` は `uv run --no-sync` 起動のため、未同期のまま実行すると実行時エラーになります（スクリプトが起動時に未同期を検出し警告します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
+
 > **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
 
 ### ドキュメントの同期更新
