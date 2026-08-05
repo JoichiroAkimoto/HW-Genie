@@ -14,8 +14,8 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 
 - [主な機能](#主な機能)
 - [クイックスタート](#クイックスタート)
-- [認証方法](#認証方法)
-- [Gemini CLI 連携](#gemini-cli-連携)
+  - [認証方法](#認証方法)
+  - [Gemini CLI 連携](#gemini-cli-連携)
 - [開発環境](#開発環境)
 - [サポート](#サポート)
 - [FAQ](#faq)
@@ -274,7 +274,7 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 ## サポート
 
-HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://github.com/sponsors/JoichiroAkimoto) でのご支援を受け付けています（バッジ上部の **[Sponsor]** から）。
+HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://github.com/sponsors/JoichiroAkimoto) でのご支援を受け付けています（README 冒頭の **[Sponsor]** バッジから）。
 支援金は主に**開発時間の確保・インフラ費用（Turso DB 等）・ライブラリ更新の継続**に充てられます。ご無理のない範囲で応援していただければ幸いです。
 
 ## FAQ
