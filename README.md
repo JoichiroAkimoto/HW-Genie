@@ -1,22 +1,42 @@
 # HW-Genie 🧞‍♂️
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-HW--Genie-ea4aaa.svg?style=for-the-badge&logo=github)](https://github.com/sponsors/JoichiroAkimoto)
+[![Python Checks](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/python-tests.yml/badge.svg)](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/python-tests.yml)
+[![Userscript CI](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/userscript-ci.yml/badge.svg)](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/userscript-ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **HW-Genie** は、Hero Wars のプレイを強力にサポートする AI エージェント対応の自動化ツールキットです。
 Python による高速な API 自動化 (CLI) と、ブラウザ画面での利便性を高めるユーザースクリプト (Userscript) を統合したハイブリッドな構成を採用しています。
 
+📚 プロジェクトサイト (GitHub Pages): [https://joichiroakimoto.github.io/HW-Genie/](https://joichiroakimoto.github.io/HW-Genie/)
+
+## 目次
+
+- [主な機能](#主な機能)
+- [クイックスタート](#クイックスタート)
+- [認証方法](#認証方法)
+- [Gemini CLI 連携](#gemini-cli-連携)
+- [開発環境](#開発環境)
+- [サポート](#サポート)
+- [FAQ](#faq)
+- [免責事項](#免責事項)
+- [ライセンス](#ライセンス)
+
 ## 主な機能
+
 - **Daily Routine**: ヒーローレイドとショッピングをワンコマンドで連続実行（アイテムのスタミナ限界の場合は中断）。
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
+- **Multi Account**: 複数アカウントのレイド・ショッピングを単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
 
 ### Python CLI (hw-genie)
-Python 3.13+ と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
+
+Python 3.13 と [uv](https://github.com/astral-sh/uv) の使用を推奨しています。
 
 > **開発者向け**: DB の状態確認には [turso CLI](https://docs.turso.tech/reference/turso-cli) が便利です。`turso auth login` で認証後、`turso db shell hw-genie-db "SELECT ..."` で Turso クラウド上の最新データを直接参照できます。
 
@@ -32,6 +52,7 @@ uv run hw-genie --debug auth --list
 ```
 
 ### Tips: direnv による自動有効化
+
 [direnv](https://direnv.net/) を使用すると、ディレクトリに移動するだけで自動的に仮想環境が有効化され、`bin/` 内の便利スクリプトへパスが通ります。
 
 ```bash
@@ -48,6 +69,7 @@ direnv allow
 有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。
 
 ### Nix を使用する場合（推奨）
+
 [Nix](https://nixos.org/) がインストール済みの環境では、`direnv` が Python 3.13 や uv、turso-cli 等のツールを Nix 経由で自動的に提供します。
 
 ```bash
@@ -70,14 +92,15 @@ uv run --locked ruff check .
 > Nix がインストールされていない環境では、従来の `.venv` ベースの環境に自動フォールバックします（`.venv` が存在すれば `source .venv/bin/activate`、なければ何もしません）。
 
 ### Docker での実行 (推奨)
+
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
 ```bash
 # 1. 認証サーバーのビルドと起動
-docker-compose up --build -d auth-server
+docker compose up --build -d auth-server
 
 # 2. ログの確認
-docker-compose logs -f
+docker compose logs -f
 ```
 
 > **Security Note**: 認証サーバーを Docker 経由で起動する場合、コンテナ外部からのアクセスを許可するために `0.0.0.0` にバインドされます。公開サーバーで実行する場合は、ファイアウォール等で適切にアクセス制限を行ってください。
@@ -85,6 +108,7 @@ docker-compose logs -f
 データベース (`hw_genie.db`) は `./data` ディレクトリに保存・永続化されます。
 
 #### コンテナ内での全アカウント一括実行（並列）
+
 `hwda` / `hwsa` 相当の処理は、1 つのコンテナプロセス内で全アカウントを並列（スレッドプール）実行する `hw-genie multi` コマンドで行います。プロセス内並列のため、libSQL の Embedded Replica（ローカルファイル + Turso Syncs）をそのまま共有でき、`wal_insert_begin failed` の WAL 競合を回避できます（issue #47 の「案 E」）。
 
 ```bash
@@ -94,8 +118,8 @@ docker compose --profile bulk up --build -d hwda
 # あるいは都度実行（指定アカウントのみ / 同時実行数を制限）
 # サービスの command に既に `multi daily`/`multi full` が含まれるため、
 # 渡すのはアカウント名と --parallel のみ（multi daily は重複指定しない）
-docker-compose run --rm hwda --parallel 4 account1 account2
-docker-compose run --rm hwsa
+docker compose run --rm hwda --parallel 4 account1 account2
+docker compose run --rm hwsa
 # ホスト上で直接実行する場合は bin/hwda・bin/hwsa を使う
 bin/hwda --parallel 4 account1 account2
 bin/hwsa
@@ -106,6 +130,7 @@ bin/hwsa
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用
+
 libSQL (Turso) を使用する場合は、環境変数 `DATABASE_URL` を指定します。
 
 ```bash
@@ -113,6 +138,7 @@ export DATABASE_URL="sqlite+libsql://[your-db].turso.io?auth_token=[your-token]"
 ```
 
 #### ローカルでの libSQL サーバーの起動
+
 Docker を使用してローカルに libSQL サーバー (`sqld`) を起動し、接続テストを行うことができます。
 
 ```bash
@@ -207,6 +233,7 @@ export TURSO_WRITE_REMOTE="true"
 ### 認証方法
 
 #### 方法1: 手動 (curl コピー)
+
 1. ブラウザの DevTools → Network タブから `api/` へのリクエストを右クリック → `Copy as cURL`
 2. ターミナルで実行:
 ```bash
@@ -223,6 +250,7 @@ hw-genie auth --list --fresh
 （改行入りメモはそのまま継続行として表示）。幅は `COLUMNS` 環境変数で固定することもできます。
 
 #### 方法2: 自動キャプチャ (推奨)
+
 1. 認証サーバーを起動:
 ```bash
 hw-genie auth-server
@@ -236,11 +264,39 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
 ### Gemini CLI 連携
+
 本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI等のツールから自然言語でレイド等を指示できます。
 
 ## 開発環境
-- **Backend**: Python 3.14 (Ruff, pytest)
+
+- **Backend**: Python 3.13 (Ruff, pytest)
 - **Frontend**: TypeScript (Bun, Vite)
 
+## サポート
+
+HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://github.com/sponsors/JoichiroAkimoto) でのご支援を受け付けています（バッジ上部の **[Sponsor]** から）。
+支援金は主に**開発時間の確保・インフラ費用（Turso DB 等）・ライブラリ更新の継続**に充てられます。ご無理のない範囲で応援していただければ幸いです。
+
+## FAQ
+
+### Q. 認証情報が古くなってエラーが出ます
+
+`hw-genie auth --curl '...'` で新しい curl コマンドを渡すか、認証サーバー + Userscript の自動キャプチャを利用してください。
+
+### Q. アカウントはどうやって指定しますか
+
+`-a` / `--account` オプションでプレイヤー名を指定します。登録アカウントが 1 件のみの場合は自動選択されます。複数アカウントを扱う場合は `hw-genie multi` を使います。
+
+### Q. 複数端末から同じ DB を使いたい
+
+Turso Embedded Replicas を利用してください（`TURSO_SYNC_URL` / `TURSO_WRITE_REMOTE=true`）。詳細は「libSQL (Turso) の利用」を参照してください。
+
+## 免責事項
+
+- 本ツールは **非公式** の自動化ツールであり、Hero Wars の開発・運営元（Nexters 等）とは一切関係ありません。
+- ゲームの利用規約に反する可能性があるため、**自己責任** で使用してください。
+- 本ツールの使用により生じたいかなる損害・不利益についても、作者は責任を負いません。
+
 ## ライセンス
+
 [MIT License](LICENSE)
