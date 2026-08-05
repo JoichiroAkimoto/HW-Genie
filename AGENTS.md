@@ -26,7 +26,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **デイリールーチン**: `uv run hw-genie daily`
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存され、`default` エイリアスは廃止されました。`-a`/`--account` 未指定時は、登録アカウントが 1 件だけなら自動選択、複数件なら `-a` 指定を要求するエラーになります。`multi` は対象アカウント未指定時は全アカウント実行です。
-*   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。実行後はアカウント別ステータス表（Account / ⚡Energy / 🏆Arena / 👑GA / 💰Gold / 💎Gems、列幅は内容に応じて自動調整）と失敗一覧を標準出力に表示。`bin/hwda` / `bin/hwsa` はこのコマンドを単一プロセスで呼び出し、出力を `data/logs/` にミラーリングします（実行ごとの統合ログ `data/logs/hwda_<ts>.log`）。ログは `HW_LOG_KEEP_DAYS`（既定 7 日、0 で無効）で自動削除されます。表示タイムゾーンは `HWGENIE_TZ`（既定 `UTC`、例 `Asia/Tokyo`）で指定でき、`auth --list` の `Updated` 列に反映されます（DB 保存は常に UTC）。カラーリングは `auth --list` / `multi` のステータス表とも同仕様（順位色・スタミナ超過赤・ゼブラ）で、TTY 直接実行時のみ有効です。パイプ先でも強制したい場合は `FORCE_COLOR=1`、無効化は `NO_COLOR=1`（優先。`FORCE_COLOR=0` や空文字は無効扱いで TTY 判定へ戻る）。`bin/hwda` / `bin/hwsa` は端末直結実行時に自動で色付けし、ログファイルは常にプレーン（ANSI 除去）です。
+*   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。実行後はアカウント別ステータス表（Account / ⚡Energy / 🏆Arena / 👑GA / 💰Gold / 💎Gems、列幅は内容に応じて自動調整）と失敗一覧を標準出力に表示。`bin/hwda` / `bin/hwsa` はこのコマンドを単一プロセスで呼び出し、出力を `data/logs/` にミラーリングします（実行ごとの統合ログ `data/logs/hwda_<ts>.log`）。ログは `HW_LOG_KEEP_DAYS`（既定 7 日、0 で無効）で自動削除されます。表示タイムゾーンは `HWGENIE_TZ`（既定 `UTC`、例 `Asia/Tokyo`）で指定でき、`auth --list` の `Updated` 列に反映されます（DB 保存は常に UTC）。カラーリングは `auth --list` / `multi` のステータス表とも同仕様（順位色・スタミナ超過赤・ゼブラ）で、TTY 直接実行時のみ有効です。パイプ先でも強制したい場合は `FORCE_COLOR=1`、無効化は `NO_COLOR=1`（優先。`FORCE_COLOR=0` や空文字は無効扱いで TTY 判定へ戻る）。`bin/hwda` / `bin/hwsa` は端末直結実行時に自動で色付けし、ログファイルは常にプレーン（ANSI 除去）です。また起動は `uv run --no-sync` で行うため、依存関係（`pyproject.toml` / `uv.lock`）を更新した場合やクローン直後は、実行前に必ず `uv sync` を一度実行してください（起動時の自動再同期が省略されるため、未同期だと `.venv` 未作成時は起動失敗、依存更新後は実行時エラーになります。待ちは更新時の `uv sync` に移ります）。
 *   **登録済みアカウント一覧**: `uv run hw-genie auth --list`（`--fresh` を併用するとゲームサーバーから最新ステータスを取得して DB を更新してから表示）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
@@ -81,6 +81,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 
 *   **`src/python/pyproject.toml` (`dependencies`)**: ツールの実行に必要なライブラリ。
 *   **ルートディレクトリの `pyproject.toml` (`dependency-groups`)**: `pytest` や `ruff` など、開発・テストに必要なツール（`dev` グループ）。
+
+**依存更新の運用**: 依存関係の更新 PR は Dependabot（週次、`python-dependencies` グループ）が作成します。マージ後に `git pull` したら、`uv sync --locked`（または `make sync`）を一度実行してください。`bin/hwda` / `bin/hwsa` は `uv run --no-sync` 起動のため、未同期のまま実行すると実行時エラーになります（スクリプトが起動時に未同期を検出し警告します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
 
 > **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
 

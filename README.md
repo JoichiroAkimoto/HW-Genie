@@ -66,7 +66,7 @@ direnv allow
 `copy.envrc` の最新版を `.envrc` に反映してください（`.env` の `dotenv` 読み込みが
 含まれていないと `TURSO_*` 等が未設定となります）。
 
-有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。
+有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。`hwda` / `hwsa` は起動時に仮想環境を再同期しない `uv run --no-sync` で実行されるため、依存関係（`pyproject.toml` / `uv.lock`）を更新した場合や初回実行前は、事前に `uv sync` を一度実行してください（未同期だと `.venv` 未作成時は起動失敗、依存更新後は実行時エラーになります）。
 
 ### Nix を使用する場合 (任意・Nix ユーザー向け)
 
@@ -88,6 +88,8 @@ uv run --locked hw-genie --help
 uv run --locked pytest
 uv run --locked ruff check .
 ```
+
+> Nix 環境で `hwda` / `hwsa` を使用する場合も、事前に **ステップ3 の `uv sync --locked`** を済ませておいてください（両スクリプトは `uv run --no-sync` で起動するため）。
 
 > Nix がインストールされていない環境では、従来の `.venv` ベースの環境に自動フォールバックします（`.venv` が存在すれば `source .venv/bin/activate`、なければ何もしません）。
 
@@ -285,6 +287,17 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 - **Backend**: Python 3.13 (Ruff, pytest)
 - **Frontend**: TypeScript (Bun, Vite)
+
+### 依存関係の更新
+
+依存関係は Dependabot が週次で更新 PR を出します。マージ後に `git pull` したら `uv sync --locked`（または `make sync`）を 1 回実行してください。
+
+```bash
+git pull
+make sync   # = uv sync --locked（依存のダウンロードはこの時だけ）
+```
+
+`hwda` / `hwsa` は `uv run --no-sync` で起動するため、未同期のまま実行すると実行時エラーになります（起動時に未同期を検出して警告を表示します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
 
 ## サポート
 
