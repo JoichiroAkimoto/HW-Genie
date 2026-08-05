@@ -68,7 +68,7 @@ direnv allow
 
 有効化後は `uv run` を付けずに直接 `hw-genie` や `pytest`, `ruff` を実行できるほか、並列処理スクリプト（`hwda` や `hwsa` など）も直接コマンドとして実行可能です（Nix 環境の場合は代わりに `uv run --locked` を使用します。詳細は「Nix を使用する場合」を参照）。
 
-### Nix を使用する場合（推奨）
+### Nix を使用する場合（任意・Nix ユーザー向け）
 
 [Nix](https://nixos.org/) がインストール済みの環境では、`direnv` が Python 3.13 や uv、turso-cli 等のツールを Nix 経由で自動的に提供します。
 
@@ -187,6 +187,9 @@ export TURSO_SYNC_ON_CONNECT="true"
 export TURSO_WRITE_REMOTE="true"
 ```
 
+<details>
+<summary><strong>動作の詳細・実装メモ</strong>（クリックで展開）</summary>
+
 > **実装メモ**: `sqlalchemy-libsql` 0.2.0 の標準ダイアレクトはローカルファイル時に
 > `sync_url` 等を破棄してしまうため、`hw_genie/core/database.py` の
 > `TursoReplicaDialect` がこれらを `libsql_experimental.connect` へ転送します。
@@ -222,6 +225,8 @@ export TURSO_WRITE_REMOTE="true"
 > - `sqlite+libsql:///./data/hw_genie.db` → `PKG_ROOT/data/hw_genie.db`（相対・推奨）
 > - `sqlite+libsql:////abs/path.db` （4スラッシュ）→ そのまま絶対パス
 > - `sqlite+libsql:///data/hw_genie.db` （3スラッシュ, `./` なし）→ リテラル絶対パス `/data/...`
+
+</details>
 
 ### 表示・運用の環境変数
 
@@ -279,17 +284,26 @@ HW-Genie の開発を継続・改善するために、[GitHub Sponsors](https://
 
 ## FAQ
 
-### Q. 認証情報が古くなってエラーが出ます
+<details>
+<summary><strong>Q. 認証情報が古くなってエラーが出ます</strong></summary>
 
 `hw-genie auth --curl '...'` で新しい curl コマンドを渡すか、認証サーバー + Userscript の自動キャプチャを利用してください。
 
-### Q. アカウントはどうやって指定しますか
+</details>
+
+<details>
+<summary><strong>Q. アカウントはどうやって指定しますか</strong></summary>
 
 `-a` / `--account` オプションでプレイヤー名を指定します。登録アカウントが 1 件のみの場合は自動選択されます。複数アカウントを扱う場合は `hw-genie multi` を使います。
 
-### Q. 複数端末から同じ DB を使いたい
+</details>
+
+<details>
+<summary><strong>Q. 複数端末から同じ DB を使いたい</strong></summary>
 
 Turso Embedded Replicas を利用してください（`TURSO_SYNC_URL` / `TURSO_WRITE_REMOTE=true`）。詳細は「libSQL (Turso) の利用」を参照してください。
+
+</details>
 
 ## 免責事項
 
