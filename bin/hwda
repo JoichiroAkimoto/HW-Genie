@@ -14,6 +14,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# 下記の uv run は --no-sync で起動するため、.venv 未作成（クローン直後等）だと
+# hw-genie が見つからず起動に失敗する。事前に uv sync を実行するよう案内して
+# 早期終了する。依存更新後の未同期は本チェックでは検出されず、実行時エラー
+# （ModuleNotFoundError 等）になるため、依存更新時も事前に uv sync を実行すること。
+if [ ! -x .venv/bin/hw-genie ]; then
+  echo "Error: .venv/bin/hw-genie が見つかりません。依存関係を同期してください:" >&2
+  echo "  uv sync" >&2
+  exit 1
+fi
+
 LOG_DIR="data/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hwda_$(date '+%Y%m%d_%H%M%S').log"
@@ -36,8 +46,13 @@ code=0
 # tee の成功で隠蔽されず `|| code=$?` に正しく捕捉される。
 # Finished 行は同じパイプラインに通し、perl の出力順を保証する（process substitution は
 # 非同期のため、別途 tee -a で追記すると順序競合が起こる）。
+# `--no-sync` は uv の起動時環境再同期（pyproject.toml / uv.lock の mtime 変化で発火し、
+# 変更パッケージのダウンロード待ちが発生）をスキップして起動を即時化する。
+# --no-sync 下では lockfile 検証（--locked 相当）もスキップされるため、
+# 検証は事前の `uv sync` に委ねられる。依存を更新した場合は
+# 事前に `uv sync` を一度実行すること（待ちは更新時のみに移る）。
 if [ -t 1 ] && [ -z "${FORCE_COLOR+x}" ]; then export FORCE_COLOR=1; fi
-(uv run --locked hw-genie multi daily "$@" 2>&1; rc=$?; echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="; exit $rc) \
+(uv run --no-sync hw-genie multi daily "$@" 2>&1; rc=$?; echo "=== Finished at $(date '+%Y-%m-%d %H:%M:%S') ==="; exit $rc) \
   | tee >(perl -pe 'BEGIN{$|=1} s/\e\[[0-9;]*m//g' >> "$LOG_FILE") || code=$?
 echo "Log saved to $LOG_FILE"
 exit $code
