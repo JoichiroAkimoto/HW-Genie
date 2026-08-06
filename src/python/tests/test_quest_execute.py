@@ -1,0 +1,184 @@
+"""``run_quest_execute``（デイリークエスト自動実行）のテスト。
+
+- モッククライアントを使い、ネットワークに依存しない。
+- quest_defaults の読み書きは conftest のインメモリ DB（SessionManager）を使う。
+"""
+
+from unittest.mock import MagicMock
+
+from hw_genie.commands.quests import (
+    get_quest_defaults,
+    run_quest_execute,
+    set_quest_defaults,
+)
+from hw_genie.core.client import ApiAction, HWClient, ResponseStatus
+from hw_genie.core.session_manager import SessionManager
+
+
+# --- ヘルパー ---
+
+
+def _ok_response(detail: dict) -> MagicMock:
+    res = MagicMock()
+    res.status = ResponseStatus.SUCCESS
+    res.error_name = None
+    res.detail = detail
+    return res
+
+
+def _error_response(error: str) -> MagicMock:
+    res = MagicMock()
+    res.status = ResponseStatus.ERROR
+    res.error_name = error
+    res.detail = {}
+    return res
+
+
+def _make_client(raw_quests: list[dict]) -> HWClient:
+    """quest_get_all をモックしたクライアントを作る（操作応答は別途差し替える）。"""
+    client = HWClient(headers={"x-auth-token": "test"})
+    res = _ok_response({"response": raw_quests})
+    client.quest_get_all = MagicMock(return_value=res)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+    return client
+
+
+def _active(qid: int) -> dict:
+    return {"id": qid, "state": 1, "progress": 0, "reward": {}, "createTime": 0, "farmCount": 0}
+
+
+# --- テスト ---
+
+
+def test_execute_runs_steps_and_claims(capsys):
+    """操作応答で対象クエストが state=2 になると questFarm で報酬受領される。"""
+    client = _make_client([_active(10024)])
+
+    def _op(action: ApiAction, args: dict):
+        if action == ApiAction.HERO_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10024, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="VitaminD", confirm=True)
+    out = capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 10024
+    assert "Reward claimed" in out
+    client.quest_farm.assert_called_once_with(10024)
+
+
+def test_execute_unregistered_quest_not_run(capsys):
+    """QUEST_OPERATIONS 未登録のクエストは実行されない。"""
+    client = _make_client([_active(10004)])
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_execute_disabled_quest_skipped(capsys):
+    """enabled:false のクエスト（10007）はスキップされ起動しない。"""
+    client = _make_client([_active(10007)])
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "disabled in QUEST_OPERATIONS" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_execute_step_failure_reported(capsys):
+    """ステップ失敗はアカウント×クエスト×ステップで報告される。"""
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(return_value=_error_response("notEnoughStamina"))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    f = failed[0]
+    assert f["account"] == "Alex"
+    assert f["quest_id"] == 10024
+    assert f["step"] == "heroArtifactLevelUp"
+    assert "notEnoughStamina" in f["error"]
+
+
+def test_execute_claim_failure_captured(capsys):
+    """操作成功でも questFarm 失敗は失敗リストに入る。"""
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(
+        return_value=_ok_response({"quests": [{"id": 10024, "state": 2}]})
+    )
+    client.quest_farm = MagicMock(return_value=_error_response("AlreadyFarmed"))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["step"] == "questFarm"
+    assert "reward claim failed" in out
+
+
+def test_dry_run_does_not_invoke_operations(capsys):
+    """dry_run はプラン表示のみで操作・受領は実行しない。"""
+    client = _make_client([_active(10024), _active(10028), _active(10030)])
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "[dry-run]" in out
+    assert "heroArtifactLevelUp" in out
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_confirm_prompt_skips_when_declined(monkeypatch, capsys):
+    """confirm=False のとき y 以外でステップをスキップし失敗報告する。"""
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock()
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=False)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["step"] == "heroArtifactLevelUp"
+    assert "skipped by user" in failed[0]["error"]
+    client.quest_operation.assert_not_called()
+
+
+def test_account_default_override_applied_in_plan(capsys):
+    """quest_defaults の引数上書きが dry-run のプランに反映される。"""
+    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    set_quest_defaults("Alex", 10024, "heroId", 999)
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "heroId" in out
+    assert "999" in out
+    assert get_quest_defaults("Alex")[10024]["heroId"] == 999

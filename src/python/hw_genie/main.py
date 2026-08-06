@@ -375,7 +375,16 @@ def cmd_quests(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
 
-    from hw_genie.commands.quests import run_quest_status
+    from hw_genie.commands.quests import run_quest_execute, run_quest_status
+
+    if args.execute or args.dry_run:
+        run_quest_execute(
+            client,
+            account_alias=args.account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+        )
+        return
 
     run_quest_status(
         client,
@@ -546,6 +555,9 @@ def main():
     p_quests.add_argument("--show-all", action="store_true", help="Show completed quests too (default: uncompleted only)")
     p_quests.add_argument("--raw", action="store_true", help="Print the raw questGetAll response as JSON")
     p_quests.add_argument("--category", choices=["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"], help="Filter by quest category")
+    p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
+    p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
+    p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
     p_quests.set_defaults(func=cmd_quests)
 
     # Sync
