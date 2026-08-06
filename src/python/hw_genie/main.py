@@ -377,6 +377,7 @@ def cmd_quests(args):
 
     from hw_genie.commands.quests import (
         classify_quest,
+        edit_quest_defaults_interactive,
         ensure_quest_defaults,
         run_quest_execute,
         run_quest_status,
@@ -384,6 +385,11 @@ def cmd_quests(args):
     )
 
     account = resolve_account(args.account)
+
+    # quest_defaults を対話的に編集する（番号選択ウィザード）
+    if getattr(args, "edit_defaults", False):
+        edit_quest_defaults_interactive(account)
+        return
 
     # quest_defaults を初期化する（QUEST_OPERATIONS 登録済みクエストを enabled:false で投入）
     if args.init_defaults:
@@ -587,6 +593,7 @@ def main():
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
     p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999)")
     p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults for the account (seed all QUEST_OPERATIONS quests as enabled=false)")
+    p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 
     # Sync

@@ -438,8 +438,24 @@ def test_ensure_quest_defaults_seeds_disabled_for_all():
         assert conf.get("enabled") is False
 
 
-def test_ensure_quest_defaults_preserves_existing_values():
-    """既存の設定値（enabled:true 等）は保持される。"""
+def test_ensure_quest_defaults_seeds_operation_args():
+    """初期投入時に操作ステップのデフォルト引数も埋まる。"""
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    defaults = ensure_quest_defaults("Alex")
+
+    assert defaults[10024]["heroId"] == 61
+    assert defaults[10024]["slotId"] == 1
+    assert defaults[10028]["titanId"] == 4022
+    assert defaults[10028]["shopId"] == 13
+    assert defaults[10030]["heroId"] == 59
+    assert defaults[10030]["skinId"] == 313
+    assert defaults[10023]["heroId"] == 38
+
+
+def test_ensure_quest_defaults_backfills_missing_args():
+    """既に初期化済みのアカウントには不足キーのみ補完される（既存値は保持）。"""
     from hw_genie.commands.quests import ensure_quest_defaults
 
     _register("Alex")
@@ -448,8 +464,8 @@ def test_ensure_quest_defaults_preserves_existing_values():
 
     defaults = ensure_quest_defaults("Alex")
     assert defaults[10024]["enabled"] is True
-    assert defaults[10024]["heroId"] == 777
-    # 他キーは seeded
+    assert defaults[10024]["heroId"] == 777  # 既存値は上書きしない
+    assert defaults[10024]["slotId"] == 1    # 不足キーは補完
     assert defaults[10028]["enabled"] is False
 
 
@@ -518,3 +534,88 @@ def test_cmd_quests_execute_success_exits_zero():
             lambda *a, **k: ([{"quest_id": 10024}], []),
         )
         assert main_mod.cmd_quests(_Args()) is None
+
+
+# --- 対話的編集ウィザード（edit_quest_defaults_interactive） ---
+
+
+def _make_input_sequence(*answers: str):
+    """与えられた順に input() が返すイテレータを作る。"""
+    it = iter(answers)
+    return lambda _prompt: next(it)
+
+
+def test_edit_defaults_wizard_enables_quest(monkeypatch, capsys):
+    """クエスト番号→enabled 番号選択で有効化できる。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "1", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert get_quest_defaults("Alex")[10007]["enabled"] is True
+    assert "10007" in out
+    assert "Perform 1 summon in the Soul Atrium" in out
+    assert "enabled" in out
+
+
+def test_edit_defaults_wizard_sets_override_value(monkeypatch, capsys):
+    """クエスト番号→引数キー番号→値入力で上書きできる。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 3 番目が 10024（10007, 10023, 10024 の順）。キー一覧で 2 番目は heroId。
+    monkeypatch.setattr("builtins.input", _make_input_sequence("3", "2", "999", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    capsys.readouterr().out
+
+    assert get_quest_defaults("Alex")[10024]["heroId"] == 999
+
+
+def test_edit_defaults_wizard_displays_current_values(monkeypatch, capsys):
+    """設定キーの現在値が一覧に表示される。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    set_quest_defaults("Alex", 10024, "enabled", True)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("3", "q", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert "Level up any Hero's Artifact 1 time" in out
+    assert "✅ enabled" in out
+    assert "heroId (current: 61)" in out
+
+
+def test_edit_defaults_wizard_back_and_invalid(monkeypatch, capsys):
+    """無効入力は再入力を促し、b で一覧に戻れる。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 1 回目は無効な 99 → 2 回目で 10007 選択 → キー選択で b → 一覧で q
+    monkeypatch.setattr("builtins.input", _make_input_sequence("99", "1", "b", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert "Invalid choice" in out
+    assert "Bye." in out
+
+
+def test_edit_defaults_wizard_eof_raises_systemexit(monkeypatch, capsys):
+    """非TTY（EOF）では SystemExit(1) で終了する。"""
+    import pytest
+
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
+
+    with pytest.raises(SystemExit) as exc_info:
+        edit_quest_defaults_interactive("Alex")
+    assert exc_info.value.code == 1
+    assert "No interactive input available" in capsys.readouterr().err

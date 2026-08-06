@@ -8,6 +8,7 @@ ID → 名称/カテゴリ/目標値）を正引きテーブルとして使う�
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -352,13 +353,16 @@ def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> Any
 
 
 def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
-    """``quest_defaults`` を初期化する（初回のみ。既存値は保持）。
+    """``quest_defaults`` を初期化・補完する（既存値は保持）。
 
     ``QUEST_OPERATIONS`` に登録されているクエストについて、``quest_defaults``
-    に未登録のものだけ ``{"enabled": False}`` を追加マージして保存する。
+    に未登録のクエストを ``{"enabled": False}`` で追加し、さらに各ステップの
+    ``args`` のデフォルト引数を（既に存在するキーは残したまま）補完する。
+    デフォルト引数はコード側のレシピ（``QUEST_OPERATIONS``）からコピーされる
+    ため、アカウント設定として固定され、レシピ変更の影響を受けない。
     初期状態は全クエスト無効（enabled=false）で、``--set-default <id> enabled
     true`` で有効化してから実行する運用。登録アカウントが存在しない場合や
-    既に初期化済みの場合は何も書き込まない。
+    補完不要の場合は何も書き込まない。
 
     Returns:
         保存後の ``quest_defaults``（quest_id → 設定 dict）。
@@ -366,12 +370,16 @@ def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     if not QUEST_OPERATIONS:
         return get_quest_defaults(account)
     defaults = get_quest_defaults(account)
-    missing = [qid for qid in QUEST_OPERATIONS if qid not in defaults]
-    if not missing:
-        return defaults
-    for qid in missing:
-        defaults[qid] = {"enabled": False}
-    SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
+    changed = False
+    for qid, op in QUEST_OPERATIONS.items():
+        conf = defaults.setdefault(qid, {"enabled": False})
+        for step in op.get("steps", []):
+            for k, v in step.get("args", {}).items():
+                if k not in conf:
+                    conf[k] = v
+                    changed = True
+    if changed:
+        SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
     return defaults
 
 
@@ -609,3 +617,129 @@ def print_quest_failures(account: str, failures: list[dict[str, Any]]) -> None:
     for f in failures:
         qid = f.get("quest_id") or "-"
         print(f"   - account={f.get('account')} quest={qid} ({f.get('quest_name')}) step={f.get('step')}: {f.get('error')}")
+
+
+# --- 対話的設定（quest_defaults 編集ウィザード） ---
+
+
+def _prompt_input(prompt: str) -> str:
+    """input() のラッパー。非TTY（EOF）では案内を出して終了する。"""
+    try:
+        return input(prompt)
+    except EOFError:
+        print("⛔ No interactive input available (non-TTY).", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+def _fmt_value(value: Any) -> str:
+    """設定値の表示用文字列（bool は true/false、dict は JSON）。"""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _select_index(prompt: str, count: int, quit_labels: set[str]) -> tuple[int, str | None]:
+    """「1..N または quit_labels」の番号選択を読む。
+
+    Returns:
+        ``(index, label)`` — index は 1 始まり、無効入力は ``(-1, label)``。
+        quit_labels の入力は ``(-1, label)`` の形式で、ラベルはそのまま返る。
+    """
+    choice = _prompt_input(prompt).strip().lower()
+    if choice in quit_labels:
+        return -1, choice
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= count:
+            return idx, choice
+    print(f"   ⚠️  Invalid choice (1-{count}, or {', '.join(sorted(quit_labels))}).")
+    return -1, choice
+
+
+def edit_quest_defaults_interactive(account: str) -> None:
+    """``quest_defaults`` を対話的に編集する（番号選択ウィザード）。
+
+    - クエストを**番号＋名前＋現在の有効状態**で一覧表示し、番号で選択する。
+    - 選択したクエストの設定キー（``enabled`` と操作引数）を現在値付きで
+      一覧表示し、番号で選択して値を入力/切り替える。
+    - ``q`` で終了、``b`` でクエスト一覧に戻る。
+    - 保存は ``set_quest_defaults`` 経由（既存値は保持）。
+    """
+    defaults = ensure_quest_defaults(account)
+    print(f"⚙️  Edit quest_defaults for {account} (select by number; 'q' to quit):")
+
+    quest_ids = sorted(defaults)
+    while True:
+        print("\nQuest list:")
+        for i, qid in enumerate(quest_ids, 1):
+            _, name = classify_quest(qid)
+            enabled = bool(defaults[qid].get("enabled"))
+            state = "✅ enabled" if enabled else "⏸️  disabled"
+            print(f"  {i}. {qid} {name} [{state}]")
+        print("  q. Quit")
+
+        idx, label = _select_index("Choice> ", len(quest_ids), quit_labels={"q"})
+        if idx < 0:
+            if label == "q":
+                print("Bye.")
+                return
+            continue
+        qid = quest_ids[idx - 1]
+        if _edit_one_quest(account, qid, defaults):
+            print("Bye.")
+            return
+
+
+def _edit_one_quest(account: str, qid: int, defaults: dict[int, dict[str, Any]]) -> bool:
+    """クエスト 1 件の設定キー選択 → 値入力のループ。
+
+    Returns:
+        True なら全体終了（q）、False ならクエスト一覧に戻る。
+    """
+    _, name = classify_quest(qid)
+    conf = defaults[qid]
+    keys = ["enabled"] + [k for k in conf if k != "enabled"]
+
+    while True:
+        print(f"\n  Configure {qid} {name}:")
+        for i, k in enumerate(keys, 1):
+            print(f"    {i}. {k} (current: {_fmt_value(conf.get(k))})")
+        print("    b. Back to quest list")
+        print("    q. Quit")
+
+        idx, label = _select_index("  Choice> ", len(keys), quit_labels={"q", "b"})
+        if idx < 0:
+            if label == "q":
+                return True
+            if label == "b":
+                return False
+            continue
+        key = keys[idx - 1]
+        new_value = _prompt_value(key, conf.get(key))
+        if new_value is None:
+            continue
+        set_quest_defaults(account, qid, key, new_value)
+        conf[key] = new_value
+        print(f"    ✅ quest_defaults[{qid} ({name})][{key}] = {_fmt_value(new_value)}")
+
+
+def _prompt_value(key: str, current: Any) -> Any:
+    """設定キーごとの値入力。enabled は true/false 選択、他は文字列入力（解釈付き）。"""
+    if key == "enabled":
+        print("    Select enabled value:")
+        print("      1. true")
+        print("      2. false")
+        print("      b. cancel")
+        choice = _prompt_input("    Choice> ").strip()
+        if choice == "1":
+            return True
+        if choice == "2":
+            return False
+        return None
+    print(f"    Enter new value for {key} (current: {_fmt_value(current)}; empty = keep)")
+    raw = _prompt_input("    Value> ").strip()
+    if not raw:
+        return None
+    return _parse_float_value(raw)
