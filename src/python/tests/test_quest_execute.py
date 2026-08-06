@@ -2,6 +2,7 @@
 
 - モッククライアントを使い、ネットワークに依存しない。
 - quest_defaults の読み書きは conftest のインメモリ DB（SessionManager）を使う。
+- 実行可否は quest_defaults[quest_id]["enabled"] で制御される（初期状態は無効）。
 """
 
 from unittest.mock import MagicMock
@@ -34,8 +35,18 @@ def _error_response(error: str) -> MagicMock:
     return res
 
 
-def _make_client(raw_quests: list[dict]) -> HWClient:
-    """quest_get_all をモックしたクライアントを作る（操作応答は別途差し替える）。"""
+def _register(account: str) -> None:
+    SessionManager.save(account, {"player": {"id": account, "name": account}, "headers": {"x-auth-token": "test"}})
+
+
+def _enable(account: str, quest_id: int) -> None:
+    _register(account)
+    set_quest_defaults(account, quest_id, "enabled", True)
+
+
+def _make_client(raw_quests: list[dict], account: str = "Alex") -> HWClient:
+    """アカウント登録＋quest_get_all モック済みクライアントを作る。"""
+    _register(account)
     client = HWClient(headers={"x-auth-token": "test"})
     res = _ok_response({"response": raw_quests})
     client.quest_get_all = MagicMock(return_value=res)
@@ -51,8 +62,9 @@ def _active(qid: int) -> dict:
 
 
 def test_execute_runs_steps_and_claims(capsys):
-    """操作応答で対象クエストが state=2 になると questFarm で報酬受領される。"""
+    """enabled=true のクエストが操作→state=2 応答→questFarm で受領される。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
 
     def _op(action: ApiAction, args: dict):
         if action == ApiAction.HERO_ARTIFACT_LEVEL_UP:
@@ -62,7 +74,7 @@ def test_execute_runs_steps_and_claims(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="VitaminD", confirm=True)
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert failed == []
@@ -86,9 +98,9 @@ def test_execute_unregistered_quest_not_run(capsys):
     client.quest_farm.assert_not_called()
 
 
-def test_execute_disabled_quest_skipped(capsys):
-    """enabled:false のクエスト（10007）はスキップされ起動しない。"""
-    client = _make_client([_active(10007)])
+def test_execute_not_enabled_quest_skipped(capsys):
+    """enabled 未設定（初期状態 false）のクエストはスキップされ起動しない。"""
+    client = _make_client([_active(10024)])
     client.quest_operation = MagicMock()
 
     succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
@@ -96,13 +108,15 @@ def test_execute_disabled_quest_skipped(capsys):
 
     assert succeeded == []
     assert failed == []
-    assert "disabled in QUEST_OPERATIONS" in out
+    assert "not enabled in quest_defaults" in out
     client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
 
 
 def test_execute_step_failure_reported(capsys):
     """ステップ失敗はアカウント×クエスト×ステップで報告される。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
     client.quest_operation = MagicMock(return_value=_error_response("notEnoughStamina"))
 
     succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
@@ -120,6 +134,7 @@ def test_execute_step_failure_reported(capsys):
 def test_execute_claim_failure_captured(capsys):
     """操作成功でも questFarm 失敗は失敗リストに入る。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
     client.quest_operation = MagicMock(
         return_value=_ok_response({"quests": [{"id": 10024, "state": 2}]})
     )
@@ -137,6 +152,9 @@ def test_execute_claim_failure_captured(capsys):
 def test_dry_run_does_not_invoke_operations(capsys):
     """dry_run はプラン表示のみで操作・受領は実行しない。"""
     client = _make_client([_active(10024), _active(10028), _active(10030)])
+    _enable("Alex", 10024)
+    _enable("Alex", 10028)
+    _enable("Alex", 10030)
     client.quest_operation = MagicMock()
 
     succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
@@ -150,9 +168,26 @@ def test_dry_run_does_not_invoke_operations(capsys):
     client.quest_farm.assert_not_called()
 
 
+def test_dry_run_hides_unregistered_claimable(capsys):
+    """QUEST_OPERATIONS 未登録の受領待ち（バトルパス等）は dry-run に表示されない。"""
+    battlepass = {"id": 2609007076, "state": 2, "progress": 1, "reward": {}, "createTime": 0, "farmCount": 0}
+    client = _make_client([battlepass, _active(10024)])
+    _enable("Alex", 10024)
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "2609007076" not in out
+    assert "10024" in out
+
+
 def test_confirm_prompt_skips_when_declined(monkeypatch, capsys):
     """confirm=False のとき y 以外でステップをスキップし失敗報告する。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
     client.quest_operation = MagicMock()
     monkeypatch.setattr("builtins.input", lambda _: "n")
 
@@ -169,6 +204,7 @@ def test_confirm_prompt_skips_when_declined(monkeypatch, capsys):
 def test_confirm_prompt_eof_reported(monkeypatch, capsys):
     """stdin が閉じている（非TTY）場合も EOFError で落ちず失敗報告される。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
     client.quest_operation = MagicMock()
 
     def _raise_eof(_prompt):
@@ -189,7 +225,7 @@ def test_confirm_prompt_eof_reported(monkeypatch, capsys):
 
 def test_account_default_override_applied_in_plan(capsys):
     """quest_defaults の引数上書きが dry-run のプランに反映される。"""
-    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    _enable("Alex", 10024)
     set_quest_defaults("Alex", 10024, "heroId", 999)
 
     client = _make_client([_active(10024)])
@@ -242,6 +278,7 @@ def test_claimable_claim_failure_reported(capsys):
 def test_multistep_claim_after_second_step(capsys):
     """10028 の2ステップで、2番目のステップ応答後に claim 判定される。"""
     client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
     calls = []
 
     def _op(action, args):
@@ -268,8 +305,6 @@ def test_reached_claimable_with_string_state():
     """レスポンスの state が文字列 '2' でも claim 判定される（型安全）。"""
     from hw_genie.commands.quests import _quest_reached_claimable
 
-    client = _make_client([_active(10024)])
-    client.quest_operation = MagicMock()
     resp = _ok_response({"quests": [{"id": "10024", "state": "2"}]})
     assert _quest_reached_claimable(resp, 10024) is True
 
@@ -299,6 +334,7 @@ def test_fetch_failure_reported(capsys):
 def test_claim_not_detected_after_all_steps(capsys):
     """全ステップ成功しても対応クエストが応答に出ない場合は注記される。"""
     client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
@@ -312,7 +348,7 @@ def test_claim_not_detected_after_all_steps(capsys):
 
 def test_defaults_unknown_key_warns(capsys, caplog):
     """quest_defaults の未知キーは適用されず警告ログが出る。"""
-    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    _enable("Alex", 10024)
     set_quest_defaults("Alex", 10024, "unknownArg", 1)
 
     client = _make_client([_active(10024)])
@@ -327,7 +363,7 @@ def test_defaults_unknown_key_warns(capsys, caplog):
 
 def test_set_default_parses_string_value():
     """set_quest_defaults は CLI 由来の文字列を bool/int に解釈する。"""
-    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    _register("Alex")
     stored_true = set_quest_defaults("Alex", 10007, "free", "true")
     stored_id = set_quest_defaults("Alex", 10024, "heroId", "61")
 
@@ -360,6 +396,7 @@ def test_unknown_target_quest_not_auto_claimable(capsys):
     """target 不明（10023）は progress>=target 判定に掛からず操作対象のまま。"""
     quest = {"id": 10023, "state": 1, "progress": 0, "reward": {}, "createTime": 0, "farmCount": 0}
     client = _make_client([quest])
+    _enable("Alex", 10023)
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
@@ -374,7 +411,7 @@ def test_unknown_target_quest_not_auto_claimable(capsys):
 
 def test_multistep_defaults_no_false_warning(caplog):
     """マルチステップのどこかのステップに一致するキーは警告されない。"""
-    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    _enable("Alex", 10028)
     set_quest_defaults("Alex", 10028, "titanId", 999)
 
     client = _make_client([_active(10028)])
@@ -386,19 +423,62 @@ def test_multistep_defaults_no_false_warning(caplog):
     assert "does not match any arg" not in caplog.text
 
 
+# --- ensure_quest_defaults ---
+
+
+def test_ensure_quest_defaults_seeds_disabled_for_all():
+    """初回は QUEST_OPERATIONS 全キーが enabled=false で投入される。"""
+    from hw_genie.commands.quests import QUEST_OPERATIONS, ensure_quest_defaults
+
+    _register("Alex")
+    defaults = ensure_quest_defaults("Alex")
+
+    assert set(defaults) == set(QUEST_OPERATIONS)
+    for qid, conf in defaults.items():
+        assert conf.get("enabled") is False
+
+
+def test_ensure_quest_defaults_preserves_existing_values():
+    """既存の設定値（enabled:true 等）は保持される。"""
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    set_quest_defaults("Alex", 10024, "enabled", True)
+    set_quest_defaults("Alex", 10024, "heroId", 777)
+
+    defaults = ensure_quest_defaults("Alex")
+    assert defaults[10024]["enabled"] is True
+    assert defaults[10024]["heroId"] == 777
+    # 他キーは seeded
+    assert defaults[10028]["enabled"] is False
+
+
+def test_ensure_quest_defaults_idempotent():
+    """2回目以降は書き込み不要で同じ結果が返る。"""
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    ensure_quest_defaults("Alex")
+    again = ensure_quest_defaults("Alex")
+    assert again == get_quest_defaults("Alex")
+
+
+# --- main.cmd_quests（exit code / 表示） ---
+
+
 def test_cmd_quests_execute_failure_exits_nonzero():
     """main.cmd_quests は execute 失敗時に exit code 1 で終了する。"""
-
     import pytest
 
     import hw_genie.main as main_mod
     from hw_genie.commands import quests as quests_mod
 
-    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}, "headers": {"x-auth-token": "t"}})
+    _register("Alex")
 
     class _Args:
-        account = None
+        account = "Alex"
         set_default = None
+        init_defaults = False
         execute = True
         dry_run = False
         yes = True
@@ -421,11 +501,12 @@ def test_cmd_quests_execute_success_exits_zero():
     import hw_genie.main as main_mod
     from hw_genie.commands import quests as quests_mod
 
-    SessionManager.save("Bob", {"player": {"id": "bob_id", "name": "Bob"}, "headers": {"x-auth-token": "t"}})
+    _register("Bob")
 
     class _Args:
         account = "Bob"
         set_default = None
+        init_defaults = False
         execute = True
         dry_run = False
         yes = True

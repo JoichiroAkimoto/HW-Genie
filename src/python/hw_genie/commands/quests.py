@@ -84,6 +84,11 @@ QUEST_MASTER: dict[int, dict[str, Any]] = {
         "name": "要確認（dungeonActivity 報酬、Daily タブ非表示）",
         "target": None,
     },
+    10023: {
+        "category": "daily",
+        "name": "要確認（heroTitanGift 系クエスト。Daily タブの名前は未確定）",
+        "target": None,
+    },
 }
 
 # ID ファミリごとのカテゴリ推定規則（マスタ未登録 ID 向け）
@@ -98,11 +103,14 @@ _FAMILY_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("100",), "daily"),
 )
 
-# --- クリア条件マップ（クエストID → クリアするための操作） ---
-# 各操作の引数はアカウント共通のデフォルト値をここに持ち、アカウント固有値は
-# account_configs の ``quest_defaults``（config_key="quest_defaults"）で上書きできる。
-# ``steps`` の各要素は ``{"rpc": ApiAction, "args": {...}}``。
-# ``enabled: false`` のクエストはデフォルトでは実行されない。
+# --- クリア条件マップ（クエストID → クリアするための操作レシピ） ---
+# この定義は「実行方法のレシピ」と「初期値」を提供するだけ。実際に実行するか
+# どうかは account_configs の ``quest_defaults``（config_key="quest_defaults"）の
+# ``enabled`` フラグでアカウントごとに制御する。
+#   - ``quest_defaults[quest_id]`` の ``enabled == true`` のときのみ実行
+#   - 空 / 未設定 / false の場合は実行しない（初期状態は全て無効）
+# ``steps`` の各要素は ``{"rpc": ApiAction, "args": {...}}``。引数はアカウント
+# 固有の ``quest_defaults`` 値で上書きできる（キーが既に存在する場合のみ）。
 # ※ 未登録のデイリー（10004 アリーナ戦闘、10006 エメラルド交換 等）は
 #   クリア操作の API が確定した時点で追記する。
 QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
@@ -114,11 +122,13 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
         ],
     },
     10024: {
+        "enabled": False,
         "steps": [
             {"rpc": ApiAction.HERO_ARTIFACT_LEVEL_UP, "args": {"heroId": 61, "slotId": 1}},
         ],
     },
     10028: {
+        "enabled": False,
         "steps": [
             # Elemental Tournament Shop でフラグメント 200 個購入 → レベルアップ
             {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 24, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2005": 1}}, "amount": 200}},
@@ -126,11 +136,13 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
         ],
     },
     10030: {
+        "enabled": False,
         "steps": [
             {"rpc": ApiAction.HERO_SKIN_UPGRADE, "args": {"heroId": 59, "skinId": 313}},
         ],
     },
     10023: {
+        "enabled": False,
         "steps": [
             {"rpc": ApiAction.HERO_TITAN_GIFT_LEVEL_UP, "args": {"heroId": 38}},
             {"rpc": ApiAction.HERO_TITAN_GIFT_LEVEL_UP, "args": {"heroId": 38}},
@@ -339,6 +351,30 @@ def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> Any
     return value
 
 
+def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
+    """``quest_defaults`` を初期化する（初回のみ。既存値は保持）。
+
+    ``QUEST_OPERATIONS`` に登録されているクエストについて、``quest_defaults``
+    に未登録のものだけ ``{"enabled": False}`` を追加マージして保存する。
+    初期状態は全クエスト無効（enabled=false）で、``--set-default <id> enabled
+    true`` で有効化してから実行する運用。登録アカウントが存在しない場合や
+    既に初期化済みの場合は何も書き込まない。
+
+    Returns:
+        保存後の ``quest_defaults``（quest_id → 設定 dict）。
+    """
+    if not QUEST_OPERATIONS:
+        return get_quest_defaults(account)
+    defaults = get_quest_defaults(account)
+    missing = [qid for qid in QUEST_OPERATIONS if qid not in defaults]
+    if not missing:
+        return defaults
+    for qid in missing:
+        defaults[qid] = {"enabled": False}
+    SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
+    return defaults
+
+
 def _parse_float_value(value: str) -> Any:
     """set-default の値文字列を bool/int/float/str に解釈する。"""
     if value == "true":
@@ -382,12 +418,17 @@ def _resolve_operation_args(
     for step in op.get("steps", []):
         args = dict(step.get("args", {}))
         for k, v in quest_overrides.items():
+            if k == "enabled":
+                # enabled は実行制御フラグであり、操作引数ではない
+                continue
             if k in args:
                 args[k] = v
         steps.append({"rpc": step["rpc"], "args": args})
 
     known_keys = {k for st in steps for k in st["args"]}
     for k in quest_overrides:
+        if k == "enabled":
+            continue
         if k not in known_keys:
             logger.warning(
                 "quest_defaults[%d] key %r does not match any arg of quest %d's steps; ignored",
@@ -410,11 +451,14 @@ def run_quest_execute(
     - ``confirm=False`` の場合（既定）、各ステップ実行前に y/n で確認する。
       ``confirm=True`` は自動実行（確認なし）。実際の操作は破壊的であるため
       CLI 上は ``--execute --yes`` 等で明示的に指示された場合のみ有効。
-    - **報酬受取可能（state=2）のクエストは操作を実行せず、直接 ``questFarm``
-      で受領する**（既に条件達成済みなのに操作リソースを消費しないため）。
-    - 未完了（state=1 進行中）のうち QUEST_OPERATIONS に登録があるものだけ
-      操作ステップを実行し、レスポンスの ``quests`` 配列で対象が state=2 に
-      変わったら ``questFarm`` で報酬を受領する。
+    - **対象は QUEST_OPERATIONS 登録済みのクエストのみ**。実行可否は
+      ``quest_defaults[quest_id]["enabled"]`` でアカウントごとに制御し、
+      enabled=true のものだけ操作ステップを実行する（未設定/初期状態は
+      無効で何もしない）。未初期化の場合は ``ensure_quest_defaults`` で
+      空設定（enabled=false）を自動投入する。
+    - **報酬受取可能（state=2、または target 到達済み）のクエストは操作を
+      実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
+      操作リソースを消費しないため）。
     - 失敗した項目は ``{account, quest_id, quest_name, step, error}`` として
       返り値と標準出力の両方に報告される。
 
@@ -433,29 +477,31 @@ def run_quest_execute(
         print(f"❌ [{account}] Unexpected questGetAll response format.")
         return [], []
     quests = parse_quests(raw_data)
-    account_defaults = get_quest_defaults(account)
+    account_defaults = ensure_quest_defaults(account)
 
-    # 対象を 2 グループに分ける:
+    # 対象を 2 グループに分ける（QUEST_OPERATIONS 登録済みのみを対象とする）:
     #   claimable  = 報酬受取可能（state=2、または target 到達済みで state 遷移前）
     #                → 操作せず questFarm のみ
-    #   targets    = 進行中（state=1 かつ target 未到達）
+    #   targets    = 進行中（state=1 かつ target 未到達）で enabled=true
     #                → クリア操作を実行してから questFarm
     # ※ progress>=target も受領のみの対象にするのは、達成済みなのに操作
     #   リソース（10028 のフラグメント購入等）を再消費しないため。
     #   target 不明（None）のクエスト（10023 等）はこの判定に掛からない。
+    # ※ バトルパス（26xx）やギルド（2000x）等、QUEST_OPERATIONS 未登録の
+    #   受領待ちクエストは execute の対象外（dry-run の表示ノイズも排除）。
     claimable: list[Quest] = []
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
     for q in quests:
         if q.is_done:
             continue
-        if q.is_claimable or (q.target is not None and q.progress >= q.target):
-            claimable.append(q)
-            continue
         op = QUEST_OPERATIONS.get(q.id)
         if op is None:
             continue
-        if not op.get("enabled", True):
-            print(f"ℹ️  [{account}] Skip {q.id} ({q.name}): disabled in QUEST_OPERATIONS")
+        if q.is_claimable or (q.target is not None and q.progress >= q.target):
+            claimable.append(q)
+            continue
+        if not (account_defaults.get(q.id, {}).get("enabled")):
+            print(f"ℹ️  [{account}] Skip {q.id} ({q.name}): not enabled in quest_defaults")
             continue
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:

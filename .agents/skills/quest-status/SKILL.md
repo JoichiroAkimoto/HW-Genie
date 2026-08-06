@@ -40,8 +40,17 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    # 確認なしで自動実行（要 --execute）
    uv run hw-genie quests -a <ACCOUNT> --execute --yes
    ```
-   - 10007（Soul Atrium 召喚）は `enabled: false` のためデフォルトでは実行されません。
-   - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。
+   - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。有効化には `--set-default` を使います:
+   ```bash
+   # 初期設定を投入（enabled:false で全登録クエストを追加。既存設定は保持）
+   uv run hw-genie quests -a <ACCOUNT> --init-defaults
+   # quest 10024 を有効化
+   uv run hw-genie quests -a <ACCOUNT> --set-default 10024 enabled true
+   # ありえ特定の操作引数を上書き（例: 10028 の titanArtifactLevelUp 対象）
+   uv run hw-genie quests -a <ACCOUNT> --set-default 10028 titanId 4022
+   ```
+   - 10007（Soul Atrium 召喚）は消費が大きいため `QUEST_OPERATIONS` 自体が `enabled: false` で、`quest_defaults` でも有効化しない限り実行されません。
+   - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。上書きキーはステップの args に**既に存在するキー**にのみ適用され（誤ったキーは警告）、マルチステップ（10028 等）では該当する全ステップに適用されます。
 
 ## 表示内容
 - カテゴリ別（Daily / Weekly / Guild / Main / Event / Battle Pass / One-time / Unclassified）に、クエスト ID・名前・進捗（progress/target）・報酬・createTime を表示。

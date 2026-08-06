@@ -376,17 +376,30 @@ def cmd_quests(args):
     client = HWClient(headers)
 
     from hw_genie.commands.quests import (
+        classify_quest,
+        ensure_quest_defaults,
         run_quest_execute,
         run_quest_status,
         set_quest_defaults,
     )
 
+    account = resolve_account(args.account)
+
+    # quest_defaults を初期化する（QUEST_OPERATIONS 登録済みクエストを enabled:false で投入）
+    if args.init_defaults:
+        defaults = ensure_quest_defaults(account)
+        print(f"ℹ️  Initialized quest_defaults for {account}:")
+        for qid in sorted(defaults):
+            category, name = classify_quest(qid)
+            print(f"    - {qid} ({name}) enabled={defaults[qid].get('enabled', False)}")
+        return
+
     # アカウント固有の操作引数上書き（quest_defaults）を 1 件登録する
     if args.set_default:
         quest_id, key, value = args.set_default
-        account = resolve_account(args.account)
         stored = set_quest_defaults(account, int(quest_id), key, value)
-        print(f"ℹ️  Registered quest_defaults[{quest_id}][{key}] = {stored} ({type(stored).__name__}) for {account}")
+        _, name = classify_quest(int(quest_id))
+        print(f"ℹ️  Registered quest_defaults[{quest_id} ({name})][{key}] = {stored} ({type(stored).__name__}) for {account}")
         return
 
     if args.execute or args.dry_run:
@@ -573,6 +586,7 @@ def main():
     p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
     p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999)")
+    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults for the account (seed all QUEST_OPERATIONS quests as enabled=false)")
     p_quests.set_defaults(func=cmd_quests)
 
     # Sync
