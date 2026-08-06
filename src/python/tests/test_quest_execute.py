@@ -182,3 +182,134 @@ def test_account_default_override_applied_in_plan(capsys):
     assert "heroId" in out
     assert "999" in out
     assert get_quest_defaults("Alex")[10024]["heroId"] == 999
+
+
+def test_claimable_quest_claimed_without_operation(capsys):
+    """state=2（受領待ち）のクエストは操作せず直接 questFarm で受領する。"""
+    quest = {"id": 10024, "state": 2, "progress": 1, "reward": {}, "createTime": 0, "farmCount": 0}
+    client = _make_client([quest])
+    client.quest_operation = MagicMock()
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 10024
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_called_once_with(10024)
+    assert "already claimable" in out or "Reward claimed" in out
+
+
+def test_claimable_claim_failure_reported(capsys):
+    """state=2 クエストの quest claim 失敗は失敗リストに入る。"""
+    quest = {"id": 10030, "state": 2, "progress": 1, "reward": {}, "createTime": 0, "farmCount": 0}
+    client = _make_client([quest])
+    client.quest_operation = MagicMock()
+    client.quest_farm = MagicMock(return_value=_error_response("AlreadyFarmed"))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["quest_id"] == 10030
+    assert failed[0]["step"] == "questFarm"
+
+
+def test_multistep_claim_after_second_step(capsys):
+    """10028 の2ステップで、2番目のステップ応答後に claim 判定される。"""
+    client = _make_client([_active(10028)])
+    calls = []
+
+    def _op(action, args):
+        calls.append(action)
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 10028
+    # 全2ステップ実行された
+    assert calls == [ApiAction.SHOP_BUY, ApiAction.TITAN_ARTIFACT_LEVEL_UP]
+    assert "Reward claimed" in out
+
+
+def test_reached_claimable_with_string_state():
+    """レスポンスの state が文字列 '2' でも claim 判定される（型安全）。"""
+    from hw_genie.commands.quests import _quest_reached_claimable
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock()
+    resp = _ok_response({"quests": [{"id": "10024", "state": "2"}]})
+    assert _quest_reached_claimable(resp, 10024) is True
+
+    # 別クエスト・別 state では False
+    resp2 = _ok_response({"quests": [{"id": "10024", "state": "1"}]})
+    assert _quest_reached_claimable(resp2, 10024) is False
+    resp3 = _ok_response({"quests": [{"id": "10023", "state": "2"}]})
+    assert _quest_reached_claimable(resp3, 10024) is False
+
+
+def test_fetch_failure_reported(capsys):
+    """questGetAll 自体が失敗すると fetch 失敗として報告される。"""
+    client = _make_client([])
+    client.quest_get_all = MagicMock(return_value=_error_response("InvalidSession"))
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["step"] == "fetch"
+    assert failed[0]["error"] == "InvalidSession"
+    assert "Failed to fetch quests" in out
+
+
+def test_claim_not_detected_after_all_steps(capsys):
+    """全ステップ成功しても対応クエストが応答に出ない場合は注記される。"""
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "claim not detected" in out
+
+
+def test_defaults_unknown_key_warns(capsys, caplog):
+    """quest_defaults の未知キーは適用されず警告ログが出る。"""
+    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    set_quest_defaults("Alex", 10024, "unknownArg", 1)
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock()
+
+    run_quest_execute(client, account_alias="Alex", dry_run=True)
+    capsys.readouterr().out
+
+    assert "not a known arg" in caplog.text
+    assert "unknownArg" in caplog.text
+
+
+def test_set_default_parses_string_value():
+    """set_quest_defaults は CLI 由来の文字列を bool/int に解釈する。"""
+    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    set_quest_defaults("Alex", 10007, "free", "true")
+    set_quest_defaults("Alex", 10024, "heroId", "61")
+
+    defaults = get_quest_defaults("Alex")
+    assert defaults[10007]["free"] is True
+    assert defaults[10024]["heroId"] == 61

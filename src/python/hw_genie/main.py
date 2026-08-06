@@ -375,15 +375,29 @@ def cmd_quests(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
 
-    from hw_genie.commands.quests import run_quest_execute, run_quest_status
+    from hw_genie.commands.quests import (
+        run_quest_execute,
+        run_quest_status,
+        set_quest_defaults,
+    )
+
+    # アカウント固有の操作引数上書き（quest_defaults）を 1 件登録する
+    if args.set_default:
+        quest_id, key, value = args.set_default
+        account = resolve_account(args.account)
+        set_quest_defaults(account, int(quest_id), key, value)
+        print(f"ℹ️  Registered quest_defaults[{quest_id}][{key}] = {value} for {account}")
+        return
 
     if args.execute or args.dry_run:
-        run_quest_execute(
+        _, failed = run_quest_execute(
             client,
             account_alias=args.account,
             dry_run=bool(args.dry_run),
             confirm=bool(args.yes),
         )
+        if failed:
+            sys.exit(1)
         return
 
     run_quest_status(
@@ -558,6 +572,7 @@ def main():
     p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
     p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
+    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999)")
     p_quests.set_defaults(func=cmd_quests)
 
     # Sync

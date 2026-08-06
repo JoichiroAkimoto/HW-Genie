@@ -87,12 +87,15 @@ QUEST_MASTER: dict[int, dict[str, Any]] = {
 }
 
 # ID ファミリごとのカテゴリ推定規則（マスタ未登録 ID 向け）
+# 先頭が "100" の ID はデイリー（既知: 10004〜10050）。判定は _FAMILY_RULES の
+# 先頭一致なので、より長い prefix を持つ規則（"2000" 等）を先に置くこと。
 _FAMILY_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("2000", "2001"), "guild"),
     (("110",), "weekly"),
     (("232",), "main"),
     (("398",), "event"),
     (("26", "27"), "battlepass"),
+    (("100",), "daily"),
 )
 
 # --- クリア条件マップ（クエストID → クリアするための操作） ---
@@ -107,31 +110,31 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
     10007: {
         "enabled": False,
         "steps": [
-            {"rpc": "gacha_open", "args": {"ident": "heroGacha", "free": True, "pack": False}},
+            {"rpc": ApiAction.GACHA_OPEN, "args": {"ident": "heroGacha", "free": True, "pack": False}},
         ],
     },
     10024: {
         "steps": [
-            {"rpc": "heroArtifactLevelUp", "args": {"heroId": 61, "slotId": 1}},
+            {"rpc": ApiAction.HERO_ARTIFACT_LEVEL_UP, "args": {"heroId": 61, "slotId": 1}},
         ],
     },
     10028: {
         "steps": [
             # Elemental Tournament Shop でフラグメント 200 個購入 → レベルアップ
-            {"rpc": "shopBuy", "args": {"shopId": 13, "slot": 24, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2005": 1}}, "amount": 200}},
-            {"rpc": "titanArtifactLevelUp", "args": {"titanId": 4022, "slotId": 0}},
+            {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 24, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2005": 1}}, "amount": 200}},
+            {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4022, "slotId": 0}},
         ],
     },
     10030: {
         "steps": [
-            {"rpc": "heroSkinUpgrade", "args": {"heroId": 59, "skinId": 313}},
+            {"rpc": ApiAction.HERO_SKIN_UPGRADE, "args": {"heroId": 59, "skinId": 313}},
         ],
     },
     10023: {
         "steps": [
-            {"rpc": "heroTitanGiftLevelUp", "args": {"heroId": 38}},
-            {"rpc": "heroTitanGiftLevelUp", "args": {"heroId": 38}},
-            {"rpc": "heroTitanGiftDrop", "args": {"heroId": 38}},
+            {"rpc": ApiAction.HERO_TITAN_GIFT_LEVEL_UP, "args": {"heroId": 38}},
+            {"rpc": ApiAction.HERO_TITAN_GIFT_LEVEL_UP, "args": {"heroId": 38}},
+            {"rpc": ApiAction.HERO_TITAN_GIFT_DROP, "args": {"heroId": 38}},
         ],
     },
 }
@@ -245,7 +248,10 @@ def run_quest_status(
     raw: bool = False,
     category: str | None = None,
 ) -> list[Quest]:
-    """クエスト一覧を取得し、未完了（state!=2）のデイリーを中心に表示する。
+    """クエスト一覧を取得し、未完了（state!=3）のクエストを中心に表示する。
+
+    受領済み（state=3）は questGetAll に通常現れないが、保険で除外する。
+    条件達成済み・未受領（state=2）は「未完了」として 🎁 マークで表示する。
 
     Returns:
         取得・パース済みの全 :class:`Quest` リスト。
@@ -320,7 +326,13 @@ def get_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
 
 
 def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> None:
-    """``quest_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。"""
+    """``quest_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。
+
+    CLI（``--set-default``）から渡される文字列値は ``_parse_float_value`` で
+    bool/int/float に解釈してから保存する。
+    """
+    if isinstance(value, str):
+        value = _parse_float_value(value)
     defaults = get_quest_defaults(account)
     defaults.setdefault(quest_id, {})[key] = value
     SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
@@ -342,10 +354,27 @@ def _parse_float_value(value: str) -> Any:
         return value
 
 
+def _rpc_display(rpc: Any) -> str:
+    """ApiAction enum を RPC 名文字列（例: ``heroArtifactLevelUp``）に変換する。
+
+    Python 3.11 以降 ``str(ApiAction.X)`` は ``ApiAction.HERO_ARTIFACT_LEVEL_UP``
+    形式を返すため、表示・ログ用には明示的に ``.value`` を使う。
+    """
+    if isinstance(rpc, ApiAction):
+        return rpc.value
+    return str(rpc)
+
+
 def _resolve_operation_args(
     quest_id: int, op: dict[str, Any], account_defaults: dict[int, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """アカウント固有設定を適用した steps（rpc+args）を返す。"""
+    """アカウント固有設定を適用した steps（rpc+args）を返す。
+
+    ``quest_defaults`` の上書きキーは、ステップの ``args`` に**既に存在する**
+    キーに対してのみ適用される（新規キーの追加はしない）。存在しないキーは
+    黙って無視せず警告ログを出し、誤入力（例: ``heroLevel`` のような存在しない
+    引数名）に気づけるようにする。
+    """
     quest_overrides = (account_defaults or {}).get(quest_id) or {}
     steps = []
     for step in op.get("steps", []):
@@ -353,6 +382,13 @@ def _resolve_operation_args(
         for k, v in quest_overrides.items():
             if k in args:
                 args[k] = v
+            else:
+                logger.warning(
+                    "quest_defaults[%d] key %r is not a known arg of %s; ignored",
+                    quest_id,
+                    k,
+                    _rpc_display(step.get("rpc")),
+                )
         steps.append({"rpc": step["rpc"], "args": args})
     return steps
 
@@ -369,8 +405,11 @@ def run_quest_execute(
     - ``confirm=False`` の場合（既定）、各ステップ実行前に y/n で確認する。
       ``confirm=True`` は自動実行（確認なし）。実際の操作は破壊的であるため
       CLI 上は ``--execute --yes`` 等で明示的に指示された場合のみ有効。
-    - 各ステップ成功後、レスポンスの ``quests`` 配列に含まれる対象クエストが
-      達成済み（state=2）になっていたら ``questFarm`` で報酬を受領する。
+    - **報酬受取可能（state=2）のクエストは操作を実行せず、直接 ``questFarm``
+      で受領する**（既に条件達成済みなのに操作リソースを消費しないため）。
+    - 未完了（state=1 進行中）のうち QUEST_OPERATIONS に登録があるものだけ
+      操作ステップを実行し、レスポンスの ``quests`` 配列で対象が state=2 に
+      変わったら ``questFarm`` で報酬を受領する。
     - 失敗した項目は ``{account, quest_id, quest_name, step, error}`` として
       返り値と標準出力の両方に報告される。
 
@@ -391,15 +430,24 @@ def run_quest_execute(
     quests = parse_quests(raw_data)
     account_defaults = get_quest_defaults(account)
 
-    # 対象: 受領済みでない && クリア操作が登録されているクエスト
+    # 対象を 2 グループに分ける:
+    #   claimable  = state=2（報酬受取可能）→ 操作せず questFarm のみ
+    #   operational = state=1（進行中）      → クリア操作を実行してから questFarm
+    claimable: list[Quest] = []
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
+    skipped_disabled: list[Quest] = []
     for q in quests:
-        op = QUEST_OPERATIONS.get(q.id)
-        if op is None or q.is_done:
+        if q.is_done:
             continue
-        enabled = op.get("enabled", True)
-        if not enabled:
+        if q.is_claimable:
+            claimable.append(q)
+            continue
+        op = QUEST_OPERATIONS.get(q.id)
+        if op is None:
+            continue
+        if not op.get("enabled", True):
             print(f"ℹ️  [{account}] Skip {q.id} ({q.name}): disabled in QUEST_OPERATIONS")
+            skipped_disabled.append(q)
             continue
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:
@@ -411,43 +459,61 @@ def run_quest_execute(
 
     if dry_run:
         print(f"\n📋 [dry-run] Quest execution plan for {account}:")
-        if not targets:
-            print("ℹ️  No executable quests.")
+        if not claimable and not targets:
+            print("🔄 No executable quests.")
             return [], failures
+        for q in claimable:
+            print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+            print("    - questFarm (claim reward, no operation needed)")
         for q, steps in targets:
             print(f"\n🔹 {q.id} {q.name}")
             for st in steps:
-                print(f"    - {st['rpc']} {st['args']}")
+                print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
         return [], failures
+
+    # 受領フェーズ（操作不要）
+    for q in claimable:
+        print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
+        claim_res = client.quest_farm(q.id)
+        if claim_res.status == ResponseStatus.SUCCESS:
+            succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
+            print(f"   🎁 Reward claimed for {q.id} {q.name}")
+        else:
+            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
+            print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
 
     # 実行フェーズ
     for q, steps in targets:
         print(f"\n🔹 Executing {q.id} {q.name} ...")
         for st in steps:
             if not confirm:
-                answer = input(f"   ⚠️  Run {st['rpc']} {st['args']}? [y/N] ")
+                try:
+                    answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
+                except EOFError:
+                    print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
+                    break
                 if answer.strip().lower() not in ("y", "yes"):
-                    print(f"   ⏭️  Skipped {st['rpc']} (user declined)")
-                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": st["rpc"], "error": "skipped by user"})
+                    print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
+                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
                     break
 
             try:
-                rpc = collect_action(st["rpc"])
-                resp = client.quest_operation(rpc, st["args"])
+                resp = client.quest_operation(st["rpc"], st["args"])
             except Exception as exc:  # noqa: BLE001
-                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": st["rpc"], "error": f"exception: {exc}"})
-                print(f"❌ [{account}] {q.id} {q.name} failed at {st['rpc']}: {exc}")
+                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
+                print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {exc}")
                 break
 
             if resp.status != ResponseStatus.SUCCESS:
                 error = resp.error_name or "-"
-                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": st["rpc"], "error": error})
-                print(f"❌ [{account}] {q.id} {q.name} failed at {st['rpc']}: {error}")
+                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": error})
+                print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {error}")
                 break
 
             # レスポンスに含まれる quests 配列から対象クエストの状態を確認
             if _quest_reached_claimable(resp, q.id):
-                print(f"   ✅ {q.id} {q.name} completed (step: {st['rpc']}). Claiming reward...")
+                print(f"   ✅ {q.id} {q.name} completed (step: {_rpc_display(st['rpc'])}). Claiming reward...")
                 claim_res = client.quest_farm(q.id)
                 if claim_res.status == ResponseStatus.SUCCESS:
                     succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
@@ -475,7 +541,8 @@ def _quest_reached_claimable(resp: Any, quest_id: int) -> bool:
     for item in quests:
         if not isinstance(item, dict):
             continue
-        if _to_int(item.get("id")) == quest_id and item.get("state") == STATE_CLAIMABLE:
+        # state は int/str 混在し得るため _to_int で正規化して比較する
+        if _to_int(item.get("id")) == quest_id and _to_int(item.get("state")) == STATE_CLAIMABLE:
             return True
     return False
 
@@ -488,11 +555,3 @@ def print_quest_failures(account: str, failures: list[dict[str, Any]]) -> None:
     for f in failures:
         qid = f.get("quest_id") or "-"
         print(f"   - account={f.get('account')} quest={qid} ({f.get('quest_name')}) step={f.get('step')}: {f.get('error')}")
-
-
-def collect_action(rpc: str) -> ApiAction:
-    """RPC 文字列を ApiAction enum に解決する。未知なら ValueError。"""
-    try:
-        return ApiAction(rpc)
-    except ValueError:
-        raise ValueError(f"Unknown API action: {rpc}")
