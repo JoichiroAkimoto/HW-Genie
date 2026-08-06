@@ -385,8 +385,8 @@ def cmd_quests(args):
     if args.set_default:
         quest_id, key, value = args.set_default
         account = resolve_account(args.account)
-        set_quest_defaults(account, int(quest_id), key, value)
-        print(f"ℹ️  Registered quest_defaults[{quest_id}][{key}] = {value} for {account}")
+        stored = set_quest_defaults(account, int(quest_id), key, value)
+        print(f"ℹ️  Registered quest_defaults[{quest_id}][{key}] = {stored} ({type(stored).__name__}) for {account}")
         return
 
     if args.execute or args.dry_run:

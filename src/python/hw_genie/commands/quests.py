@@ -325,17 +325,18 @@ def get_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     return {int(k): dict(v) for k, v in raw.items()}
 
 
-def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> None:
+def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> Any:
     """``quest_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。
 
     CLI（``--set-default``）から渡される文字列値は ``_parse_float_value`` で
-    bool/int/float に解釈してから保存する。
+    bool/int/float に解釈してから保存する。保存した値（解釈後）を返す。
     """
     if isinstance(value, str):
         value = _parse_float_value(value)
     defaults = get_quest_defaults(account)
     defaults.setdefault(quest_id, {})[key] = value
     SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
+    return value
 
 
 def _parse_float_value(value: str) -> Any:
@@ -371,9 +372,10 @@ def _resolve_operation_args(
     """アカウント固有設定を適用した steps（rpc+args）を返す。
 
     ``quest_defaults`` の上書きキーは、ステップの ``args`` に**既に存在する**
-    キーに対してのみ適用される（新規キーの追加はしない）。存在しないキーは
-    黙って無視せず警告ログを出し、誤入力（例: ``heroLevel`` のような存在しない
-    引数名）に気づけるようにする。
+    キーに対してのみ適用される（新規キーの追加はしない）。マルチステップ
+    （例: 10028）では各キーが該当する全ステップに適用される。どのステップの
+    args にも存在しないキー（誤入力）は黙って無視せず警告ログを出し、
+    気づけるようにする。
     """
     quest_overrides = (account_defaults or {}).get(quest_id) or {}
     steps = []
@@ -382,14 +384,17 @@ def _resolve_operation_args(
         for k, v in quest_overrides.items():
             if k in args:
                 args[k] = v
-            else:
-                logger.warning(
-                    "quest_defaults[%d] key %r is not a known arg of %s; ignored",
-                    quest_id,
-                    k,
-                    _rpc_display(step.get("rpc")),
-                )
         steps.append({"rpc": step["rpc"], "args": args})
+
+    known_keys = {k for st in steps for k in st["args"]}
+    for k in quest_overrides:
+        if k not in known_keys:
+            logger.warning(
+                "quest_defaults[%d] key %r does not match any arg of quest %d's steps; ignored",
+                quest_id,
+                k,
+                quest_id,
+            )
     return steps
 
 
@@ -431,15 +436,19 @@ def run_quest_execute(
     account_defaults = get_quest_defaults(account)
 
     # 対象を 2 グループに分ける:
-    #   claimable  = state=2（報酬受取可能）→ 操作せず questFarm のみ
-    #   operational = state=1（進行中）      → クリア操作を実行してから questFarm
+    #   claimable  = 報酬受取可能（state=2、または target 到達済みで state 遷移前）
+    #                → 操作せず questFarm のみ
+    #   targets    = 進行中（state=1 かつ target 未到達）
+    #                → クリア操作を実行してから questFarm
+    # ※ progress>=target も受領のみの対象にするのは、達成済みなのに操作
+    #   リソース（10028 のフラグメント購入等）を再消費しないため。
+    #   target 不明（None）のクエスト（10023 等）はこの判定に掛からない。
     claimable: list[Quest] = []
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
-    skipped_disabled: list[Quest] = []
     for q in quests:
         if q.is_done:
             continue
-        if q.is_claimable:
+        if q.is_claimable or (q.target is not None and q.progress >= q.target):
             claimable.append(q)
             continue
         op = QUEST_OPERATIONS.get(q.id)
@@ -447,7 +456,6 @@ def run_quest_execute(
             continue
         if not op.get("enabled", True):
             print(f"ℹ️  [{account}] Skip {q.id} ({q.name}): disabled in QUEST_OPERATIONS")
-            skipped_disabled.append(q)
             continue
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:

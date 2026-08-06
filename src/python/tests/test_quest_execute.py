@@ -166,6 +166,27 @@ def test_confirm_prompt_skips_when_declined(monkeypatch, capsys):
     client.quest_operation.assert_not_called()
 
 
+def test_confirm_prompt_eof_reported(monkeypatch, capsys):
+    """stdin が閉じている（非TTY）場合も EOFError で落ちず失敗報告される。"""
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock()
+
+    def _raise_eof(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=False)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["step"] == "heroArtifactLevelUp"
+    assert "use --yes" in failed[0]["error"]
+    assert "--yes" in out
+    client.quest_operation.assert_not_called()
+
+
 def test_account_default_override_applied_in_plan(capsys):
     """quest_defaults の引数上書きが dry-run のプランに反映される。"""
     SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
@@ -300,16 +321,119 @@ def test_defaults_unknown_key_warns(capsys, caplog):
     run_quest_execute(client, account_alias="Alex", dry_run=True)
     capsys.readouterr().out
 
-    assert "not a known arg" in caplog.text
+    assert "does not match any arg" in caplog.text
     assert "unknownArg" in caplog.text
 
 
 def test_set_default_parses_string_value():
     """set_quest_defaults は CLI 由来の文字列を bool/int に解釈する。"""
     SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
-    set_quest_defaults("Alex", 10007, "free", "true")
-    set_quest_defaults("Alex", 10024, "heroId", "61")
+    stored_true = set_quest_defaults("Alex", 10007, "free", "true")
+    stored_id = set_quest_defaults("Alex", 10024, "heroId", "61")
 
     defaults = get_quest_defaults("Alex")
     assert defaults[10007]["free"] is True
     assert defaults[10024]["heroId"] == 61
+    # 保存値（解釈後）が返る
+    assert stored_true is True
+    assert stored_id == 61
+
+
+def test_progress_reached_target_claimed_without_operation(capsys):
+    """state=1 でも progress>=target のクエストは操作せず直接受領する。"""
+    quest = {"id": 10024, "state": 1, "progress": 1, "reward": {}, "createTime": 0, "farmCount": 0}
+    client = _make_client([quest])
+    client.quest_operation = MagicMock()
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 10024
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_called_once_with(10024)
+
+
+def test_unknown_target_quest_not_auto_claimable(capsys):
+    """target 不明（10023）は progress>=target 判定に掛からず操作対象のまま。"""
+    quest = {"id": 10023, "state": 1, "progress": 0, "reward": {}, "createTime": 0, "farmCount": 0}
+    client = _make_client([quest])
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert succeeded == []
+    # 操作は実行された（target 判定に掛からないため）
+    client.quest_operation.assert_called()
+
+
+def test_multistep_defaults_no_false_warning(caplog):
+    """マルチステップのどこかのステップに一致するキーは警告されない。"""
+    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}})
+    set_quest_defaults("Alex", 10028, "titanId", 999)
+
+    client = _make_client([_active(10028)])
+    client.quest_operation = MagicMock()
+
+    run_quest_execute(client, account_alias="Alex", dry_run=True)
+
+    # titanId は titanArtifactLevelUp ステップの args に存在するため警告しない
+    assert "does not match any arg" not in caplog.text
+
+
+def test_cmd_quests_execute_failure_exits_nonzero():
+    """main.cmd_quests は execute 失敗時に exit code 1 で終了する。"""
+
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands import quests as quests_mod
+
+    SessionManager.save("Alex", {"player": {"id": "alex_id", "name": "Alex"}, "headers": {"x-auth-token": "t"}})
+
+    class _Args:
+        account = None
+        set_default = None
+        execute = True
+        dry_run = False
+        yes = True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            quests_mod,
+            "run_quest_execute",
+            lambda *a, **k: ([], [{"step": "fetch", "error": "boom"}]),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main_mod.cmd_quests(_Args())
+    assert exc_info.value.code == 1
+
+
+def test_cmd_quests_execute_success_exits_zero():
+    """main.cmd_quests は execute 成功時に exit code 0 で終了する。"""
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands import quests as quests_mod
+
+    SessionManager.save("Bob", {"player": {"id": "bob_id", "name": "Bob"}, "headers": {"x-auth-token": "t"}})
+
+    class _Args:
+        account = "Bob"
+        set_default = None
+        execute = True
+        dry_run = False
+        yes = True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            quests_mod,
+            "run_quest_execute",
+            lambda *a, **k: ([{"quest_id": 10024}], []),
+        )
+        assert main_mod.cmd_quests(_Args()) is None
