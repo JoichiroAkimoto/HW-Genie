@@ -33,6 +33,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
 *   **同期**: `uv run hw-genie sync` （ローカル Turso レプリカをクラウドと明示的に同期）
+*   **DB 整合性チェック**: `uv run hw-genie db-check` （全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示。壊れがあれば exit 1）。壊れた行は `get_data` が警告付きでスキップするため日常操作（hwda / auth / quests）は続行できますが、`db-check` で場所を特定して `--set-default` 等で書き直してください。
 *   **デバッグ出力**: 各コマンドに `--debug` を付与することで詳細なペイロード等が出力されます (例: `uv run hw-genie --debug daily`)
 
 ### 3. API 仕様とメソッドの理解

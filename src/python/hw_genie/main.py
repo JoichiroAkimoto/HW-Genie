@@ -513,6 +513,30 @@ def cmd_sync(args):
     print(f"✓ Local replica synced with Turso cloud ({sync_url})")
 
 
+def cmd_db_check(args):
+    """全アカウントの account_configs に壊れた JSON が無いか検査する。
+
+    ``get_data`` は壊れた行を（警告付きで）スキップして読み取りを続行する
+    ため、破損があっても hwda / auth / quests 等は落ちない。その代わり、
+    どこが破損しているかを確認する手段として本コマンドを提供する。
+    壊れた行が 1 つでも見つかれば exit code 1 を返す。
+    """
+    from hw_genie.core.session_manager import SessionManager
+
+    broken = SessionManager.repo.check_configs()
+    if not broken:
+        print("✓ No broken config JSON found.")
+        return
+
+    print(f"✗ {len(broken)} broken config JSON row(s) found:")
+    for item in broken:
+        print(
+            f"  - account={item['account']} key={item['key']} "
+            f"error={item['error']}"
+        )
+    sys.exit(1)
+
+
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
     from hw_genie.runner import (
@@ -607,6 +631,14 @@ def main():
     # Sync
     p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
     p_sync.set_defaults(func=cmd_sync)
+
+    # DB check (detect broken config JSON rows)
+    p_db_check = subparsers.add_parser(
+        "db-check",
+        parents=[parent_parser],
+        help="Scan account_configs for broken config JSON rows (exit 1 if any)",
+    )
+    p_db_check.set_defaults(func=cmd_db_check)
 
     # Multi (single-process parallel across accounts)
     # NOTE: do NOT inherit parent_parser — the ``--account`` flag is meaningless
