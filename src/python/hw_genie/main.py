@@ -370,6 +370,72 @@ def cmd_shop(args):
     client.exchange_stones()
 
 
+def cmd_quests(args):
+    """クエスト（デイリー等）の取得・表示"""
+    from hw_genie.commands.quests import (
+        classify_quest,
+        edit_quest_defaults_interactive,
+        ensure_quest_defaults,
+        run_quest_execute,
+        run_quest_status,
+        set_quest_defaults,
+    )
+
+    account = resolve_account(args.account)
+
+    # quest_defaults を対話的に編集する（番号選択ウィザード）。
+    # DB 内の設定編集のみなので認証セッションは不要（_ensure_session 前に処理）。
+    # ただし未登録アカウントは他オプションと同じ「Session not found」文言で
+    # 前置きを揃える（auth での登録を促す）。
+    if getattr(args, "edit_defaults", False):
+        from hw_genie.core.session_manager import SessionManager
+
+        if not SessionManager.load(account):
+            print(f"Error: Session not found for account '{account}'. Please provide a valid curl with --curl.")
+            sys.exit(1)
+        edit_quest_defaults_interactive(account)
+        return
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+
+    # quest_defaults を初期化する（QUEST_OPERATIONS 登録済みクエストを enabled:false で投入）
+    if args.init_defaults:
+        defaults = ensure_quest_defaults(account)
+        print(f"ℹ️  Initialized quest_defaults for {account}:")
+        for qid in sorted(defaults):
+            category, name = classify_quest(qid)
+            print(f"    - {qid} ({name}) enabled={defaults[qid].get('enabled', False)}")
+        return
+
+    # アカウント固有の操作引数上書き（quest_defaults）を 1 件登録する
+    if args.set_default:
+        quest_id, key, value = args.set_default
+        stored = set_quest_defaults(account, int(quest_id), key, value)
+        _, name = classify_quest(int(quest_id))
+        print(f"ℹ️  Registered quest_defaults[{quest_id} ({name})][{key}] = {stored} ({type(stored).__name__}) for {account}")
+        return
+
+    if args.execute or args.dry_run:
+        _, failed = run_quest_execute(
+            client,
+            account_alias=args.account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+        )
+        if failed:
+            sys.exit(1)
+        return
+
+    run_quest_status(
+        client,
+        account_alias=args.account,
+        show_all=args.show_all,
+        raw=args.raw,
+        category=args.category,
+    )
+
+
 def cmd_daily(args):
     """デイリーレイド実行"""
     headers = None
@@ -445,6 +511,30 @@ def cmd_sync(args):
         sys.exit(1)
 
     print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+
+
+def cmd_db_check(args):
+    """全アカウントの account_configs に壊れた JSON が無いか検査する。
+
+    ``get_data`` は壊れた行を（警告付きで）スキップして読み取りを続行する
+    ため、破損があっても hwda / auth / quests 等は落ちない。その代わり、
+    どこが破損しているかを確認する手段として本コマンドを提供する。
+    壊れた行が 1 つでも見つかれば exit code 1 を返す。
+    """
+    from hw_genie.core.session_manager import SessionManager
+
+    broken = SessionManager.repo.check_configs()
+    if not broken:
+        print("✓ No broken config JSON found.")
+        return
+
+    print(f"✗ {len(broken)} broken config JSON row(s) found:")
+    for item in broken:
+        print(
+            f"  - account={item['account']} key={item['key']} "
+            f"error={item['error']}"
+        )
+    sys.exit(1)
 
 
 def cmd_multi(args):
@@ -525,9 +615,30 @@ def main():
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
     p_daily.set_defaults(func=cmd_daily)
 
+    # Quests
+    p_quests = subparsers.add_parser("quests", parents=[parent_parser], help="Quest status (daily quests)")
+    p_quests.add_argument("--show-all", action="store_true", help="Show completed quests too (default: uncompleted only)")
+    p_quests.add_argument("--raw", action="store_true", help="Print the raw questGetAll response as JSON")
+    p_quests.add_argument("--category", choices=["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"], help="Filter by quest category")
+    p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
+    p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
+    p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
+    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999)")
+    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults for the account (seed all QUEST_OPERATIONS quests as enabled=false)")
+    p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
+    p_quests.set_defaults(func=cmd_quests)
+
     # Sync
     p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
     p_sync.set_defaults(func=cmd_sync)
+
+    # DB check (detect broken config JSON rows)
+    p_db_check = subparsers.add_parser(
+        "db-check",
+        parents=[parent_parser],
+        help="Scan account_configs for broken config JSON rows (exit 1 if any)",
+    )
+    p_db_check.set_defaults(func=cmd_db_check)
 
     # Multi (single-process parallel across accounts)
     # NOTE: do NOT inherit parent_parser — the ``--account`` flag is meaningless

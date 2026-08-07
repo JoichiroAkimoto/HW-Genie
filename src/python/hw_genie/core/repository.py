@@ -1,8 +1,9 @@
+import json
 import logging
 from typing import Any, List, TypedDict
+from sqlalchemy import text
 from .database import (
     Account,
-    AccountConfig,
     _wal_io_lock,
     get_engine,
     get_session_local,
@@ -59,6 +60,20 @@ class AccountData(TypedDict, total=False):
 # :func:`hw_genie.core.database.retry_on_wal_contention`.
 
 logger = logging.getLogger(__name__)
+
+
+def _deserialize_config_value(raw_value: Any) -> Any:
+    """生 SQL で取得した ``config_value`` を Python オブジェクトへ復元する。
+
+    SQLAlchemy の JSON 型は書き込み時に ``json.dumps`` で文字列化され保存
+    されるため（int/float/bool のスカラーも同様）、読み出しは通常 str で返る。
+    一方、SQLite の動的型付け（NUMERIC affinity）により、直接書き込まれた
+    純数値文字列等は整数型で返ることもある。``str`` のみ ``json.loads`` し、
+    それ以外はそのまま返す（壊れた JSON は例外を送出する）。
+    """
+    if isinstance(raw_value, str):
+        return json.loads(raw_value)
+    return raw_value
 
 
 class SessionRepository:
@@ -132,11 +147,33 @@ class SessionRepository:
                 data = {}
                 player_info = {}
 
-                configs = db.query(AccountConfig).filter(AccountConfig.account_id == account_rec.id).all()
+                configs = db.execute(
+                    text(
+                        "SELECT config_key, config_value FROM account_configs "
+                        "WHERE account_id = :account_id"
+                    ),
+                    {"account_id": account_rec.id},
+                ).all()
 
-                for cfg in configs:
-                    key = cfg.config_key
-                    val = cfg.config_value
+                for key, raw_value in configs:
+                    # SQLAlchemy の JSON カラムはフェッチ時にデシリアライズされ、
+                    # 1 行でも壊れた JSON があると `.all()` 全体が失敗する。
+                    # 生 SQL で取得して行ごとに個別パースし、壊れた行は警告して
+                    # スキップする（hwda / auth / quests 等すべての読み取り経路
+                    # が単一の壊れた行で落ちるのを防ぐ）。
+                    if raw_value is None:
+                        continue
+                    try:
+                        val = _deserialize_config_value(raw_value)
+                    except (TypeError, ValueError) as exc:
+                        logger.warning(
+                            "config_key=%r for account %r has broken JSON; "
+                            "skipping: %s",
+                            key,
+                            account,
+                            exc,
+                        )
+                        continue
 
                     if key == "headers":
                         data["headers"] = val
@@ -173,6 +210,44 @@ class SessionRepository:
                     data["player"] = player_info
 
                 return data
+
+        return self._read_with_retry(_read)
+
+    def check_configs(self) -> List[dict]:
+        """全アカウントの account_configs を走査し、壊れた JSON 行を列挙する。
+
+        ``get_data`` は壊れた行を黙ってスキップするため、手動編集等で破損が
+        混入しても日常操作は続行できる。その代わり、どこが壊れているかを
+        確認する手段として本関数（``hw-genie db-check``）を提供する。
+
+        Returns:
+            list[dict]: 壊れた行のリスト。
+            各 dict は ``{"account": alias, "key": config_key, "error": str}``。
+        """
+
+        def _read() -> List[dict]:
+            broken = []
+            with get_session_local()() as db:
+                rows = db.execute(
+                    text(
+                        "SELECT a.alias, c.config_key, c.config_value "
+                        "FROM account_configs c JOIN accounts a ON a.id = c.account_id"
+                    )
+                ).all()
+                for alias, key, raw_value in rows:
+                    if raw_value is None:
+                        continue
+                    try:
+                        _deserialize_config_value(raw_value)
+                    except (TypeError, ValueError) as exc:
+                        broken.append(
+                            {
+                                "account": alias,
+                                "key": key,
+                                "error": str(exc),
+                            }
+                        )
+            return broken
 
         return self._read_with_retry(_read)
 
@@ -297,7 +372,14 @@ class SessionRepository:
     def _upsert_config(self, db, account_id: int, key: str, value: Any) -> None:
         """
         Helper to insert or update a config entry.
-        
+
+        Uses raw SQL (``INSERT ... ON CONFLICT DO UPDATE``) so that a row whose
+        JSON is broken can still be overwritten: the ORM path
+        (``db.query(AccountConfig).filter_by(...).first()``) would try to
+        deserialize the JSON column while SELECTing the row and crash with
+        ``JSONDecodeError`` -- making ``--set-default`` unable to repair the
+        very row ``hw-genie db-check`` reports.
+
         Args:
             db: The DB session.
             account_id (int): Internal Account ID.
@@ -306,8 +388,16 @@ class SessionRepository:
         """
         if not key or not isinstance(key, str):
             raise ValueError(f"Invalid config_key: {key}")
-        existing = db.query(AccountConfig).filter_by(account_id=account_id, config_key=key).first()
-        if existing:
-            existing.config_value = value
-        else:
-            db.add(AccountConfig(account_id=account_id, config_key=key, config_value=value))
+        db.execute(
+            text(
+                "INSERT INTO account_configs (account_id, config_key, config_value) "
+                "VALUES (:account_id, :config_key, :config_value) "
+                "ON CONFLICT (account_id, config_key) "
+                "DO UPDATE SET config_value = excluded.config_value"
+            ),
+            {
+                "account_id": account_id,
+                "config_key": key,
+                "config_value": json.dumps(value),
+            },
+        )

@@ -143,6 +143,14 @@ class ApiAction(str, Enum):
     ARENA_GET_ALL = "arenaGetAll"
     MISSION_GET_ALL = "missionGetAll"
     MISSION_RAID = "missionRaid"
+    QUEST_GET_ALL = "questGetAll"
+    QUEST_FARM = "questFarm"
+    GACHA_OPEN = "gacha_open"
+    HERO_ARTIFACT_LEVEL_UP = "heroArtifactLevelUp"
+    TITAN_ARTIFACT_LEVEL_UP = "titanArtifactLevelUp"
+    HERO_SKIN_UPGRADE = "heroSkinUpgrade"
+    HERO_TITAN_GIFT_LEVEL_UP = "heroTitanGiftLevelUp"
+    HERO_TITAN_GIFT_DROP = "heroTitanGiftDrop"
     CONSUMABLE_USE_STAMINA = "consumableUseStamina"
     INVENTORY_EXCHANGE_STONES = "inventoryExchangeStones"
     SHOP_GET_ALL = "shopGetAll"
@@ -343,6 +351,29 @@ class HWClient:
     def mission_get_all(self) -> HWResponse:
         """キャンペーン（ストーリーモード）の各ステージクリア状況を取得"""
         payload = {"calls": [{"name": ApiAction.MISSION_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def quest_get_all(self) -> HWResponse:
+        """全クエスト（デイリー/メイン/ギルド/イベント/バトルパス等）の進捗を取得"""
+        payload = {"calls": [{"name": ApiAction.QUEST_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def quest_farm(self, quest_id: int) -> HWResponse:
+        """クエストの報酬を受け取る（条件達成済み state=2 のもののみ有効）"""
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.QUEST_FARM,
+                    "args": {"questId": quest_id},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload)
+
+    def quest_operation(self, action: ApiAction, args: dict[str, Any]) -> HWResponse:
+        """デイリークエストを進めるゲーム操作（強化/召喚/購入等）を実行"""
+        payload = {"calls": [{"name": action, "args": args, "ident": "body"}]}
         return self.call(payload)
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:

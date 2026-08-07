@@ -30,6 +30,51 @@ def mock_no_env():
         yield
 
 
+def test_find_pkg_root_supports_git_file_worktree(tmp_path):
+    """git worktree（.git がディレクトリではなくファイル）でもルートを正しく検出する。
+
+    通常のリポジトリは ``.git`` ディレクトリだが、``git worktree`` の作業ツリーでは
+    ``.git`` が ``gitdir: ...`` へのポインタを持つ**ファイル**になる。``_find_pkg_root``
+    がこの形式もルートとして扱えることを確認する（従来は ``isdir`` のみだったため
+    worktree で PKG_ROOT が誤解決し、``.env`` や ``data/`` の参照が壊れていた）。
+    """
+    from hw_genie.core.database import _find_pkg_root
+
+    wt = tmp_path / "hidden-nebula"
+    wt.mkdir()
+    # git worktree が作る .git ファイル（ポインタ）
+    (wt / ".git").write_text("gitdir: /path/to/main/.git/worktrees/hidden-nebula\n")
+
+    # 通常リポジトリ形式（.git ディレクトリ）にも対応していること
+    normal = tmp_path / "main"
+    normal.mkdir()
+    (normal / ".git").mkdir()
+
+    # パッケージ配下の database.py へ至るパスを起点に呼ぶ
+    start = os.path.join(str(wt), "src", "python", "hw_genie", "core", "database.py")
+    assert _find_pkg_root(start) == str(wt)
+
+    start_normal = os.path.join(str(normal), "src", "python", "hw_genie", "core", "database.py")
+    assert _find_pkg_root(start_normal) == str(normal)
+
+
+def test_find_pkg_root_falls_back_to_pkg_parent_without_git(tmp_path):
+    """.git が無い環境（コンテナ等）は hw_genie パッケージの親へフォールバックする。
+
+    ``_find_pkg_root`` は .git（ディレクトリ/ファイルいずれ）が見つかるまで親へ
+    遡り、見つからなければ ``hw_genie`` パッケージの親ディレクトリ（例: コンテナ
+    の ``/app``）を返す。worktree 対応で取得条件を広げてもフォールバックが
+    壊れないことを確認する。
+    """
+    from hw_genie.core.database import _find_pkg_root
+
+    app = tmp_path / "app"
+    app.mkdir()
+
+    start = os.path.join(str(app), "hw_genie", "core", "database.py")
+    assert _find_pkg_root(start) == str(app)
+
+
 def test_turso_sync_config_not_set():
     """TURSO_SYNC_URL が設定されていない場合の動作を検証"""
     env = {

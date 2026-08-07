@@ -15,7 +15,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-shopping**: HW-Genie を使用して、ターゲットショップのヒーローソウルとソウルショップの全アイテムを一括購入します。
 *   **hero-wars-auth**: HW-Genie を使用してセッション情報を管理し、ユーザー情報を取得します。ブラウザからコピーした curl コマンドを使用して認証情報を更新できます。
 *   **item-raid**: HW-Genie を使用して特定のアイテムを収集します。失敗する（スタミナ不足等）か指定回数に達するまで繰り返し実行します。
-*   **db-inspect**: HW-Genie のデータベース（Turso クラウド / ローカルレプリカ）を確認します。機能開発時の状態確認やデバッグに使用します。
+*   **quest-status**: HW-Genie を使用して未完了のデイリー等クエストの状態を取得・表示します。`--execute`（要確認・`--yes` で自動化）で `QUEST_OPERATIONS` 登録済みのデイリーを操作 API → `questFarm` で自動完了することもできます。*   **db-inspect**: HW-Genie のデータベース（Turso クラウド / ローカルレプリカ）を確認します。機能開発時の状態確認やデバッグに使用します。
 
 ### 2. コマンドラインツールの使用法
 すべての操作はルートディレクトリから `uv run hw-genie` を通じて行われます。
@@ -25,6 +25,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **デイリールーチン**: `uv run hw-genie daily`
+*   **クエスト状態**: `uv run hw-genie quests`（未完了クエストをカテゴリ別に表示。`-a` でアカウント指定、`--show-all` で完了済みも表示、`--category daily|weekly|guild|...` で絞り込み、`--raw` で生 JSON）。デイリー ID の名前解決は `src/python/hw_genie/commands/quests.py` の `QUEST_MASTER`。実データのメモは [docs/api/QUEST_API.md](docs/api/QUEST_API.md)。**自動完了**: `quests --execute`（破壊的操作。各ステップ y/n 確認付き、自動化は `--yes`）で `QUEST_OPERATIONS` 登録済みの未完了デイリー（10007/10024/10028/10030/10023）を操作 API → `questFarm` でクリア。事前確認は `--dry-run`。**実行可否はアカウントごとに `quest_defaults`（account_configs）の `enabled` フラグで制御**（初期状態は全無効。`--init-defaults` で未初期化アカウントに `enabled:false` ＋デフォルト引数＋`note`（操作 RPC 名メモ、実行に影響なし）を自動投入、初回 `--execute` でも自動投入、`--edit-defaults` の対話ウィザード（TTY では rich 全画面リフレッシュ、非TTY はスクロール表示）または `--set-default <id> <key> <value>` で有効化・引数上書き可）。10007 は `QUEST_OPERATIONS` 自体がデフォルト無効。
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存され、`default` エイリアスは廃止されました。`-a`/`--account` 未指定時は、登録アカウントが 1 件だけなら自動選択、複数件なら `-a` 指定を要求するエラーになります。`multi` は対象アカウント未指定時は全アカウント実行です。
 *   **全アカウント一括 (単一プロセス並列)**: `uv run hw-genie multi daily` （`full` でヒーローレイド＋ショップ＋デイリー）。`--parallel N` で同時実行数、`account1 account2 ...` で対象アカウントを限定可能。実行後はアカウント別ステータス表（Account / ⚡Energy / 🏆Arena / 👑GA / 💰Gold / 💎Gems、列幅は内容に応じて自動調整）と失敗一覧を標準出力に表示。`bin/hwda` / `bin/hwsa` はこのコマンドを単一プロセスで呼び出し、出力を `data/logs/` にミラーリングします（実行ごとの統合ログ `data/logs/hwda_<ts>.log`）。ログは `HW_LOG_KEEP_DAYS`（既定 7 日、0 で無効）で自動削除されます。表示タイムゾーンは `HWGENIE_TZ`（既定 `UTC`、例 `Asia/Tokyo`）で指定でき、`auth --list` の `Updated` 列に反映されます（DB 保存は常に UTC）。カラーリングは `auth --list` / `multi` のステータス表とも同仕様（順位色・スタミナ超過赤・ゼブラ）で、TTY 直接実行時のみ有効です。パイプ先でも強制したい場合は `FORCE_COLOR=1`、無効化は `NO_COLOR=1`（優先。`FORCE_COLOR=0` や空文字は無効扱いで TTY 判定へ戻る）。`bin/hwda` / `bin/hwsa` は端末直結実行時に自動で色付けし、ログファイルは常にプレーン（ANSI 除去）です。また起動は `uv run --no-sync` で行うため、依存関係（`pyproject.toml` / `uv.lock`）を更新した場合やクローン直後は、実行前に必ず `uv sync` を一度実行してください（起動時の自動再同期が省略されるため、未同期だと `.venv` 未作成時は起動失敗、依存更新後は実行時エラーになります。待ちは更新時の `uv sync` に移ります）。
 *   **登録済みアカウント一覧**: `uv run hw-genie auth --list`（`--fresh` を併用するとゲームサーバーから最新ステータスを取得して DB を更新してから表示）
@@ -32,6 +33,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **認証サーバー起動**: `uv run hw-genie auth-server` (自動認証キャプチャ用)
 *   **認証サーバー (1回限り)**: `uv run hw-genie auth-server --once`
 *   **同期**: `uv run hw-genie sync` （ローカル Turso レプリカをクラウドと明示的に同期）
+*   **DB 整合性チェック**: `uv run hw-genie db-check` （全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示。壊れがあれば exit 1）。壊れた行は `get_data` が警告付きでスキップするため日常操作（hwda / auth / quests）は続行できますが、`db-check` で場所を特定して `--set-default` 等で書き直してください。
 *   **デバッグ出力**: 各コマンドに `--debug` を付与することで詳細なペイロード等が出力されます (例: `uv run hw-genie --debug daily`)
 
 ### 3. API 仕様とメソッドの理解
@@ -43,7 +45,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 
 ### 4. 重要事項（エージェント向け）
 *   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。
-    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただしDB 作成者アカウントでのログインが必要です。
+    *   **worktree / 新規クローンの準備**: `.env` は `.gitignore` 済みのため checkout に含まれません。worktree で DB 操作する前に main worktree の `.env` へのシンボリックリンクを貼ってください（例: `ln -s /path/to/main-worktree/.env .env`）。解除は `unlink .env`（`rm` は main の `.env` を誤削除する恐れがあるため使用しないこと）。詳細は `.agents/skills/db-inspect/SKILL.md` 参照。
+    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただしDB 作成者アカウントでのログインが必要です。ログイン切れ時は worktree の `.env` 経由（`uv run hw-genie sync && sqlite3 ...`）で確認してください。
     *   **ローカル確認（推奨）**: `uv run hw-genie sync && sqlite3 data/hw_genie.db "SELECT ..."` — Turso CLI 不要。明示的同期後にローカルレプリカを確認。
     *   **スキーマ確認**: `sqlite3 data/hw_genie.db ".schema"` または `sqlite3 data/hw_genie.db ".tables"`。
     *   詳細は `.agents/skills/db-inspect/SKILL.md` を参照。
