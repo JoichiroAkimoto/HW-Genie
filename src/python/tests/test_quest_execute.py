@@ -51,7 +51,13 @@ def _make_client(raw_quests: list[dict], account: str = "Alex") -> HWClient:
     res = _ok_response({"response": raw_quests})
     client.quest_get_all = MagicMock(return_value=res)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
+    client.call = MagicMock(return_value=_ok_response({"response": {}}))
     return client
+
+
+def _shop_inventory(slots: dict) -> MagicMock:
+    """shopGetAll のレスポンスを作る。slots は ``{"18": {"reward": ..., "cost": ...}}``。"""
+    return _ok_response({"response": {"13": {"slots": slots}}})
 
 
 def _active(qid: int) -> dict:
@@ -301,6 +307,150 @@ def test_multistep_claim_after_second_step(capsys):
     assert "Reward claimed" in out
 
 
+def test_shop_buy_reward_resolved_from_inventory(capsys):
+    """shopBuy の reward/cost が実在庫（shopGetAll）の slot から動的解決される。
+
+    実在庫が slot 22 → fragment 2003 の場合、コード既定の 2001 ではなく
+    2003 が送信される（slot を変えるアカウントでも在庫に追従できる）。
+    """
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    # 実在庫: slot 22 には fragment 2003 が売られている（既定レシピは slot 18 / 2001）
+    client.call.return_value = _shop_inventory(
+        {
+            "10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {"coin": {"18": 12}}},
+            "22": {"reward": {"fragmentTitanArtifact": {"2003": 1}}, "cost": {"coin": {"18": 12}}},
+        }
+    )
+    set_quest_defaults("Alex", 10028, "slot", 22)
+
+    sent_args = []
+
+    def _op(action, args):
+        if action == ApiAction.SHOP_BUY:
+            sent_args.append(dict(args))
+            return _ok_response({"quests": [{"id": 10028, "state": 1}]})
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert len(sent_args) == 1
+    # slot 22 → 実在庫の fragment 2003 / cost に追従
+    assert sent_args[0]["slot"] == 22
+    assert sent_args[0]["reward"] == {"fragmentTitanArtifact": {"2003": 1}}
+    assert sent_args[0]["cost"] == {"coin": {"18": 12}}
+
+
+def test_shop_buy_slot_not_in_inventory_fails(capsys):
+    """指定 slot が実在庫に存在しない場合は実行せず失敗報告される。
+
+    在庫は取得できたが slot が無い場合、固定 reward で shopBuy を送信すると
+    必ず NotAvailable になるため、ステップ実行前に abort する。
+    """
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    client.call.return_value = _shop_inventory(
+        {"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
+    set_quest_defaults("Alex", 10028, "slot", 99)  # 在庫に存在しない slot
+
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    f = failed[0]
+    assert f["quest_id"] == 10028
+    assert f["step"] == "shopBuy"
+    assert "slot 99 not in shop 13 inventory" in f["error"]
+    assert "cannot execute" in out
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_shop_buy_auth_error_reraises(capsys):
+    """shopGetAll で認証エラー（HWAuthError）は握りつぶさず再送出される。"""
+    import pytest
+
+    from hw_genie.core.client import HWAuthError
+
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    client.call = MagicMock(side_effect=HWAuthError("auth failed"))
+
+    client.quest_operation = MagicMock()
+
+    with pytest.raises(HWAuthError):
+        run_quest_execute(client, account_alias="Alex", confirm=True)
+    client.quest_operation.assert_not_called()
+
+
+def test_shop_buy_inventory_fetch_failure_keeps_default(capsys, caplog):
+    """shopGetAll 失敗（認証以外）は既定 reward のまま動作（取得失敗を警告で知らせる）。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    client.call = MagicMock(return_value=_error_response("NetworkError"))
+
+    sent_args = []
+
+    def _op(action, payload):
+        if action == ApiAction.SHOP_BUY:
+            sent_args.append(dict(payload))
+            return _ok_response({"quests": [{"id": 10028, "state": 1}]})
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert len(sent_args) == 1
+    assert sent_args[0]["reward"] == {"fragmentTitanArtifact": {"2001": 1}}
+    assert "shopGetAll failed" in caplog.text
+
+
+def test_shop_buy_inventory_cached_per_shop(capsys):
+    """同一 shop の shopBuy が複数ステップあっても shopGetAll は1回だけ発行される。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    client.call.return_value = _shop_inventory(
+        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
+
+    sent_args = []
+
+    def _op(action, args):
+        if action == ApiAction.SHOP_BUY:
+            sent_args.append(dict(args))
+            return _ok_response({"quests": [{"id": 10028, "state": 1}]})
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert client.call.call_count == 1
+    assert client.call.call_args.args[0]["calls"][0]["name"] == ApiAction.SHOP_GET_ALL
+
+
 def test_reached_claimable_with_string_state():
     """レスポンスの state が文字列 '2' でも claim 判定される（型安全）。"""
     from hw_genie.commands.quests import _quest_reached_claimable
@@ -447,7 +597,8 @@ def test_ensure_quest_defaults_seeds_operation_args():
 
     assert defaults[10024]["heroId"] == 61
     assert defaults[10024]["slotId"] == 1
-    assert defaults[10028]["titanId"] == 4022
+    assert defaults[10028]["titanId"] == 4012
+    assert defaults[10028]["slotId"] == 1
     assert defaults[10028]["shopId"] == 13
     assert defaults[10030]["heroId"] == 59
     assert defaults[10030]["skinId"] == 313
@@ -503,7 +654,7 @@ def test_ensure_quest_defaults_skips_dict_args():
     _register("Alex")
     defaults = ensure_quest_defaults("Alex")
 
-    assert defaults[10028]["titanId"] == 4022
+    assert defaults[10028]["titanId"] == 4012
     assert defaults[10028]["shopId"] == 13
     assert "cost" not in defaults[10028]
     assert "reward" not in defaults[10028]

@@ -18,7 +18,7 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from hw_genie.core.client import ApiAction, HWClient, ResponseStatus, resolve_account
+from hw_genie.core.client import HWAuthError, ApiAction, HWClient, ResponseStatus, resolve_account
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import format_timestamp_for_display
 
@@ -137,8 +137,14 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
         "enabled": False,
         "steps": [
             # Elemental Tournament Shop でフラグメント 200 個購入 → レベルアップ
-            {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 24, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2005": 1}}, "amount": 200}},
-            {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4022, "slotId": 0}},
+            # slot の reward/cost は実行時に shopGetAll の実在庫から動的解決される
+            # （_resolve_shop_buy_reward）。この静的な cost/reward は在庫取得失敗時
+            # のみのフォールバック（通常は到達しない）。フラグメント ID は
+            # 「タイタンアーティファクトの強化素材」として共通であり、購入後は
+            # quest_defaults で指定した titanId/slotId の対象に使う
+            # （docs/superpowers/titan-quests-ops.md 参照）。
+            {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "amount": 200}},
+            {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4012, "slotId": 1}},
         ],
     },
     10030: {
@@ -485,6 +491,92 @@ def _resolve_operation_args(
     return steps
 
 
+def _fetch_shop_inventory(client: HWClient, shop_id: Any) -> dict[str, Any]:
+    """shopGetAll を呼び、指定 shop の ``slots`` 辞書を返す（取得失敗時は空 dict）。
+
+    認証エラー（``HWAuthError``）は握りつぶさず再送出する。それ以外の
+    取得失敗（通信エラー等）は空 dict を返し、呼び出し側で既定値
+    フォールバックを適用する。
+    """
+    try:
+        res = client.call({"calls": [{"name": ApiAction.SHOP_GET_ALL, "args": {}, "ident": "shopGetAll"}]})
+    except HWAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shopGetAll failed; using default shopBuy reward: %s", exc)
+        return {}
+    if res.status != ResponseStatus.SUCCESS:
+        logger.warning("shopGetAll failed (%s); using default shopBuy reward", res.error_name)
+        return {}
+    detail = res.detail if isinstance(res.detail, dict) else {}
+    shops = detail.get("response") if isinstance(detail, dict) else None
+    if not isinstance(shops, dict):
+        return {}
+    shop = shops.get(str(shop_id))
+    slots = shop.get("slots") if isinstance(shop, dict) else None
+    return slots if isinstance(slots, dict) else {}
+
+
+def _resolve_shop_buy_reward(
+    client: HWClient, steps: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+    """shopBuy ステップの実在庫（shopGetAll）から reward/cost を動的解決する。
+
+    タイタンアーティファクトショップ等は slot ごとにフラグメント商品が並び、
+    期間で在庫が変わり得る。quest_defaults の ``slot`` は保持したまま、
+    その slot の実際の商品（reward/cost）を実行直前に取得して上書きする。
+    これにより「slot はユーザー選択、reward/cost はサーバー在庫に追従」と
+    なる（reward を code 既定に固定しない）。
+
+    フラグメントはタイタンアーティファクトの強化素材として共通であり
+    （実測: fragment 2001 → titan 4012/4022、fragment 2003 → titan 4001
+    がすべて成功）、titanArtifactLevelUp の対象（titanId/slotId）は
+    quest_defaults でアカウントごとに指定する設計とする。
+
+    - **在庫取得失敗**（通信等、認証以外）: 既定 reward をフォールバック
+      として維持する（呼び出し側でエラー欄には出さない）。
+    - **指定 slot が在庫に存在しない**: 確実に失敗することが判明している
+      ため、フォールバックせず ``(step, error)`` を problems に返す。
+      呼び出し元はこのクエストの操作ステップを実行せず失敗報告する
+      （固定 reward のまま送信して NotAvailable になるのを防ぐ）。
+
+    Returns:
+        ``(resolved_steps, problems)`` — problems は ``(step, message)`` 形式。
+    """
+    shop_cache: dict[str, dict[str, Any]] = {}
+    problems: list[tuple[str, str]] = []
+
+    resolved: list[dict[str, Any]] = []
+    for step in steps:
+        if step["rpc"] != ApiAction.SHOP_BUY:
+            resolved.append(step)
+            continue
+        args = dict(step["args"])
+        shop_id = args.get("shopId")
+        slot = args.get("slot")
+        step_name = _rpc_display(step["rpc"])
+        if shop_id is not None and slot is not None:
+            key = str(shop_id)
+            if key not in shop_cache:
+                shop_cache[key] = _fetch_shop_inventory(client, shop_id)
+            inventory = shop_cache[key]
+            if str(slot) in inventory:
+                item = inventory[str(slot)]
+                if isinstance(item, dict):
+                    if "reward" in item:
+                        args["reward"] = item["reward"]
+                    if "cost" in item:
+                        args["cost"] = item["cost"]
+            elif inventory:
+                # 在庫は取得できたが指定 slot が存在しない → 実行しても失敗。
+                problems.append(
+                    (step_name, f"slot {slot} not in shop {shop_id} inventory (available: {sorted(inventory.keys())})")
+                )
+                continue
+        resolved.append({"rpc": step["rpc"], "args": args})
+    return resolved, problems
+
+
 def run_quest_execute(
     client: HWClient,
     account_alias: str | None = None,
@@ -494,6 +586,8 @@ def run_quest_execute(
     """未完了デイリー（state!=3 かつ QUEST_OPERATIONS 登録）を順に実行する。
 
     - ``dry_run=True`` の場合は操作は実行せず、実行予定の一覧を表示する。
+      計画表示のため実在庫参照（shopGetAll の読み取りのみ）を行う場合が
+      ある。操作（書き込み）は一切行わない。
     - ``confirm=False`` の場合（既定）、各ステップ実行前に y/n で確認する。
       ``confirm=True`` は自動実行（確認なし）。実際の操作は破壊的であるため
       CLI 上は ``--execute --yes`` 等で明示的に指示された場合のみ有効。
@@ -502,6 +596,11 @@ def run_quest_execute(
       enabled=true のものだけ操作ステップを実行する（未設定/初期状態は
       無効で何もしない）。未初期化の場合は ``ensure_quest_defaults`` で
       空設定（enabled=false）を自動投入する。
+    - **shopBuy ステップは実在庫（shopGetAll）を読み、指定 slot の
+      reward/cost を動的に解決してから実行する**。指定 slot が在庫に
+      存在しない場合は実行せず失敗報告する（固定 reward での
+      NotAvailable 送信を防ぐ）。在庫取得失敗時（認証以外）は既定値を
+      フォールバックする。
     - **報酬受取可能（state=2、または target 到達済み）のクエストは操作を
       実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
       操作リソースを消費しないため）。
@@ -536,6 +635,7 @@ def run_quest_execute(
     # ※ バトルパス（26xx）やギルド（2000x）等、QUEST_OPERATIONS 未登録の
     #   受領待ちクエストは execute の対象外（dry-run の表示ノイズも排除）。
     claimable: list[Quest] = []
+    failures: list[dict[str, Any]] = []
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
     for q in quests:
         if q.is_done:
@@ -552,10 +652,15 @@ def run_quest_execute(
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:
             continue
+        steps, shop_problems = _resolve_shop_buy_reward(client, steps)
+        if shop_problems:
+            for step, message in shop_problems:
+                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": step, "error": message})
+                print(f"❌ [{account}] {q.id} {q.name} cannot execute ({step}): {message}")
+            continue
         targets.append((q, steps))
 
     succeeded: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
 
     if dry_run:
         print(f"\n📋 [dry-run] Quest execution plan for {account}:")
