@@ -421,13 +421,16 @@ def _find_pkg_root(start: str) -> str:
     # 開発環境(src/python/hw_genie/...)でもコンテナ(/app/hw_genie/...)でも
     # data/ や .env の位置が正しく解決される。
     while True:
-        if os.path.isdir(os.path.join(current, ".git")):
+        # git worktree では .git がディレクトリではなく「gitdir: ...」への
+        # ポインタを持つファイルになるため、ディレクトリ/ファイル両方を
+        # 検出できる exists で判定する。
+        if os.path.exists(os.path.join(current, ".git")):
             return current
         parent = os.path.dirname(current)
         if parent == current:
             # ルートまで到達しても .git が無い場合は、hw_genie パッケージの
             # 親ディレクトリ（/app など）を返す。
-            # start = .../hw_genie/core/database.py -> 3 階層上がパッケージの親。
+            # start = .../hw_genie/core/database.py -> 3階層上がパッケージの親。
             pkg_parent = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.abspath(start)))
             )

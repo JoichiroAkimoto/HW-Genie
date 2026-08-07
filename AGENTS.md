@@ -45,7 +45,8 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 
 ### 4. 重要事項（エージェント向け）
 *   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。
-    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただしDB 作成者アカウントでのログインが必要です。
+    *   **worktree / 新規クローンの準備**: `.env` は `.gitignore` 済みのため checkout に含まれません。worktree で DB 操作する前に main worktree の `.env` へのシンボリックリンクを貼ってください（例: `ln -s /path/to/main-worktree/.env .env`）。解除は `unlink .env`（`rm` は main の `.env` を誤削除する恐れがあるため使用しないこと）。詳細は `.agents/skills/db-inspect/SKILL.md` 参照。
+    *   **リモート確認**: `turso db shell hw-genie-db "SELECT ..."` — 常に最新データを取得。同期不要。ただしDB 作成者アカウントでのログインが必要です。ログイン切れ時は worktree の `.env` 経由（`uv run hw-genie sync && sqlite3 ...`）で確認してください。
     *   **ローカル確認（推奨）**: `uv run hw-genie sync && sqlite3 data/hw_genie.db "SELECT ..."` — Turso CLI 不要。明示的同期後にローカルレプリカを確認。
     *   **スキーマ確認**: `sqlite3 data/hw_genie.db ".schema"` または `sqlite3 data/hw_genie.db ".tables"`。
     *   詳細は `.agents/skills/db-inspect/SKILL.md` を参照。

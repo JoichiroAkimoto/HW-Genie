@@ -9,6 +9,7 @@ description: HW-Genie のデータベース（Turso クラウド / ローカル�
 
 - 本プロジェクトのルートディレクトリにいること
 - `.env` に `TURSO_SYNC_URL` / `TURSO_AUTH_TOKEN` が設定されていること（通常は既に設定済み）
+- **worktree / 新規クローンで動かす場合**: `.env` は `.gitignore` 済みのため checkout に含まれない。main worktree の `.env` へのシンボリックリンクを貼るか、環境変数として注入する（下記「worktree での準備」）
 
 ## DB 構成
 
@@ -23,6 +24,27 @@ Turso Cloud (hw-genie-db)  ←→  ローカルレプリカ (data/hw_genie.db)
 |----------|------|
 | `accounts` | プレイヤーアカウント情報（レベル、ゴールド、エネルギー等） |
 | `account_configs` | アカウント別の Key-Value 設定（認証ヘッダー、レイド状態等） |
+
+## worktree での準備
+
+`git worktree` の作業ツリーや新規クローンには `.env` が無いため、そのままでは
+Turso 接続（sync / リモート確認）ができません。最初に `.env` を用意してください。
+
+```bash
+# worktree のルートディレクトリで実行（main worktree の .env を共有・追従する）
+ln -s /path/to/main-worktree/.env .env
+```
+
+- シンボリックリンク方式は main の `.env` を共有するため、更新に自動で追従します。
+  独立した設定にしたい場合は `cp` でコピーしてください（main の更新に追従しない）。
+- `.env` は `.gitignore` 済みなので、リンク/コピーしても git の差分やコミットに
+  含まれません。不要になったら worktree 側で `unlink .env`（symlink のみ削除）で
+  解除できます。**`rm` は使わないこと**: カレントを間違えると main の `.env`
+  実体を削除してしまう恐れがあります。`cp` でコピーした場合は、解除前に
+  `ls -la .env` で実ファイル（`-` 始まり）かリンク（`l` 始まり）かを必ず確認してください。
+- 注意: リンク経由の書き込みは main の `.env` に反映されます（読み取り用途が基本）。
+- なお、`_find_pkg_root` は worktree の `.git` ファイル（`gitdir:` ポインタ）にも
+  対応しているため、リンクを貼れば DB パス解決は worktree 内で正しく動きます。
 
 ## 操作方法
 
