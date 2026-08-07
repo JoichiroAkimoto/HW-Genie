@@ -479,6 +479,89 @@ def test_ensure_quest_defaults_idempotent():
     assert again == get_quest_defaults("Alex")
 
 
+def test_ensure_quest_defaults_seeds_note():
+    """note に操作ステップの RPC 名が連結されて補完される。"""
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    defaults = ensure_quest_defaults("Alex")
+
+    assert defaults[10024]["note"] == "heroArtifactLevelUp"
+    assert defaults[10028]["note"] == "shopBuy → titanArtifactLevelUp"
+    assert defaults[10023]["note"] == "heroTitanGiftLevelUp → heroTitanGiftLevelUp → heroTitanGiftDrop"
+    assert defaults[10007]["note"] == "gacha_open"
+
+
+def test_ensure_quest_defaults_skips_dict_args():
+    """dict/list 型のデフォルト引数（10028 の cost/reward 等）はバックフィルしない。
+
+    行編集（ウィザード/--set-default）で JSON→文字列に型崩れするのを防ぐため、
+    スカラー引数のみ固定値化する。
+    """
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    defaults = ensure_quest_defaults("Alex")
+
+    assert defaults[10028]["titanId"] == 4022
+    assert defaults[10028]["shopId"] == 13
+    assert "cost" not in defaults[10028]
+    assert "reward" not in defaults[10028]
+
+
+def test_parse_float_value_json_dict():
+    """set-default の値文字列は dict/list を JSON 解釈で復元できる（型崩れ防止）。"""
+    from hw_genie.commands.quests import _parse_float_value
+
+    assert _parse_float_value('{"coin": {"18": 12}}') == {"coin": {"18": 12}}
+    assert _parse_float_value("[1, 2, 3]") == [1, 2, 3]
+    assert _parse_float_value("true") is True
+    assert _parse_float_value("123") == 123
+    assert _parse_float_value("1.5") == 1.5
+    assert _parse_float_value("hello") == "hello"
+    assert _parse_float_value("123abc") == "123abc"
+
+
+def test_set_default_stores_dict_value():
+    """--set-default で dict 引数（10028 の cost 等）を JSON 文字列から復元保存する。"""
+    from hw_genie.commands.quests import _parse_float_value, set_quest_defaults
+
+    _register("Alex")
+    set_quest_defaults("Alex", 10028, "cost", _parse_float_value('{"coin": {"18": 12}}'))
+
+    assert get_quest_defaults("Alex")[10028]["cost"] == {"coin": {"18": 12}}
+
+
+def test_ensure_quest_defaults_preserves_existing_note():
+    """既存の note は上書きされない（他のキーと同じセマンティクス）。"""
+    from hw_genie.commands.quests import ensure_quest_defaults
+
+    _register("Alex")
+    set_quest_defaults("Alex", 10024, "note", "my memo")
+    defaults = ensure_quest_defaults("Alex")
+    assert defaults[10024]["note"] == "my memo"
+
+
+def test_note_ignored_in_operation_args(caplog, capsys):
+    """note は操作引数の適用・未知キー警告の対象外。"""
+    _register("Alex")
+    set_quest_defaults("Alex", 10024, "note", "custom memo")
+    set_quest_defaults("Alex", 10024, "enabled", True)
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert "does not match any arg" not in caplog.text
+    # 操作は実際に実行され、その args に note が混入していない
+    assert client.quest_operation.call_args_list
+    for call in client.quest_operation.call_args_list:
+        args = call.args[1]
+        assert "note" not in args
+
+
 # --- main.cmd_quests（exit code / 表示） ---
 
 
@@ -536,6 +619,59 @@ def test_cmd_quests_execute_success_exits_zero():
         assert main_mod.cmd_quests(_Args()) is None
 
 
+def test_cmd_quests_edit_defaults_requires_registered_account(capsys):
+    """--edit-defaults は未登録アカウントでは他オプション同様の文言で exit 1。"""
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands import quests as quests_mod
+
+    class _Args:
+        account = "NoSuchAlias"
+        edit_defaults = True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            quests_mod,
+            "edit_quest_defaults_interactive",
+            lambda acct: (_ for _ in ()).throw(AssertionError("must not be called")),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            main_mod.cmd_quests(_Args())
+    assert exc_info.value.code == 1
+    assert "Session not found for account 'NoSuchAlias'" in capsys.readouterr().out
+
+
+def test_cmd_quests_edit_defaults_skips_session():
+    """--edit-defaults は DB 編集のみなので認証セッション（_ensure_session）が不要。
+
+    `_ensure_session` は**呼ばれたら失敗するモック**にして、edit 分岐が
+    `_ensure_session` より前で return することを実効的に検証する。
+    """
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands import quests as quests_mod
+
+    _register("Carol")
+
+    class _Args:
+        account = "Carol"
+        edit_defaults = True
+
+    called = {"edit": False}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            main_mod,
+            "_ensure_session",
+            lambda args: (_ for _ in ()).throw(AssertionError("_ensure_session must not be called")),
+        )
+        mp.setattr(quests_mod, "edit_quest_defaults_interactive", lambda acct: called.update(edit=True))
+        assert main_mod.cmd_quests(_Args()) is None
+    assert called["edit"] is True
+
+
 # --- 対話的編集ウィザード（edit_quest_defaults_interactive） ---
 
 
@@ -550,6 +686,7 @@ def test_edit_defaults_wizard_enables_quest(monkeypatch, capsys):
     from hw_genie.commands.quests import edit_quest_defaults_interactive
 
     _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "1", "q"))
 
     edit_quest_defaults_interactive("Alex")
@@ -557,7 +694,7 @@ def test_edit_defaults_wizard_enables_quest(monkeypatch, capsys):
 
     assert get_quest_defaults("Alex")[10007]["enabled"] is True
     assert "10007" in out
-    assert "Perform 1 summon in the Soul Atrium" in out
+    assert "Soul Atrium" in out
     assert "enabled" in out
 
 
@@ -567,6 +704,7 @@ def test_edit_defaults_wizard_sets_override_value(monkeypatch, capsys):
 
     _register("Alex")
     # 3 番目が 10024（10007, 10023, 10024 の順）。キー一覧で 2 番目は heroId。
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", _make_input_sequence("3", "2", "999", "q"))
 
     edit_quest_defaults_interactive("Alex")
@@ -581,14 +719,17 @@ def test_edit_defaults_wizard_displays_current_values(monkeypatch, capsys):
 
     _register("Alex")
     set_quest_defaults("Alex", 10024, "enabled", True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", _make_input_sequence("3", "q", "q"))
 
     edit_quest_defaults_interactive("Alex")
     out = capsys.readouterr().out
 
-    assert "Level up any Hero's Artifact 1 time" in out
+    assert "10024" in out
+    assert "heroArtifactLevelUp" in out
     assert "✅ enabled" in out
-    assert "heroId (current: 61)" in out
+    assert "heroId" in out
+    assert "61" in out
 
 
 def test_edit_defaults_wizard_back_and_invalid(monkeypatch, capsys):
@@ -597,12 +738,79 @@ def test_edit_defaults_wizard_back_and_invalid(monkeypatch, capsys):
 
     _register("Alex")
     # 1 回目は無効な 99 → 2 回目で 10007 選択 → キー選択で b → 一覧で q
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", _make_input_sequence("99", "1", "b", "q"))
 
     edit_quest_defaults_interactive("Alex")
     out = capsys.readouterr().out
 
     assert "Invalid choice" in out
+    assert "Bye." in out
+
+
+def test_edit_defaults_wizard_value_input_bq_cancels(monkeypatch, capsys):
+    """値入力で b/q はキャンセルとみなされ、設定値として保存されない。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 10024 選択 → heroId キー → b（キャンセル）→ キー一覧で q → 一覧で q
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("3", "2", "b", "q", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert "b/q: cancel" in out
+    assert get_quest_defaults("Alex")[10024]["heroId"] == 61  # 変更されていない
+
+
+def test_edit_defaults_wizard_rejects_dict_value(monkeypatch, capsys):
+    """ウィザードの値入力で JSON（dict/list）は拒否され、--set-default を案内する。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 10024 選択 → heroId キー → JSON を入力（拒否される）→ q → 一覧で q
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("3", "2", '{"a": 1}', "q", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert "dict/list 値は --set-default で指定" in out
+    assert get_quest_defaults("Alex")[10024]["heroId"] == 61  # 変更されていない
+
+
+def test_edit_defaults_wizard_enabled_choice_cancel(monkeypatch, capsys):
+    """enabled の true/false 選択中に b でキャンセルでき、DB は変更されない。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 10007 選択 → enabled キー → true/false 選択で b → キー一覧に戻る → q
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "b", "q", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert get_quest_defaults("Alex")[10007]["enabled"] is False
+    assert "saved" not in out
+    assert "Invalid choice" not in out
+    assert "Bye." in out
+
+
+def test_edit_defaults_wizard_enabled_choice_quit(monkeypatch, capsys):
+    """enabled の true/false 選択中に q でキャンセルし、次の q で終了できる。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    # 10007 選択 → enabled キー → true/false 選択で q（キャンセル）→ キー一覧 → q
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "q", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert get_quest_defaults("Alex")[10007]["enabled"] is False
     assert "Bye." in out
 
 
@@ -613,9 +821,86 @@ def test_edit_defaults_wizard_eof_raises_systemexit(monkeypatch, capsys):
     from hw_genie.commands.quests import edit_quest_defaults_interactive
 
     _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
 
     with pytest.raises(SystemExit) as exc_info:
         edit_quest_defaults_interactive("Alex")
     assert exc_info.value.code == 1
     assert "No interactive input available" in capsys.readouterr().err
+
+
+def test_edit_defaults_wizard_tty_path(monkeypatch, capsys):
+    """stdin+stdout とも TTY なら rich パスの選択フローが動き、クリア制御コードが出る。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "1", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert get_quest_defaults("Alex")[10007]["enabled"] is True
+    assert "Soul Atrium" in out
+    assert "Bye." in out
+    # 全画面リフレッシュ（画面クリア制御コード）が出力に含まれる
+    assert "\x1b[2J" in out
+
+
+def test_edit_defaults_wizard_stdout_redirect_no_clear_codes(monkeypatch, capsys):
+    """stdin が TTY でも stdout が非TTY（リダイレクト）ならクリア制御コードを混入しない。"""
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    assert "\x1b[2J" not in out
+    assert "Bye." in out
+
+
+def test_edit_defaults_wizard_tty_eof_raises_systemexit(monkeypatch, capsys):
+    """TTY 判定でも EOF は SystemExit(1)（_prompt_input 共用）。"""
+    import pytest
+
+    from hw_genie.commands.quests import edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
+
+    with pytest.raises(SystemExit) as exc_info:
+        edit_quest_defaults_interactive("Alex")
+    assert exc_info.value.code == 1
+    assert "No interactive input available" in capsys.readouterr().err
+
+
+def test_edit_defaults_wizard_hides_note_from_keys(monkeypatch, capsys):
+    """note はキー一覧に表示されず編集対象にならない（参照専用）。"""
+
+    from rich.console import Console
+
+    from hw_genie.commands.quests import _key_list_table, edit_quest_defaults_interactive
+
+    _register("Alex")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", _make_input_sequence("1", "q"))
+
+    edit_quest_defaults_interactive("Alex")
+    out = capsys.readouterr().out
+
+    # クエスト一覧には note（操作名）が表示される
+    assert "gacha_open" in out
+    # キー一覧テーブルには note 行が存在しない（enabled と ident/free/pack のみ）
+    conf = get_quest_defaults("Alex")[10007]
+    Console().print(_key_list_table(10007, conf))
+    key_out = capsys.readouterr().out
+    assert "note" not in key_out
+    for key in ("enabled", "ident", "free", "pack"):
+        assert key in key_out, f"{key} がキー一覧にない"

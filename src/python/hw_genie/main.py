@@ -372,9 +372,6 @@ def cmd_shop(args):
 
 def cmd_quests(args):
     """クエスト（デイリー等）の取得・表示"""
-    headers = _ensure_session(args)
-    client = HWClient(headers)
-
     from hw_genie.commands.quests import (
         classify_quest,
         edit_quest_defaults_interactive,
@@ -386,10 +383,21 @@ def cmd_quests(args):
 
     account = resolve_account(args.account)
 
-    # quest_defaults を対話的に編集する（番号選択ウィザード）
+    # quest_defaults を対話的に編集する（番号選択ウィザード）。
+    # DB 内の設定編集のみなので認証セッションは不要（_ensure_session 前に処理）。
+    # ただし未登録アカウントは他オプションと同じ「Session not found」文言で
+    # 前置きを揃える（auth での登録を促す）。
     if getattr(args, "edit_defaults", False):
+        from hw_genie.core.session_manager import SessionManager
+
+        if not SessionManager.load(account):
+            print(f"Error: Session not found for account '{account}'. Please provide a valid curl with --curl.")
+            sys.exit(1)
         edit_quest_defaults_interactive(account)
         return
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
 
     # quest_defaults を初期化する（QUEST_OPERATIONS 登録済みクエストを enabled:false で投入）
     if args.init_defaults:

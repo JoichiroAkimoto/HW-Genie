@@ -40,22 +40,27 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    # 確認なしで自動実行（要 --execute）
    uv run hw-genie quests -a <ACCOUNT> --execute --yes
    ```
-   - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
+   - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）と `note`（操作 RPC 名の連結メモ、例: `"shopBuy → titanArtifactLevelUp"`）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます（`note` は DB JSON の可読性用で実行・引数上書きには影響しません）。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
    ```bash
-   # 初期設定を投入（enabled:false ＋ デフォルト引数を追加。既存設定は保持）
+   # 初期設定を投入（enabled:false ＋ デフォルト引数・note を追加。既存設定は保持）
    uv run hw-genie quests -a <ACCOUNT> --init-defaults
 
-   # 対話的ウィザード（クエスト名付き一覧から番号選択 → 設定キーを番号選択 → 値入力）
+   # 対話的ウィザード（TTY では rich による全画面リフレッシュ表示）
    uv run hw-genie quests -a <ACCOUNT> --edit-defaults
-   #  例: 1. 10007 Perform 1 summon in the Soul Atrium [⏸️ disabled]
-   #      2. 10023 要確認（heroTitanGift 系クエスト。…） [⏸️ disabled]
-   #      3. 10024 Level up any Hero's Artifact 1 time [⏸️ disabled]  ← 3 を選択
+   #  例: ⚙️  quest_defaults for Joe
+   #      ┌─────────────┬───────────────┬───────────────────────┬─────────┐
+   #      │ # │ ID   │ Quest                    │ Operations (note) │ Status  │
+   #      ├─────────────┼───────────────┼───────────────────────┼─────────┤
+   #      │ 1 │ 10007 │ Perform 1 summon in...  │ gacha_open         │ ⏸️ disabled │
+   #      │ 3 │ 10024 │ Level up any Hero's...  │ heroArtifactLevelUp│ ⏸️ disabled │ ← 番号選択
+   #      │ 4 │ 10028 │ Level up any Titan...   │ shopBuy → titan... │ ⏸️ disabled │
+   #      └─────────────┴───────────────┴───────────────────────┴─────────┘
    #        Configure 10024 …:
-   #          1. enabled (current: false)
-   #          2. heroId (current: 61)                                ← 1 を選択
-   #          3. slotId (current: 1)
-   #          1. true / 2. false                                     ← 1 で有効化
-   #  q: 終了、b: クエスト一覧に戻る
+   #          1. enabled (current: false)   ← 番号選択
+   #          2. heroId (current: 61)
+   #        （enabled は 1. true / 2. false の番号選択、他キーは値入力）
+   #  q: 終了、b: クエスト一覧に戻る。選択のたびに画面が更新され必要な情報だけが残る。
+   #  ※ note は一覧に参照表示されるのみで編集対象外。非TTY ではスクロール表示。
 
    # ID 指定で直接設定（スクリプト向け）
    uv run hw-genie quests -a <ACCOUNT> --set-default 10024 enabled true
