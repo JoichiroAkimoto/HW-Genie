@@ -811,7 +811,7 @@ def test_shop_buy_shop_not_found_fails(capsys):
 
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -835,7 +835,7 @@ def test_shop_buy_slot_bought_fails(capsys):
 
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -880,7 +880,7 @@ def test_shop_inventory_cached_across_quests(monkeypatch, capsys):
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []

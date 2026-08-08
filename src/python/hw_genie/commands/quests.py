@@ -20,7 +20,6 @@ from rich.table import Table
 from rich.text import Text
 
 from hw_genie.core.client import (
-    HWAuthError,
     ApiAction,
     ErrorName,
     HWClient,
