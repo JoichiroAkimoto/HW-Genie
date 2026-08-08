@@ -7,6 +7,7 @@ from hw_genie.core.client import (
     ErrorName,
     ResponseStatus,
 )
+from hw_genie.core.shop import ShopReadError, fetch_shops, get_shop_slots, is_bought
 
 class ShopId(Enum):
     ARENA = "4"
@@ -82,19 +83,13 @@ def run_hero_shopping(
     print(f"\n{Emojis.STEP}--- Fetching current shop status ---", flush=True)
     results: list[ShopResult] = []
 
-    # 全ショップ情報を取得
-    get_all_payload = {"calls": [{"name": ApiAction.SHOP_GET_ALL, "args": {}, "ident": "shopGetAll"}]}
-    res_all = client.call(get_all_payload)
-
-    if not res_all.is_success:
-        print(f"{Emojis.ERROR}Error: Failed to fetch shop data. {res_all.error_name}", flush=True)
-        return [ShopResult(action="Fetch Shop Status", status=ResponseStatus.ERROR, error=res_all.error_name)], None
-
+    # 全ショップ情報を取得（shopGetAll の取得・パースは共通ヘルパーに一元化）
     try:
-        shops_data = res_all.detail["response"]
-    except (KeyError, TypeError):
-        print(f"{Emojis.ERROR}Error: Unexpected response format.", flush=True)
-        return [ShopResult(action="Fetch Shop Status", status=ResponseStatus.ERROR, error="Invalid format")], None
+        shops_data = fetch_shops(client)
+    except ShopReadError as exc:
+        error = exc.error_name or f"Invalid format: {exc}"
+        print(f"{Emojis.ERROR}Error: Failed to fetch shop data. {exc}", flush=True)
+        return [ShopResult(action="Fetch Shop Status", status=ResponseStatus.ERROR, error=error)], None
 
     print(f"\n{Emojis.STEP}--- Purchasing Target Items ---", flush=True)
 
@@ -117,12 +112,11 @@ def run_hero_shopping(
         if shop_id_str not in shops_data:
             continue
 
-        shop = shops_data[shop_id_str]
-        slots = shop.get("slots", {})
+        slots = get_shop_slots(shops_data, shop_id_str)
         shop_name = SHOP_NAMES.get(shop_id_enum, f"Shop {shop_id_str}")
 
         for slot_id, item in slots.items():
-            if item.get("bought") in [True, 1, "1"]:
+            if is_bought(item):
                 continue
 
             reward = item.get("reward", {})
