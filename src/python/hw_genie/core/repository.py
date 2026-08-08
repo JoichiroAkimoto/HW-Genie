@@ -1,6 +1,7 @@
+import copy
 import json
 import logging
-from typing import Any, List, TypedDict
+from typing import Any, Callable, List, TypedDict
 from sqlalchemy import text
 from .database import (
     Account,
@@ -306,6 +307,71 @@ class SessionRepository:
                 raise
 
         retry_on_wal_contention(_attempt, logger=logger)
+
+    def update_config_merged(
+        self, account: str, key: str, merge: Callable[[Any | None], Any]
+    ) -> Any:
+        """Atomically read-modify-write one config key inside the WAL lock.
+
+        ``merge(existing)`` receives the current stored value for ``key``
+        (``None`` when the row is absent) and must return the new value to
+        store. The read and the write happen under ``_wal_io_lock``, so
+        concurrent threads in this process cannot lose updates (e.g. two
+        ``quest_guild_defaults`` writers clobbering each other's
+        ``last_recipe_at``). Returns the stored value.
+
+        The read uses the write session so it sees the same state the write
+        will replace. WAL contention is retried like ``update_config``.
+        """
+        def _attempt() -> Any:
+            try:
+                with _wal_io_lock:
+                    with get_write_session_local()() as db:
+                        account_rec = (
+                            db.query(Account)
+                            .filter(Account.alias == account)
+                            .first()
+                        )
+                        existing: Any = None
+                        if account_rec is not None:
+                            row = db.execute(
+                                text(
+                                    "SELECT config_value FROM account_configs "
+                                    "WHERE account_id = :account_id AND config_key = :config_key"
+                                ),
+                                {"account_id": account_rec.id, "config_key": key},
+                            ).first()
+                            if row is not None and row[0] is not None:
+                                try:
+                                    existing = json.loads(row[0])
+                                except (TypeError, ValueError):
+                                    existing = None
+                        # merge が existing を変異させる（quests の set/ensure は
+                        # 既存 dict に直接キーを足す）ため、比較用に変異前の
+                        # スナップショットを取っておく。変異後は existing と
+                        # new_value が同じオブジェクトになり値比較が無意味に
+                        # なる（書き込みスキップの誤判定）のを防ぐ。
+                        existing_snapshot = copy.deepcopy(existing)
+                        new_value = merge(existing)
+                        if account_rec is None:
+                            raise ValueError(f"Account not found for alias: {account}")
+                        # 値が変わっていなければ書き込みをスキップ（ensure_* が毎回
+                        # 呼ばれても WAL 書き込みが走らないようにする）
+                        if existing_snapshot != new_value:
+                            self._upsert_config(db, account_rec.id, key, new_value)
+                            db.commit()
+                        return new_value
+            except Exception as exc:
+                if is_hrana_stream_error(exc):
+                    logger.warning(
+                        "Transient Hrana stream error; disposing write pool "
+                        "before retry: %s",
+                        exc,
+                    )
+                    self._dispose_pool(get_write_engine, "write")
+                raise
+
+        return retry_on_wal_contention(_attempt, logger=logger)
 
     def _update_config_locked(self, account: str, data: AccountData) -> None:
         """Single locked ``update_config`` attempt (retried on WAL contention)."""

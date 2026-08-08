@@ -248,6 +248,217 @@ def test_cmd_multi_default_all_accounts(monkeypatch):
     assert captured["accounts"] == ["x", "y"]
 
 
+def test_quests_routine_calls_run_quest_execute(monkeypatch):
+    """quests_routine wraps run_quest_execute non-interactively."""
+    from hw_genie import runner
+
+    calls = {}
+    fake_client = object()
+
+    def fake_execute(client, account_alias=None, dry_run=False, confirm=False):
+        calls["client"] = client
+        calls["account_alias"] = account_alias
+        calls["dry_run"] = dry_run
+        calls["confirm"] = confirm
+        return ([{"account": account_alias, "quest_id": 10024, "quest_name": "x"}], [], [])
+
+    monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_execute)
+
+    routine = runner.quests_routine()
+    result = routine(fake_client, "alpha")
+
+    assert calls == {
+        "client": fake_client,
+        "account_alias": "alpha",
+        "dry_run": False,
+        "confirm": True,
+    }
+    assert result[0][0]["quest_id"] == 10024
+    assert result[1] == []
+    assert result[2] == []
+
+
+def test_quests_routine_forwards_dry_run(monkeypatch):
+    from hw_genie import runner
+
+    calls = {}
+
+    def fake_execute(client, account_alias=None, dry_run=False, confirm=False):
+        calls["dry_run"] = dry_run
+        return ([], [], [])
+
+    monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_execute)
+    runner.quests_routine(dry_run=True)(object(), "alpha")
+    assert calls["dry_run"] is True
+
+
+def test_daily_routine_runs_quest_completion(monkeypatch):
+    """daily_routine completes enabled quests without failing the run."""
+    from hw_genie import runner
+
+    calls = {}
+    fake_client = type("C", (), {})()
+    fake_client.fetch_player_status = lambda: "status_ok"
+
+    def fake_daily(client, item_payload=None, account_alias=None):
+        return "ok"
+
+    def fake_quests(client, account_alias=None, dry_run=False, confirm=False):
+        calls["quests"] = (account_alias, dry_run, confirm)
+        # quest failures are reported by the command, not raised
+        return ([], [{"account": account_alias, "quest_id": 1, "quest_name": "q", "step": "x", "error": "boom"}], [])
+
+    monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_quests)
+    monkeypatch.setattr(
+        "hw_genie.core.session_manager.SessionManager.build_item_raid_payload",
+        lambda account="default": None,
+    )
+
+    assert runner.daily_routine(fake_client, "acc") == "status_ok"
+    assert calls["quests"] == ("acc", False, True)
+
+
+def test_summarize_quests_counts_failures(capsys):
+    from hw_genie.runner import summarize_quests
+
+    results = [
+        ("alpha", (([{"quest_id": 10024}], [], []), None)),
+        ("beta", (([], [{"quest_id": 10028, "error": "bought"}], []), None)),
+        ("gamma", (None, ValueError("x"))),
+    ]
+    failed = summarize_quests(results)
+    out = capsys.readouterr().out
+    assert failed == 2
+    assert "alpha" in out
+    assert "beta" in out
+    assert "gamma" in out
+    assert "Multi-quest summary" in out
+    assert "Failed (2)" in out
+    # ok counts only accounts without quest failures (alpha only)
+    assert "1 account(s) completed, ❌ 2 failed." in out
+
+
+def test_summarize_quests_shows_skipped_column(capsys):
+    """Skipped (quest_defaults disabled) quests appear as a count column."""
+    from hw_genie.runner import summarize_quests
+
+    results = [
+        ("alpha", (([{"quest_id": 10024}], [], [10007, 10028]), None)),
+        ("beta", (([], [], [10007]), None)),
+    ]
+    failed = summarize_quests(results)
+    out = capsys.readouterr().out
+    assert failed == 0
+    assert "⏭️ Skipped" in out
+    assert "2 account(s) completed, ❌ 0 failed." in out
+
+
+def test_summarize_quests_unavailable_result_marks_failed(capsys):
+    """A routine result that is not a (succeeded, failed, skipped) triple is a failure."""
+    from hw_genie.runner import summarize_quests
+
+    failed = summarize_quests([("alpha", ("unexpected", None))])
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "alpha (quest result unavailable)" in out
+    assert "0 account(s) completed, ❌ 1 failed." in out
+
+
+def test_cmd_multi_quests_success_exits_zero(monkeypatch):
+    """multi quests with no failed quests exits 0."""
+    from hw_genie import main
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+
+    args = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False})()
+    main.cmd_multi(args)  # must not raise SystemExit
+
+
+def test_cmd_multi_dry_run_rejected_outside_quests(monkeypatch):
+    """--dry-run with daily/full is rejected: those modes always execute."""
+    from hw_genie import main
+
+    for mode in ("daily", "full"):
+        args = type("A", (), {"mode": mode, "accounts": [], "parallel": None, "debug": False, "dry_run": True})()
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(args)
+        assert exc.value.code == 2
+
+
+def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
+    """multi quests routes to quests_routine + summarize_quests and exits 1."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["routine"] = routine
+        return {"a": ((1, 2), None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    # cmd_multi imports summarize_quests inside the function, so patch the
+    # runner module (the import source) rather than main's namespace.
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 1)
+
+    args = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False})()
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(args)
+    assert exc.value.code == 1
+    assert callable(captured["routine"])
+
+
+def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
+    """--dry-run is forwarded to quests_routine (getattr keeps old args safe)."""
+
+    captured = {}
+
+    def fake_builder(dry_run=False):
+        captured["dry_run"] = dry_run
+        return lambda c, a: ([], [])
+
+    monkeypatch.setattr("hw_genie.runner.quests_routine", fake_builder)
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+
+    # args without dry_run attribute (legacy shape) -> default False
+    from hw_genie import main
+
+    args = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False})()
+    main.cmd_multi(args)
+    assert captured["dry_run"] is False
+
+    # args WITH dry_run=True -> forwarded
+    args2 = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False, "dry_run": True})()
+    main.cmd_multi(args2)
+    assert captured["dry_run"] is True
+
+
+def test_cmd_multi_quests_dry_run_runs_sequentially(monkeypatch):
+    """multi quests --dry-run runs accounts sequentially to keep the plan order readable."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallels"].append(max_parallel)
+        return {}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.runner.quests_routine", lambda dry_run=False: lambda c, a: ([], [], []))
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+
+    captured["max_parallels"] = []
+    args = type("A", (), {"mode": "quests", "accounts": [], "parallel": 4, "debug": False, "dry_run": True})()
+    main.cmd_multi(args)
+    assert captured["max_parallels"] == [1]
+
+    args2 = type("A", (), {"mode": "quests", "accounts": [], "parallel": 4, "debug": False, "dry_run": False})()
+    main.cmd_multi(args2)
+    assert captured["max_parallels"] == [1, 4]
+
+
 def test_daily_routine_invokes_run_daily_raid(monkeypatch):
     from hw_genie import runner
 
@@ -262,6 +473,10 @@ def test_daily_routine_invokes_run_daily_raid(monkeypatch):
         return "ok"
 
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute",
+        lambda *a, **k: ([], []),
+    )
     monkeypatch.setattr(
         "hw_genie.core.session_manager.SessionManager.build_item_raid_payload",
         lambda account="default": {"mission_id": 123, "calls": [{"args": {"id": 123}}]},
@@ -289,6 +504,10 @@ def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
         return "ok"
 
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute",
+        lambda *a, **k: ([], []),
+    )
     monkeypatch.setattr(
         "hw_genie.core.session_manager.SessionManager.build_item_raid_payload",
         lambda account="default": None,
@@ -333,6 +552,10 @@ def test_full_routine_invokes_subroutines(monkeypatch):
     monkeypatch.setattr("hw_genie.commands.hero_raid.run_hero_raid", fake_hero_raid)
     monkeypatch.setattr("hw_genie.commands.hero_shopping.run_hero_shopping", fake_shop)
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", lambda *a, **k: "daily_ok")
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute",
+        lambda *a, **k: ([], []),
+    )
     # TARGET_SHOP_IDS is imported inside full_routine at call time from the
     # hero_shopping module, so patch the attribute there.
     monkeypatch.setattr(
@@ -372,6 +595,10 @@ def test_full_routine_runs_hero_raid_twice(monkeypatch):
     monkeypatch.setattr("hw_genie.commands.hero_raid.run_hero_raid", fake_hero_raid)
     monkeypatch.setattr("hw_genie.commands.hero_shopping.run_hero_shopping", lambda *a, **k: None)
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", spy_daily_raid)
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute",
+        lambda *a, **k: ([], []),
+    )
 
     runner.full_routine(fake_client, "acc")
     # expect exactly two hero-raid invocations (raid hero + daily's hero raid)

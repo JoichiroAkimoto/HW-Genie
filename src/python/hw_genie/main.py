@@ -373,12 +373,15 @@ def cmd_shop(args):
 def cmd_quests(args):
     """クエスト（デイリー等）の取得・表示"""
     from hw_genie.commands.quests import (
+        QUEST_GUILD_DEFAULTS_KEY,
         classify_quest,
         edit_quest_defaults_interactive,
         ensure_quest_defaults,
+        ensure_quest_guild_defaults,
         run_quest_execute,
         run_quest_status,
         set_quest_defaults,
+        set_quest_guild_defaults,
     )
 
     account = resolve_account(args.account)
@@ -399,25 +402,33 @@ def cmd_quests(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
 
-    # quest_defaults を初期化する（QUEST_OPERATIONS 登録済みクエストを enabled:false で投入）
+    # quest_defaults / quest_guild_defaults を初期化する（QUEST_OPERATIONS 登録済み
+    # クエスト + ギルドクエスト設定を enabled:false で投入）
     if args.init_defaults:
         defaults = ensure_quest_defaults(account)
         print(f"ℹ️  Initialized quest_defaults for {account}:")
         for qid in sorted(defaults):
             category, name = classify_quest(qid)
             print(f"    - {qid} ({name}) enabled={defaults[qid].get('enabled', False)}")
+        guild_defaults = ensure_quest_guild_defaults(account)
+        print(f"ℹ️  Initialized {QUEST_GUILD_DEFAULTS_KEY} for {account}:")
+        print(f"    - guild quests (Sparks of Power) enabled={guild_defaults.get('enabled', False)}")
         return
 
-    # アカウント固有の操作引数上書き（quest_defaults）を 1 件登録する
+    # アカウント固有の操作引数上書き（quest_defaults / quest_guild_defaults）を 1 件登録する
     if args.set_default:
         quest_id, key, value = args.set_default
-        stored = set_quest_defaults(account, int(quest_id), key, value)
-        _, name = classify_quest(int(quest_id))
-        print(f"ℹ️  Registered quest_defaults[{quest_id} ({name})][{key}] = {stored} ({type(stored).__name__}) for {account}")
+        if str(quest_id) == "guild":
+            stored = set_quest_guild_defaults(account, key, value)
+            print(f"ℹ️  Registered quest_guild_defaults[{key}] = {stored} ({type(stored).__name__}) for {account}")
+        else:
+            stored = set_quest_defaults(account, int(quest_id), key, value)
+            _, name = classify_quest(int(quest_id))
+            print(f"ℹ️  Registered quest_defaults[{quest_id} ({name})][{key}] = {stored} ({type(stored).__name__}) for {account}")
         return
 
     if args.execute or args.dry_run:
-        _, failed = run_quest_execute(
+        _, failed, _ = run_quest_execute(
             client,
             account_alias=args.account,
             dry_run=bool(args.dry_run),
@@ -543,6 +554,8 @@ def cmd_multi(args):
         daily_routine,
         full_routine,
         list_account_aliases,
+        quests_routine,
+        summarize_quests,
     )
 
     mode = args.mode
@@ -552,10 +565,29 @@ def cmd_multi(args):
     else:
         accounts = list_account_aliases()
 
-    routine = full_routine if mode == "full" else daily_routine
+    if mode != "quests" and getattr(args, "dry_run", False):
+        print(
+            "Error: --dry-run is only supported with the 'quests' mode "
+            "(daily/full routines always execute their operations).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
-    results = run_all_accounts(routine, accounts=accounts, max_parallel=args.parallel)
-    failed = summarize(results.items())
+    if mode == "quests":
+        dry_run = bool(getattr(args, "dry_run", False))
+        routine = quests_routine(dry_run=dry_run)
+        # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
+        max_parallel = 1 if dry_run else args.parallel
+    else:
+        routine = full_routine if mode == "full" else daily_routine
+        max_parallel = args.parallel
+
+    results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
+    failed = (
+        summarize_quests(results.items())
+        if mode == "quests"
+        else summarize(results.items())
+    )
     if failed:
         sys.exit(1)
 
@@ -623,8 +655,8 @@ def main():
     p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
     p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
-    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999)")
-    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults for the account (seed all QUEST_OPERATIONS quests as enabled=false)")
+    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999, or --set-default guild enabled true)")
+    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults and quest_guild_defaults for the account (seed as enabled=false)")
     p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 
@@ -651,10 +683,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full"],
+        choices=["daily", "full", "quests"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default) or 'full' (raid+shop+daily)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), or 'quests' (daily quest auto-completion)",
     )
     p_multi.add_argument(
         "accounts",
@@ -667,6 +699,11 @@ def main():
         type=int,
         default=None,
         help="Max concurrent accounts (default: HW_MAX_PARALLEL / unbounded)",
+    )
+    p_multi.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the quest execution plan without running anything (quests mode only)",
     )
     p_multi.set_defaults(func=cmd_multi)
 

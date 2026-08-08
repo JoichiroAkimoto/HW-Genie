@@ -111,6 +111,8 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 energy=next((i["amount"] for i in user_info.get("refillable", []) if i.get("id") == 1), 0),
                 arena_rank=int(arena_info.get("arenaPlace", 0)),
                 grand_rank=int(arena_info.get("grandPlace", 0)),
+                timezone=int(user_info.get("timeZone", 0) or 0),
+                next_day_ts=int(user_info.get("nextDayTs", 0) or 0),
             )
             return {"headers": headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
         return {"status": "error", "message": "API error"}

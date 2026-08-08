@@ -96,6 +96,8 @@ class PlayerStatus:
     energy: int = 0
     arena_rank: int = 0
     grand_rank: int = 0
+    timezone: int = 0
+    next_day_ts: int = 0
 
     @property
     def is_valid(self) -> bool:
@@ -132,6 +134,8 @@ class PlayerStatus:
             energy=_safe_int(data.get("energy")),
             arena_rank=_safe_int(data.get("arena_rank", data.get("arenaPlace"))),
             grand_rank=_safe_int(data.get("grand_rank", data.get("grandPlace"))),
+            timezone=_safe_int(data.get("timezone", data.get("timeZone"))),
+            next_day_ts=_safe_int(data.get("next_day_ts", data.get("nextDayTs"))),
         )
 
     def to_dict(self) -> dict:
@@ -474,6 +478,8 @@ class HWClient:
             energy=energy,
             arena_rank=arena_rank,
             grand_rank=grand_rank,
+            timezone=_safe_int(user_data.get("timeZone")),
+            next_day_ts=_safe_int(user_data.get("nextDayTs")),
         )
 
     def sleep(self) -> None:

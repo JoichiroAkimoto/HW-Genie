@@ -9,6 +9,7 @@ ID → 名称/カテゴリ/目標値）を正引きテーブルとして使う�
 import json
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -18,7 +19,15 @@ from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from hw_genie.core.client import HWAuthError, ApiAction, HWClient, ResponseStatus, resolve_account
+from hw_genie.core.client import (
+    HWAuthError,
+    ApiAction,
+    ErrorName,
+    HWClient,
+    HWResponse,
+    ResponseStatus,
+    resolve_account,
+)
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import format_timestamp_for_display
 
@@ -166,11 +175,34 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
 # quest_defaults の設定キー
 QUEST_DEFAULTS_KEY = "quest_defaults"
 
+# ギルドクエスト（「Obtain xxx Sparks of Power」等、ID がアカウント・日次で
+# 動的な 2000xxxx/2001xxxx ファミリ）専用の実行制御設定キー。
+# ・enabled      … true のときのみギルドクエスト達成用の操作（heroTitanGift
+#                  LevelUp ×2 → Drop）を実行する。false / 未設定なら active
+#                  （state=1）のギルドクエストは操作せずスキップする
+#                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う）。
+# ・heroId       … ギフト操作の対象ヒーロー（既定は QUEST_OPERATIONS[10023] と同一。
+#                  優先度は quest_defaults[10023].heroId が先、未設定なら本設定）。
+# ・last_recipe_at … レシピ（LevelUp ×2 → Drop）を最後に完了した Unix 秒（UTC）。
+#                  userGetInfo の nextDayTs（アカウントタイムゾーンの翌日
+#                  リセット時刻）を基準に「最近のリセット境界以降に実行済みか」
+#                  を判定し、1 リセットサイクルに 1 回だけレシピを実行する
+#                  （正確には前回実行時刻 >= 現在サイクル開始時刻 ならスキップ）。
+# ・note        … 操作 RPC 名の連結メモ（可読性専用）
+QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
+
+# ギルドクエスト達成レシピのテンプレート（10023 = heroTitanGift 3 連続操作）
+GUILD_QUEST_RECIPE_ID = 10023
+
 # quest_defaults 内で「操作引数ではない」キー（実行制御フラグ / 可読性メモ）
-# ・enabled … 実行可否フラグ（true のときのみ操作を実行）
-# ・note   … 操作 RPC 名の連結メモ（DB JSON の人間可読性専用）
+# ・enabled    … 実行可否フラグ（true のときのみ操作を実行）
+# ・note       … 操作 RPC 名の連結メモ（DB JSON の人間可読性専用）
+# ・candidates … 失敗時のフォールバック候補（優先度順の dict リスト。ステップの
+#                args を候補 key/value で上書きして再実行する）
+# ・last_recipe_at … ギルドレシピを最後に完了した時刻（Unix 秒・UTC）。
+#                1 リセットサイクル 1 回ガードの実行記録（quest_guild_defaults）
 # これらは操作ステップの args としては使用されず、未知キー警告の対象外でもある。
-NON_ARG_KEYS = ("enabled", "note")
+NON_ARG_KEYS = ("enabled", "note", "candidates", "last_recipe_at")
 
 
 def classify_quest(qid: int) -> tuple[str, str]:
@@ -193,6 +225,17 @@ def _to_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def is_guild_quest(qid: int) -> bool:
+    """ギルドクエスト（2000xxxx/2001xxxx ファミリ）かどうか。
+
+    ギルドクエスト（ゲーム側の名称は「Obtain xxx Sparks of Power」等）は
+    ID がアカウント・日次で変わるため、QUEST_OPERATIONS のように固定 ID で
+    は登録できず、ファミリ判定で捕捉する。category は ``classify_quest`` の
+    _FAMILY_RULES（"2000"/"2001" → guild）に由来する。
+    """
+    return classify_quest(qid)[0] == "guild"
 
 
 @dataclass
@@ -360,13 +403,128 @@ def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> Any
 
     CLI（``--set-default``）から渡される文字列値は ``_parse_float_value`` で
     bool/int/float/JSON に解釈してから保存する。保存した値（解釈後）を返す。
+
+    保存は ``update_config_merged`` によるロック付き read-modify-write で
+    行う（並列実行時に他スレッドの書き込みを lost update で失わない）。
     """
     if isinstance(value, str):
         value = _parse_float_value(value)
-    defaults = get_quest_defaults(account)
-    defaults.setdefault(quest_id, {})[key] = value
-    SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
+
+    def _merge(existing: Any) -> dict[int, dict[str, Any]]:
+        raw = existing if isinstance(existing, dict) else {}
+        defaults = {int(k): dict(v) for k, v in raw.items()}
+        defaults.setdefault(quest_id, {})[key] = value
+        return defaults
+
+    SessionManager.repo.update_config_merged(account, QUEST_DEFAULTS_KEY, _merge)
     return value
+
+
+def get_quest_guild_defaults(account: str) -> dict[str, Any]:
+    """``account_configs`` の ``quest_guild_defaults`` を読み込む（未設定は空 dict）。"""
+    data = SessionManager.load(account)
+    raw = data.get(QUEST_GUILD_DEFAULTS_KEY)
+    return raw if isinstance(raw, dict) else {}
+
+
+def set_quest_guild_defaults(account: str, key: str, value: Any) -> Any:
+    """``quest_guild_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。
+
+    保存は ``update_config_merged`` によるロック付き read-modify-write で
+    行う（``last_recipe_at`` の更新が並列実行で旧値に戻るのを防ぐ）。
+    """
+    if isinstance(value, str):
+        value = _parse_float_value(value)
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        defaults = existing if isinstance(existing, dict) else {}
+        defaults[key] = value
+        return defaults
+
+    SessionManager.repo.update_config_merged(account, QUEST_GUILD_DEFAULTS_KEY, _merge)
+    return value
+
+
+# ギルドレシピ（1 日 1 回ガード）で現在のリセットサイクル開始時刻（Unix 秒）を求める。
+# userGetInfo の nextDayTs は「次のデイリーリセット境界」なので、そこから 24 時間を
+# 引いた時刻が「今のサイクル（今日）の開始」になる。アカウントごとのタイムゾーン
+# （timeZone / GMT オフセット）はサーバーが判定済みで、nextDayTs に反映されている。
+def _guild_cycle_boundary(player: Any) -> int | None:
+    """PlayerStatus の nextDayTs から現在のリセットサイクル開始時刻（Unix 秒）を返す。
+
+    nextDayTs が未取得（0 など）なら None を返し、呼び出し側で「ガード無効
+    （従来どおり実行）」として扱う。
+    """
+    next_day_ts = getattr(player, "next_day_ts", 0) or 0
+    if not next_day_ts:
+        return None
+    return int(next_day_ts) - 86400
+
+
+# リソース不足等で「フォールバック候補（candidates）」を試す価値があるエラー名。
+# 実測: 10024（heroArtifactLevelUp）の資源不足は "NotEnough"。スタミナ不足は
+# 候補（heroId/slotId 変更）では解決しないため対象外。
+FALLBACK_ERROR_NAMES = {ErrorName.NOT_ENOUGH.value}
+
+
+def _guild_recipe_overrides(
+    account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]
+) -> dict[str, Any]:
+    """ギルドレシピ実行用の引数オーバーライドを組み立てる。
+
+    - heroId は ``quest_defaults[10023].heroId`` が設定済みならそれを優先し、
+      未設定の場合のみ ``quest_guild_defaults.heroId`` を使う（二重管理の解消）。
+    - 実行制御系キー（enabled / note / last_recipe_at / candidates）は
+      オーバーライドに含めない（未知引数として警告されるのを防ぐ）。
+    """
+    overrides = {k: v for k, v in guild_defaults.items() if k not in NON_ARG_KEYS and k != "heroId"}
+    hero_id = (account_defaults.get(GUILD_QUEST_RECIPE_ID) or {}).get("heroId")
+    if hero_id is None:
+        hero_id = guild_defaults.get("heroId")
+    if hero_id is not None:
+        overrides["heroId"] = hero_id
+    return overrides
+
+
+def _quest_candidates(account_defaults: dict[int, dict[str, Any]], quest_id: int) -> list[dict[str, Any]]:
+    """``quest_defaults[quest_id].candidates``（優先度順のフォールバック候補）を返す。"""
+    candidates = (account_defaults.get(quest_id) or {}).get("candidates")
+    if not isinstance(candidates, list):
+        return []
+    return [c for c in candidates if isinstance(c, dict)]
+
+
+def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
+    """``quest_guild_defaults`` を初期化・補完する（既存値は保持）。
+
+    ``QUEST_OPERATIONS[10023]``（heroTitanGift LevelUp ×2 → Drop）をギルド
+    クエスト達成レシピとして使い、未設定のアカウントに ``enabled: false`` と
+    ``heroId``（レシピ既定値）・``note`` を投入する。初期状態は無効で、
+    ``--set-default guild enabled true`` で有効化する運用。
+
+    補完は ``update_config_merged`` のロック付き read-modify-write で行う
+    （並列実行時に ``last_recipe_at`` などの同時更新を失わない）。
+
+    Returns:
+        保存後の ``quest_guild_defaults``（dict）。
+    """
+    recipe = QUEST_OPERATIONS.get(GUILD_QUEST_RECIPE_ID)
+    if not recipe:
+        return get_quest_guild_defaults(account)
+    first_args = recipe.get("steps", [{}])[0].get("args", {}) if recipe.get("steps") else {}
+    note = " → ".join(_rpc_display(step["rpc"]) for step in recipe.get("steps", []))
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        defaults = existing if isinstance(existing, dict) else {}
+        if defaults.get("enabled") is None:
+            defaults["enabled"] = False
+        if "heroId" not in defaults and isinstance(first_args.get("heroId"), int):
+            defaults["heroId"] = first_args["heroId"]
+        if "note" not in defaults and note:
+            defaults["note"] = note
+        return defaults
+
+    return SessionManager.repo.update_config_merged(account, QUEST_GUILD_DEFAULTS_KEY, _merge)
 
 
 def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
@@ -388,32 +546,34 @@ def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     ``ValueError`` になるため、呼び出し側で事前にアカウント登録を確認する
     こと**（CLI は ``_ensure_session`` 等で登録済みを保証する）。
 
+    補完は ``update_config_merged`` のロック付き read-modify-write で行う
+    （並列実行時に ``enabled`` などの同時更新を失わない）。
+
     Returns:
         保存後の ``quest_defaults``（quest_id → 設定 dict）。
     """
     if not QUEST_OPERATIONS:
         return get_quest_defaults(account)
-    defaults = get_quest_defaults(account)
-    changed = False
-    for qid, op in QUEST_OPERATIONS.items():
-        conf = defaults.setdefault(qid, {})
-        if conf.get("enabled") is None:
-            conf["enabled"] = False
-            changed = True
-        note = " → ".join(_rpc_display(step["rpc"]) for step in op.get("steps", []))
-        if "note" not in conf and note:
-            conf["note"] = note
-            changed = True
-        for step in op.get("steps", []):
-            for k, v in step.get("args", {}).items():
-                # dict/list 型（10028 の cost/reward 等）は構造データであり、
-                # 行編集（ウィザード/--set-default）で型崩れするため固定値化しない。
-                if k not in NON_ARG_KEYS and not isinstance(v, (dict, list)) and k not in conf:
-                    conf[k] = v
-                    changed = True
-    if changed:
-        SessionManager.repo.update_config(account, {QUEST_DEFAULTS_KEY: defaults})
-    return defaults
+
+    def _merge(existing: Any) -> dict[int, dict[str, Any]]:
+        raw = existing if isinstance(existing, dict) else {}
+        defaults = {int(k): dict(v) for k, v in raw.items()}
+        for qid, op in QUEST_OPERATIONS.items():
+            conf = defaults.setdefault(qid, {})
+            if conf.get("enabled") is None:
+                conf["enabled"] = False
+            note = " → ".join(_rpc_display(step["rpc"]) for step in op.get("steps", []))
+            if "note" not in conf and note:
+                conf["note"] = note
+            for step in op.get("steps", []):
+                for k, v in step.get("args", {}).items():
+                    # dict/list 型（10028 の cost/reward 等）は構造データであり、
+                    # 行編集（ウィザード/--set-default）で型崩れするため固定値化しない。
+                    if k not in NON_ARG_KEYS and not isinstance(v, (dict, list)) and k not in conf:
+                        conf[k] = v
+        return defaults
+
+    return SessionManager.repo.update_config_merged(account, QUEST_DEFAULTS_KEY, _merge)
 
 
 def _parse_float_value(value: str) -> Any:
@@ -608,19 +768,20 @@ def run_quest_execute(
       返り値と標準出力の両方に報告される。
 
     Returns:
-        ``(succeeded, failed)`` — 成功/失敗の各報告リスト。
+        ``(succeeded, failed, skipped)`` — 成功/失敗の各報告リストと、無効
+        （quest_defaults で enabled=false）のため対象外としたクエスト ID 一覧。
     """
     account = resolve_account(account_alias)
     res = client.quest_get_all()
     if res.status != ResponseStatus.SUCCESS:
         error = res.error_name or "-"
         print(f"❌ [{account}] Failed to fetch quests: {res.status.value} ({error})")
-        return [], [{"account": account, "quest_id": None, "quest_name": "questGetAll", "step": "fetch", "error": error}]
+        return [], [{"account": account, "quest_id": None, "quest_name": "questGetAll", "step": "fetch", "error": error}], []
 
     raw_data = res.detail.get("response") if isinstance(res.detail, dict) else None
     if raw_data is None:
         print(f"❌ [{account}] Unexpected questGetAll response format.")
-        return [], []
+        return [], [], []
     quests = parse_quests(raw_data)
     account_defaults = ensure_quest_defaults(account)
 
@@ -632,13 +793,28 @@ def run_quest_execute(
     # ※ progress>=target も受領のみの対象にするのは、達成済みなのに操作
     #   リソース（10028 のフラグメント購入等）を再消費しないため。
     #   target 不明（None）のクエスト（10023 等）はこの判定に掛からない。
-    # ※ バトルパス（26xx）やギルド（2000x）等、QUEST_OPERATIONS 未登録の
-    #   受領待ちクエストは execute の対象外（dry-run の表示ノイズも排除）。
+    # ※ バトルパス（26xx）等、QUEST_OPERATIONS 未登録の受領待ちクエストは
+    #   execute の対象外（dry-run の表示ノイズも排除）。
+    # ※ ギルドクエスト（2000xxxx/2001xxxx、"Obtain xxx Sparks of Power" 等、
+    #   ID が日次・アカウントで動的）は QUEST_OPERATIONS と別扱い:
+    #     - state=2（報酬受取可能）→ 無条件に claim 対象
+    #     - state=1（進行中）→ quest_guild_defaults.enabled=true のとき
+    #       heroTitanGift レシピ（10023 と同一）を実行して Sparks を稼ぐ。
+    #       実行後 questGetAll を取り直し、達成（state=2）になったものを claim。
     claimable: list[Quest] = []
     failures: list[dict[str, Any]] = []
+    skipped: list[int] = []
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
+    guild_claimable: list[Quest] = []
+    guild_active: list[Quest] = []
     for q in quests:
         if q.is_done:
+            continue
+        if is_guild_quest(q.id):
+            if q.is_claimable:
+                guild_claimable.append(q)
+            else:
+                guild_active.append(q)
             continue
         op = QUEST_OPERATIONS.get(q.id)
         if op is None:
@@ -647,7 +823,7 @@ def run_quest_execute(
             claimable.append(q)
             continue
         if not (account_defaults.get(q.id, {}).get("enabled")):
-            print(f"ℹ️  [{account}] Skip {q.id} ({q.name}): not enabled in quest_defaults")
+            skipped.append(q.id)
             continue
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:
@@ -660,24 +836,63 @@ def run_quest_execute(
             continue
         targets.append((q, steps))
 
+    guild_defaults = ensure_quest_guild_defaults(account)
+    guild_enabled = bool(guild_defaults.get("enabled"))
+    if guild_active and not guild_enabled:
+        skipped.extend(q.id for q in guild_active)
+
+    # ギルドレシピの 1 日 1 回ガード: userGetInfo の nextDayTs から現在の
+    # リセットサイクル開始時刻を求め、last_recipe_at がサイクル内ならスキップ。
+    # （タイムゾーンはサーバーが nextDayTs に反映済みのため、ここでは UTC で
+    #   比較するだけでよい。nextDayTs が取れない環境ではガード無効＝従来挙動）
+    guild_recipe_ran_today = False
+    if guild_active and guild_enabled:
+        try:
+            player = client.fetch_player_status()
+            guild_boundary = _guild_cycle_boundary(player)
+        except Exception:  # noqa: BLE001
+            guild_boundary = None
+        if guild_boundary is not None:
+            last_recipe_at = guild_defaults.get("last_recipe_at")
+            guild_recipe_ran_today = isinstance(last_recipe_at, (int, float)) and last_recipe_at >= guild_boundary
+
     succeeded: list[dict[str, Any]] = []
+    has_work = claimable or targets or guild_claimable or guild_active
 
     if dry_run:
         print(f"\n📋 [dry-run] Quest execution plan for {account}:")
-        if not claimable and not targets:
+        if not has_work:
             print("🔄 No executable quests.")
-            return [], failures
+            return [], failures, skipped
         for q in claimable:
+            print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+            print("    - questFarm (claim reward, no operation needed)")
+        for q in guild_claimable:
             print(f"\n🔹 {q.id} {q.name}: [claim already available]")
             print("    - questFarm (claim reward, no operation needed)")
         for q, steps in targets:
             print(f"\n🔹 {q.id} {q.name}")
             for st in steps:
                 print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
-        return [], failures
+            candidates = _quest_candidates(account_defaults, q.id)
+            if candidates:
+                print(f"    (fallback candidates: {candidates})")
+        if guild_active:
+            if not guild_enabled:
+                print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
+            elif guild_recipe_ran_today:
+                print(f"ℹ️  Guild quests (Sparks of Power): recipe already executed today (cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
+            else:
+                print("\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks")
+                recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
+                steps = _resolve_operation_args(GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: _guild_recipe_overrides(account_defaults, guild_defaults)})
+                for st in steps:
+                    print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
+        print_skipped_quests(account, skipped)
+        return [], failures, skipped
 
     # 受領フェーズ（操作不要）
-    for q in claimable:
+    for q in claimable + guild_claimable:
         print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
         claim_res = client.quest_farm(q.id)
         if claim_res.status == ResponseStatus.SUCCESS:
@@ -691,29 +906,8 @@ def run_quest_execute(
     for q, steps in targets:
         print(f"\n🔹 Executing {q.id} {q.name} ...")
         for st in steps:
-            if not confirm:
-                try:
-                    answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
-                except EOFError:
-                    print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
-                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
-                    break
-                if answer.strip().lower() not in ("y", "yes"):
-                    print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
-                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
-                    break
-
-            try:
-                resp = client.quest_operation(st["rpc"], st["args"])
-            except Exception as exc:  # noqa: BLE001
-                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
-                print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {exc}")
-                break
-
-            if resp.status != ResponseStatus.SUCCESS:
-                error = resp.error_name or "-"
-                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": error})
-                print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {error}")
+            resp = _run_quest_step(client, q, st, account, confirm, account_defaults, failures)
+            if resp is None:
                 break
 
             # レスポンスに含まれる quests 配列から対象クエストの状態を確認
@@ -727,12 +921,162 @@ def run_quest_execute(
                     failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
                     print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
                 break
-        else:
             # 全ステップ成功したが、このレスポンス群には対象クエストが含まれなかった
+        else:
             print(f"ℹ️  [{account}] {q.id} {q.name}: steps executed but claim not detected (check questGetAll).")
 
+    # ギルドクエスト（Sparks of Power）フェーズ: active のギルドクエストが
+    # ある場合、heroTitanGift レシピを 1 回実行し、その後 questGetAll を
+    # 取り直して達成（state=2）になったギルドクエストをまとめて claim する。
+    # （1 リセットサイクル 1 回ガード: nextDayTs で決まる今日のサイクル内に
+    #   レシピを実行済みなら、次のリセットまでレシピはスキップする。
+    #   claimable のギルドクエストは上の受領フェーズで既に受領されている）
+    if guild_enabled and guild_active:
+        if guild_recipe_ran_today:
+            guild_ids = ", ".join(str(q.id) for q in guild_active)
+            print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed this cycle (cycle started "
+                  f"{format_create_time(int(guild_boundary))}); skipping recipe.")
+        else:
+            guild_ids = ", ".join(str(q.id) for q in guild_active)
+            print(f"\n🔹 Guild quests ({guild_ids}): running recipe to gain Sparks of Power ...")
+            recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
+            overrides = _guild_recipe_overrides(account_defaults, guild_defaults)
+            steps = _resolve_operation_args(GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: overrides})
+            recipe_ok = True
+            for st in steps:
+                if not confirm:
+                    try:
+                        answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
+                    except EOFError:
+                        print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+                        failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
+                        recipe_ok = False
+                        break
+                    if answer.strip().lower() not in ("y", "yes"):
+                        print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
+                        failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
+                        recipe_ok = False
+                        break
+
+                try:
+                    resp = client.quest_operation(st["rpc"], st["args"])
+                except Exception as exc:  # noqa: BLE001
+                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
+                    print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
+                    recipe_ok = False
+                    break
+
+                if resp.status != ResponseStatus.SUCCESS:
+                    error = resp.error_name or "-"
+                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": error})
+                    print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {error}")
+                    recipe_ok = False
+                    break
+
+            if recipe_ok:
+                print("   ✅ Recipe executed. Re-fetching quests to claim reached stages...")
+                set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
+                res2 = client.quest_get_all()
+                if res2.status == ResponseStatus.SUCCESS:
+                    raw2 = res2.detail.get("response") if isinstance(res2.detail, dict) else None
+                    refreshed = parse_quests(raw2) if isinstance(raw2, list) else []
+                    reached = [q for q in refreshed if is_guild_quest(q.id) and q.is_claimable]
+                    if not reached:
+                        print("   ℹ️  No guild quest reached claimable state yet (progress gained).")
+                    for q in reached:
+                        print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
+                        claim_res = client.quest_farm(q.id)
+                        if claim_res.status == ResponseStatus.SUCCESS:
+                            succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
+                            print(f"   🎁 Reward claimed for {q.id} {q.name}")
+                        else:
+                            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
+                            print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
+                else:
+                    error = res2.error_name or "-"
+                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": "questGetAll", "error": error})
+                    print(f"❌ [{account}] Guild quests: re-fetch failed: {error}")
+
+    print_skipped_quests(account, skipped)
     print_quest_failures(account, failures)
-    return succeeded, failures
+    return succeeded, failures, skipped
+
+
+def print_skipped_quests(account: str, skipped: list[int]) -> None:
+    """enabled=false（quest_defaults / quest_guild_defaults）のため対象外としたクエストを 1 行にまとめる。"""
+    if skipped:
+        ids = ", ".join(str(q) for q in skipped)
+        print(f"ℹ️  [{account}] Skipped (not enabled in quest_defaults / quest_guild_defaults): {ids}")
+
+
+def _run_quest_step(
+    client: HWClient,
+    q: Quest,
+    st: dict[str, Any],
+    account: str,
+    confirm: bool,
+    account_defaults: dict[int, dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> HWResponse | None:
+    """1 ステップを実行し、結果を failures に記録する。
+
+    - ``confirm=False`` の場合（既定）、実行前に y/n で確認する。
+      ``confirm=True`` は自動実行（確認なし）。
+    - 失敗がフォールバック対象エラー（``FALLBACK_ERROR_NAMES``、リソース
+      不足系）で、``quest_defaults[qid].candidates``（優先度順の dict
+      リスト）が設定されていれば、候補を args にマージして再実行する。
+      成功した候補で継続し、全候補失敗なら失敗報告する。
+
+    Returns:
+        成功時の HWResponse（呼び出し側で claim 判定に使う）。中断・全失敗
+        なら None（failures への追記済み）。
+    """
+    candidates = _quest_candidates(account_defaults, q.id)
+    args_list = [st["args"]] + [{**st["args"], **cand} for cand in candidates]
+    last_error: str | None = None
+    for idx, args in enumerate(args_list):
+        is_fallback = idx > 0
+        if not confirm:
+            label = f" (fallback {idx})" if is_fallback else ""
+            try:
+                answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {args}{label}? [y/N] ")
+            except EOFError:
+                print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+                failures.append(
+                    {"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"}
+                )
+                return None
+            if answer.strip().lower() not in ("y", "yes"):
+                print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
+                failures.append(
+                    {"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "skipped by user"}
+                )
+                return None
+        try:
+            resp = client.quest_operation(st["rpc"], args)
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"exception: {exc}"
+            if is_fallback:
+                continue
+            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": last_error})
+            print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {exc}")
+            return None
+        if resp.status == ResponseStatus.SUCCESS:
+            if is_fallback:
+                print(f"   ⚡️ [{account}] {q.id} {q.name} recovered with fallback args {args}")
+            return resp
+        last_error = resp.error_name or "-"
+        if is_fallback:
+            print(f"   ℹ️  [{account}] {q.id} {q.name} fallback {args} failed ({last_error}); trying next candidate...")
+            continue
+        if last_error in FALLBACK_ERROR_NAMES and len(args_list) > 1:
+            print(f"   💡 [{account}] {q.id} {q.name} {last_error}; retrying with fallback candidates...")
+            continue
+        break
+    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": last_error or "-"})
+    print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {last_error}")
+    return None
+
 
 
 def _quest_reached_claimable(resp: Any, quest_id: int) -> bool:

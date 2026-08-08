@@ -5,14 +5,17 @@
 - 実行可否は quest_defaults[quest_id]["enabled"] で制御される（初期状態は無効）。
 """
 
+import time
 from unittest.mock import MagicMock
 
 from hw_genie.commands.quests import (
     get_quest_defaults,
+    get_quest_guild_defaults,
     run_quest_execute,
     set_quest_defaults,
+    set_quest_guild_defaults,
 )
-from hw_genie.core.client import ApiAction, HWClient, ResponseStatus
+from hw_genie.core.client import ApiAction, HWClient, PlayerStatus, ResponseStatus
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -44,14 +47,20 @@ def _enable(account: str, quest_id: int) -> None:
     set_quest_defaults(account, quest_id, "enabled", True)
 
 
-def _make_client(raw_quests: list[dict], account: str = "Alex") -> HWClient:
-    """アカウント登録＋quest_get_all モック済みクライアントを作る。"""
+def _make_client(raw_quests: list[dict], account: str = "Alex", player: PlayerStatus | None = None) -> HWClient:
+    """アカウント登録＋quest_get_all モック済みクライアントを作る。
+
+    ``player`` を渡すと fetch_player_status がその PlayerStatus を返すように
+    モックされる（未指定なら next_day_ts=0 となりギルドレシピガードは無効）。
+    """
     _register(account)
     client = HWClient(headers={"x-auth-token": "test"})
     res = _ok_response({"response": raw_quests})
     client.quest_get_all = MagicMock(return_value=res)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
     client.call = MagicMock(return_value=_ok_response({"response": {}}))
+    if player is not None:
+        client.fetch_player_status = MagicMock(return_value=player)
     return client
 
 
@@ -62,6 +71,364 @@ def _shop_inventory(slots: dict) -> MagicMock:
 
 def _active(qid: int) -> dict:
     return {"id": qid, "state": 1, "progress": 0, "reward": {}, "createTime": 0, "farmCount": 0}
+
+
+def _claimable_guild(qid: int) -> dict:
+    return {"id": qid, "state": 2, "progress": 100, "reward": {"stamina": 200}, "createTime": 0, "farmCount": 0}
+
+
+def _active_guild(qid: int) -> dict:
+    return {"id": qid, "state": 1, "progress": 0, "reward": {"clanQuestsPoints": 10, "prestige": 50}, "createTime": 0, "farmCount": 0, "order": 1}
+
+
+# --- ギルドクエスト（2000xxxx/2001xxxx = Sparks of Power） ---
+
+
+def test_guild_claimable_farmed_without_defaults(capsys):
+    """state=2 のギルドクエストは quest_defaults 設定なしでも questFarm で受領される。"""
+    client = _make_client([_claimable_guild(20010002)])
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 20010002
+    assert failed == []
+    client.quest_farm.assert_called_once_with(20010002)
+
+
+def test_guild_active_skipped_when_disabled(capsys):
+    """quest_guild_defaults 無効（初期状態）なら active ギルドクエストは操作されず skipped に入る。"""
+    client = _make_client([_active_guild(20000111)])
+    client.quest_operation = MagicMock()
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    assert succeeded == []
+    assert failed == []
+    assert 20000111 in skipped
+    client.quest_operation.assert_not_called()
+
+    # 未初期化でも ensure により quest_guild_defaults が投入されている
+    defaults = get_quest_guild_defaults("Alex")
+    assert defaults.get("enabled") is False
+    assert defaults.get("heroId") == 38
+
+
+def test_guild_active_runs_recipe_and_claims_reached(capsys):
+    """enabled=true なら heroTitanGift レシピ実行 → 再取得で state=2 になったものを claim。"""
+    client = _make_client([_active_guild(20000111)])
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    def _op(action: ApiAction, args: dict):
+        return _ok_response({"quests": [{"id": 20000111, "state": 1}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+
+    # 1 回目は state=1（進行中）、レシピ実行後の再取得では state=2 になったものを返す
+    res_first = _ok_response({"response": [_active_guild(20000111)]})
+    res_after = _ok_response({"response": [_claimable_guild(20000111)]})
+    client.quest_get_all = MagicMock(side_effect=[res_first, res_after])
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 20000111
+    assert failed == []
+    assert skipped == []
+    client.quest_farm.assert_called_once_with(20000111)
+    # quest_operation 呼び出しを確認
+    ops = [c.args[0] for c in client.quest_operation.call_args_list]
+    assert ops == [ApiAction.HERO_TITAN_GIFT_LEVEL_UP, ApiAction.HERO_TITAN_GIFT_LEVEL_UP, ApiAction.HERO_TITAN_GIFT_DROP]
+
+
+def test_guild_dry_run_plan(capsys):
+    """dry-run では active/claimable のギルドクエストがプランに現れる。"""
+    client = _make_client([_claimable_guild(20010002), _active_guild(20000111)])
+    set_quest_guild_defaults("Alex", "enabled", True)
+    _ = client
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "20010002" in out
+    assert "Guild quests (Sparks of Power)" in out
+    assert "heroTitanGiftLevelUp" in out
+
+
+# --- ギルドレシピ 1 日 1 回ガード（nextDayTs 境界） ---
+
+
+def test_guild_cycle_boundary():
+    """nextDayTs から現在のリセットサイクル開始時刻（-24h）が求まる。"""
+    from hw_genie.commands.quests import _guild_cycle_boundary
+
+    assert _guild_cycle_boundary(PlayerStatus(next_day_ts=1786287600)) == 1786287600 - 86400
+    # nextDayTs 未取得（0 / None）はガード無効
+    assert _guild_cycle_boundary(PlayerStatus()) is None
+    assert _guild_cycle_boundary(PlayerStatus(next_day_ts=0)) is None
+
+
+def test_guild_recipe_skipped_when_already_ran_this_cycle(capsys):
+    """last_recipe_at が現在のリセットサイクル内ならレシピはスキップされる。"""
+    boundary = 1786287600 - 86400  # 現在のサイクル開始
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary + 1)  # サイクル内で実行済み
+
+    client.quest_operation = MagicMock()
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "already executed this cycle" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_guild_recipe_runs_when_last_is_previous_cycle(capsys):
+    """last_recipe_at が前サイクルなら（今日未実行）レシピが実行される。"""
+    boundary = 1786287600 - 86400
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary - 60)  # 直前のサイクル
+
+    def _op(action: ApiAction, args: dict):
+        return _ok_response({"quests": [{"id": 20000111, "state": 1}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert client.quest_operation.call_count == 3
+    # 実行成功後、last_recipe_at が更新される
+    defaults = get_quest_guild_defaults("Alex")
+    assert isinstance(defaults.get("last_recipe_at"), int)
+    assert defaults["last_recipe_at"] >= boundary
+
+
+def test_guild_recipe_guard_disabled_without_nextday(capsys):
+    """nextDayTs が取れない環境（ガード無効データ）では従来どおり実行される。"""
+    client = _make_client([_active_guild(20000111)], player=PlayerStatus())
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", int(time.time()))  # 今日実行済み扱いだがガードは無効
+
+    def _op(action: ApiAction, args: dict):
+        return _ok_response({"quests": [{"id": 20000111, "state": 1}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert client.quest_operation.call_count == 3
+
+    # ガードのロジック（next_day_ts なし = None）を直接確認
+    from hw_genie.commands.quests import _guild_cycle_boundary
+
+    assert _guild_cycle_boundary(PlayerStatus()) is None
+
+
+def test_guild_dry_run_shows_guard_skip(capsys):
+    """dry-run でも今日のサイクルでレシピ実行済みならスキップが表示される。"""
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", 1786287600 - 86300)
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "already executed today" in out
+    assert "heroTitanGiftLevelUp" not in out
+
+
+# --- フォールバック候補（candidates） ---
+
+
+def test_candidates_fallback_used_on_not_enough(capsys):
+    """リソース不足（NotEnough）時、candidates の候補 args で再実行して成功する。"""
+    client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53, "slotId": 2}])
+
+    sent_args = []
+
+    def _op(action, args):
+        sent_args.append(dict(args))
+        if action == ApiAction.HERO_ARTIFACT_LEVEL_UP:
+            if len(sent_args) == 1:
+                return _error_response("NotEnough")
+            return _ok_response({"quests": [{"id": 10024, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert "recovered with fallback" in out
+    assert sent_args[0] == {"heroId": 61, "slotId": 1}
+    assert sent_args[1] == {"heroId": 53, "slotId": 2}
+    assert client.quest_farm.call_count == 1
+
+
+def test_candidates_fallback_all_fail_reported(capsys):
+    """全候補失敗時は失敗として報告される（エラーは候補の最後のもの）。"""
+    client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53, "slotId": 2}])
+
+    client.quest_operation = MagicMock(return_value=_error_response("NotEnough"))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["step"] == "heroArtifactLevelUp"
+    assert "NotEnough" in failed[0]["error"]
+    assert client.quest_operation.call_count == 2  # 初回 + 候補1
+
+
+def test_candidates_ignored_for_non_resource_error(capsys):
+    """リソース系以外のエラー（スタミナ不足等）では候補を試さない。"""
+    client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53}])
+
+    client.quest_operation = MagicMock(return_value=_error_response("notEnoughStamina"))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert client.quest_operation.call_count == 1
+
+
+def test_candidates_ignored_in_operation_args(capsys, caplog):
+    """candidates は操作引数に混入せず、未知キー警告の対象外。"""
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53}])
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert "does not match any arg" not in caplog.text
+    for call in client.quest_operation.call_args_list:
+        args = call.args[1]
+        assert "candidates" not in args
+
+
+def test_guild_recipe_hero_id_prefers_quest_defaults(capsys):
+    """ギルドレシピ heroId は quest_defaults[10023] が優先される。"""
+    client = _make_client([_active_guild(20000111)])
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "heroId", 42)
+    _enable("Alex", 10023)
+    set_quest_defaults("Alex", 10023, "heroId", 7)
+
+    def _op(action, args):
+        return _ok_response({"quests": [{"id": 20000111, "state": 1}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_get_all = MagicMock(
+        side_effect=[
+            _ok_response({"response": [_active_guild(20000111)]}),
+            _ok_response({"response": [_active_guild(20000111)]}),  # レシピ後の再取得
+        ]
+    )
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    ops = [c.args[1] for c in client.quest_operation.call_args_list]
+    assert ops
+    assert all(args.get("heroId") == 7 for args in ops)
+
+
+# --- read-modify-write 保持（update_config_merged の原子的 RMW） ---
+# インメモリ SQLite はスレッドごとに別 DB になるため、真の並列スレッドテストは
+# できない。代わりに「update_config_merged が既存値を保持してマージする」ことを
+# 順序を変えて検証する（ロック付き RMW の本質 = lost update しない）。
+
+
+def test_set_quest_guild_defaults_keeps_existing_keys():
+    """set（last_recipe_at）→ set（heroId）の順でも両方のキーが保持される。"""
+    _register("Para")
+    set_quest_guild_defaults("Para", "last_recipe_at", 111)
+    set_quest_guild_defaults("Para", "heroId", 42)
+
+    defaults = get_quest_guild_defaults("Para")
+    assert defaults.get("last_recipe_at") == 111
+    assert defaults.get("heroId") == 42
+
+
+def test_set_quest_defaults_keeps_existing_keys():
+    """quest_defaults への複数キー書き込みで既存の quest 設定が保持される。"""
+    _register("ParaQ")
+    set_quest_defaults("ParaQ", 10024, "heroId", 61)
+    set_quest_defaults("ParaQ", 10028, "titanId", 4022)
+
+    defaults = get_quest_defaults("ParaQ")
+    assert defaults[10024]["heroId"] == 61
+    assert defaults[10028]["titanId"] == 4022
+
+
+def test_ensure_preserves_existing_last_recipe_at():
+    """ensure（補完）は既存の last_recipe_at を保持する。
+
+    set で last_recipe_at を記録した後に ensure を実行しても、ensure の
+    補完（enabled/heroId/note）が last_recipe_at を上書きしない。
+    """
+    from hw_genie.commands.quests import ensure_quest_guild_defaults
+
+    _register("ParaG")
+    set_quest_guild_defaults("ParaG", "last_recipe_at", 999)
+    ensure_quest_guild_defaults("ParaG")
+
+    defaults = get_quest_guild_defaults("ParaG")
+    assert defaults.get("last_recipe_at") == 999
+    assert defaults.get("enabled") is False  # ensure による初期化も反映
+
+
+def test_set_preserves_ensure_completed_defaults():
+    """逆順（ensure → set）でも ensure の補完が保持される。"""
+    from hw_genie.commands.quests import ensure_quest_guild_defaults
+
+    _register("ParaG2")
+    ensure_quest_guild_defaults("ParaG2")
+    set_quest_guild_defaults("ParaG2", "last_recipe_at", 888)
+
+    defaults = get_quest_guild_defaults("ParaG2")
+    assert defaults.get("last_recipe_at") == 888
+    assert defaults.get("enabled") is False
+    assert defaults.get("heroId") == 38
 
 
 # --- テスト ---
@@ -80,7 +447,7 @@ def test_execute_runs_steps_and_claims(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert failed == []
@@ -95,7 +462,7 @@ def test_execute_unregistered_quest_not_run(capsys):
     client = _make_client([_active(10004)])
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert succeeded == []
@@ -109,7 +476,7 @@ def test_execute_not_enabled_quest_skipped(capsys):
     client = _make_client([_active(10024)])
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -125,7 +492,7 @@ def test_execute_step_failure_reported(capsys):
     _enable("Alex", 10024)
     client.quest_operation = MagicMock(return_value=_error_response("notEnoughStamina"))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert succeeded == []
@@ -146,7 +513,7 @@ def test_execute_claim_failure_captured(capsys):
     )
     client.quest_farm = MagicMock(return_value=_error_response("AlreadyFarmed"))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -163,7 +530,7 @@ def test_dry_run_does_not_invoke_operations(capsys):
     _enable("Alex", 10030)
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -181,7 +548,7 @@ def test_dry_run_hides_unregistered_claimable(capsys):
     _enable("Alex", 10024)
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -197,7 +564,7 @@ def test_confirm_prompt_skips_when_declined(monkeypatch, capsys):
     client.quest_operation = MagicMock()
     monkeypatch.setattr("builtins.input", lambda _: "n")
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=False)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=False)
     capsys.readouterr().out
 
     assert succeeded == []
@@ -218,7 +585,7 @@ def test_confirm_prompt_eof_reported(monkeypatch, capsys):
 
     monkeypatch.setattr("builtins.input", _raise_eof)
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=False)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=False)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -237,7 +604,7 @@ def test_account_default_override_applied_in_plan(capsys):
     client = _make_client([_active(10024)])
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -254,7 +621,7 @@ def test_claimable_quest_claimed_without_operation(capsys):
     client.quest_operation = MagicMock()
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert failed == []
@@ -272,7 +639,7 @@ def test_claimable_claim_failure_reported(capsys):
     client.quest_operation = MagicMock()
     client.quest_farm = MagicMock(return_value=_error_response("AlreadyFarmed"))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert succeeded == []
@@ -296,7 +663,7 @@ def test_multistep_claim_after_second_step(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert failed == []
@@ -337,7 +704,7 @@ def test_shop_buy_reward_resolved_from_inventory(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []
@@ -363,7 +730,7 @@ def test_shop_buy_slot_not_in_inventory_fails(capsys):
 
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -413,7 +780,7 @@ def test_shop_buy_inventory_fetch_failure_keeps_default(capsys, caplog):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []
@@ -443,7 +810,7 @@ def test_shop_buy_inventory_cached_per_shop(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []
@@ -471,7 +838,7 @@ def test_fetch_failure_reported(capsys):
     client.quest_get_all = MagicMock(return_value=_error_response("InvalidSession"))
     client.quest_operation = MagicMock()
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -488,7 +855,7 @@ def test_claim_not_detected_after_all_steps(capsys):
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
@@ -532,7 +899,7 @@ def test_progress_reached_target_claimed_without_operation(capsys):
     client.quest_operation = MagicMock()
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []
@@ -550,7 +917,7 @@ def test_unknown_target_quest_not_auto_claimable(capsys):
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert failed == []
@@ -737,7 +1104,7 @@ def test_cmd_quests_execute_failure_exits_nonzero():
         mp.setattr(
             quests_mod,
             "run_quest_execute",
-            lambda *a, **k: ([], [{"step": "fetch", "error": "boom"}]),
+            lambda *a, **k: ([], [{"step": "fetch", "error": "boom"}], []),
         )
         with pytest.raises(SystemExit) as exc_info:
             main_mod.cmd_quests(_Args())
@@ -765,7 +1132,7 @@ def test_cmd_quests_execute_success_exits_zero():
         mp.setattr(
             quests_mod,
             "run_quest_execute",
-            lambda *a, **k: ([{"quest_id": 10024}], []),
+            lambda *a, **k: ([{"quest_id": 10024}], [], []),
         )
         assert main_mod.cmd_quests(_Args()) is None
 

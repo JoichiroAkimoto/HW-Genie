@@ -78,8 +78,7 @@ title: Quest API Reference
 ```
 
 *   **Tips**: 応答に含まれる `quests` 配列でバトルパス・ギルド報酬の進捗が更新される（state=3）。
-*   **Next Phase**: `hwda daily` へ組み込み自動化（未完了デイリーの `questFarm` 実行）は次フェーズとして実装予定。
-    このイテレーションでは `quests` コマンドによる取得・表示・判定のみ。
+*   **実装状況**: `quests --execute`（アカウント指定）と `multi quests`（全アカウント一括）で自動完了を実装済み。`multi daily` / `multi full`（bin/hwda / bin/hwsa）は実行後に各アカウントの `quest_defaults.enabled` クエストを自動完了する。
 
 ---
 
