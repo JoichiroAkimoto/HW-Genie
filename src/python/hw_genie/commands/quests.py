@@ -29,6 +29,7 @@ from hw_genie.core.client import (
     resolve_account,
 )
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.shop import ShopInventory, ShopNotFoundError, get_shop_slots, is_bought
 from hw_genie.core.utils import format_timestamp_for_display
 
 logger = logging.getLogger(__name__)
@@ -148,10 +149,11 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
             # Elemental Tournament Shop でフラグメント 200 個購入 → レベルアップ
             # slot の reward/cost は実行時に shopGetAll の実在庫から動的解決される
             # （_resolve_shop_buy_reward）。この静的な cost/reward は在庫取得失敗時
-            # のみのフォールバック（通常は到達しない）。フラグメント ID は
-            # 「タイタンアーティファクトの強化素材」として共通であり、購入後は
-            # quest_defaults で指定した titanId/slotId の対象に使う
-            # （docs/superpowers/titan-quests-ops.md 参照）。
+            # のみのフォールバック（通常は到達しない）。指定 shop/slot が在庫に
+            # 無い場合や購入済み（bought）の slot の場合は実行前に失敗報告
+            # される。フラグメント ID は「タイタンアーティファクトの強化素材」として
+            # 共通であり、購入後は quest_defaults で指定した titanId/slotId の
+            # 対象に使う（docs/superpowers/titan-quests-ops.md 参照）。
             {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "amount": 200}},
             {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4012, "slotId": 1}},
         ],
@@ -401,14 +403,14 @@ def get_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
 def set_quest_defaults(account: str, quest_id: int, key: str, value: Any) -> Any:
     """``quest_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。
 
-    CLI（``--set-default``）から渡される文字列値は ``_parse_float_value`` で
+    CLI（``--set-default``）から渡される文字列値は ``_parse_config_value`` で
     bool/int/float/JSON に解釈してから保存する。保存した値（解釈後）を返す。
 
     保存は ``update_config_merged`` によるロック付き read-modify-write で
     行う（並列実行時に他スレッドの書き込みを lost update で失わない）。
     """
     if isinstance(value, str):
-        value = _parse_float_value(value)
+        value = _parse_config_value(value)
 
     def _merge(existing: Any) -> dict[int, dict[str, Any]]:
         raw = existing if isinstance(existing, dict) else {}
@@ -434,7 +436,7 @@ def set_quest_guild_defaults(account: str, key: str, value: Any) -> Any:
     行う（``last_recipe_at`` の更新が並列実行で旧値に戻るのを防ぐ）。
     """
     if isinstance(value, str):
-        value = _parse_float_value(value)
+        value = _parse_config_value(value)
 
     def _merge(existing: Any) -> dict[str, Any]:
         defaults = existing if isinstance(existing, dict) else {}
@@ -576,7 +578,7 @@ def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     return SessionManager.repo.update_config_merged(account, QUEST_DEFAULTS_KEY, _merge)
 
 
-def _parse_float_value(value: str) -> Any:
+def _parse_config_value(value: str) -> Any:
     """set-default の値文字列を bool/int/float/dict/list/str に解釈する。
 
     スカラー（bool/int/float）を最優先で解釈し、解釈できない場合は JSON として
@@ -651,34 +653,10 @@ def _resolve_operation_args(
     return steps
 
 
-def _fetch_shop_inventory(client: HWClient, shop_id: Any) -> dict[str, Any]:
-    """shopGetAll を呼び、指定 shop の ``slots`` 辞書を返す（取得失敗時は空 dict）。
-
-    認証エラー（``HWAuthError``）は握りつぶさず再送出する。それ以外の
-    取得失敗（通信エラー等）は空 dict を返し、呼び出し側で既定値
-    フォールバックを適用する。
-    """
-    try:
-        res = client.call({"calls": [{"name": ApiAction.SHOP_GET_ALL, "args": {}, "ident": "shopGetAll"}]})
-    except HWAuthError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("shopGetAll failed; using default shopBuy reward: %s", exc)
-        return {}
-    if res.status != ResponseStatus.SUCCESS:
-        logger.warning("shopGetAll failed (%s); using default shopBuy reward", res.error_name)
-        return {}
-    detail = res.detail if isinstance(res.detail, dict) else {}
-    shops = detail.get("response") if isinstance(detail, dict) else None
-    if not isinstance(shops, dict):
-        return {}
-    shop = shops.get(str(shop_id))
-    slots = shop.get("slots") if isinstance(shop, dict) else None
-    return slots if isinstance(slots, dict) else {}
-
-
 def _resolve_shop_buy_reward(
-    client: HWClient, steps: list[dict[str, Any]]
+    client: HWClient,
+    steps: list[dict[str, Any]],
+    shop_cache: ShopInventory,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """shopBuy ステップの実在庫（shopGetAll）から reward/cost を動的解決する。
 
@@ -694,16 +672,23 @@ def _resolve_shop_buy_reward(
     quest_defaults でアカウントごとに指定する設計とする。
 
     - **在庫取得失敗**（通信等、認証以外）: 既定 reward をフォールバック
-      として維持する（呼び出し側でエラー欄には出さない）。
-    - **指定 slot が在庫に存在しない**: 確実に失敗することが判明している
-      ため、フォールバックせず ``(step, error)`` を problems に返す。
-      呼び出し元はこのクエストの操作ステップを実行せず失敗報告する
-      （固定 reward のまま送信して NotAvailable になるのを防ぐ）。
+      として維持する（呼び出し側でエラー欄には出さない）。取得は
+      ``shop_cache``（実行単位で共有）で最大 1 回に抑える。
+    - **指定 shop が在庫に存在しない / 指定 slot が在庫に存在しない**:
+      確実に失敗することが判明しているため、フォールバックせず
+      ``(step, error)`` を problems に返す。呼び出し元はこのクエストの
+      操作ステップを実行せず失敗報告する（固定 reward のまま送信して
+      NotAvailable になるのを防ぐ）。
+    - **指定 slot が購入済み（bought）**: 再購入はできないため同様に
+      problems に返す（フォールバック・失敗の扱いは在庫不存在と統一）。
+
+    Args:
+        shop_cache: 実行単位で共有される shopGetAll のキャッシュ。
+            （複数クエスト間で重複呼び出しを省くため run_quest_execute から渡す）
 
     Returns:
         ``(resolved_steps, problems)`` — problems は ``(step, message)`` 形式。
     """
-    shop_cache: dict[str, dict[str, Any]] = {}
     problems: list[tuple[str, str]] = []
 
     resolved: list[dict[str, Any]] = []
@@ -716,23 +701,35 @@ def _resolve_shop_buy_reward(
         slot = args.get("slot")
         step_name = _rpc_display(step["rpc"])
         if shop_id is not None and slot is not None:
-            key = str(shop_id)
-            if key not in shop_cache:
-                shop_cache[key] = _fetch_shop_inventory(client, shop_id)
-            inventory = shop_cache[key]
-            if str(slot) in inventory:
-                item = inventory[str(slot)]
-                if isinstance(item, dict):
-                    if "reward" in item:
-                        args["reward"] = item["reward"]
-                    if "cost" in item:
-                        args["cost"] = item["cost"]
-            elif inventory:
+            shops = shop_cache.load(client)
+            if shops is None:
+                # 在庫取得失敗 → 既定 reward/cost でフォールバック
+                resolved.append({"rpc": step["rpc"], "args": args})
+                continue
+            try:
+                inventory = get_shop_slots(shops, shop_id)
+            except ShopNotFoundError as exc:
+                problems.append((step_name, str(exc)))
+                continue
+            slot_key = str(slot)
+            if slot_key not in inventory:
                 # 在庫は取得できたが指定 slot が存在しない → 実行しても失敗。
                 problems.append(
                     (step_name, f"slot {slot} not in shop {shop_id} inventory (available: {sorted(inventory.keys())})")
                 )
                 continue
+            item = inventory[slot_key]
+            if is_bought(item):
+                # 購入済み slot は再購入できない → 実行しても失敗。
+                problems.append(
+                    (step_name, f"slot {slot} in shop {shop_id} is already bought; choose another slot in quest_defaults")
+                )
+                continue
+            if isinstance(item, dict):
+                if "reward" in item:
+                    args["reward"] = item["reward"]
+                if "cost" in item:
+                    args["cost"] = item["cost"]
         resolved.append({"rpc": step["rpc"], "args": args})
     return resolved, problems
 
@@ -757,10 +754,11 @@ def run_quest_execute(
       無効で何もしない）。未初期化の場合は ``ensure_quest_defaults`` で
       空設定（enabled=false）を自動投入する。
     - **shopBuy ステップは実在庫（shopGetAll）を読み、指定 slot の
-      reward/cost を動的に解決してから実行する**。指定 slot が在庫に
-      存在しない場合は実行せず失敗報告する（固定 reward での
-      NotAvailable 送信を防ぐ）。在庫取得失敗時（認証以外）は既定値を
-      フォールバックする。
+      reward/cost を動的に解決してから実行する**。在庫の取得は実行単位で
+      1 回にキャッシュされ（複数クエスト間で共有）、指定 shop / slot が
+      在庫に存在しない場合や指定 slot が購入済み（bought）の場合は
+      実行せず失敗報告する（固定 reward での NotAvailable 送信を防ぐ）。
+      在庫取得失敗時（認証以外）は既定値をフォールバックする。
     - **報酬受取可能（state=2、または target 到達済み）のクエストは操作を
       実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
       操作リソースを消費しないため）。
@@ -807,6 +805,7 @@ def run_quest_execute(
     targets: list[tuple[Quest, list[dict[str, Any]]]] = []
     guild_claimable: list[Quest] = []
     guild_active: list[Quest] = []
+    shop_cache = ShopInventory()
     for q in quests:
         if q.is_done:
             continue
@@ -828,7 +827,7 @@ def run_quest_execute(
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:
             continue
-        steps, shop_problems = _resolve_shop_buy_reward(client, steps)
+        steps, shop_problems = _resolve_shop_buy_reward(client, steps, shop_cache)
         if shop_problems:
             for step, message in shop_problems:
                 failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": step, "error": message})
@@ -1214,7 +1213,7 @@ def edit_quest_defaults_interactive(account: str) -> None:
                 # 他の選択メニューと同じ「キャンセル」セマンティクス（保存しない）
                 message = "⚠️  Enter to keep current value; b/q: cancel (nothing saved)"
                 continue
-            new_value = _parse_float_value(raw)
+            new_value = _parse_config_value(raw)
             # dict/list 構造（JSON 入力）はウィザードの「行編集」では型を保証
             # できないため受け付けない。登録は --set-default <id> <key> '<json>'
             # で明示的に行う（_editable_keys の除外と対称）。

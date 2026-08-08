@@ -528,6 +528,10 @@ def test_dry_run_does_not_invoke_operations(capsys):
     _enable("Alex", 10024)
     _enable("Alex", 10028)
     _enable("Alex", 10030)
+    # 10028 の shopBuy 解決用の実在庫
+    client.call.return_value = _shop_inventory(
+        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
     client.quest_operation = MagicMock()
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
@@ -652,6 +656,9 @@ def test_multistep_claim_after_second_step(capsys):
     """10028 の2ステップで、2番目のステップ応答後に claim 判定される。"""
     client = _make_client([_active(10028)])
     _enable("Alex", 10028)
+    client.call.return_value = _shop_inventory(
+        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
     calls = []
 
     def _op(action, args):
@@ -787,6 +794,99 @@ def test_shop_buy_inventory_fetch_failure_keeps_default(capsys, caplog):
     assert len(sent_args) == 1
     assert sent_args[0]["reward"] == {"fragmentTitanArtifact": {"2001": 1}}
     assert "shopGetAll failed" in caplog.text
+
+
+def test_shop_buy_shop_not_found_fails(capsys):
+    """在庫取得成功でも指定 shop が存在しない場合は実行せず失敗報告される。
+
+    従来は在庫取得失敗と区別せずフォールバックして NotAvailable になるのを、
+    取得成功（=在庫データがある）と失敗を分けて即座に報告する。
+    """
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    # shop 13 は在庫に無い（shop 10 のみ）
+    client.call.return_value = _ok_response(
+        {"response": {"10": {"slots": {"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {}}}}}}
+    )
+
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    f = failed[0]
+    assert f["quest_id"] == 10028
+    assert f["step"] == "shopBuy"
+    assert "shop 13 not found" in f["error"]
+    assert "cannot execute" in out
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_shop_buy_slot_bought_fails(capsys):
+    """指定 slot が購入済み（bought）の場合は実行せず失敗報告される（再購入不可）。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    client.call.return_value = _shop_inventory(
+        {"18": {"bought": True, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
+
+    client.quest_operation = MagicMock()
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    f = failed[0]
+    assert f["quest_id"] == 10028
+    assert f["step"] == "shopBuy"
+    assert "already bought" in f["error"]
+    assert "cannot execute" in out
+    client.quest_operation.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_shop_inventory_cached_across_quests(monkeypatch, capsys):
+    """同一 shop を使う複数クエストでも shopGetAll は実行単位で1回だけ発行される。
+
+    キャッシュはクエスト単位ではなく run_quest_execute 全体（_resolve_shop_buy_reward
+    の呼び出し間）で共有され、重複取得を排除する。
+    """
+    import hw_genie.commands.quests as quests_mod
+
+    monkeypatch.setattr(
+        quests_mod,
+        "QUEST_OPERATIONS",
+        {
+            10028: quests_mod.QUEST_OPERATIONS[10028],
+            99999: {
+                "enabled": False,
+                "steps": [
+                    {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "amount": 1}},
+                    {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4012, "slotId": 1}},
+                ],
+            },
+        },
+    )
+    client = _make_client([_active(10028), _active(99999)])
+    _enable("Alex", 10028)
+    _enable("Alex", 99999)
+    client.call.return_value = _shop_inventory(
+        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
+    )
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    # shopGetAll は 2 クエストで 1 回だけ発行される
+    assert client.call.call_count == 1
+    assert client.call.call_args.args[0]["calls"][0]["name"] == ApiAction.SHOP_GET_ALL
 
 
 def test_shop_buy_inventory_cached_per_shop(capsys):
@@ -1027,25 +1127,25 @@ def test_ensure_quest_defaults_skips_dict_args():
     assert "reward" not in defaults[10028]
 
 
-def test_parse_float_value_json_dict():
+def test_parse_config_value_json_dict():
     """set-default の値文字列は dict/list を JSON 解釈で復元できる（型崩れ防止）。"""
-    from hw_genie.commands.quests import _parse_float_value
+    from hw_genie.commands.quests import _parse_config_value
 
-    assert _parse_float_value('{"coin": {"18": 12}}') == {"coin": {"18": 12}}
-    assert _parse_float_value("[1, 2, 3]") == [1, 2, 3]
-    assert _parse_float_value("true") is True
-    assert _parse_float_value("123") == 123
-    assert _parse_float_value("1.5") == 1.5
-    assert _parse_float_value("hello") == "hello"
-    assert _parse_float_value("123abc") == "123abc"
+    assert _parse_config_value('{"coin": {"18": 12}}') == {"coin": {"18": 12}}
+    assert _parse_config_value("[1, 2, 3]") == [1, 2, 3]
+    assert _parse_config_value("true") is True
+    assert _parse_config_value("123") == 123
+    assert _parse_config_value("1.5") == 1.5
+    assert _parse_config_value("hello") == "hello"
+    assert _parse_config_value("123abc") == "123abc"
 
 
 def test_set_default_stores_dict_value():
     """--set-default で dict 引数（10028 の cost 等）を JSON 文字列から復元保存する。"""
-    from hw_genie.commands.quests import _parse_float_value, set_quest_defaults
+    from hw_genie.commands.quests import _parse_config_value, set_quest_defaults
 
     _register("Alex")
-    set_quest_defaults("Alex", 10028, "cost", _parse_float_value('{"coin": {"18": 12}}'))
+    set_quest_defaults("Alex", 10028, "cost", _parse_config_value('{"coin": {"18": 12}}'))
 
     assert get_quest_defaults("Alex")[10028]["cost"] == {"coin": {"18": 12}}
 
