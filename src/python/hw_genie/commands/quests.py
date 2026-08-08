@@ -738,7 +738,7 @@ def run_quest_execute(
     account_alias: str | None = None,
     dry_run: bool = False,
     confirm: bool = False,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[int]]:
     """未完了デイリー（state!=3 かつ QUEST_OPERATIONS 登録）を順に実行する。
 
     - ``dry_run=True`` の場合は操作は実行せず、実行予定の一覧を表示する。
