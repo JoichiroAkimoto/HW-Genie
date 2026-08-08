@@ -18,16 +18,23 @@ TURSO_KEYS_TO_SKIP = (
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(tmp_path_factory):
     """
-    テストごとにインメモリDBを初期化し、プロダクションDBへの影響を遮断する。
+    テストごとに一時ファイル DB を初期化し、プロダクション DB への影響を遮断する。
+
+    インメモリ SQLite（``sqlite:///:memory:``）は接続（セッション）ごとに別 DB が
+    作られるため、読み取りセッションと書き込みセッションが別接続を持つと
+    「書いた値が読めない」・並列テストで ``no such table`` になる。一時ファイル
+    ベースにすることで全接続が同じ DB を共有し、本番（ローカルレプリカファイル）
+    と同じ挙動になる。
     """
     # .env 由来の TURSO_* 設定がテストに漏れないよう一時的に除去する。
     # （build_database_config は os.environ を直接読むため、ローカルファイル
     #   モードでないとインメモリ差し替えと本物のリモートエンジンが分断される）
     saved = {k: os.environ.pop(k) for k in TURSO_KEYS_TO_SKIP if k in os.environ}
+    db_file = tmp_path_factory.mktemp("testdb") / "test.db"
     try:
-        test_engine = create_engine("sqlite:///:memory:")
+        test_engine = create_engine(f"sqlite:///{db_file}")
         test_SessionLocal = sessionmaker(bind=test_engine, expire_on_commit=False)
 
         def _get_test_engine():

@@ -260,7 +260,7 @@ def test_quests_routine_calls_run_quest_execute(monkeypatch):
         calls["account_alias"] = account_alias
         calls["dry_run"] = dry_run
         calls["confirm"] = confirm
-        return ([{"account": account_alias, "quest_id": 10024, "quest_name": "x"}], [])
+        return ([{"account": account_alias, "quest_id": 10024, "quest_name": "x"}], [], [])
 
     monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_execute)
 
@@ -275,6 +275,7 @@ def test_quests_routine_calls_run_quest_execute(monkeypatch):
     }
     assert result[0][0]["quest_id"] == 10024
     assert result[1] == []
+    assert result[2] == []
 
 
 def test_quests_routine_forwards_dry_run(monkeypatch):
@@ -284,7 +285,7 @@ def test_quests_routine_forwards_dry_run(monkeypatch):
 
     def fake_execute(client, account_alias=None, dry_run=False, confirm=False):
         calls["dry_run"] = dry_run
-        return ([], [])
+        return ([], [], [])
 
     monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_execute)
     runner.quests_routine(dry_run=True)(object(), "alpha")
@@ -305,7 +306,7 @@ def test_daily_routine_runs_quest_completion(monkeypatch):
     def fake_quests(client, account_alias=None, dry_run=False, confirm=False):
         calls["quests"] = (account_alias, dry_run, confirm)
         # quest failures are reported by the command, not raised
-        return ([], [{"account": account_alias, "quest_id": 1, "quest_name": "q", "step": "x", "error": "boom"}])
+        return ([], [{"account": account_alias, "quest_id": 1, "quest_name": "q", "step": "x", "error": "boom"}], [])
 
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
     monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", fake_quests)
@@ -322,8 +323,8 @@ def test_summarize_quests_counts_failures(capsys):
     from hw_genie.runner import summarize_quests
 
     results = [
-        ("alpha", (([{"quest_id": 10024}], []), None)),
-        ("beta", (([], [{"quest_id": 10028, "error": "bought"}]), None)),
+        ("alpha", (([{"quest_id": 10024}], [], []), None)),
+        ("beta", (([], [{"quest_id": 10028, "error": "bought"}], []), None)),
         ("gamma", (None, ValueError("x"))),
     ]
     failed = summarize_quests(results)
@@ -338,8 +339,23 @@ def test_summarize_quests_counts_failures(capsys):
     assert "1 account(s) completed, ❌ 2 failed." in out
 
 
+def test_summarize_quests_shows_skipped_column(capsys):
+    """Skipped (quest_defaults disabled) quests appear as a count column."""
+    from hw_genie.runner import summarize_quests
+
+    results = [
+        ("alpha", (([{"quest_id": 10024}], [], [10007, 10028]), None)),
+        ("beta", (([], [], [10007]), None)),
+    ]
+    failed = summarize_quests(results)
+    out = capsys.readouterr().out
+    assert failed == 0
+    assert "⏭️ Skipped" in out
+    assert "2 account(s) completed, ❌ 0 failed." in out
+
+
 def test_summarize_quests_unavailable_result_marks_failed(capsys):
-    """A routine result that is not a (succeeded, failed) pair is a failure."""
+    """A routine result that is not a (succeeded, failed, skipped) triple is a failure."""
     from hw_genie.runner import summarize_quests
 
     failed = summarize_quests([("alpha", ("unexpected", None))])
@@ -417,6 +433,30 @@ def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
     args2 = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False, "dry_run": True})()
     main.cmd_multi(args2)
     assert captured["dry_run"] is True
+
+
+def test_cmd_multi_quests_dry_run_runs_sequentially(monkeypatch):
+    """multi quests --dry-run runs accounts sequentially to keep the plan order readable."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallels"].append(max_parallel)
+        return {}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.runner.quests_routine", lambda dry_run=False: lambda c, a: ([], [], []))
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+
+    captured["max_parallels"] = []
+    args = type("A", (), {"mode": "quests", "accounts": [], "parallel": 4, "debug": False, "dry_run": True})()
+    main.cmd_multi(args)
+    assert captured["max_parallels"] == [1]
+
+    args2 = type("A", (), {"mode": "quests", "accounts": [], "parallel": 4, "debug": False, "dry_run": False})()
+    main.cmd_multi(args2)
+    assert captured["max_parallels"] == [1, 4]
 
 
 def test_daily_routine_invokes_run_daily_raid(monkeypatch):

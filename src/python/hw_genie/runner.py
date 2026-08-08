@@ -369,7 +369,7 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
 
 
 # Quest summary table (per-account succeeded / failed quest counts).
-_QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "❌ Failed"]
+_QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "⏭️ Skipped", "❌ Failed"]
 
 
 def _quest_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
@@ -390,18 +390,19 @@ def summarize_quests(
     """Print a per-account quest completion table and return the failed count.
 
     Results come from routines built by :func:`quests_routine`: per account a
-    ``(succeeded, failed)`` pair (see ``run_quest_execute``). Accounts whose
-    routine errored or reported any failed quest count as failed, mirroring
-    ``quests --execute`` exiting non-zero on failure; ``ok`` counts only
-    accounts that completed without quest failures.
+    ``(succeeded, failed, skipped)`` triple (see ``run_quest_execute``).
+    Accounts whose routine errored or reported any failed quest count as
+    failed, mirroring ``quests --execute`` exiting non-zero on failure; ``ok``
+    counts only accounts that completed without quest failures. ``skipped``
+    are quests excluded because ``quest_defaults`` disabled them.
     """
     ok = 0
     failed: list[str] = []
     rows: list[list[str]] = []
     for account, (res, err) in results:
-        if err is None and isinstance(res, tuple) and len(res) == 2:
-            succeeded, failures = res
-            rows.append([account, str(len(succeeded)), str(len(failures))])
+        if err is None and isinstance(res, tuple) and len(res) == 3:
+            succeeded, failures, skipped = res
+            rows.append([account, str(len(succeeded)), str(len(skipped)), str(len(failures))])
             if failures:
                 failed.append(account)
             else:

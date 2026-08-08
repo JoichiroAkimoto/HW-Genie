@@ -1,6 +1,6 @@
 ---
 name: quest-status
-description: HW-Genie を使用して未完了のデイリー等クエストの状態を取得・表示します。--execute で QUEST_OPERATIONS 登録済みのデイリーを自動完了（操作実行＋questFarm 報酬受領）することもできます。
+description: HW-Genie を使用して未完了のデイリー等クエストの状態を取得・表示します。--execute で QUEST_OPERATIONS 登録済みのデイリーとギルドクエスト（Sparks of Power）を自動完了（操作実行＋questFarm 報酬受領）することもできます。
 ---
 # クエスト状態 Skill (HW-Genie 版)
 
@@ -46,6 +46,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie multi quests --dry-run  # 実行プランのみ表示（何も実行しない）
    uv run hw-genie multi quests account1 account2  # 対象を限定
    ```
+   `--dry-run` は計画表示をアカウント順に保つため逐次実行されます。実行後のサマリ表には `quest_defaults` で無効のため対象外としたクエスト数を示す ⏭️ Skipped 列も表示されます（Skip 通知はアカウントごとに 1 行へ集約）。
    - **daily / full ルーチンに自動統合**: `multi daily`（bin/hwda）と `multi full`（bin/hwsa）は実行後に、各アカウントの `quest_defaults.enabled` クエストを自動完了します（非対話。クエスト失敗は報告のみでルーチン自体は exit 0。未初期化アカウントは何も実行されません）。
    - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）と `note`（操作 RPC 名の連結メモ、例: `"shopBuy → titanArtifactLevelUp"`）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます（`note` は DB JSON の可読性用で実行・引数上書きには影響しません）。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
    ```bash
@@ -74,6 +75,12 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie quests -a <ACCOUNT> --set-default 10028 titanId 4022
    ```
    - 10007（Soul Atrium 召喚）は消費が大きいため `QUEST_OPERATIONS` 自体が `enabled: false` で、`quest_defaults` でも有効化しない限り実行されません。
+   - **ギルドクエスト（「Obtain xxx Sparks of Power」等、2000xxxx/2001xxxx ファミリ）**: ID が日次・アカウントで動的なため `QUEST_OPERATIONS` の固定 ID 登録ではなく `quest_guild_defaults`（config キー `quest_guild_defaults`）で制御します。`--init-defaults` で `enabled:false`＋`heroId`（既定 38）を自動投入し、`--set-default guild enabled true` で有効化します:
+   ```bash
+   uv run hw-genie quests -a <ACCOUNT> --set-default guild enabled true
+   ```
+   claimable（state=2）のギルドクエスト報酬受領（スタミナ等）は設定に関係なく常時実行され、進行中（state=1）のものは有効時のみ heroTitanGift レシピ（10023 と同一: LevelUp ×2 → Drop）を 1 回実行して Sparks of Power を獲得、その後 questGetAll を取り直して state=2 になったものをまとめて受領します。レシピは**1 リセットサイクル（userGetInfo の nextDayTs ベース）に 1 回まで**で、実行完了時刻が `quest_guild_defaults.last_recipe_at`（Unix 秒）に保存され、同一サイクル内の再実行はスキップされます（nextDayTs が取れない環境ではガード無効＝レシピは従来どおり毎回実行。dry-run でもスキップが表示されます）。ギルドクエストが 0 件の日（月 1 回程度）は自動スキップされます。`multi quests` / `multi daily` / `multi full` にも同じロジックが組み込まれています。
+   - **フォールバック候補（candidates）**: 操作失敗時の再試行候補として `quest_defaults[qid].candidates`（優先度順の dict リスト、例: `[{"heroId": 53, "slotId": 2}]`）を設定できます。リソース不足エラー（`NotEnough` 等、`FALLBACK_ERROR_NAMES`）時に各候補の引数を args へマージして自動リトライし、成功した場合は報酬受領まで続行します。全候補失敗は失敗報告になります。スタミナ不足等の非リソース系エラーでは試行しません（heroId/slotId の変更では解決しないため）。
    - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。上書きキーはステップの args に**既に存在するキー**にのみ適用され（誤ったキーは警告）、マルチステップ（10028 等）では該当する全ステップに適用されます。
 
 ## 表示内容
