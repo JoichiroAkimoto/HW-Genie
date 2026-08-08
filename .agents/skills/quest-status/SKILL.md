@@ -40,6 +40,13 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    # 確認なしで自動実行（要 --execute）
    uv run hw-genie quests -a <ACCOUNT> --execute --yes
    ```
+   - **全アカウント一括自動完了**: `multi quests` で全アカウントの `enabled` クエストを単一プロセス並列で自動完了します（各アカウントで `--execute --yes` 相当の非対話実行。実行可否はアカウントごとの `quest_defaults` がゲート）。`--dry-run` で予行確認、失敗アカウントがあれば exit 1:
+   ```bash
+   uv run hw-genie multi quests            # 全アカウントの enabled クエストを自動完了
+   uv run hw-genie multi quests --dry-run  # 実行プランのみ表示（何も実行しない）
+   uv run hw-genie multi quests account1 account2  # 対象を限定
+   ```
+   - **daily / full ルーチンに自動統合**: `multi daily`（bin/hwda）と `multi full`（bin/hwsa）は実行後に、各アカウントの `quest_defaults.enabled` クエストを自動完了します（非対話。クエスト失敗は報告のみでルーチン自体は exit 0。未初期化アカウントは何も実行されません）。
    - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）と `note`（操作 RPC 名の連結メモ、例: `"shopBuy → titanArtifactLevelUp"`）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます（`note` は DB JSON の可読性用で実行・引数上書きには影響しません）。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
    ```bash
    # 初期設定を投入（enabled:false ＋ デフォルト引数・note を追加。既存設定は保持）

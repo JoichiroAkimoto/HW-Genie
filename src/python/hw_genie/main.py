@@ -543,6 +543,8 @@ def cmd_multi(args):
         daily_routine,
         full_routine,
         list_account_aliases,
+        quests_routine,
+        summarize_quests,
     )
 
     mode = args.mode
@@ -552,10 +554,25 @@ def cmd_multi(args):
     else:
         accounts = list_account_aliases()
 
-    routine = full_routine if mode == "full" else daily_routine
+    if mode != "quests" and getattr(args, "dry_run", False):
+        print(
+            "Error: --dry-run is only supported with the 'quests' mode "
+            "(daily/full routines always execute their operations).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "quests":
+        routine = quests_routine(dry_run=bool(getattr(args, "dry_run", False)))
+    else:
+        routine = full_routine if mode == "full" else daily_routine
 
     results = run_all_accounts(routine, accounts=accounts, max_parallel=args.parallel)
-    failed = summarize(results.items())
+    failed = (
+        summarize_quests(results.items())
+        if mode == "quests"
+        else summarize(results.items())
+    )
     if failed:
         sys.exit(1)
 
@@ -651,10 +668,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full"],
+        choices=["daily", "full", "quests"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default) or 'full' (raid+shop+daily)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), or 'quests' (daily quest auto-completion)",
     )
     p_multi.add_argument(
         "accounts",
@@ -667,6 +684,11 @@ def main():
         type=int,
         default=None,
         help="Max concurrent accounts (default: HW_MAX_PARALLEL / unbounded)",
+    )
+    p_multi.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the quest execution plan without running anything (quests mode only)",
     )
     p_multi.set_defaults(func=cmd_multi)
 

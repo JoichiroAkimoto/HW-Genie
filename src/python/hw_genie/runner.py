@@ -148,8 +148,14 @@ def daily_routine(client: HWClient, account: str) -> object:
     the item-raid mission), this builds an item-raid payload from the mission
     id stored in the DB (``SessionManager.build_item_raid_payload``) so the
     item raid actually runs to the stamina limit inside ``run_daily_raid``.
+
+    After the raids/shop the account's enabled quests are completed too (see
+    ``run_quest_execute``): the per-account ``quest_defaults`` ``enabled``
+    flags are the safety gate (default disabled), and quest failures are
+    reported to stdout without failing the daily routine itself.
     """
     from hw_genie.commands.daily_raid import run_daily_raid
+    from hw_genie.commands.quests import run_quest_execute
     from hw_genie.core.session_manager import SessionManager
 
     # The payload shape (calls/ident/context) is owned by SessionManager; the
@@ -157,6 +163,10 @@ def daily_routine(client: HWClient, account: str) -> object:
     item_payload = SessionManager.build_item_raid_payload(account=account)
 
     run_daily_raid(client, item_payload=item_payload, account_alias=account)
+    # Quest auto-completion: non-interactive (confirm=True), gated per account
+    # by quest_defaults enabled flags. Failures are printed by the command, not
+    # raised, so a quest hiccup never fails the whole daily run.
+    run_quest_execute(client, account_alias=account, dry_run=False, confirm=True)
     # Fetch the latest status for the summary table. run_daily_raid already
     # prints it, but returning it lets multi-account runs show a consolidated
     # view at the end.
@@ -165,6 +175,31 @@ def daily_routine(client: HWClient, account: str) -> object:
     except Exception:  # pragma: no cover - best-effort, never abort summary
         logger.error("Failed to fetch final status for account '%s'.", account)
         return None
+
+
+def quests_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
+    """Build a routine that completes the daily quests for any account.
+
+    Wraps :func:`hw_genie.commands.quests.run_quest_execute` with
+    ``confirm=True`` so multi-account runs stay non-interactive; the
+    account-level ``quest_defaults`` ``enabled`` flags are the safety gate
+    (accounts are initialized disabled, see ``ensure_quest_defaults``).
+
+    Args:
+        dry_run: Show the per-account execution plan without running anything.
+
+    Returns:
+        A routine whose result per account is the ``(succeeded, failed)``
+        pair returned by ``run_quest_execute``.
+    """
+    from hw_genie.commands.quests import run_quest_execute
+
+    def run(client: HWClient, account: str) -> object:
+        return run_quest_execute(
+            client, account_alias=account, dry_run=dry_run, confirm=True
+        )
+
+    return run
 
 
 def full_routine(client: HWClient, account: str) -> object:
@@ -223,14 +258,15 @@ def _cell_int(cell: str) -> int | None:
         return None
 
 
-def _summary_table_layout(rows: list[list[str]]) -> tuple[list[int], int]:
-    """Shared column layout: ``(widths, rule_width)`` for the summary table.
+def _table_layout(
+    headers: Sequence[str], rows: list[list[str]]
+) -> tuple[list[int], int]:
+    """Shared column layout: ``(widths, rule_width)`` for a table.
 
     Widths are display-width based (emoji double-width, combining chars 0).
-    ``summarize`` uses ``rule_width`` to align its own separator lines with
-    the table borders.
+    ``rule_width`` is the plain-text width of the header row, used to align
+    separator lines with the table borders.
     """
-    headers = _SUMMARY_HEADERS
     widths = [
         max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
         for i in range(len(headers))
@@ -239,12 +275,24 @@ def _summary_table_layout(rows: list[list[str]]) -> tuple[list[int], int]:
     return widths, _display_width(plain_header)
 
 
-def _render_summary_table(rows: list[list[str]]) -> str:
-    """Render the per-account table with widths derived from the actual content."""
+def _summary_table_layout(rows: list[list[str]]) -> tuple[list[int], int]:
+    """Column layout for the player-status summary table."""
+    return _table_layout(_SUMMARY_HEADERS, rows)
+
+
+def _render_table(
+    headers: Sequence[str],
+    rows: list[list[str]],
+    cell_styler: Callable[[int, str, str, bool], str] | None = None,
+) -> str:
+    """Render a display-width-aligned table with zebra striping.
+
+    ``cell_styler(index, raw_cell, padded_cell, dim_row)`` may restyle any
+    cell (e.g. rank colors); when ``None`` only zebra dimming is applied.
+    """
     if not rows:
         return ""
-    headers = _SUMMARY_HEADERS
-    widths, rule_width = _summary_table_layout(rows)
+    widths, rule_width = _table_layout(headers, rows)
     # 幅計算はプレーン文字列で行い、パディング後にスタイルを後付けする
     plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
     header_line = style(plain_header, bold=True, fg="cyan")
@@ -255,25 +303,37 @@ def _render_summary_table(rows: list[list[str]]) -> str:
         cells = []
         for i, cell in enumerate(row):
             padded = _pad(cell, widths[i])
-            if i == 0:
-                padded = style(padded, bold=True, dim=dim_row)
-            elif i == 1:
-                padded = (
-                    style(padded, fg="red")
-                    if _energy_over_max(cell)
-                    else style(padded, dim=dim_row)
-                )
-            elif i in (2, 3):
-                color = rank_color(_cell_int(cell))
-                # 色付きセルはゼブラでも dim しない（色を保つ）
-                padded = style(padded, fg=color, dim=dim_row and not color)
-            else:
+            if cell_styler is None:
                 padded = style(padded, dim=dim_row)
+            else:
+                padded = cell_styler(i, cell, padded, dim_row)
             cells.append(padded)
         body_lines.append(" | ".join(cells))
     sep = style("=" * rule_width, dim=True)
     rule = style("-" * rule_width, dim=True)
     return "\n".join([sep, header_line, rule, *body_lines, sep])
+
+
+def _player_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the player-status summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    if i == 1:
+        return (
+            style(padded, fg="red")
+            if _energy_over_max(cell)
+            else style(padded, dim=dim)
+        )
+    if i in (2, 3):
+        color = rank_color(_cell_int(cell))
+        # 色付きセルはゼブラでも dim しない（色を保つ）
+        return style(padded, fg=color, dim=dim and not color)
+    return style(padded, dim=dim)
+
+
+def _render_summary_table(rows: list[list[str]]) -> str:
+    """Render the per-account status table with widths derived from content."""
+    return _render_table(_SUMMARY_HEADERS, rows, _player_cell_styler)
 
 
 def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | None]]]) -> int:
@@ -308,11 +368,72 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
     return len(failed)
 
 
+# Quest summary table (per-account succeeded / failed quest counts).
+_QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "❌ Failed"]
+
+
+def _quest_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the quest summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_quest_table(rows: list[list[str]]) -> str:
+    """Render the per-account quest summary table."""
+    return _render_table(_QUEST_SUMMARY_HEADERS, rows, _quest_cell_styler)
+
+
+def summarize_quests(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+) -> int:
+    """Print a per-account quest completion table and return the failed count.
+
+    Results come from routines built by :func:`quests_routine`: per account a
+    ``(succeeded, failed)`` pair (see ``run_quest_execute``). Accounts whose
+    routine errored or reported any failed quest count as failed, mirroring
+    ``quests --execute`` exiting non-zero on failure; ``ok`` counts only
+    accounts that completed without quest failures.
+    """
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, tuple) and len(res) == 2:
+            succeeded, failures = res
+            rows.append([account, str(len(succeeded)), str(len(failures))])
+            if failures:
+                failed.append(account)
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (quest result unavailable)")
+        else:
+            failed.append(account)
+
+    # テーブルと同じ幅で見出し・失敗一覧の罫線を引く（rows が無い場合は固定幅）
+    width = _table_layout(_QUEST_SUMMARY_HEADERS, rows)[1] if rows else 48
+
+    # Separator so the table stands out from the per-account progress logs.
+    print("\n" + "=" * width)
+    print("📊 --- Multi-quest summary ---")
+    if rows:
+        print(_render_quest_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 __all__ = [
     "list_account_aliases",
     "run_for_account",
     "run_all_accounts",
     "daily_routine",
     "full_routine",
+    "quests_routine",
     "summarize",
+    "summarize_quests",
 ]
