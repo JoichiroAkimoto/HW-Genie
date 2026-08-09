@@ -71,7 +71,8 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ギルド活動やチャット機能です。
 *   **`clanGetInfo`**: 所属ギルドの情報、メンバーリスト。
 *   **`clanWarGetBriefInfo`**: ギルド戦（ゴールドリーグ等）の概要・対戦相手。
-*   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗。
+*   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗（`response.shop` にショップ在庫・`coins` に残高。詳細は GUILD_API.md）。
+*   **`clanRaid_shopBuy`**: ギルドレイド（Asgard）のショップ購入（`args: {"slotId": N}`。詳細は GUILD_API.md）。
 *   **`chatGetAll`**: チャット履歴取得（chatType指定）。
 *   **`chatServerSubscribe`**: リアルタイムチャット購読。
 *   **`userGetAvailableStickers`**: 利用可能なスタンプ一覧。

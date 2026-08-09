@@ -149,6 +149,12 @@ POST https://heroes-wb.nextersglobal.com/api/
 POST https://heroes-wb.nextersglobal.com/api/
 ```
 
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| なし | - | - | - |
+
 ### Response Structure
 ```json
 {
@@ -156,15 +162,72 @@ POST https://heroes-wb.nextersglobal.com/api/
     "ident": "body",
     "result": {
       "response": {
-        "boss": {
-          "teams": [...]
-        }
+        "boss": { "teams": [...] },
+        "shop": {
+          "6": {
+            "branch": "",
+            "buffId": 66,
+            "buffValue": 3,
+            "buyLimit": 1,
+            "cost": { "coin": { "30": 50 } },
+            "rank": 3,
+            "requirement": "",
+            "boughtCount": 0
+          }
+        },
+        "coins": 1000
       }
     }
   }]
 }
 ```
 > ※ 構造が複雑なため、解析の際は `jq` 等で内容を確認してください。
+
+### Response フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `boss` | object | ボスフェーズの情報（`teams` にボスのユニット構成） |
+| `nodes` | dict | ミニオンフェーズのノード情報 |
+| `shop` | dict | ショップ在庫（キーは slotId → 商品詳細） |
+| `coins` | int | 所持コイン数（Osh の Realm Traveler では Valor Emblem） |
+| `buffs` | dict | `buffId → {id, value}` のバフ定義 |
+| `stats.currentBoss` | string | 現在のボス ID |
+| `stats.weekStart` | string | 週の開始タイムスタンプ |
+
+### shop{} フィールド（slot 単位）
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `buffId` | int | バフ ID（Osh の Realm Traveler は 61〜81 で固定） |
+| `buffValue` | int | バフ効果量（% 表示用） |
+| `buyLimit` | int | 購入上限（Valor Emblem 商品は 1） |
+| `cost` | object | 価格。`{"coin": {"30": 価格}}` が Valor Emblem、`{"gold": ...}` がゴールドバフ |
+| `rank` | int | レアリティ（1=150 / 2=100 / 3=50 の目安） |
+| `boughtCount` | int | 購入済み回数（>= buyLimit で購入済み） |
+| `requirement` / `branch` | string | 条件・ブランチ（現在は空文字） |
+
+> **Osh 週のラインナップ**: slot 1〜5 はゴールドバフ（`cost.gold` 100万、buyLimit 5）、
+> slot 6〜21 が Valor Emblem 商品（価格は週替わりで 50/100/150 のいずれか）。
+> ラインナップ（slot→buffId）は全アカウント共通で固定、`boughtCount` と `coins` はアカウント別。
+
+---
+
+### clanRaid_shopBuy - クランレイドショップ購入
+Osh の Realm Traveler 等、クランレイドのショップでアイテム（バフ）を購入します。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `slotId` | int | ✓ | 購入するスロット ID（`clanRaid_getInfo` の `shop` キーと対応） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_shopBuy","args":{"slotId":17},"context":{"actionTs":3247542},"ident":"body"}]}'
+```
 
 ---
 
