@@ -404,13 +404,6 @@ class SessionRepository:
                     account_rec.alias = account.strip()
                     account_rec.update_from_dict(player)
 
-                    # Store other player configs
-                    status_fields = ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank")
-                    for k, v in player.items():
-                        if k in status_fields:
-                            continue
-                        self._upsert_config(db, account_rec.id, f"player_{k}", v)
-
                 elif player is None:
                     account_rec = db.query(Account).filter(Account.alias == account).first()
                     if not account_rec:
