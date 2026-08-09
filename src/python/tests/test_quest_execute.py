@@ -344,6 +344,145 @@ def test_candidates_ignored_in_operation_args(capsys, caplog):
         assert "candidates" not in args
 
 
+# --- レビュー指摘対応の追加テスト ---
+
+
+def test_candidates_unknown_keys_filtered_out(capsys):
+    """ステップ args に存在しない候補キー（titanId 等）は送信 args に混入しない。
+
+    フォールバック時も、サーバーへ未知キーを送らない（_resolve_operation_args の
+    「既存キーのみ上書き」規則と同じ挙動を保証する）。
+    """
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53, "titanId": 999, "slotId": 2}])
+
+    sent_args = []
+
+    def _op(action, args):
+        sent_args.append(dict(args))
+        if len(sent_args) == 1:
+            return _error_response("NotEnough")
+        return _ok_response({"quests": [{"id": 10024, "state": 2}]})
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert len(succeeded) == 1
+    assert failed == []
+    # 10024 のステップ args は {heroId, slotId}。titanId は混入しない
+    assert sent_args[1] == {"heroId": 53, "slotId": 2}
+    assert "titanId" not in sent_args[1]
+
+
+def test_candidates_only_unknown_keys_not_tried(capsys):
+    """全ての候補キーがステップ args 外なら候補は 1 つも試されない（リトライなし）。"""
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"titanId": 999}])
+
+    client = _make_client([_active(10024)])
+    client.quest_operation = MagicMock(return_value=_error_response("NotEnough"))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert client.quest_operation.call_count == 1  # リトライされない
+
+
+def test_candidates_dry_run_plan_filters_unknown_keys(capsys):
+    """dry-run の計画表示でも未知キーを含む候補はフィルタされて表示される。"""
+    _enable("Alex", 10024)
+    set_quest_defaults("Alex", 10024, "candidates", [{"heroId": 53, "titanId": 999}])
+
+    client = _make_client([_active(10024)])
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert "titanId" not in out
+    assert "{'heroId': 53}" in out
+
+
+def test_guild_recipe_skipped_at_exact_boundary(capsys):
+    """last_recipe_at == サイクル開始時刻ちょうどでもスキップされる（>= 判定）。"""
+    boundary = 1786287600 - 86400
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary)
+
+    client.quest_operation = MagicMock()
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert "already executed this cycle" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
+    """デイリー 10023 成功時はギルドレシピを重複実行しない（同じ Gift 消費）。
+
+    quest_defaults[10023].enabled + quest_guild_defaults.enabled の両方が
+    有効なアカウントで、レシピが 1 回（LevelUp ×2 → Drop = 3 RPC）だけ
+    実行されることを保証する。
+    """
+    boundary = 1786287600 - 86400
+    client = _make_client(
+        [_active(10023), _active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    _enable("Alex", 10023)
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary - 60)  # 今日は未実行
+
+    calls = []
+
+    def _op(action, args):
+        calls.append((action, dict(args)))
+        if len(calls) == 3:
+            return _ok_response({"quests": [{"id": 10023, "state": 2}]})
+        return _ok_response({"quests": [{"id": 10023, "state": 1}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    # レシピは計 3 RPC（LevelUp×2 → Drop）＝デイリー 10023 の実行分のみ
+    assert client.quest_operation.call_count == 3
+    assert "skipping duplicate recipe" in out
+    assert len(succeeded) >= 1  # 10023 の claim は実行される
+
+
+def test_guild_dry_run_shows_daily_coverage(capsys):
+    """dry-run で 10023 がプランに載っている場合は重複レシピを計画しない。"""
+    client = _make_client(
+        [_active(10023), _active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    _enable("Alex", 10023)
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "skipping duplicate recipe" in out
+    # プランのギルドレシピセクションで heroTitanGiftLevelUp が提示されない
+    assert "Guild quests (Sparks of Power): run recipe to gain Sparks" not in out
+
+
 def test_guild_recipe_hero_id_prefers_quest_defaults(capsys):
     """ギルドレシピ heroId は quest_defaults[10023] が優先される。"""
     client = _make_client([_active_guild(20000111)])

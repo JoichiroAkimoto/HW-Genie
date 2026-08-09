@@ -179,6 +179,8 @@ class SessionRepository:
                     if key == "headers":
                         data["headers"] = val
                     elif key.startswith("player_"):
+                        # レガシー互換: 旧バージョンが保存した player_* 行の読み取り
+                        # （書き込み側は廃止済み。既存データのみを再構成する）
                         player_info[key[7:]] = val
                     else:
                         data[key] = val
@@ -403,13 +405,6 @@ class SessionRepository:
                     # Update alias and basic info using model method
                     account_rec.alias = account.strip()
                     account_rec.update_from_dict(player)
-
-                    # Store other player configs
-                    status_fields = ("id", "name", "level", "gold", "gems", "energy", "arena_rank", "grand_rank")
-                    for k, v in player.items():
-                        if k in status_fields:
-                            continue
-                        self._upsert_config(db, account_rec.id, f"player_{k}", v)
 
                 elif player is None:
                     account_rec = db.query(Account).filter(Account.alias == account).first()

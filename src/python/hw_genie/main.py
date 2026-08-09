@@ -584,7 +584,7 @@ def cmd_multi(args):
 
     results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
     failed = (
-        summarize_quests(results.items())
+        summarize_quests(results.items(), dry_run=dry_run)
         if mode == "quests"
         else summarize(results.items())
     )

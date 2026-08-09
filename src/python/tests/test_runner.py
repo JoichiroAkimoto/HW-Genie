@@ -365,12 +365,27 @@ def test_summarize_quests_unavailable_result_marks_failed(capsys):
     assert "0 account(s) completed, ❌ 1 failed." in out
 
 
+def test_summarize_quests_dry_run_uses_planned(capsys):
+    """dry-run サマリは completed ではなく planned と表示する（何も実行していないため）。"""
+    from hw_genie.runner import summarize_quests
+
+    results = [
+        ("alpha", (([{"quest_id": 10024}], [], []), None)),
+        ("beta", (([], [{"quest_id": 10028, "error": "bought"}], []), None)),
+    ]
+    failed = summarize_quests(results, dry_run=True)
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "1 account(s) planned, ❌ 1 failed." in out
+    assert "completed" not in out
+
+
 def test_cmd_multi_quests_success_exits_zero(monkeypatch):
     """multi quests with no failed quests exits 0."""
     from hw_genie import main
 
     monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
-    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 0)
 
     args = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False})()
     main.cmd_multi(args)  # must not raise SystemExit
@@ -400,7 +415,7 @@ def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     # cmd_multi imports summarize_quests inside the function, so patch the
     # runner module (the import source) rather than main's namespace.
-    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 1)
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 1)
 
     args = type("A", (), {"mode": "quests", "accounts": [], "parallel": None, "debug": False})()
     with pytest.raises(SystemExit) as exc:
@@ -420,7 +435,7 @@ def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
 
     monkeypatch.setattr("hw_genie.runner.quests_routine", fake_builder)
     monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
-    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 0)
 
     # args without dry_run attribute (legacy shape) -> default False
     from hw_genie import main
@@ -447,7 +462,7 @@ def test_cmd_multi_quests_dry_run_runs_sequentially(monkeypatch):
 
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
     monkeypatch.setattr("hw_genie.runner.quests_routine", lambda dry_run=False: lambda c, a: ([], [], []))
-    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items: 0)
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 0)
 
     captured["max_parallels"] = []
     args = type("A", (), {"mode": "quests", "accounts": [], "parallel": 4, "debug": False, "dry_run": True})()

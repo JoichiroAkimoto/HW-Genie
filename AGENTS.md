@@ -26,7 +26,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **デイリールーチン**: `uv run hw-genie daily`
 *   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
-*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定。詳細は README.md の「Docker での実行」セクションを参照。
+*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`--dry-run` でプラン表示のみ）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）。クエスト失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
 *   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）

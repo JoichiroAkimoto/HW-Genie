@@ -46,7 +46,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie multi quests --dry-run  # 実行プランのみ表示（何も実行しない）
    uv run hw-genie multi quests account1 account2  # 対象を限定
    ```
-   `--dry-run` は計画表示をアカウント順に保つため逐次実行されます。実行後のサマリ表には `quest_defaults` で無効のため対象外としたクエスト数を示す ⏭️ Skipped 列も表示されます（Skip 通知はアカウントごとに 1 行へ集約）。
+   `--dry-run` は計画表示をアカウント順に保つため逐次実行されます（`--parallel` を指定しても dry-run では無視され 1 が強制されます）。実行後のサマリ表には `quest_defaults` / `quest_guild_defaults` で無効のため対象外としたクエスト数を示す ⏭️ Skipped 列も表示されます（Skip 通知はアカウントごとに 1 行へ集約）。dry-run のサマリは「✅ N account(s) planned」と表示されます（何も実行していないため）。クエスト失敗があるアカウントがある場合は exit 1 で終了します（dry-run では失敗扱いになりません）。
    - **daily / full ルーチンに自動統合**: `multi daily`（bin/hwda）と `multi full`（bin/hwsa）は実行後に、各アカウントの `quest_defaults.enabled` クエストを自動完了します（非対話。クエスト失敗は報告のみでルーチン自体は exit 0。未初期化アカウントは何も実行されません）。
    - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）と `note`（操作 RPC 名の連結メモ、例: `"shopBuy → titanArtifactLevelUp"`）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます（`note` は DB JSON の可読性用で実行・引数上書きには影響しません）。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
    ```bash
@@ -80,7 +80,10 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie quests -a <ACCOUNT> --set-default guild enabled true
    ```
    claimable（state=2）のギルドクエスト報酬受領（スタミナ等）は設定に関係なく常時実行され、進行中（state=1）のものは有効時のみ heroTitanGift レシピ（10023 と同一: LevelUp ×2 → Drop）を 1 回実行して Sparks of Power を獲得、その後 questGetAll を取り直して state=2 になったものをまとめて受領します。レシピは**1 リセットサイクル（userGetInfo の nextDayTs ベース）に 1 回まで**で、実行完了時刻が `quest_guild_defaults.last_recipe_at`（Unix 秒）に保存され、同一サイクル内の再実行はスキップされます（nextDayTs が取れない環境ではガード無効＝レシピは従来どおり毎回実行。dry-run でもスキップが表示されます）。ギルドクエストが 0 件の日（月 1 回程度）は自動スキップされます。`multi quests` / `multi daily` / `multi full` にも同じロジックが組み込まれています。
-   - **フォールバック候補（candidates）**: 操作失敗時の再試行候補として `quest_defaults[qid].candidates`（優先度順の dict リスト、例: `[{"heroId": 53, "slotId": 2}]`）を設定できます。リソース不足エラー（`NotEnough` 等、`FALLBACK_ERROR_NAMES`）時に各候補の引数を args へマージして自動リトライし、成功した場合は報酬受領まで続行します。全候補失敗は失敗報告になります。スタミナ不足等の非リソース系エラーでは試行しません（heroId/slotId の変更では解決しないため）。
+   - **フォールバック候補（candidates）**: 操作失敗時の再試行候補として `quest_defaults[qid].candidates`（優先度順の dict リスト）を設定できます。リソース不足エラー（`NotEnough` 等、`FALLBACK_ERROR_NAMES`）時に各候補の引数を args へマージして自動リトライし、成功した場合は報酬受領まで続行します。全候補失敗は失敗報告になります。スタミナ不足等の非リソース系エラーでは試行しません（heroId/slotId の変更では解決しないため）。設定例（10024 が資源不足で失敗した場合に heroId:53 / slotId:2 で再試行する）:
+   ```bash
+   uv run hw-genie quests -a <ACCOUNT> --set-default 10024 candidates '[{"heroId": 53, "slotId": 2}]'
+   ```
    - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。上書きキーはステップの args に**既に存在するキー**にのみ適用され（誤ったキーは警告）、マルチステップ（10028 等）では該当する全ステップに適用されます。
    - 10028（Titan Artifact）の `shopBuy` は実行時に **shopGetAll の実在庫から reward/cost を動的解決**します（取得は実行単位で 1 回にキャッシュされ複数クエスト間で共有）。在庫取得失敗（認証以外）時のみコード既定値へフォールバックし、**指定 shop / slot が在庫に無い、または指定 slot が購入済み（bought）の場合は実行せず失敗報告**します（固定 reward での NotAvailable 送信を防止）。
 
