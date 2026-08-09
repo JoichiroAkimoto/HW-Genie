@@ -8,6 +8,8 @@
   slot 6〜21 が Valor Emblem 商品で buffId 61〜81）。``shop`` の
   buffId 集合がシグネチャ（61〜81）と一致した場合のみ Osh 週と判定し、
   Maestro 週などの不一致時はスキップする（Maestro は未対応）。
+  ``shop`` が空（買い切り済み）の場合は判定不能のため購入対象なしとして
+  正常完了する（購入は発生しないので実害なし）。
 - **優先度**: 優先度 1 → 2 → 3 の slot を順に購入し、残りの未購入商品は
   価格昇順（同額は slot 昇順）で購入する。購入済み（boughtCount >= buyLimit）
   とゴールドバフは対象外。
@@ -145,6 +147,8 @@ def is_osh_shop(shop: dict[str, Any]) -> bool:
     部分集合（非空）で判定するため、買い切った slot が shop から省略された
     場合やラインナップが将来追加された場合でも Osh 週として扱える。
     Maestro 週など Osh と異なるラインナップの場合は False（現状スキップ対象）。
+    空 shop は判定不能のため False（= スキップ扱い。購入対象が存在しないので
+    実害はない）。
     """
     buff_ids = _slot_buff_ids(shop)
     return bool(buff_ids) and buff_ids.issubset(OSH_BUFF_IDS)
@@ -154,9 +158,13 @@ def parse_slot(slot_id: Any, item: Any) -> AsgardItem | None:
     """slot を Valor Emblem 商品としてパースする。
 
     ゴールドバフ（cost に gold のみ）、価格が 0 以下（パース失敗を含む）、
-    構造不正の slot は ``None`` を返す（購入候補から除外される）。
+    構造不正・slotId が数値でない slot は ``None`` を返す（購入候補から除外される）。
     """
     if not isinstance(item, dict):
+        return None
+    # slotId は clanRaid_shopBuy の args にそのまま渡るため、数値化できない
+    # キー（"x" 等）は除外する（変換失敗時に 0 で購入リクエストが飛ぶのを防ぐ）。
+    if not str(slot_id).isdigit():
         return None
     cost = item.get("cost")
     if not isinstance(cost, dict):
@@ -189,6 +197,8 @@ def build_buy_queue(shop: dict[str, Any]) -> list[AsgardItem]:
 
     優先度 1〜3 に含まれる slot はその優先度・リスト順で先頭に並び、
     それ以外の商品は価格昇順（同額は slot 昇順）で末尾に続く。
+    （優先度外の商品は効果量・週替わり価格のバランスが不明なため、安い
+    ものを先に買う価格昇順で揃えている。）
     購入済み・ゴールドバフ・構造不正の slot は除外される。
     """
     shop_items = {
@@ -215,11 +225,6 @@ def build_buy_queue(shop: dict[str, Any]) -> list[AsgardItem]:
     return queue
 
 
-def _build_purchase_plan(shop: dict[str, Any]) -> list[AsgardItem]:
-    """購入キューを構築する（dry_run も同じ計画を使う）。"""
-    return build_buy_queue(shop)
-
-
 def run_asgard_shop(client: HWClient, dry_run: bool = False, account_alias: str | None = None) -> AsgardRunResult:
     """Asgard ショップの購入を実行（または計画表示）する。
 
@@ -230,6 +235,11 @@ def run_asgard_shop(client: HWClient, dry_run: bool = False, account_alias: str 
 
     Returns:
         AsgardRunResult。Maestro 週等でスキップした場合は ``skipped=True``。
+
+    Note:
+        残高（coins）は 1 ショップ分の連続購入ではローカル減算で十分（この
+        ツール以外の購入が挟まらないため）。実際の購入失敗（NotEnough）が
+        起きた場合も以降をスキップする安全策を併用している。
     """
     prefix = f"[{account_alias}] " if account_alias else ""
 
@@ -243,14 +253,22 @@ def run_asgard_shop(client: HWClient, dry_run: bool = False, account_alias: str 
         )
 
     if not is_osh_shop(shop):
-        print(
-            f"{Emojis.INFO}{prefix}Current Guild Raid shop is not the Osh lineup "
-            "(Maestro or unknown) - skipping (Osh only for now).",
-            flush=True,
-        )
+        # 空 shop（買い切り済み等）と Maestro 週など未知のラインナップは
+        # どちらも購入対象なしとしてスキップする（buy は一切発生しない）。
+        if shop:
+            print(
+                f"{Emojis.INFO}{prefix}Current Guild Raid shop is not the Osh lineup "
+                "(Maestro or unknown) - skipping (Osh only for now).",
+                flush=True,
+            )
+        else:
+            print(
+                f"{Emojis.INFO}{prefix}Asgard shop is empty (all slots bought out) - nothing to buy.",
+                flush=True,
+            )
         return AsgardRunResult(coins=coins, spent=0, remaining=coins, bought=0, skipped=True, items=[])
 
-    plan = _build_purchase_plan(shop)
+    plan = build_buy_queue(shop)
     total_cost = sum(item.price for item in plan)
     print(f"{Emojis.INFO}{prefix}Osh week detected: {len(plan)} item(s) available, budget: {coins} Valor Emblems "
           f"(total cost: {total_cost}).", flush=True)

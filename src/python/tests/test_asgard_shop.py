@@ -139,6 +139,25 @@ def test_run_asgard_shop_skips_maestro_week(mock_client, mock_sleep):
     assert mock_call.call_count == 1
 
 
+def test_run_asgard_shop_empty_shop_skips_cleanly(mock_client, mock_sleep):
+    """空 shop（全 slot 買い切り済み）はエラー扱いせずスキップで正常終了する。"""
+    client, mock_call = mock_client
+
+    res_empty = MagicMock()
+    res_empty.is_success = True
+    res_empty.detail = {"response": {"shop": {}, "coins": 300}}
+    mock_call.side_effect = [res_empty]
+
+    result = run_asgard_shop(client)
+
+    assert result.skipped is True
+    assert result.bought == 0
+    assert result.spent == 0
+    assert result.remaining == 300
+    assert result.error is None
+    assert mock_call.call_count == 1  # buy は一切呼ばれない
+
+
 def test_run_asgard_shop_fetch_error_reports_error(mock_client, mock_sleep):
     """clanRaid_getInfo 失敗時はエラーを報告し empty 結果（error 付き）を返すことを検証。"""
     client, mock_call = mock_client
@@ -180,10 +199,14 @@ def test_build_buy_queue_excludes_malformed_slots():
     shop["24"] = "not-a-dict"
     # cost が coin を持たないスロット
     shop["25"] = dict(shop["6"]) | {"buffId": 84, "cost": {"gold": 1000000}}
+    # slotId が数値でないスロット（変換失敗時に slotId=0 の購入が飛ぶのを防ぐ）
+    shop["x"] = dict(shop["6"]) | {"buffId": 85}
 
     queue = build_buy_queue(shop)
 
     assert all(item.slot_id not in (22, 23, 24, 25) for item in queue)
+    # "x" は数値化できないため候補に含まれない
+    assert all(item.slot_id != 0 for item in queue)
 
 
 def test_build_buy_queue_handles_string_counts_and_missing_coins():
@@ -271,6 +294,35 @@ def test_cmd_asgard_shop_success_exits_zero():
                 bought=1,
                 skipped=False,
                 items=[],
+            )
+
+        mp.setattr("hw_genie.commands.asgard_shop.run_asgard_shop", _run)
+        assert main_mod.cmd_asgard_shop(_Args()) is None
+
+
+def test_cmd_asgard_shop_purchase_error_exits_zero():
+    """購入エラー（error 未設定・items に ERROR あり）は exit 0（単一モード）。"""
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands.asgard_shop import AsgardResult, AsgardRunResult, ResponseStatus
+
+    class _Args:
+        account = None
+        dry_run = False
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
+        mp.setattr(main_mod.HWClient, "__init__", lambda self, headers: None)
+
+        def _run(*a, **k):
+            return AsgardRunResult(
+                coins=1000,
+                spent=100,
+                remaining=900,
+                bought=1,
+                skipped=False,
+                items=[AsgardResult(action="buy 8", status=ResponseStatus.ERROR, error="NotEnough")],
             )
 
         mp.setattr("hw_genie.commands.asgard_shop.run_asgard_shop", _run)
