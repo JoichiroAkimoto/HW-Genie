@@ -370,6 +370,20 @@ def cmd_shop(args):
     client.exchange_stones()
 
 
+def cmd_asgard_shop(args):
+    """Asgard（ギルドレイド）ショップの自動購入（Osh 週のみ）"""
+    headers = _ensure_session(args)
+
+    client = HWClient(headers)
+    from hw_genie.commands.asgard_shop import run_asgard_shop
+
+    result = run_asgard_shop(
+        client, dry_run=bool(args.dry_run), account_alias=args.account or None
+    )
+    if result.error:
+        sys.exit(1)
+
+
 def cmd_quests(args):
     """クエスト（デイリー等）の取得・表示"""
     from hw_genie.commands.quests import (
@@ -551,10 +565,12 @@ def cmd_db_check(args):
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
     from hw_genie.runner import (
+        asgard_shop_routine,
         daily_routine,
         full_routine,
         list_account_aliases,
         quests_routine,
+        summarize_asgard_shop,
         summarize_quests,
     )
 
@@ -568,7 +584,7 @@ def cmd_multi(args):
     if mode != "quests" and getattr(args, "dry_run", False):
         print(
             "Error: --dry-run is only supported with the 'quests' mode "
-            "(daily/full routines always execute their operations).",
+            "(daily/full/asgard-shop routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -578,16 +594,20 @@ def cmd_multi(args):
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
         max_parallel = 1 if dry_run else args.parallel
+    elif mode == "asgard-shop":
+        routine = asgard_shop_routine
+        max_parallel = args.parallel
     else:
         routine = full_routine if mode == "full" else daily_routine
         max_parallel = args.parallel
 
     results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
-    failed = (
-        summarize_quests(results.items(), dry_run=dry_run)
-        if mode == "quests"
-        else summarize(results.items())
-    )
+    if mode == "quests":
+        failed = summarize_quests(results.items(), dry_run=dry_run)
+    elif mode == "asgard-shop":
+        failed = summarize_asgard_shop(results.items())
+    else:
+        failed = summarize(results.items())
     if failed:
         sys.exit(1)
 
@@ -642,6 +662,17 @@ def main():
     p_shop = subparsers.add_parser("shop", parents=[parent_parser], help="Shop operations")
     p_shop.set_defaults(func=cmd_shop)
 
+    # Asgard Shop (Guild Raid merchant, Osh week only)
+    p_asgard_shop = subparsers.add_parser(
+        "asgard-shop",
+        parents=[parent_parser],
+        help="Asgard Guild Raid shop operations (Osh week only; Maestro skipped)",
+    )
+    p_asgard_shop.add_argument(
+        "--dry-run", action="store_true", help="Show the purchase plan without buying anything"
+    )
+    p_asgard_shop.set_defaults(func=cmd_asgard_shop)
+
     # Daily
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
@@ -683,10 +714,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests"],
+        choices=["daily", "full", "quests", "asgard-shop"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), or 'quests' (daily quest auto-completion)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), or 'asgard-shop' (Osh Guild Raid merchant auto-buy)",
     )
     p_multi.add_argument(
         "accounts",

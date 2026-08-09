@@ -987,3 +987,87 @@ def test_cmd_sync_sync_failure(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "Sync failed" in captured.err
     assert "connection refused" in captured.err
+
+
+def test_summarize_asgard_shop_counts_failures(capsys):
+    """Asgard shop summary: purchase errors and routine errors count as failed."""
+    from hw_genie.commands.asgard_shop import (
+        AsgardResult,
+        AsgardRunResult,
+        ResponseStatus,
+    )
+    from hw_genie.runner import summarize_asgard_shop
+
+    results = [
+        (
+            "alpha",
+            (
+                AsgardRunResult(
+                    coins=1000, spent=1000, remaining=0, bought=13, skipped=False,
+                    items=[AsgardResult(action="buy 8", status=ResponseStatus.SUCCESS)],
+                ),
+                None,
+            ),
+        ),
+        (
+            "beta",
+            (
+                AsgardRunResult(
+                    coins=1000, spent=100, remaining=900, bought=1, skipped=False,
+                    items=[AsgardResult(action="buy 8", status=ResponseStatus.ERROR, error="NotEnough")],
+                ),
+                None,
+            ),
+        ),
+        ("gamma", (None, ValueError("x"))),
+    ]
+    failed = summarize_asgard_shop(results)
+    out = capsys.readouterr().out
+    assert failed == 2
+    assert "alpha" in out
+    assert "beta" in out
+    assert "gamma" in out
+    assert "Multi asgard-shop summary" in out
+    assert "Failed (2)" in out
+    assert "1 account(s) completed, ❌ 2 failed." in out
+
+
+def test_summarize_asgard_shop_skipped_week_is_ok(capsys):
+    """Maestro 週（skipped=True）は失敗扱いにせず Skipped 列に表示する。"""
+    from hw_genie.commands.asgard_shop import AsgardRunResult
+    from hw_genie.runner import summarize_asgard_shop
+
+    results = [
+        ("alpha", (AsgardRunResult(coins=1000, spent=0, remaining=1000, bought=0, skipped=True, items=[]), None)),
+    ]
+    failed = summarize_asgard_shop(results)
+    out = capsys.readouterr().out
+    assert failed == 0
+    assert "⏭️" in out
+    assert "1 account(s) completed, ❌ 0 failed." in out
+
+
+def test_summarize_asgard_shop_unavailable_result_marks_failed(capsys):
+    """AsgardRunResult 以外のルーチン結果は失敗扱いにする。"""
+    from hw_genie.runner import summarize_asgard_shop
+
+    failed = summarize_asgard_shop([("alpha", ("unexpected", None))])
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "alpha (asgard-shop result unavailable)" in out
+    assert "0 account(s) completed, ❌ 1 failed." in out
+
+
+def test_summarize_asgard_shop_fetch_error_marks_failed(capsys):
+    """在庫取得失敗（result.error）は失敗扱いにして exit 対象にする。"""
+    from hw_genie.commands.asgard_shop import AsgardRunResult
+    from hw_genie.runner import summarize_asgard_shop
+
+    results = [
+        ("alpha", (AsgardRunResult(coins=0, spent=0, remaining=0, bought=0, skipped=False, items=[], error="clanRaid_getInfo failed (notFound)"), None)),
+    ]
+    failed = summarize_asgard_shop(results)
+    out = capsys.readouterr().out
+    assert failed == 1
+    assert "alpha (shop fetch failed: clanRaid_getInfo failed (notFound))" in out
+    assert "0 account(s) completed, ❌ 1 failed." in out

@@ -160,6 +160,8 @@ class ApiAction(str, Enum):
     SHOP_GET_ALL = "shopGetAll"
     SHOP_BUY = "shopBuy"
     USER_GET_INFO = "userGetInfo"
+    CLAN_RAID_GET_INFO = "clanRaid_getInfo"
+    CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
 
 
 class ErrorName(str, Enum):

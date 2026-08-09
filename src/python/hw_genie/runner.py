@@ -202,6 +202,20 @@ def quests_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
     return run
 
 
+def asgard_shop_routine(client: HWClient, account: str) -> object:
+    """Run the Asgard Guild Raid shop auto-buy for ``account``.
+
+    Osh 週のみ購入を実行し、Maestro 週等はスキップする
+    （判定と購入ロジックは :mod:`hw_genie.commands.asgard_shop` に集約）。
+
+    Returns:
+        ``AsgardRunResult``（アカウント別の残高・購入結果サマリ）。
+    """
+    from hw_genie.commands.asgard_shop import run_asgard_shop
+
+    return run_asgard_shop(client, dry_run=False, account_alias=account)
+
+
 def full_routine(client: HWClient, account: str) -> object:
     """Run raid-hero + shop + daily, the equivalent of ``bin/hwsa``."""
     from hw_genie.commands.hero_raid import run_hero_raid
@@ -432,6 +446,74 @@ def summarize_quests(
     return len(failed)
 
 
+# Asgard shop summary table (per-account bought / spent / remaining).
+_ASGARD_HEADERS = ["Account", "✅ Bought", "💰 Spent", "🪙 Left", "⏭️ Skipped"]
+
+
+def _asgard_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the Asgard shop summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_asgard_table(rows: list[list[str]]) -> str:
+    """Render the per-account Asgard shop summary table."""
+    return _render_table(_ASGARD_HEADERS, rows, _asgard_cell_styler)
+
+
+def summarize_asgard_shop(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+) -> int:
+    """Print a per-account Asgard shop table and return the failed count.
+
+    Results come from :func:`asgard_shop_routine`: per account an
+    ``AsgardRunResult``. Accounts whose routine errored, whose shop fetch
+    failed (``result.error`` set), or with any purchase error count as
+    failed; accounts skipped because the shop is not the Osh lineup (Maestro
+    week) are shown in the "Skipped" column and do not fail.
+    """
+    from hw_genie.commands.asgard_shop import AsgardRunResult
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, AsgardRunResult) and res.error is None:
+            rows.append(
+                [
+                    account,
+                    str(res.bought),
+                    str(res.spent),
+                    str(res.remaining),
+                    "⏭️" if res.skipped else "-",
+                ]
+            )
+            if res.failed_count:
+                failed.append(f"{account} ({res.failed_count} purchase error(s))")
+            else:
+                ok += 1
+        elif err is None and isinstance(res, AsgardRunResult):
+            failed.append(f"{account} (shop fetch failed: {res.error})")
+        elif err is None:
+            failed.append(f"{account} (asgard-shop result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_ASGARD_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print("📊 --- Multi asgard-shop summary ---")
+    if rows:
+        print(_render_asgard_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 __all__ = [
     "list_account_aliases",
     "run_for_account",
@@ -439,6 +521,8 @@ __all__ = [
     "daily_routine",
     "full_routine",
     "quests_routine",
+    "asgard_shop_routine",
     "summarize",
     "summarize_quests",
+    "summarize_asgard_shop",
 ]
