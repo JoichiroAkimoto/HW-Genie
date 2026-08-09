@@ -61,7 +61,7 @@ Unique constraint: `(account_id, config_key)`
 | `"headers"` | `dict[str, str]` | 認証ヘッダー（x-auth-*） |
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
-| `"player_{key}"` | 任意 | Player のその他情報（Account テーブルのカラム以外のもの） |
+| `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
 
 ## 型定義
 
@@ -104,7 +104,7 @@ SessionManager.load(alias)
   → SessionRepository.get_data(alias)
     → Account (alias で検索)
     → AccountConfig (account_id で一括取得)
-    → 各 config_key を data dict にマージ
+    → 各 config_key を data dict にマージ（`player_*` はレガシー行として player_info へ再構成）
     → Account カラムを player_info にオーバーレイ
     → AccountData を返す
 ```

@@ -63,26 +63,35 @@ def test_update_session_updates_existing_db_record():
 
 
 def test_update_session_does_not_persist_player_meta_configs():
-    """PlayerStatus の next_day_ts / timezone は player_* config として保存されない。
+    """player_* 系 config（next_day_ts / timezone 等）は保存されない。
 
     quests ギルドレシピの 1 日 1 回ガードは fetch_player_status()（ライブ API）
     の値を用いるため、認証時のキャッシュ（player_next_day_ts 等）は不要。
-    保存されないことで account_configs にゴミが溜まらないことを保証する。
+    account_configs に player_* ファミリー全体が存在しないことを直接検証する
+    （timezone / next_day_ts の 2 キーのみのスポットチェックでは、将来
+    player_* 書き込みを復活させてもテストが通ってしまうため）。
     """
     account = "meta_config_user"
     headers = {"x-auth-token": "mock-token"}
 
-    mock_player = PlayerStatus(name="MetaUser", level=100, timezone=-10, next_day_ts=1786287600)
+    mock_player = PlayerStatus(id="meta-player-001", name="MetaUser", level=100, timezone=-10, next_day_ts=1786287600)
     mock_info = {"headers": headers, "status": "success", "player": mock_player}
 
     with patch("hw_genie.core.auth.get_user_info", return_value=mock_info):
         update_session_with_headers(headers, account)
 
-    # player_* キーが account_configs に保存されていないこと（timezone / next_day_ts は
-    # player dict に混入しない）。SessionManager.load は player_* config を player に
-    # 再構成するため、ここが空なら DB にも保存されていないことになる。
-    db_data = SessionManager.load(account)
-    assert "player" in db_data
-    player_info = db_data["player"]
-    assert "timezone" not in player_info
-    assert "next_day_ts" not in player_info
+    # account_configs に player_* キーが 1 件も存在しないこと（直接走査）
+    from hw_genie.core.database import Account, AccountConfig
+    from hw_genie.core.repository import get_session_local
+
+    db = get_session_local()()
+    try:
+        acct = db.query(Account).filter(Account.player_id == mock_player.id).first()
+        assert acct is not None
+        keys = [
+            c.config_key
+            for c in db.query(AccountConfig).filter(AccountConfig.account_id == acct.id).all()
+        ]
+    finally:
+        db.close()
+    assert not any(k.startswith("player_") for k in keys)

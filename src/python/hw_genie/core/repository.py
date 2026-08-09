@@ -179,6 +179,8 @@ class SessionRepository:
                     if key == "headers":
                         data["headers"] = val
                     elif key.startswith("player_"):
+                        # レガシー互換: 旧バージョンが保存した player_* 行の読み取り
+                        # （書き込み側は廃止済み。既存データのみを再構成する）
                         player_info[key[7:]] = val
                     else:
                         data[key] = val
