@@ -495,6 +495,32 @@ def _quest_candidates(account_defaults: dict[int, dict[str, Any]], quest_id: int
     return [c for c in candidates if isinstance(c, dict)]
 
 
+def _filter_candidates(candidates: list[dict[str, Any]], known_keys: set[str]) -> list[dict[str, Any]]:
+    """候補からステップ args に存在しないキーを除去する。
+
+    実実行（``_run_quest_step``）と同じ規則を dry-run の計画表示にも適用し、
+    「試される候補」の表示が実際の挙動と乖離しないようにする。
+    """
+    filtered = [{k: v for k, v in cand.items() if k in known_keys} for cand in candidates]
+    return [cand for cand in filtered if cand]
+
+
+def _guild_recipe_steps(
+    account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """ギルドレシピ（QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]）のステップ列を解決する。
+
+    dry-run の計画表示と実実行で同じ解決ロジックを使い回すための共通化。
+    ``quest_defaults[10023].heroId`` が設定済みならそれを優先する
+    （``_guild_recipe_overrides`` 参照）。
+    """
+    recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
+    overrides = _guild_recipe_overrides(account_defaults, guild_defaults)
+    return _resolve_operation_args(
+        GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: overrides}
+    )
+
+
 def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
     """``quest_guild_defaults`` を初期化・補完する（既存値は保持）。
 
@@ -844,6 +870,7 @@ def run_quest_execute(
     # （タイムゾーンはサーバーが nextDayTs に反映済みのため、ここでは UTC で
     #   比較するだけでよい。nextDayTs が取れない環境ではガード無効＝従来挙動）
     guild_recipe_ran_today = False
+    guild_boundary: int | None = None
     if guild_active and guild_enabled:
         try:
             player = client.fetch_player_status()
@@ -852,7 +879,11 @@ def run_quest_execute(
             guild_boundary = None
         if guild_boundary is not None:
             last_recipe_at = guild_defaults.get("last_recipe_at")
-            guild_recipe_ran_today = isinstance(last_recipe_at, (int, float)) and last_recipe_at >= guild_boundary
+            guild_recipe_ran_today = (
+                isinstance(last_recipe_at, (int, float))
+                and not isinstance(last_recipe_at, bool)
+                and last_recipe_at >= guild_boundary
+            )
 
     succeeded: list[dict[str, Any]] = []
     has_work = claimable or targets or guild_claimable or guild_active
@@ -872,40 +903,40 @@ def run_quest_execute(
             print(f"\n🔹 {q.id} {q.name}")
             for st in steps:
                 print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
-            candidates = _quest_candidates(account_defaults, q.id)
+            candidates = _filter_candidates(
+                _quest_candidates(account_defaults, q.id),
+                {k for st in steps for k in st["args"]},
+            )
             if candidates:
                 print(f"    (fallback candidates: {candidates})")
         if guild_active:
+            daily_covers_recipe = any(q.id == GUILD_QUEST_RECIPE_ID for q, _ in targets)
             if not guild_enabled:
                 print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
+            elif daily_covers_recipe:
+                print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
             elif guild_recipe_ran_today:
                 print(f"ℹ️  Guild quests (Sparks of Power): recipe already executed today (cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
             else:
                 print("\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks")
-                recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
-                steps = _resolve_operation_args(GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: _guild_recipe_overrides(account_defaults, guild_defaults)})
+                steps = _guild_recipe_steps(account_defaults, guild_defaults)
                 for st in steps:
                     print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
         print_skipped_quests(account, skipped)
         return [], failures, skipped
 
-    # 受領フェーズ（操作不要）
-    for q in claimable + guild_claimable:
-        print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
-        claim_res = client.quest_farm(q.id)
-        if claim_res.status == ResponseStatus.SUCCESS:
-            succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
-            print(f"   🎁 Reward claimed for {q.id} {q.name}")
-        else:
-            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
-            print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
+# 受領フェーズ（操作不要）
+    _claim_quests(client, claimable + guild_claimable, account, succeeded, failures)
 
     # 実行フェーズ
+    recipe_executed_in_daily = False
     for q, steps in targets:
         print(f"\n🔹 Executing {q.id} {q.name} ...")
+        all_steps_ok = True
         for st in steps:
             resp = _run_quest_step(client, q, st, account, confirm, account_defaults, failures)
             if resp is None:
+                all_steps_ok = False
                 break
 
             # レスポンスに含まれる quests 配列から対象クエストの状態を確認
@@ -923,81 +954,141 @@ def run_quest_execute(
         else:
             print(f"ℹ️  [{account}] {q.id} {q.name}: steps executed but claim not detected (check questGetAll).")
 
+        # デイリー 10023（heroTitanGift レシピと同一）を成功させた場合は、
+        # 「ギルドレシピ実行」を兼ねた扱いにしてギルドフェーズでの二重実行を防ぐ。
+        if q.id == GUILD_QUEST_RECIPE_ID and all_steps_ok:
+            recipe_executed_in_daily = True
+            set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
+
     # ギルドクエスト（Sparks of Power）フェーズ: active のギルドクエストが
     # ある場合、heroTitanGift レシピを 1 回実行し、その後 questGetAll を
     # 取り直して達成（state=2）になったギルドクエストをまとめて claim する。
     # （1 リセットサイクル 1 回ガード: nextDayTs で決まる今日のサイクル内に
     #   レシピを実行済みなら、次のリセットまでレシピはスキップする。
     #   claimable のギルドクエストは上の受領フェーズで既に受領されている）
-    if guild_enabled and guild_active:
-        if guild_recipe_ran_today:
-            guild_ids = ", ".join(str(q.id) for q in guild_active)
-            print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed this cycle (cycle started "
-                  f"{format_create_time(int(guild_boundary))}); skipping recipe.")
-        else:
-            guild_ids = ", ".join(str(q.id) for q in guild_active)
-            print(f"\n🔹 Guild quests ({guild_ids}): running recipe to gain Sparks of Power ...")
-            recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
-            overrides = _guild_recipe_overrides(account_defaults, guild_defaults)
-            steps = _resolve_operation_args(GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: overrides})
-            recipe_ok = True
-            for st in steps:
-                if not confirm:
-                    try:
-                        answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
-                    except EOFError:
-                        print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
-                        failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
-                        recipe_ok = False
-                        break
-                    if answer.strip().lower() not in ("y", "yes"):
-                        print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
-                        failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
-                        recipe_ok = False
-                        break
-
-                try:
-                    resp = client.quest_operation(st["rpc"], st["args"])
-                except Exception as exc:  # noqa: BLE001
-                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
-                    print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
-                    recipe_ok = False
-                    break
-
-                if resp.status != ResponseStatus.SUCCESS:
-                    error = resp.error_name or "-"
-                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": error})
-                    print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {error}")
-                    recipe_ok = False
-                    break
-
-            if recipe_ok:
-                print("   ✅ Recipe executed. Re-fetching quests to claim reached stages...")
-                set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
-                res2 = client.quest_get_all()
-                if res2.status == ResponseStatus.SUCCESS:
-                    raw2 = res2.detail.get("response") if isinstance(res2.detail, dict) else None
-                    refreshed = parse_quests(raw2) if isinstance(raw2, list) else []
-                    reached = [q for q in refreshed if is_guild_quest(q.id) and q.is_claimable]
-                    if not reached:
-                        print("   ℹ️  No guild quest reached claimable state yet (progress gained).")
-                    for q in reached:
-                        print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
-                        claim_res = client.quest_farm(q.id)
-                        if claim_res.status == ResponseStatus.SUCCESS:
-                            succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
-                            print(f"   🎁 Reward claimed for {q.id} {q.name}")
-                        else:
-                            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
-                            print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
-                else:
-                    error = res2.error_name or "-"
-                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": "questGetAll", "error": error})
-                    print(f"❌ [{account}] Guild quests: re-fetch failed: {error}")
+    _run_guild_quest_phase(
+        client=client,
+        guild_active=guild_active,
+        guild_enabled=guild_enabled,
+        guild_recipe_ran_today=guild_recipe_ran_today,
+        recipe_executed_in_daily=recipe_executed_in_daily,
+        guild_boundary=guild_boundary,
+        account=account,
+        account_defaults=account_defaults,
+        guild_defaults=guild_defaults,
+        confirm=confirm,
+        succeeded=succeeded,
+        failures=failures,
+    )
 
     print_skipped_quests(account, skipped)
     print_quest_failures(account, failures)
     return succeeded, failures, skipped
+
+
+def _claim_quests(
+    client: HWClient,
+    quests: list[Quest],
+    account: str,
+    succeeded: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> None:
+    """操作不要な claimable クエストをまとめて questFarm で受領する。"""
+    for q in quests:
+        print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
+        claim_res = client.quest_farm(q.id)
+        if claim_res.status == ResponseStatus.SUCCESS:
+            succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
+            print(f"   🎁 Reward claimed for {q.id} {q.name}")
+        else:
+            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
+            print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
+
+
+def _run_guild_quest_phase(
+    client: HWClient,
+    guild_active: list[Quest],
+    guild_enabled: bool,
+    guild_recipe_ran_today: bool,
+    recipe_executed_in_daily: bool,
+    guild_boundary: int | None,
+    account: str,
+    account_defaults: dict[int, dict[str, Any]],
+    guild_defaults: dict[str, Any],
+    confirm: bool,
+    succeeded: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> None:
+    """ギルドクエスト（Sparks of Power）フェーズを実行する。
+
+    active のギルドクエストに対して heroTitanGift レシピを 1 回実行し、
+    その後 questGetAll を取り直して達成（state=2）になったギルドクエストを
+    まとめて claim する。
+
+    - ``recipe_executed_in_daily``: 同一実行内でデイリー 10023 が既に成功
+      していた場合、レシピを重複実行しない（Gift 系資源の二重消費防止）。
+    - ``guild_recipe_ran_today``: リセットサイクル内で既に実行済み（別の
+      実行時）の場合もスキップする。
+    """
+    if not (guild_enabled and guild_active):
+        return
+    guild_ids = ", ".join(str(q.id) for q in guild_active)
+    if recipe_executed_in_daily:
+        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed via daily quest 10023 in this run; skipping duplicate recipe.")
+        return
+    if guild_recipe_ran_today:
+        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed this cycle (cycle started "
+              f"{format_create_time(int(guild_boundary))}); skipping recipe.")
+        return
+
+    print(f"\n🔹 Guild quests ({guild_ids}): running recipe to gain Sparks of Power ...")
+    steps = _guild_recipe_steps(account_defaults, guild_defaults)
+    recipe_ok = True
+    for st in steps:
+        if not confirm:
+            try:
+                answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
+            except EOFError:
+                print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
+                recipe_ok = False
+                break
+            if answer.strip().lower() not in ("y", "yes"):
+                print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
+                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
+                recipe_ok = False
+                break
+
+        try:
+            resp = client.quest_operation(st["rpc"], st["args"])
+        except Exception as exc:  # noqa: BLE001
+            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
+            print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
+            recipe_ok = False
+            break
+
+        if resp.status != ResponseStatus.SUCCESS:
+            error = resp.error_name or "-"
+            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": error})
+            print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {error}")
+            recipe_ok = False
+            break
+
+    if recipe_ok:
+        print("   ✅ Recipe executed. Re-fetching quests to claim reached stages...")
+        set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
+        res2 = client.quest_get_all()
+        if res2.status == ResponseStatus.SUCCESS:
+            raw2 = res2.detail.get("response") if isinstance(res2.detail, dict) else None
+            refreshed = parse_quests(raw2) if isinstance(raw2, list) else []
+            reached = [q for q in refreshed if is_guild_quest(q.id) and q.is_claimable]
+            if not reached:
+                print("   ℹ️  No guild quest reached claimable state yet (progress gained).")
+            _claim_quests(client, reached, account, succeeded, failures)
+        else:
+            error = res2.error_name or "-"
+            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": "questGetAll", "error": error})
+            print(f"❌ [{account}] Guild quests: re-fetch failed: {error}")
 
 
 def print_skipped_quests(account: str, skipped: list[int]) -> None:
@@ -1029,7 +1120,9 @@ def _run_quest_step(
         成功時の HWResponse（呼び出し側で claim 判定に使う）。中断・全失敗
         なら None（failures への追記済み）。
     """
-    candidates = _quest_candidates(account_defaults, q.id)
+    candidates = _filter_candidates(
+        _quest_candidates(account_defaults, q.id), set(st["args"])
+    )
     args_list = [st["args"]] + [{**st["args"], **cand} for cand in candidates]
     last_error: str | None = None
     for idx, args in enumerate(args_list):

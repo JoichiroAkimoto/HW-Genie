@@ -46,7 +46,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie multi quests --dry-run  # 実行プランのみ表示（何も実行しない）
    uv run hw-genie multi quests account1 account2  # 対象を限定
    ```
-   `--dry-run` は計画表示をアカウント順に保つため逐次実行されます。実行後のサマリ表には `quest_defaults` で無効のため対象外としたクエスト数を示す ⏭️ Skipped 列も表示されます（Skip 通知はアカウントごとに 1 行へ集約）。
+   `--dry-run` は計画表示をアカウント順に保つため逐次実行されます（`--parallel` を指定しても dry-run では無視され 1 が強制されます）。実行後のサマリ表には `quest_defaults` / `quest_guild_defaults` で無効のため対象外としたクエスト数を示す ⏭️ Skipped 列も表示されます（Skip 通知はアカウントごとに 1 行へ集約）。dry-run のサマリは「✅ N account(s) planned」と表示されます（何も実行していないため）。クエスト失敗があるアカウントがある場合は exit 1 で終了します（dry-run では失敗扱いになりません）。
    - **daily / full ルーチンに自動統合**: `multi daily`（bin/hwda）と `multi full`（bin/hwsa）は実行後に、各アカウントの `quest_defaults.enabled` クエストを自動完了します（非対話。クエスト失敗は報告のみでルーチン自体は exit 0。未初期化アカウントは何も実行されません）。
    - **実行可否はアカウントごとに** `account_configs` の `quest_defaults` で制御します。初期状態は全クエスト無効（`enabled: false`）で、`--init-defaults`（または初回 `--execute`）で未初期化アカウントにのみ自動投入されます。**投入時に各操作ステップのデフォルト引数（heroId/titanId 等の共有値）と `note`（操作 RPC 名の連結メモ、例: `"shopBuy → titanArtifactLevelUp"`）も一緒に補完**され、コード側レシピの変更の影響を受けないアカウント設定として固定されます（`note` は DB JSON の可読性用で実行・引数上書きには影響しません）。有効化・引数上書きは **対話的ウィザード `--edit-defaults`**（推奨）か `--set-default` で行います:
    ```bash

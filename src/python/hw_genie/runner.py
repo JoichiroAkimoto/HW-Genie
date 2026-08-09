@@ -189,8 +189,8 @@ def quests_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
         dry_run: Show the per-account execution plan without running anything.
 
     Returns:
-        A routine whose result per account is the ``(succeeded, failed)``
-        pair returned by ``run_quest_execute``.
+        A routine whose result per account is the ``(succeeded, failed,
+        skipped)`` triple returned by ``run_quest_execute``.
     """
     from hw_genie.commands.quests import run_quest_execute
 
@@ -386,6 +386,7 @@ def _render_quest_table(rows: list[list[str]]) -> str:
 
 def summarize_quests(
     results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
 ) -> int:
     """Print a per-account quest completion table and return the failed count.
 
@@ -394,7 +395,9 @@ def summarize_quests(
     Accounts whose routine errored or reported any failed quest count as
     failed, mirroring ``quests --execute`` exiting non-zero on failure; ``ok``
     counts only accounts that completed without quest failures. ``skipped``
-    are quests excluded because ``quest_defaults`` disabled them.
+    are quests excluded because ``quest_defaults`` / ``quest_guild_defaults``
+    disabled them. With ``dry_run=True`` the footer says "planned" instead of
+    "completed" since nothing was executed.
     """
     ok = 0
     failed: list[str] = []
@@ -424,7 +427,8 @@ def summarize_quests(
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
     print("=" * width)
-    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
 
 
