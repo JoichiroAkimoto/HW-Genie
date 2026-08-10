@@ -14,6 +14,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-raid**: 指定ミッションのヒーローレイド。
 *   **hero-shopping**: ヒーローソウルとソウルショップの一括購入。
 *   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh 週）で Valor Emblem を使ったバフの自動購入。
+*   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認）。
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
 *   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`）。
@@ -27,8 +28,10 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh 週のみ。`--dry-run` で計画表示のみ。詳細は `.agents/skills/asgard-shop/SKILL.md`）
 *   **デイリールーチン**: `uv run hw-genie daily`
 *   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
+*   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）
+*   **consumable 一括消費**: `uv run hw-genie consumable run`（レジストリ `CONSUMABLE_USE_TARGETS` 登録済みアイテムを在庫全量消費。`<libId>` 位置引数で指定、未登録アイテムは `--method` でメソッド指定、`--dry-run` で予行。詳細は `.agents/skills/consumable/SKILL.md`）
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
-*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ、`--dry-run` でプラン表示のみ）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）。クエスト失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
+*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ、`consumable` で consumable 一括消費のみ、`--dry-run` でプラン表示のみ）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）。クエスト／consumable 失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
 *   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）

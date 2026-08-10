@@ -158,6 +158,54 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 }
 ```
 
+`response` の各キーがカテゴリ（`consumable` / `gear` / `scroll` / `fragmentScroll` /
+`fragmentGear` / `fragmentHero` / `ascensionGear` 等、実測で 14 種）、その値が
+`{libId: 個数}` のマップです。`consumable` の libId は消費アイテムを表し、
+事前定義された名前・消費方法は `core/consumables.py` のレジストリを参照してください。
+
+---
+
+## consumableUseLootBox - ルートボックス（Loot Box）消費
+
+consumable（`inventoryGet` の `response.consumable`）のうち、ルートボックス
+種別のアイテムをまとめて開封します。レジストリ登録済み libId の一括消費は
+`hw-genie consumable run` で行えます。
+
+### curl 実行例
+```bash
+# libId 215（Equipment Fragment Chest）を 48 個消費
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"consumableUseLootBox","args":{"libId":215,"amount":48},"context":{"actionTs":1750526},"ident":"body"}]}'
+```
+
+### Response Structure
+```json
+{
+  "results": [{
+    "ident": "body",
+    "result": {
+      "response": {
+        "48": {
+          "fragmentScroll": { "218": 5, "192": 10, "193": 15, "216": 5 },
+          "fragmentGear": { "91": 10, "93": 10, "171": 5, "94": 5 }
+        }
+      }
+    }
+  }]
+}
+```
+
+`response` のキーは**消費した数量**（例: `"48"`）で、その値のカテゴリ
+（`fragmentScroll` 等）ごとに `{libId: 報酬量}` として報酬が返ります。
+`hw-genie` ではこのカテゴリごとの合計を `ConsumableUseResult.rewards` に集計します。
+
+他の consumable 種別（`consumableUseStamina` 等）はアイテムごとにメソッドが
+異なるため、実測で判明したものだけ `core/consumables.py` のレジストリに
+登録しています。未登録アイテムは `consumable run --method <method>` で
+明示指定できます。
+
 ---
 
 ## その他のメソッド
