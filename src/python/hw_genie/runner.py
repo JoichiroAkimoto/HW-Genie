@@ -229,6 +229,35 @@ def full_routine(client: HWClient, account: str) -> object:
     return daily_routine(client, account)
 
 
+def consumable_routine(
+    lib_ids: list[int] | None = None,
+    method_override: str | None = None,
+    dry_run: bool = False,
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that consumes the registered consumables for any account.
+
+    ``CONSUMABLE_USE_TARGETS``（core/consumables.py のレジストリ）に登録された
+    consumable を在庫全量消費する。対象・メソッドは実行時に ``--lib`` /
+    ``--method`` で上書きできる。dry_run なら計画表示のみ。
+
+    Returns:
+        A routine whose result per account is the list of
+        ``ConsumableUseResult`` returned by ``run_consumable_use``.
+    """
+    from hw_genie.commands.consumables import run_consumable_use
+
+    def run(client: HWClient, account: str) -> object:
+        return run_consumable_use(
+            client,
+            lib_ids=lib_ids,
+            method_override=method_override,
+            dry_run=dry_run,
+            account_alias=account,
+        )
+
+    return run
+
+
 def _status_cells(account: str, result: object) -> list[str] | None:
     """Return the column cells for one account, or None if status is unavailable."""
     from hw_genie.core.client import PlayerStatus
@@ -382,7 +411,72 @@ def summarize(results: Iterable[tuple[str, tuple[object | None, BaseException | 
     return len(failed)
 
 
-# Quest summary table (per-account succeeded / failed quest counts).
+# Consumable use summary table (per-account consumed / skipped / failed).
+_CONSUMABLE_HEADERS = ["Account", "✅ Consumed", "⏭️ Skipped", "❌ Failed"]
+
+
+def _consumable_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the consumable use summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_consumable_table(rows: list[list[str]]) -> str:
+    """Render the per-account consumable use summary table."""
+    return _render_table(_CONSUMABLE_HEADERS, rows, _consumable_cell_styler)
+
+
+def summarize_consumable(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account consumable use table and return the failed count.
+
+    Results come from routines built by :func:`consumable_routine`: per account
+    a list of ``ConsumableUseResult`` (see ``run_consumable_use``). Accounts
+    whose routine errored or whose results contain any ERROR/UNEXPECTED item
+    count as failed; ``ok`` counts only accounts that consumed (or planned)
+    without errors. With ``dry_run=True`` the footer says "planned" instead of
+    "consumed" since nothing was executed.
+    """
+    from hw_genie.core.client import ResponseStatus
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, list):
+            succeeded = sum(1 for r in res if r.status == ResponseStatus.SUCCESS)
+            skipped = sum(1 for r in res if r.status == ResponseStatus.SKIPPED)
+            errors = sum(
+                1
+                for r in res
+                if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED)
+            )
+            rows.append([account, str(succeeded), str(skipped), str(errors)])
+            if errors:
+                failed.append(account)
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (consumable result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_CONSUMABLE_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print("📊 --- Multi consumable summary ---")
+    if rows:
+        print(_render_consumable_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "consumed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
 _QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "⏭️ Skipped", "❌ Failed"]
 
 
@@ -522,7 +616,9 @@ __all__ = [
     "full_routine",
     "quests_routine",
     "asgard_shop_routine",
+    "consumable_routine",
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",
+    "summarize_consumable",
 ]

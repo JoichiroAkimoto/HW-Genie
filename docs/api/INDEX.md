@@ -44,7 +44,8 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 
 ### 2. インベントリ・資産・ショップ
 所持アイテムや通貨、購入可能な商品に関連する機能です。
-*   **`inventoryGet`**: 所持している全アイテム（装備、ポーション、ルーンなど）のリスト。
+*   **`inventoryGet`**: 所持している全アイテム（装備、ポーション、ルーンなど）のリスト。`response.consumable` が `{libId: 個数}`（詳細は UNIT_API.md）。
+*   **`consumableUseLootBox`**: ルートボックス（consumable）の一括消費（`args: {"libId": 215, "amount": 48}`。レスポンスは `response.<消費数>.fragmentScroll` 等。詳細は UNIT_API.md）。
 *   **`billingGetAll` / `billingGetLast`**: 課金通貨（エメラルド等）や購入履歴の状態。
 *   **`shopGetAll`**: タウンショップ、アリーナショップ、ギルドショップなど、全ショップのラインナップと更新状況。
 *   **`heroesMerchantGet`**: ヒーローのソウルストーンショップの状態（推測）。

@@ -156,6 +156,8 @@ class ApiAction(str, Enum):
     HERO_TITAN_GIFT_LEVEL_UP = "heroTitanGiftLevelUp"
     HERO_TITAN_GIFT_DROP = "heroTitanGiftDrop"
     CONSUMABLE_USE_STAMINA = "consumableUseStamina"
+    CONSUMABLE_USE_LOOT_BOX = "consumableUseLootBox"
+    INVENTORY_GET = "inventoryGet"
     INVENTORY_EXCHANGE_STONES = "inventoryExchangeStones"
     SHOP_GET_ALL = "shopGetAll"
     SHOP_BUY = "shopBuy"

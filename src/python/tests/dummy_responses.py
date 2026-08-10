@@ -51,6 +51,89 @@ STAMINA_RECOVERY_SUCCESS = {
     "date": 1773215224,
 }
 
+# --- Inventory (consumable 在庫) ---
+# 実測の inventoryGet レスポンスに基づく（libId 215 = Equipment Fragment Chest）。
+INVENTORY_GET_CONSUMABLE = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {
+                        "17": 327,  # Stamina Potion
+                        "20": 1142335,
+                        "215": 48,  # Equipment Fragment Chest
+                    },
+                    "gear": {"4": 866},
+                    "scroll": {"100": 5},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+# 215 を全消費済みの在庫（VitaminD 相当: 在庫 0 またはキー消失）。
+INVENTORY_GET_NO_STOCK = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {"17": 327, "20": 1142335},
+                    "gear": {"4": 866},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+# レジストリ未登録の consumable（201）を含む在庫。
+INVENTORY_GET_UNREGISTERED = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {"17": 327, "201": 360, "215": 48},
+                    "gear": {"4": 866},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+# --- Consumable Use (LootBox) ---
+# 実測の consumableUseLootBox レスポンス（libId 215 を 48 個消費）。
+CONSUMABLE_USE_LOOT_BOX_SUCCESS = {
+    "results": [
+        {
+            "ident": "consumable_use",
+            "result": {
+                "response": {
+                    "48": {
+                        "fragmentScroll": {"218": 5, "192": 10, "193": 15, "216": 5},
+                        "fragmentGear": {"91": 10, "93": 10, "171": 5, "94": 5},
+                    }
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+CONSUMABLE_USE_LIMIT_REACHED = {
+    "results": [
+        {
+            "ident": "consumable_use",
+            "error": {"name": "limitReached", "detail": {"description": "Daily limit reached"}},
+        }
+    ],
+    "date": 1786306606,
+}
+
 # --- Shop ---
 SHOP_GET_ALL_DUMMY = {
     "results": [

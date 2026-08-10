@@ -370,6 +370,38 @@ def cmd_shop(args):
     client.exchange_stones()
 
 
+def cmd_inventory(args):
+    """consumable 等の在庫表示"""
+    from hw_genie.commands.consumables import run_inventory
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+
+    raw = run_inventory(client, show_all=bool(args.all), min_amount=int(args.min or 0))
+    if args.raw:
+        print(json.dumps(raw, indent=2))
+
+
+def cmd_consumable_run(args):
+    """登録済み consumable の一括消費"""
+    from hw_genie.commands.consumables import run_consumable_use
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+
+    results = run_consumable_use(
+        client,
+        lib_ids=args.lib_ids or None,
+        method_override=args.method,
+        dry_run=bool(args.dry_run),
+        account_alias=None,
+    )
+    from hw_genie.core.client import ResponseStatus
+
+    if any(r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED) for r in results):
+        sys.exit(1)
+
+
 def cmd_asgard_shop(args):
     """Asgard（ギルドレイド）ショップの自動購入（Osh 週のみ）"""
     headers = _ensure_session(args)
@@ -566,11 +598,13 @@ def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
     from hw_genie.runner import (
         asgard_shop_routine,
+        consumable_routine,
         daily_routine,
         full_routine,
         list_account_aliases,
         quests_routine,
         summarize_asgard_shop,
+        summarize_consumable,
         summarize_quests,
     )
 
@@ -581,22 +615,27 @@ def cmd_multi(args):
     else:
         accounts = list_account_aliases()
 
-    if mode != "quests" and getattr(args, "dry_run", False):
+    dry_run = bool(getattr(args, "dry_run", False))
+    if mode not in ("quests", "consumable") and dry_run:
         print(
-            "Error: --dry-run is only supported with the 'quests' mode "
+            "Error: --dry-run is only supported with the 'quests' and 'consumable' modes "
             "(daily/full/asgard-shop routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
 
     if mode == "quests":
-        dry_run = bool(getattr(args, "dry_run", False))
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
         routine = asgard_shop_routine
         max_parallel = args.parallel
+    elif mode == "consumable":
+        routine = consumable_routine(
+            lib_ids=args.lib, method_override=args.method, dry_run=dry_run
+        )
+        max_parallel = 1 if dry_run else args.parallel
     else:
         routine = full_routine if mode == "full" else daily_routine
         max_parallel = args.parallel
@@ -606,6 +645,8 @@ def cmd_multi(args):
         failed = summarize_quests(results.items(), dry_run=dry_run)
     elif mode == "asgard-shop":
         failed = summarize_asgard_shop(results.items())
+    elif mode == "consumable":
+        failed = summarize_consumable(results.items(), dry_run=dry_run)
     else:
         failed = summarize(results.items())
     if failed:
@@ -662,6 +703,34 @@ def main():
     p_shop = subparsers.add_parser("shop", parents=[parent_parser], help="Shop operations")
     p_shop.set_defaults(func=cmd_shop)
 
+    # Inventory (consumable 等の在庫表示)
+    p_inventory = subparsers.add_parser(
+        "inventory", parents=[parent_parser], help="Show inventory (consumable by default)"
+    )
+    p_inventory.add_argument("--all", action="store_true", help="Show all inventory categories")
+    p_inventory.add_argument("--min", type=int, default=0, help="Only show items with at least N in stock")
+    p_inventory.add_argument("--raw", action="store_true", help="Print the raw inventoryGet response as JSON")
+    p_inventory.set_defaults(func=cmd_inventory)
+
+    # Consumable
+    p_consumable = subparsers.add_parser("consumable", help="Consumable operations")
+    consumable_sub = p_consumable.add_subparsers(dest="consumable_type", help="Consumable operation")
+
+    # Consumable Run (登録済みアイテムの一括消費)
+    p_consumable_run = consumable_sub.add_parser(
+        "run", parents=[parent_parser], help="Consume all registered consumables"
+    )
+    p_consumable_run.add_argument(
+        "lib_ids", type=int, nargs="*", help="Target libIds (default: CONSUMABLE_USE_TARGETS)"
+    )
+    p_consumable_run.add_argument(
+        "--method", help="Override the RPC method (e.g. consumableUseLootBox)"
+    )
+    p_consumable_run.add_argument(
+        "--dry-run", action="store_true", help="Show the consumption plan without consuming anything"
+    )
+    p_consumable_run.set_defaults(func=cmd_consumable_run)
+
     # Asgard Shop (Guild Raid merchant, Osh week only)
     p_asgard_shop = subparsers.add_parser(
         "asgard-shop",
@@ -714,10 +783,20 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), or 'asgard-shop' (Osh Guild Raid merchant auto-buy)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
+    )
+    p_multi.add_argument(
+        "--lib",
+        type=int,
+        action="append",
+        help="Target consumable libId for the 'consumable' mode (repeatable; default: registered targets)",
+    )
+    p_multi.add_argument(
+        "--method",
+        help="Override the RPC method for the 'consumable' mode (e.g. consumableUseLootBox)",
     )
     p_multi.add_argument(
         "accounts",

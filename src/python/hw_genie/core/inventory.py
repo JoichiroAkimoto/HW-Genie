@@ -1,0 +1,147 @@
+"""inventoryGet の取得・パースと consumable 消費（consumableUse*）の共通ヘルパー。
+
+``inventoryGet`` のレスポンスは ``response.<カテゴリ> = {libId: 個数}`` という
+構造（カテゴリ: ``consumable`` / ``gear`` / ``scroll`` / ``fragmentScroll`` /
+``fragmentGear`` 等）。消費系（``consumableUseLootBox`` 等）のレスポンスは
+``response.<消費数> = {カテゴリ: {libId: 報酬量}}`` のため、カテゴリ別の
+合計報酬量に集計して返す。
+
+認証エラー（HWAuthError）以外の失敗は ``InventoryReadError`` で表し、
+消費自体の失敗は呼び出し側で判定できるよう ``ConsumableUseResult`` に
+status / error_name を載せる。
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from hw_genie.core.client import ApiAction, HWAuthError, HWClient, ResponseStatus, _safe_int
+
+
+class InventoryReadError(Exception):
+    """inventoryGet の取得・パースが失敗したことを表す（認証エラーは HWAuthError のまま）。"""
+
+    def __init__(self, message: str, error_name: str | None = None):
+        super().__init__(message)
+        self.error_name = error_name
+
+
+@dataclass
+class InventorySnapshot:
+    """inventoryGet のパース結果。カテゴリ別に ``{libId: 個数}`` を保持する。"""
+
+    categories: dict[str, dict[int, Any]] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def consumable(self) -> dict[int, Any]:
+        """``response.consumable``（未取得・未存在なら空辞書）。"""
+        return self.categories.get("consumable", {})
+
+
+@dataclass
+class ConsumableUseResult:
+    """consumable 消費 1 件の実行結果。"""
+
+    lib_id: int
+    name: str | None = None
+    stock: int = 0  # 実行時点の在庫（dry-run では消費予定数）
+    consumed: int = 0  # 実際に消費した数（dry-run では 0）
+    rewards: dict[str, int] = field(default_factory=dict)  # カテゴリ → 合計報酬量
+    status: ResponseStatus = ResponseStatus.ERROR
+    error_name: str | None = None
+
+
+def fetch_inventory(client: HWClient) -> InventorySnapshot:
+    """inventoryGet を呼び、カテゴリ別の在庫を返す。
+
+    Raises:
+        HWAuthError: 認証エラー（握りつぶさず再送出）
+        InventoryReadError: 通信・API エラー、または予期しないレスポンス形式
+    """
+    try:
+        res = client.call(
+            {"calls": [{"name": ApiAction.INVENTORY_GET, "args": {}, "ident": "inventory"}]}
+        )
+    except HWAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise InventoryReadError(f"inventoryGet failed: {exc}") from exc
+    if not res.is_success:
+        raise InventoryReadError(
+            f"inventoryGet failed ({res.error_name or res.status.value})",
+            error_name=res.error_name,
+        )
+    detail = res.detail if isinstance(res.detail, dict) else {}
+    response = detail.get("response")
+    if not isinstance(response, dict):
+        raise InventoryReadError("inventoryGet returned unexpected response (missing 'response' dict)")
+    categories: dict[str, dict[int, Any]] = {}
+    for category, entries in response.items():
+        if isinstance(entries, dict):
+            categories[category] = {_safe_int(lib_id): qty for lib_id, qty in entries.items()}
+    return InventorySnapshot(categories=categories, raw=response)
+
+
+def parse_use_rewards(detail: Any, amount: int) -> dict[str, int]:
+    """consumableUse* のレスポンスから報酬をカテゴリ別合計に集計する。
+
+    形式: ``response[str(amount)] = {カテゴリ: {libId: 報酬量}}``。値が
+    辞書でない（``"stamina": 120`` のようなスカラー）場合はその値をそのまま
+    合計に加える。
+    """
+    rewards: dict[str, int] = {}
+    response = detail.get("response") if isinstance(detail, dict) else None
+    if not isinstance(response, dict):
+        return rewards
+    payload = response.get(str(amount))
+    if not isinstance(payload, dict):
+        return rewards
+    for category, value in payload.items():
+        if isinstance(value, dict):
+            total = sum(_safe_int(qty) for qty in value.values())
+        else:
+            total = _safe_int(value)
+        if total > 0:
+            rewards[category] = rewards.get(category, 0) + total
+    return rewards
+
+
+def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> ConsumableUseResult:
+    """consumableUse* を 1 回呼び、その実行結果を返す。
+
+    Args:
+        client: 認証済み HWClient。
+        lib_id: 消費対象の consumable libId。
+        amount: 消費する数量（在庫全量を渡す想定）。
+        method: 消費 RPC メソッド名（``consumableUseLootBox`` 等）。
+
+    Raises:
+        HWAuthError: 認証エラー（握りつぶさず再送出）
+    """
+    try:
+        res = client.call(
+            {
+                "calls": [
+                    {
+                        "name": method,
+                        "args": {"libId": lib_id, "amount": amount},
+                        "context": {"actionTs": 0},
+                        "ident": "consumable_use",
+                    }
+                ]
+            }
+        )
+    except HWAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return ConsumableUseResult(
+            lib_id=lib_id, stock=amount, status=ResponseStatus.UNEXPECTED, error_name=str(exc)
+        )
+    if not res.is_success:
+        return ConsumableUseResult(
+            lib_id=lib_id, stock=amount, status=ResponseStatus.ERROR, error_name=res.error_name
+        )
+    rewards = parse_use_rewards(res.detail, amount)
+    return ConsumableUseResult(
+        lib_id=lib_id, stock=amount, consumed=amount, rewards=rewards, status=ResponseStatus.SUCCESS
+    )
