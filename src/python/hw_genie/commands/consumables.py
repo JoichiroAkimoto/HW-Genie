@@ -70,7 +70,7 @@ def run_consumable_use(
     if not targets:
         print(
             f"{Emojis.WARNING}{prefix}No consumable use targets "
-            "(CONSUMABLE_USE_TARGETS is empty; pass --only or register in core/consumables.py).",
+            "(CONSUMABLE_USE_TARGETS is empty; pass <libId> positional args or register in core/consumables.py).",
             flush=True,
         )
         return []
