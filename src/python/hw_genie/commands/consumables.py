@@ -3,7 +3,7 @@
 - ``hw-genie inventory``: ``inventoryGet`` で在庫を取得し、consumable を
   `表示名 (libId): 個数` 形式で表示する（``--all`` で全カテゴリ）。
 - ``hw-genie consumable run``: ``CONSUMABLE_USE_TARGETS`` に登録された
-  libId を順に全消費する（``--only`` で絞り込み、``--method`` で RPC
+  libId を順に全消費する（位置引数 ``lib_ids`` で対象指定、``--method`` で RPC
   メソッドを上書き、``--dry-run`` でプラン表示のみ）。
 
 消費量は引数ではなく、実行直前に ``inventoryGet`` で取得した実在庫数

@@ -289,7 +289,7 @@ def test_run_inventory_min_amount_filter(mock_client, capsys):
     assert "libId 20" in out  # 1,142,335 >= 1000
 
 
-# --- multi（consumbale_routine / summarize_consumable） ---
+# --- multi（consumable_routine / summarize_consumable） ---
 
 
 def test_summarize_consumable_counts_and_fails(mock_client):
