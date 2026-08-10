@@ -9,7 +9,6 @@ ID → 名称/カテゴリ/目標値）を正引きテーブルとして使う�
 import json
 import logging
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -184,11 +183,14 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 #                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う）。
 # ・heroId       … ギフト操作の対象ヒーロー（既定は QUEST_OPERATIONS[10023] と同一。
 #                  優先度は quest_defaults[10023].heroId が先、未設定なら本設定）。
-# ・last_recipe_at … レシピ（LevelUp ×2 → Drop）を最後に完了した Unix 秒（UTC）。
-#                  userGetInfo の nextDayTs（アカウントタイムゾーンの翌日
-#                  リセット時刻）を基準に「最近のリセット境界以降に実行済みか」
-#                  を判定し、1 リセットサイクルに 1 回だけレシピを実行する
-#                  （正確には前回実行時刻 >= 現在サイクル開始時刻 ならスキップ）。
+# ・max_recipes  … 1 リセットサイクルに実行できるレシピの上限回数（既定 2）。
+#                  達成まで自動で繰り返し実行されるが、この回数に達すると
+#                  スキップされる（Gift 資源消費の上限ガード）。
+# ・recipe_runs  … サイクル内のレシピ実行記録。{"at": サイクル開始 Unix 秒,
+#                  "count": 実行済み回数}。userGetInfo の nextDayTs から求めた
+#                  境界（_guild_cycle_boundary）と at が一致する場合のみ count を
+#                  使用し、境界が変わればリセットされる。デイリー 10023（同一
+#                  レシピ）の成功も count に含まれる（Gift 資源の二重消費防止）。
 # ・note        … 操作 RPC 名の連結メモ（可読性専用）
 QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
 
@@ -200,10 +202,12 @@ GUILD_QUEST_RECIPE_ID = 10023
 # ・note       … 操作 RPC 名の連結メモ（DB JSON の人間可読性専用）
 # ・candidates … 失敗時のフォールバック候補（優先度順の dict リスト。ステップの
 #                args を候補 key/value で上書きして再実行する）
-# ・last_recipe_at … ギルドレシピを最後に完了した時刻（Unix 秒・UTC）。
-#                1 リセットサイクル 1 回ガードの実行記録（quest_guild_defaults）
+# ・last_recipe_at … （旧式・互換のため残置）ギルドレシピ実行記録の旧キー。
+#                現在は recipe_runs（サイクル内回数）に置き換わっている。
+# ・max_recipes … ギルドレシピの 1 サイクルあたり実行上限回数（quest_guild_defaults）
+# ・recipe_runs … ギルドレシピのサイクル内実行記録（quest_guild_defaults）
 # これらは操作ステップの args としては使用されず、未知キー警告の対象外でもある。
-NON_ARG_KEYS = ("enabled", "note", "candidates", "last_recipe_at")
+NON_ARG_KEYS = ("enabled", "note", "candidates", "last_recipe_at", "max_recipes", "recipe_runs")
 
 
 def classify_quest(qid: int) -> tuple[str, str]:
@@ -462,6 +466,48 @@ def _guild_cycle_boundary(player: Any) -> int | None:
     return int(next_day_ts) - 86400
 
 
+# ギルドレシピの 1 サイクルあたり実行上限の既定値（quest_guild_defaults.max_recipes）
+GUILD_MAX_RECIPES_DEFAULT = 2
+
+
+def _guild_recipe_runs_in_cycle(guild_defaults: dict[str, Any], boundary: int | None) -> int:
+    """現在のリセットサイクル内で実行済みのギルドレシピ回数を返す。
+
+    ``recipe_runs``（``{"at": サイクル開始, "count": 回数}``）の ``at`` が現在の
+    境界と一致する場合のみ ``count`` を返す。boundary が None（nextDayTs 取得
+    不可）や記録がない場合は 0（＝ガード無効・毎回リセット扱い）。
+    """
+    if boundary is None:
+        return 0
+    runs = guild_defaults.get("recipe_runs")
+    if not isinstance(runs, dict):
+        return 0
+    if runs.get("at") != boundary:
+        return 0
+    try:
+        return int(runs.get("count", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _store_guild_recipe_run(account: str, boundary: int | None, count: int) -> None:
+    """サイクル内レシピ実行回数を ``quest_guild_defaults.recipe_runs`` に保存する。
+
+    ``set_quest_guild_defaults``（update_config_merged のロック付き
+    read-modify-write）経由なので、並列実行時の lost update は起きない。
+    """
+    set_quest_guild_defaults(account, "recipe_runs", {"at": boundary, "count": count})
+
+
+def _guild_max_recipes(guild_defaults: dict[str, Any]) -> int:
+    """1 サイクルあたりのギルドレシピ実行上限回数を返す（config、既定 2）。"""
+    try:
+        value = int(guild_defaults.get("max_recipes", GUILD_MAX_RECIPES_DEFAULT))
+    except (TypeError, ValueError):
+        return GUILD_MAX_RECIPES_DEFAULT
+    return value if value > 0 else GUILD_MAX_RECIPES_DEFAULT
+
+
 # リソース不足等で「フォールバック候補（candidates）」を試す価値があるエラー名。
 # 実測: 10024（heroArtifactLevelUp）の資源不足は "NotEnough"。スタミナ不足は
 # 候補（heroId/slotId 変更）では解決しないため対象外。
@@ -525,12 +571,12 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
     """``quest_guild_defaults`` を初期化・補完する（既存値は保持）。
 
     ``QUEST_OPERATIONS[10023]``（heroTitanGift LevelUp ×2 → Drop）をギルド
-    クエスト達成レシピとして使い、未設定のアカウントに ``enabled: false`` と
-    ``heroId``（レシピ既定値）・``note`` を投入する。初期状態は無効で、
-    ``--set-default guild enabled true`` で有効化する運用。
+    クエスト達成レシピとして使い、未設定のアカウントに ``enabled: false``、
+    ``heroId``（レシピ既定値）・``note``・``max_recipes``（既定 2）を投入する。
+    初期状態は無効で、``--set-default guild enabled true`` で有効化する運用。
 
     補完は ``update_config_merged`` のロック付き read-modify-write で行う
-    （並列実行時に ``last_recipe_at`` などの同時更新を失わない）。
+    （並列実行時に ``recipe_runs`` などの同時更新を失わない）。
 
     Returns:
         保存後の ``quest_guild_defaults``（dict）。
@@ -549,6 +595,8 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
             defaults["heroId"] = first_args["heroId"]
         if "note" not in defaults and note:
             defaults["note"] = note
+        if "max_recipes" not in defaults:
+            defaults["max_recipes"] = GUILD_MAX_RECIPES_DEFAULT
         return defaults
 
     return SessionManager.repo.update_config_merged(account, QUEST_GUILD_DEFAULTS_KEY, _merge)
@@ -865,12 +913,14 @@ def run_quest_execute(
     if guild_active and not guild_enabled:
         skipped.extend(q.id for q in guild_active)
 
-    # ギルドレシピの 1 日 1 回ガード: userGetInfo の nextDayTs から現在の
-    # リセットサイクル開始時刻を求め、last_recipe_at がサイクル内ならスキップ。
-    # （タイムゾーンはサーバーが nextDayTs に反映済みのため、ここでは UTC で
-    #   比較するだけでよい。nextDayTs が取れない環境ではガード無効＝従来挙動）
-    guild_recipe_ran_today = False
+    # ギルドレシピの 1 サイクル上限ガード: userGetInfo の nextDayTs から現在の
+    # リセットサイクル開始時刻を求め、recipe_runs（サイクル内実行回数）が
+    # max_recipes に達していればスキップ。（タイムゾーンはサーバーが nextDayTs
+    # に反映済みのため、ここでは UTC で比較するだけでよい。nextDayTs が取れない
+    # 環境ではガード無効＝1 実行ごとに max_recipes 回まで）
+    guild_recipe_runs = 0
     guild_boundary: int | None = None
+    guild_max_recipes = _guild_max_recipes(guild_defaults)
     if guild_active and guild_enabled:
         try:
             player = client.fetch_player_status()
@@ -878,12 +928,7 @@ def run_quest_execute(
         except Exception:  # noqa: BLE001
             guild_boundary = None
         if guild_boundary is not None:
-            last_recipe_at = guild_defaults.get("last_recipe_at")
-            guild_recipe_ran_today = (
-                isinstance(last_recipe_at, (int, float))
-                and not isinstance(last_recipe_at, bool)
-                and last_recipe_at >= guild_boundary
-            )
+            guild_recipe_runs = _guild_recipe_runs_in_cycle(guild_defaults, guild_boundary)
 
     succeeded: list[dict[str, Any]] = []
     has_work = claimable or targets or guild_claimable or guild_active
@@ -915,10 +960,11 @@ def run_quest_execute(
                 print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
             elif daily_covers_recipe:
                 print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
-            elif guild_recipe_ran_today:
-                print(f"ℹ️  Guild quests (Sparks of Power): recipe already executed today (cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
+            elif guild_recipe_runs >= guild_max_recipes:
+                print(f"ℹ️  Guild quests (Sparks of Power): recipe already run {guild_recipe_runs}/{guild_max_recipes} times this cycle (cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
             else:
-                print("\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks")
+                runs_left = guild_max_recipes - guild_recipe_runs
+                print(f"\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks (runs left this cycle: {runs_left})")
                 steps = _guild_recipe_steps(account_defaults, guild_defaults)
                 for st in steps:
                     print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
@@ -955,22 +1001,28 @@ def run_quest_execute(
             print(f"ℹ️  [{account}] {q.id} {q.name}: steps executed but claim not detected (check questGetAll).")
 
         # デイリー 10023（heroTitanGift レシピと同一）を成功させた場合は、
-        # 「ギルドレシピ実行」を兼ねた扱いにしてギルドフェーズでの二重実行を防ぐ。
+        # 「ギルドレシピ実行」を兼ねた扱いにしてギルドフェーズでの二重実行を
+        # 防ぎつつ、サイクル内の実行回数（recipe_runs）にも 1 回分として
+        # カウントする（Gift 資源の二重消費防止＝max_recipes の枠を消費）。
         if q.id == GUILD_QUEST_RECIPE_ID and all_steps_ok:
             recipe_executed_in_daily = True
-            set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
+            runs = guild_recipe_runs + 1
+            _store_guild_recipe_run(account, guild_boundary, runs)
 
     # ギルドクエスト（Sparks of Power）フェーズ: active のギルドクエストが
-    # ある場合、heroTitanGift レシピを 1 回実行し、その後 questGetAll を
-    # 取り直して達成（state=2）になったギルドクエストをまとめて claim する。
-    # （1 リセットサイクル 1 回ガード: nextDayTs で決まる今日のサイクル内に
-    #   レシピを実行済みなら、次のリセットまでレシピはスキップする。
-    #   claimable のギルドクエストは上の受領フェーズで既に受領されている）
+    # ある場合、heroTitanGift レシピを達成するまで自動で繰り返し実行し、
+    # レシピ実行ごとに questGetAll を取り直して達成（state=2）になった
+    # ギルドクエストをまとめて claim する。
+    # （1 サイクル上限ガード: nextDayTs で決まる今日のサイクル内で
+    #   recipe_runs が max_recipes 回に達していれば、次のリセットまで
+    #   レシピはスキップする。claimable のギルドクエストは上の受領フェーズ
+    #   で既に受領されている）
     _run_guild_quest_phase(
         client=client,
         guild_active=guild_active,
         guild_enabled=guild_enabled,
-        guild_recipe_ran_today=guild_recipe_ran_today,
+        guild_recipe_runs=guild_recipe_runs,
+        guild_max_recipes=guild_max_recipes,
         recipe_executed_in_daily=recipe_executed_in_daily,
         guild_boundary=guild_boundary,
         account=account,
@@ -1009,7 +1061,8 @@ def _run_guild_quest_phase(
     client: HWClient,
     guild_active: list[Quest],
     guild_enabled: bool,
-    guild_recipe_ran_today: bool,
+    guild_recipe_runs: int,
+    guild_max_recipes: int,
     recipe_executed_in_daily: bool,
     guild_boundary: int | None,
     account: str,
@@ -1021,14 +1074,23 @@ def _run_guild_quest_phase(
 ) -> None:
     """ギルドクエスト（Sparks of Power）フェーズを実行する。
 
-    active のギルドクエストに対して heroTitanGift レシピを 1 回実行し、
-    その後 questGetAll を取り直して達成（state=2）になったギルドクエストを
-    まとめて claim する。
+    active のギルドクエストに対して heroTitanGift レシピ（LevelUp ×2 →
+    Drop）を実行し、実行のたびに questGetAll を取り直して達成（state=2）
+    になったギルドクエストを claim する。**達成するまで自動で繰り返し
+    実行**されるが、1 リセットサイクルあたり ``quest_guild_defaults.
+    max_recipes`` 回（既定 2）を上限とする（Gift 資源の消費ガード）。
 
+    - ``guild_recipe_runs``: サイクル内で実行済みのレシピ回数（保存値）。
+    - ``guild_max_recipes``: サイクル内のレシピ実行上限回数（config）。
     - ``recipe_executed_in_daily``: 同一実行内でデイリー 10023 が既に成功
       していた場合、レシピを重複実行しない（Gift 系資源の二重消費防止）。
-    - ``guild_recipe_ran_today``: リセットサイクル内で既に実行済み（別の
-      実行時）の場合もスキップする。
+      10023 の成功もサイクル内実行回数として既にカウントされている。
+    - 停止条件:
+      1. サイクル内実行回数が ``max_recipes`` に達した
+      2. レシピのステップが失敗した（資源不足等。上限が残っていても再試行しない）
+      3. active のギルドクエストが全て claim 済みになった
+      4. レシピ実行前後でどの active クエストも progress が増えていない
+         （レシピが効くクエストが残っていない）
     """
     if not (guild_enabled and guild_active):
         return
@@ -1036,59 +1098,76 @@ def _run_guild_quest_phase(
     if recipe_executed_in_daily:
         print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed via daily quest 10023 in this run; skipping duplicate recipe.")
         return
-    if guild_recipe_ran_today:
-        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed this cycle (cycle started "
+    if guild_recipe_runs >= guild_max_recipes:
+        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already run {guild_recipe_runs}/{guild_max_recipes} times this cycle (cycle started "
               f"{format_create_time(int(guild_boundary))}); skipping recipe.")
         return
 
-    print(f"\n🔹 Guild quests ({guild_ids}): running recipe to gain Sparks of Power ...")
     steps = _guild_recipe_steps(account_defaults, guild_defaults)
-    recipe_ok = True
-    for st in steps:
-        if not confirm:
+    pending = list(guild_active)
+    runs_done = 0
+    while pending and guild_recipe_runs + runs_done < guild_max_recipes:
+        run_no = guild_recipe_runs + runs_done + 1
+        print(f"\n🔹 Guild quests ({guild_ids}): running recipe to gain Sparks of Power (run {run_no}/{guild_max_recipes}) ...")
+        before = {q.id: q.progress for q in pending}
+
+        recipe_ok = True
+        for st in steps:
+            if not confirm:
+                try:
+                    answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
+                except EOFError:
+                    print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
+                    recipe_ok = False
+                    break
+                if answer.strip().lower() not in ("y", "yes"):
+                    print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
+                    failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
+                    recipe_ok = False
+                    break
+
             try:
-                answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
-            except EOFError:
-                print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
-                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
-                recipe_ok = False
-                break
-            if answer.strip().lower() not in ("y", "yes"):
-                print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
-                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
+                resp = client.quest_operation(st["rpc"], st["args"])
+            except Exception as exc:  # noqa: BLE001
+                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
+                print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
                 recipe_ok = False
                 break
 
-        try:
-            resp = client.quest_operation(st["rpc"], st["args"])
-        except Exception as exc:  # noqa: BLE001
-            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
-            print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
-            recipe_ok = False
-            break
+            if resp.status != ResponseStatus.SUCCESS:
+                error = resp.error_name or "-"
+                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": error})
+                print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {error}")
+                recipe_ok = False
+                break
 
-        if resp.status != ResponseStatus.SUCCESS:
-            error = resp.error_name or "-"
-            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": error})
-            print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {error}")
-            recipe_ok = False
+        if not recipe_ok:
             break
-
-    if recipe_ok:
+        runs_done += 1
+        _store_guild_recipe_run(account, guild_boundary, guild_recipe_runs + runs_done)
         print("   ✅ Recipe executed. Re-fetching quests to claim reached stages...")
-        set_quest_guild_defaults(account, "last_recipe_at", int(time.time()))
         res2 = client.quest_get_all()
-        if res2.status == ResponseStatus.SUCCESS:
-            raw2 = res2.detail.get("response") if isinstance(res2.detail, dict) else None
-            refreshed = parse_quests(raw2) if isinstance(raw2, list) else []
-            reached = [q for q in refreshed if is_guild_quest(q.id) and q.is_claimable]
-            if not reached:
-                print("   ℹ️  No guild quest reached claimable state yet (progress gained).")
-            _claim_quests(client, reached, account, succeeded, failures)
-        else:
+        if res2.status != ResponseStatus.SUCCESS:
             error = res2.error_name or "-"
             failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": "questGetAll", "error": error})
             print(f"❌ [{account}] Guild quests: re-fetch failed: {error}")
+            break
+        raw2 = res2.detail.get("response") if isinstance(res2.detail, dict) else None
+        refreshed = parse_quests(raw2) if isinstance(raw2, list) else []
+        reached = [q for q in refreshed if is_guild_quest(q.id) and q.is_claimable]
+        if not reached:
+            print("   ℹ️  No guild quest reached claimable state yet.")
+        _claim_quests(client, reached, account, succeeded, failures)
+        pending = [q for q in refreshed if is_guild_quest(q.id) and not q.is_done and not q.is_claimable]
+        after = {q.id: q.progress for q in pending}
+        if not reached and before == after:
+            # レシピが効く（Sparks が進む）クエストがもう残っていない
+            print("   ℹ️  No guild quest progress changed; stopping recipe loop.")
+            break
+
+    if pending and guild_recipe_runs + runs_done >= guild_max_recipes:
+        print(f"ℹ️  [{account}] Guild quests ({guild_ids}): recipe run limit reached ({guild_max_recipes}/{guild_max_recipes} this cycle); stopping.")
 
 
 def print_skipped_quests(account: str, skipped: list[int]) -> None:

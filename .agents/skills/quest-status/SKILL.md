@@ -75,11 +75,13 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie quests -a <ACCOUNT> --set-default 10028 titanId 4022
    ```
    - 10007（Soul Atrium 召喚）は消費が大きいため `QUEST_OPERATIONS` 自体が `enabled: false` で、`quest_defaults` でも有効化しない限り実行されません。
-   - **ギルドクエスト（「Obtain xxx Sparks of Power」等、2000xxxx/2001xxxx ファミリ）**: ID が日次・アカウントで動的なため `QUEST_OPERATIONS` の固定 ID 登録ではなく `quest_guild_defaults`（config キー `quest_guild_defaults`）で制御します。`--init-defaults` で `enabled:false`＋`heroId`（既定 38）を自動投入し、`--set-default guild enabled true` で有効化します:
-   ```bash
-   uv run hw-genie quests -a <ACCOUNT> --set-default guild enabled true
-   ```
-   claimable（state=2）のギルドクエスト報酬受領（スタミナ等）は設定に関係なく常時実行され、進行中（state=1）のものは有効時のみ heroTitanGift レシピ（10023 と同一: LevelUp ×2 → Drop）を 1 回実行して Sparks of Power を獲得、その後 questGetAll を取り直して state=2 になったものをまとめて受領します。レシピは**1 リセットサイクル（userGetInfo の nextDayTs ベース）に 1 回まで**で、実行完了時刻が `quest_guild_defaults.last_recipe_at`（Unix 秒）に保存され、同一サイクル内の再実行はスキップされます（nextDayTs が取れない環境ではガード無効＝レシピは従来どおり毎回実行。dry-run でもスキップが表示されます）。ギルドクエストが 0 件の日（月 1 回程度）は自動スキップされます。`multi quests` / `multi daily` / `multi full` にも同じロジックが組み込まれています。
+- **ギルドクエスト（「Obtain xxx Sparks of Power」等、2000xxxx/2001xxxx ファミリ）**: ID が日次・アカウントで動的なため `QUEST_OPERATIONS` の固定 ID 登録ではなく `quest_guild_defaults`（config キー `quest_guild_defaults`）で制御します。`--init-defaults` で `enabled:false`＋`heroId`（既定 38）を自動投入し、`--set-default guild enabled true` で有効化します:
+    ```bash
+    uv run hw-genie quests -a <ACCOUNT> --set-default guild enabled true
+    # 1 サイクルあたりのレシピ実行上限（既定 2）を変更する場合
+    uv run hw-genie quests -a <ACCOUNT> --set-default guild max_recipes 4
+    ```
+    claimable（state=2）のギルドクエスト報酬受領（スタミナ等）は設定に関係なく常時実行され、進行中（state=1）のものは有効時のみ heroTitanGift レシピ（10023 と同一: LevelUp ×2 → Drop）を実行して Sparks of Power を獲得、その後 questGetAll を取り直して state=2 になったものをまとめて受領します。レシピは**達成するまで自動で繰り返し実行**されますが、1 リセットサイクル（userGetInfo の nextDayTs ベース）あたりの実行数は `quest_guild_defaults.max_recipes`（既定 2）が上限です（Gift 資源の消費ガード。`--set-default guild max_recipes N` で調整）。実行記録は `recipe_runs`（`{"at": サイクル開始 Unix 秒, "count": 実行済み回数}`）に保存され、同一サイクル内で上限に達するとスキップされます（nextDayTs が取れない環境ではサイクル判定が無効＝1 実行ごとに `max_recipes` 回まで実行）。停止条件は「active のギルドクエストが全て達成・受領された」「上限到達」「レシピ失敗（資源不足等）」「レシピ実行前後でどの active クエストも progress が増えない」のいずれかです。デイリー 10023（同一レシピ）の成功も「レシピ 1 回分」として `max_recipes` の枠を消費します。ギルドクエストが 0 件の日（月 1 回程度）は自動スキップされます。`multi quests` / `multi daily` / `multi full` にも同じロジックが組み込まれています。
    - **フォールバック候補（candidates）**: 操作失敗時の再試行候補として `quest_defaults[qid].candidates`（優先度順の dict リスト）を設定できます。リソース不足エラー（`NotEnough` 等、`FALLBACK_ERROR_NAMES`）時に各候補の引数を args へマージして自動リトライし、成功した場合は報酬受領まで続行します。全候補失敗は失敗報告になります。スタミナ不足等の非リソース系エラーでは試行しません（heroId/slotId の変更では解決しないため）。設定例（10024 が資源不足で失敗した場合に heroId:53 / slotId:2 で再試行する）:
    ```bash
    uv run hw-genie quests -a <ACCOUNT> --set-default 10024 candidates '[{"heroId": 53, "slotId": 2}]'
