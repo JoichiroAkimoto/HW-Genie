@@ -174,14 +174,14 @@ def test_guild_cycle_boundary():
 
 
 def test_guild_recipe_skipped_when_already_ran_this_cycle(capsys):
-    """recipe_runs が現在のリセットサイクルで上限（既定 2）に達していればスキップ。"""
+    """recipe_runs が現在のリセットサイクルで上限（既定 1）に達していればスキップ。"""
     boundary = 1786287600 - 86400  # 現在のサイクル開始
     client = _make_client(
         [_active_guild(20000111)],
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
-    set_quest_guild_defaults("Alex", "recipe_runs", {"at": boundary, "count": 2})  # サイクル内で上限実行済み
+    set_quest_guild_defaults("Alex", "recipe_runs", {"at": boundary, "count": 1})  # サイクル内で実行済み
 
     client.quest_operation = MagicMock()
     client.quest_farm = MagicMock(return_value=_ok_response({}))
@@ -191,7 +191,7 @@ def test_guild_recipe_skipped_when_already_ran_this_cycle(capsys):
 
     assert succeeded == []
     assert failed == []
-    assert "already run 2/2 times this cycle" in out
+    assert "recipe limit reached this cycle (ran 1, limit 1" in out
     client.quest_operation.assert_not_called()
 
 
@@ -251,25 +251,57 @@ def test_guild_dry_run_shows_guard_skip(capsys):
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
-    set_quest_guild_defaults("Alex", "recipe_runs", {"at": 1786287600 - 86400, "count": 2})
+    set_quest_guild_defaults("Alex", "recipe_runs", {"at": 1786287600 - 86400, "count": 1})
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
     out = capsys.readouterr().out
 
     assert succeeded == []
     assert failed == []
-    assert "already run 2/2 times this cycle" in out
+    assert "recipe limit reached this cycle (ran 1, limit 1" in out
     assert "heroTitanGiftLevelUp" not in out
 
 
-def test_guild_recipe_repeats_until_reached(capsys):
-    """レシピ 1 回で達成できない場合、達成まで（上限内で）自動で繰り返す。"""
+def test_guild_recipe_default_runs_once_per_cycle(capsys):
+    """デフォルト（max_recipes=1）では 1 ゲームデイにレシピ 1 セットのみ。
+
+    1 回実行しても未達成なら 2 セット目は実行されず、上限到達で停止する。
+    """
     boundary = 1786287600 - 86400
     client = _make_client(
         [_active_guild(20000111)],
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
+
+    res_initial = _ok_response({"response": [_active_guild(20000111)]})
+    res_run1 = _ok_response({"response": [dict(_active_guild(20000111), progress=150)]})
+    client.quest_get_all = MagicMock(side_effect=[res_initial, res_run1])
+    client.quest_operation = MagicMock(return_value=_ok_response({}))
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    # 1 セット（LevelUp ×2 → Drop = 3 RPC）のみ。2 セット目は実行されない
+    assert client.quest_operation.call_count == 3
+    assert succeeded == []
+    assert failed == []
+    assert "run 1/1" in out
+    assert "recipe run limit reached (1/1 this cycle); stopping." in out
+    runs = get_quest_guild_defaults("Alex").get("recipe_runs")
+    assert runs == {"at": boundary, "count": 1}
+
+
+def test_guild_recipe_repeats_until_reached_with_max_recipes_2(capsys):
+    """max_recipes=2 設定時のみ、達成まで 2 セット目が実行される（config 反映）。"""
+    boundary = 1786287600 - 86400
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "max_recipes", 2)
 
     res_initial = _ok_response({"response": [_active_guild(20000111)]})
     res_run1 = _ok_response({"response": [dict(_active_guild(20000111), progress=150)]})
@@ -299,6 +331,7 @@ def test_guild_recipe_stops_when_no_progress(capsys):
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "max_recipes", 2)
 
     res_initial = _ok_response({"response": [_active_guild(20000111)]})
     res_after = _ok_response({"response": [_active_guild(20000111)]})  # progress 変わらず
@@ -309,7 +342,7 @@ def test_guild_recipe_stops_when_no_progress(capsys):
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
-    # 1 ループ（3 RPC）のみで停止
+    # 1 ループ（3 RPC）のみで停止（2 セット目は回らない）
     assert client.quest_operation.call_count == 3
     assert succeeded == []
     assert failed == []
@@ -318,14 +351,15 @@ def test_guild_recipe_stops_when_no_progress(capsys):
     assert runs["count"] == 1
 
 
-def test_guild_recipe_stops_at_max_recipes(capsys):
-    """達成しないままサイクル内上限（既定 2）まで実行すると停止する。"""
+def test_guild_recipe_max_recipes_configurable(capsys):
+    """max_recipes を config で増やすとサイクル内の実行回数が増える（2 回設定）。"""
     boundary = 1786287600 - 86400
     client = _make_client(
         [_active_guild(20000111)],
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "max_recipes", 2)
 
     res_initial = _ok_response({"response": [_active_guild(20000111)]})
     res_run1 = _ok_response({"response": [dict(_active_guild(20000111), progress=100)]})
@@ -337,36 +371,14 @@ def test_guild_recipe_stops_at_max_recipes(capsys):
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
-    # 2 ループ（6 RPC）で停止。3 ループ目は回らない
+    # max=2 設定なら 2 セット（6 RPC）まで実行され、上限で停止
     assert client.quest_operation.call_count == 6
     assert succeeded == []
     assert failed == []
+    assert "run 2/2" in out
     assert "recipe run limit reached (2/2 this cycle); stopping." in out
     runs = get_quest_guild_defaults("Alex").get("recipe_runs")
     assert runs == {"at": boundary, "count": 2}
-
-
-def test_guild_recipe_max_recipes_configurable(capsys):
-    """max_recipes を config で変更すると上限が反映される（1 回で停止）。"""
-    client = _make_client(
-        [_active_guild(20000111)],
-        player=PlayerStatus(next_day_ts=1786287600),
-    )
-    set_quest_guild_defaults("Alex", "enabled", True)
-    set_quest_guild_defaults("Alex", "max_recipes", 1)
-
-    res_initial = _ok_response({"response": [_active_guild(20000111)]})
-    res_after = _ok_response({"response": [dict(_active_guild(20000111), progress=100)]})
-    client.quest_get_all = MagicMock(side_effect=[res_initial, res_after])
-    client.quest_operation = MagicMock(return_value=_ok_response({}))
-    client.quest_farm = MagicMock(return_value=_ok_response({}))
-
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
-    out = capsys.readouterr().out
-
-    assert client.quest_operation.call_count == 3
-    assert "run 1/1" in out
-    assert "recipe run limit reached (1/1 this cycle); stopping." in out
 
 
 def test_guild_recipe_claims_partial_and_continues(capsys):
@@ -377,6 +389,7 @@ def test_guild_recipe_claims_partial_and_continues(capsys):
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "max_recipes", 2)
 
     res_initial = _ok_response({"response": [_active_guild(20000111), _active_guild(20000112)]})
     # 1 回目実行後: 20000111 は claimable、20000112 は進捗ありで still active
@@ -559,14 +572,14 @@ def test_guild_recipe_skipped_at_exact_boundary(capsys):
         player=PlayerStatus(next_day_ts=1786287600),
     )
     set_quest_guild_defaults("Alex", "enabled", True)
-    set_quest_guild_defaults("Alex", "recipe_runs", {"at": boundary, "count": 2})
+    set_quest_guild_defaults("Alex", "recipe_runs", {"at": boundary, "count": 1})
 
     client.quest_operation = MagicMock()
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
-    assert "already run 2/2 times this cycle" in out
+    assert "recipe limit reached this cycle (ran 1, limit 1" in out
     client.quest_operation.assert_not_called()
 
 
@@ -688,7 +701,7 @@ def test_set_quest_defaults_keeps_existing_keys():
 
 
 def test_ensure_preserves_existing_recipe_runs_and_adds_max_recipes():
-    """ensure（補完）は既存キーを保持し、max_recipes（既定 2）だけ補完する。
+    """ensure（補完）は既存キーを保持し、max_recipes（既定 1）だけ補完する。
 
     set で recipe_runs と max_recipes を記録した後に ensure を実行しても、
     ensure の補完（enabled/heroId/note）がそれらを上書きしない。
@@ -718,7 +731,7 @@ def test_set_preserves_ensure_completed_defaults():
     assert defaults.get("recipe_runs") == {"at": 888, "count": 1}
     assert defaults.get("enabled") is False
     assert defaults.get("heroId") == 38
-    assert defaults.get("max_recipes") == 2  # 既定値が補完されている
+    assert defaults.get("max_recipes") == 1  # 既定値が補完されている
 
 
 # --- テスト ---

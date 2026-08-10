@@ -183,7 +183,7 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 #                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う）。
 # ・heroId       … ギフト操作の対象ヒーロー（既定は QUEST_OPERATIONS[10023] と同一。
 #                  優先度は quest_defaults[10023].heroId が先、未設定なら本設定）。
-# ・max_recipes  … 1 リセットサイクルに実行できるレシピの上限回数（既定 2）。
+# ・max_recipes  … 1 リセットサイクルに実行できるレシピの上限回数（既定 1）。
 #                  達成まで自動で繰り返し実行されるが、この回数に達すると
 #                  スキップされる（Gift 資源消費の上限ガード）。
 # ・recipe_runs  … サイクル内のレシピ実行記録。{"at": サイクル開始 Unix 秒,
@@ -467,7 +467,8 @@ def _guild_cycle_boundary(player: Any) -> int | None:
 
 
 # ギルドレシピの 1 サイクルあたり実行上限の既定値（quest_guild_defaults.max_recipes）
-GUILD_MAX_RECIPES_DEFAULT = 2
+# 1 ゲームデイ（リセットサイクル）に 1 セット（LevelUp ×2 → Drop）で十分なため 1。
+GUILD_MAX_RECIPES_DEFAULT = 1
 
 
 def _guild_recipe_runs_in_cycle(guild_defaults: dict[str, Any], boundary: int | None) -> int:
@@ -500,7 +501,7 @@ def _store_guild_recipe_run(account: str, boundary: int | None, count: int) -> N
 
 
 def _guild_max_recipes(guild_defaults: dict[str, Any]) -> int:
-    """1 サイクルあたりのギルドレシピ実行上限回数を返す（config、既定 2）。"""
+    """1 サイクルあたりのギルドレシピ実行上限回数を返す（config、既定 1）。"""
     try:
         value = int(guild_defaults.get("max_recipes", GUILD_MAX_RECIPES_DEFAULT))
     except (TypeError, ValueError):
@@ -572,7 +573,7 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
 
     ``QUEST_OPERATIONS[10023]``（heroTitanGift LevelUp ×2 → Drop）をギルド
     クエスト達成レシピとして使い、未設定のアカウントに ``enabled: false``、
-    ``heroId``（レシピ既定値）・``note``・``max_recipes``（既定 2）を投入する。
+    ``heroId``（レシピ既定値）・``note``・``max_recipes``（既定 1）を投入する。
     初期状態は無効で、``--set-default guild enabled true`` で有効化する運用。
 
     補完は ``update_config_merged`` のロック付き read-modify-write で行う
@@ -961,7 +962,7 @@ def run_quest_execute(
             elif daily_covers_recipe:
                 print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
             elif guild_recipe_runs >= guild_max_recipes:
-                print(f"ℹ️  Guild quests (Sparks of Power): recipe already run {guild_recipe_runs}/{guild_max_recipes} times this cycle (cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
+                print(f"ℹ️  Guild quests (Sparks of Power): recipe limit reached this cycle (ran {guild_recipe_runs}, limit {guild_max_recipes}, cycle started {format_create_time(int(guild_boundary))}); skipping recipe (claims still run).")
             else:
                 runs_left = guild_max_recipes - guild_recipe_runs
                 print(f"\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks (runs left this cycle: {runs_left})")
@@ -1078,7 +1079,7 @@ def _run_guild_quest_phase(
     Drop）を実行し、実行のたびに questGetAll を取り直して達成（state=2）
     になったギルドクエストを claim する。**達成するまで自動で繰り返し
     実行**されるが、1 リセットサイクルあたり ``quest_guild_defaults.
-    max_recipes`` 回（既定 2）を上限とする（Gift 資源の消費ガード）。
+    max_recipes`` 回（既定 1）を上限とする（Gift 資源の消費ガード）。
 
     - ``guild_recipe_runs``: サイクル内で実行済みのレシピ回数（保存値）。
     - ``guild_max_recipes``: サイクル内のレシピ実行上限回数（config）。
@@ -1099,7 +1100,7 @@ def _run_guild_quest_phase(
         print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed via daily quest 10023 in this run; skipping duplicate recipe.")
         return
     if guild_recipe_runs >= guild_max_recipes:
-        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already run {guild_recipe_runs}/{guild_max_recipes} times this cycle (cycle started "
+        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe limit reached this cycle (ran {guild_recipe_runs}, limit {guild_max_recipes}, cycle started "
               f"{format_create_time(int(guild_boundary))}); skipping recipe.")
         return
 
