@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from . import dummy_responses as dummy
 from hw_genie.commands.consumables import run_consumable_use, run_inventory
-from hw_genie.core.client import ResponseStatus
+from hw_genie.core.client import HWAuthError, ResponseStatus
 from hw_genie.core.consumables import CONSUMABLE_USE_TARGETS, CONSUMABLE_REGISTRY
 from hw_genie.core.inventory import (
     ConsumableUseResult,
@@ -56,6 +58,24 @@ def test_fetch_inventory_raises_on_api_error(mock_client):
         assert exc.error_name == "auth"
 
 
+def test_fetch_inventory_reraises_auth_error(mock_client):
+    """認証エラー（HWAuthError）は握りつぶさず再送出する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = HWAuthError("session expired")
+
+    with pytest.raises(HWAuthError):
+        fetch_inventory(client)
+
+
+def test_use_consumable_reraises_auth_error(mock_client):
+    """消費 API の認証エラー（HWAuthError）は握りつぶさず再送出する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = HWAuthError("session expired")
+
+    with pytest.raises(HWAuthError):
+        use_consumable(client, lib_id=215, amount=48, method="consumableUseLootBox")
+
+
 # --- parse_use_rewards / use_consumable ---
 
 
@@ -66,7 +86,14 @@ def test_parse_use_rewards_sums_category_quantities():
     rewards = parse_use_rewards(detail, 48)
 
     assert rewards == {"fragmentScroll": 35, "fragmentGear": 30}
-    assert parse_use_rewards(detail, 99) == {}  # 消費数と不一致なら空
+    assert parse_use_rewards(detail, 99) == {"fragmentScroll": 35, "fragmentGear": 30}  # キー不一致でもキャップ応答として集計
+
+
+def test_parse_use_rewards_scalar_values():
+    """スカラー報酬（stamina 等）はそのまま合計に加える。"""
+    detail = {"response": {"1": {"stamina": 120, "gold": 5000}}}
+
+    assert parse_use_rewards(detail, 1) == {"stamina": 120, "gold": 5000}
 
 
 def test_use_consumable_success(mock_client):
@@ -156,6 +183,37 @@ def test_run_consumable_use_not_registered_needs_method(mock_client, mock_sleep)
     assert results[0].consumed == 360
 
 
+def test_run_consumable_use_dedupes_lib_ids(mock_client, mock_sleep):
+    """同一 libId の重複指定は 1 回の消費にまとめる。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),
+        _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),
+    ]
+
+    results = run_consumable_use(client, lib_ids=[215, 215, 215])
+
+    assert len(results) == 1
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert mock_call.call_count == 2  # inventory(1) + use(1)
+
+
+def test_run_consumable_use_propagates_inventory_error(mock_client, mock_sleep):
+    """在庫取得の失敗（InventoryReadError）は伝播し、消費は実行されない。"""
+    from hw_genie.core.inventory import InventoryReadError
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = False
+    res.error_name = "someError"
+    res.status = ResponseStatus.ERROR
+    mock_call.return_value = res
+
+    with pytest.raises(InventoryReadError):
+        run_consumable_use(client)
+    assert mock_call.call_count == 1  # inventoryGet のみ
+
+
 def test_run_consumable_use_dry_run(mock_client, mock_sleep):
     """dry-run は消費 API を呼ばずプランのみ（status=SUCCESS, consumed=0）。"""
     client, mock_call = mock_client
@@ -202,6 +260,20 @@ def test_run_inventory_displays_consumable(mock_client, capsys):
     run_inventory(client, show_all=True)
     out_all = capsys.readouterr().out
     assert "=== gear (1 kind(s)) ===" in out_all
+
+
+def test_run_inventory_empty(mock_client, capsys):
+    """空の在庫レスポンスは 'Inventory is empty.' を表示する。"""
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.detail = {"response": {}}
+    mock_call.return_value = res
+
+    raw = run_inventory(client)
+
+    assert raw == {}
+    assert "Inventory is empty." in capsys.readouterr().out
 
 
 def test_run_inventory_min_amount_filter(mock_client, capsys):

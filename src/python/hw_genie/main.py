@@ -813,7 +813,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the quest execution plan without running anything (quests mode only)",
+        help="Show the execution plan without running anything (quests/consumable modes only)",
     )
     p_multi.set_defaults(func=cmd_multi)
 

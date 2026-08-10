@@ -88,14 +88,30 @@ def parse_use_rewards(detail: Any, amount: int) -> dict[str, int]:
     形式: ``response[str(amount)] = {カテゴリ: {libId: 報酬量}}``。値が
     辞書でない（``"stamina": 120`` のようなスカラー）場合はその値をそのまま
     合計に加える。
+
+    サーバーが消費数を amount 未満にキャップして応答する場合（``str(amount)``
+    キーが存在しない）に備え、キー不一致時は応答内の数値キー（消費数キー）を
+    全走査して報酬を合算する（偽の「報酬なし成功」を避ける）。
     """
     rewards: dict[str, int] = {}
     response = detail.get("response") if isinstance(detail, dict) else None
     if not isinstance(response, dict):
         return rewards
+
     payload = response.get(str(amount))
-    if not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        _merge_rewards(rewards, payload)
         return rewards
+
+    # キー不一致（キャップ応答）: 数値解釈できるキーの dict 値だけを対象に合算
+    for key, value in response.items():
+        if isinstance(value, dict) and _safe_int(key) > 0:
+            _merge_rewards(rewards, value)
+    return rewards
+
+
+def _merge_rewards(rewards: dict[str, int], payload: dict[str, Any]) -> None:
+    """response 内の 1 報酬ブロックをカテゴリ別合計へ足し込む。"""
     for category, value in payload.items():
         if isinstance(value, dict):
             total = sum(_safe_int(qty) for qty in value.values())
@@ -103,7 +119,6 @@ def parse_use_rewards(detail: Any, amount: int) -> dict[str, int]:
             total = _safe_int(value)
         if total > 0:
             rewards[category] = rewards.get(category, 0) + total
-    return rewards
 
 
 def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> ConsumableUseResult:

@@ -17,7 +17,7 @@
 import logging
 from typing import Any
 
-from hw_genie.core.client import Emojis, HWClient, ResponseStatus
+from hw_genie.core.client import Emojis, HWClient, ResponseStatus, _safe_int
 from hw_genie.core.consumables import (
     CONSUMABLE_USE_TARGETS,
     display_name,
@@ -66,7 +66,7 @@ def run_consumable_use(
         InventoryReadError: 在庫取得失敗（消費可否の判定不能として伝播）
     """
     prefix = f"[{account_alias}] " if account_alias else ""
-    targets = list(lib_ids) if lib_ids else list(CONSUMABLE_USE_TARGETS)
+    targets = list(dict.fromkeys(lib_ids)) if lib_ids else list(CONSUMABLE_USE_TARGETS)
     if not targets:
         print(
             f"{Emojis.WARNING}{prefix}No consumable use targets "
@@ -102,7 +102,7 @@ def run_consumable_use(
             )
             continue
 
-        stock = int(consumables.get(lib_id, 0) or 0)
+        stock = _safe_int(consumables.get(lib_id, 0))
         if stock <= 0:
             print(f"  [{index}/{len(targets)}] {Emojis.INFO}{label}: no stock, skipped.", flush=True)
             results.append(
@@ -139,6 +139,11 @@ def run_consumable_use(
                 f"    {Emojis.ERROR}Failed ({result.error_name or result.status.value}).",
                 flush=True,
             )
+            logger.warning(
+                "Consumable use failed for libId %d (%s)",
+                lib_id,
+                result.error_name or result.status.value,
+            )
         client.sleep()
 
     return results
@@ -160,7 +165,7 @@ def run_inventory(client: HWClient, show_all: bool = False, min_amount: int = 0)
         print(f"\n=== {category} ({len(entries)} kind(s)) ===")
         rows = []
         for lib_id, qty in sorted(entries.items(), key=lambda item: item[0] or 0):
-            count = int(qty or 0)
+            count = _safe_int(qty)
             if min_amount and count < min_amount:
                 continue
             label = _item_label(lib_id)
