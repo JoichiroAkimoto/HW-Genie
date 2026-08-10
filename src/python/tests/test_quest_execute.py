@@ -5,7 +5,7 @@
 - 実行可否は quest_defaults[quest_id]["enabled"] で制御される（初期状態は無効）。
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from hw_genie.commands.quests import (
     get_quest_defaults,
@@ -16,6 +16,11 @@ from hw_genie.commands.quests import (
 )
 from hw_genie.core.client import ApiAction, HWClient, PlayerStatus, ResponseStatus
 from hw_genie.core.session_manager import SessionManager
+
+
+# テスト用の固定実行時刻（2026-08-11 00:00 JST）。time.time をパッチして
+# レシピ実行記録（last_recipe_at）の検証を clock 非依存にする。
+FIXED_CLOCK = 1786374000
 
 
 # --- ヘルパー ---
@@ -210,14 +215,14 @@ def test_guild_recipe_runs_when_record_is_previous_cycle(capsys):
 
     client.quest_operation = MagicMock(side_effect=_op)
 
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert client.quest_operation.call_count == 3
     # 実行成功後、last_recipe_at が今日（サイクル開始以降）に更新される
     last = get_quest_guild_defaults("Alex").get("last_recipe_at")
-    assert isinstance(last, int)
-    assert last >= boundary
+    assert last == FIXED_CLOCK
 
 
 def test_guild_recipe_guard_disabled_without_nextday(capsys):
@@ -266,7 +271,6 @@ def test_guild_recipe_runs_once_per_day(capsys):
     1 回実行 → last_recipe_at 記録 → 同じサイクル内でもう一度実行すると
     スキップされる（進捗には依存しない時刻ベースの 1 日 1 回ガード）。
     """
-    boundary = 1786287600 - 86400
     client = _make_client(
         [_active_guild(20000111)],
         player=PlayerStatus(next_day_ts=1786287600),
@@ -279,7 +283,8 @@ def test_guild_recipe_runs_once_per_day(capsys):
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     # 1 セット（LevelUp ×2 → Drop = 3 RPC）のみ。2 セット目は実行されない
@@ -288,16 +293,15 @@ def test_guild_recipe_runs_once_per_day(capsys):
     assert failed == []
     assert "today's run" in out
     assert "No guild quest reached claimable state yet." in out
-    last = get_quest_guild_defaults("Alex").get("last_recipe_at")
-    assert isinstance(last, int)
-    assert last >= boundary
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
 
     # 同じサイクル内の再実行ではスキップされる（未達成でも繰り返さない）
     res2 = _ok_response({"response": [_active_guild(20000111)]})
     client.quest_get_all = MagicMock(return_value=res2)
     client.quest_operation = MagicMock()
 
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out2 = capsys.readouterr().out
 
     assert "recipe already run today" in out2
@@ -491,16 +495,53 @@ def test_guild_recipe_claims_reached_partial(capsys):
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert client.quest_operation.call_count == 3  # 1 セットのみ（繰り返さない）
     assert client.quest_farm.call_count == 1
     assert {s["quest_id"] for s in succeeded} == {20000111}
     assert failed == []
-    last = get_quest_guild_defaults("Alex").get("last_recipe_at")
-    assert isinstance(last, int)
-    assert last >= 1786287600 - 86400
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
+
+
+def test_guild_recipe_boundary_exact_and_just_before(capsys):
+    """last_recipe_at == boundary ちょうどは実行済み扱い、boundary - 1 は未実行。"""
+    boundary = 1786287600 - 86400
+
+    # boundary ちょうど → 今日実行済み扱い（スキップ）
+    client = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary)
+    client.quest_operation = MagicMock()
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+    assert "recipe already run today" in out
+    client.quest_operation.assert_not_called()
+
+    # boundary - 1 → 未実行扱い（実行される）
+    client2 = _make_client(
+        [_active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    set_quest_guild_defaults("Alex", "enabled", True)
+    set_quest_guild_defaults("Alex", "last_recipe_at", boundary - 1)
+    client2.quest_operation = MagicMock(return_value=_ok_response({}))
+    client2.quest_get_all = MagicMock(
+        side_effect=[
+            _ok_response({"response": [_active_guild(20000111)]}),
+            _ok_response({"response": [_active_guild(20000111)]}),
+        ]
+    )
+    client2.quest_farm = MagicMock(return_value=_ok_response({}))
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        run_quest_execute(client2, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+    assert client2.quest_operation.call_count == 3
 
 
 def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
@@ -511,7 +552,6 @@ def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
     実行されることを保証する。10023 の成功は last_recipe_at に記録され
     ギルドフェーズはスキップされる。
     """
-    boundary = 1786287600 - 86400
     client = _make_client(
         [_active(10023), _active_guild(20000111)],
         player=PlayerStatus(next_day_ts=1786287600),
@@ -530,7 +570,8 @@ def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
     client.quest_operation = MagicMock(side_effect=_op)
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
-    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     out = capsys.readouterr().out
 
     # レシピは計 3 RPC（LevelUp×2 → Drop）＝デイリー 10023 の実行分のみ
@@ -539,9 +580,7 @@ def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
     assert len(succeeded) >= 1  # 10023 の claim は実行される
 
     # 10023 の成功が今日の実行済み記録（last_recipe_at）に反映される
-    last = get_quest_guild_defaults("Alex").get("last_recipe_at")
-    assert isinstance(last, int)
-    assert last >= boundary
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
 
 
 def test_guild_dry_run_shows_daily_coverage(capsys):

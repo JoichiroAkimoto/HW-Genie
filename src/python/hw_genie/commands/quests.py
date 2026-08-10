@@ -466,11 +466,6 @@ def _guild_cycle_boundary(player: Any) -> int | None:
     return int(next_day_ts) - 86400
 
 
-# ギルドレシピの 1 日 1 回実行ガード：'last_recipe_at'（最後の実行時刻）が今日の
-# サイクル開始（nextDayTs - 86400）以上なら「今日は実行済み」とみなしてスキップ。
-# ギルドクエストはギルド全体の累積ポイントで達成するため進捗には依存しない。
-
-
 def _guild_ran_recipe_today(guild_defaults: dict[str, Any], boundary: int | None) -> bool:
     """今日のリセットサイクル内にギルドレシピを実行済みか（時刻ベース）。
 
@@ -1074,7 +1069,9 @@ def _run_guild_quest_phase(
         print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already executed via daily quest 10023 in this run; skipping duplicate recipe.")
         return
     if guild_recipe_done_today:
-        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already run today; skipping recipe.")
+        last_ts = guild_defaults.get("last_recipe_at")
+        at_label = format_create_time(int(last_ts)) if last_ts is not None else "today"
+        print(f"\nℹ️  [{account}] Guild quests ({guild_ids}): recipe already run today ({at_label}); skipping recipe.")
         return
 
     steps = _guild_recipe_steps(account_defaults, guild_defaults)
