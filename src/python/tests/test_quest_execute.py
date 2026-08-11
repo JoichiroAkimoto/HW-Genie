@@ -583,6 +583,135 @@ def test_daily_10023_covers_guild_recipe_no_double_run(capsys):
     assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
 
 
+def test_daily_10023_reached_on_first_step_still_runs_full_recipe(capsys):
+    """10023 が 1 ステップ目で達成（claimable）してもレシピ全体を実行する。
+
+    実運用では 10023 のターゲットが小さく、1 回目の heroTitanGiftLevelUp
+    で達成となる場合がある。このとき残りのステップ（LevelUp、Drop）を
+    中断せずレシピ全体（3 RPC）を実行し、last_recipe_at に記録する
+    （1 ステップのみで「今日は実行済み扱い」になる従来動作を防ぐ）。
+    報酬 claim は最初の達成検知時に 1 回だけ行う。
+    """
+    client = _make_client(
+        [_active(10023), _active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    _enable("Alex", 10023)
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    calls = []
+
+    def _op(action, args):
+        calls.append((action, dict(args)))
+        return _ok_response({"quests": [{"id": 10023, "state": 2}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    # 1 ステップ目で達成してもレシピは全 3 RPC 実行される
+    assert client.quest_operation.call_count == 3
+    assert [a for a, _ in calls] == [
+        "heroTitanGiftLevelUp",
+        "heroTitanGiftLevelUp",
+        "heroTitanGiftDrop",
+    ]
+    assert client.quest_farm.call_count == 1
+    assert len(succeeded) >= 1
+    # レシピ全体の成功が今日の実行済み記録（last_recipe_at）に反映される
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
+    # ギルドフェーズは重複実行せずスキップされる
+    assert "skipping duplicate recipe" in out
+    # 誤った「claim not detected」表示は出ない
+    assert "claim not detected" not in out
+
+
+def test_daily_10023_claim_failure_still_runs_recipe_and_records(capsys):
+    """claim 失敗でもレシピ全体を実行し、last_recipe_at に記録する。
+
+    claim 失敗は failures に記録され、次回実行時に claimable として
+    再受領される。レシピ全体（3 RPC）は実行済みなので last_recipe_at
+    は記録され、ギルドフェーズでの重複実行（= Gift 資源の二重消費）は
+    防がれる。
+    """
+    client = _make_client(
+        [_active(10023), _active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    _enable("Alex", 10023)
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    client.quest_operation = MagicMock(
+        side_effect=lambda action, args: _ok_response({"quests": [{"id": 10023, "state": 2}]})
+    )
+    client.quest_farm = MagicMock(return_value=_error_response("ClaimError"))
+
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert client.quest_operation.call_count == 3
+    assert client.quest_farm.call_count == 1
+    assert any(f.get("step") == "questFarm" for f in failed)
+    assert len(succeeded) == 0
+    # claim 失敗でもレシピ全体は実行済みのため実行記録は残る
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
+    assert "skipping duplicate recipe" in out
+
+
+def test_daily_10023_step_failure_after_claim_allows_guild_rerun(capsys):
+    """claim 検知後のステップ失敗は last_recipe_at を記録せず、ギルド再実行で
+    Sparks 稼ぎのレシピ全体を実行し直す。
+
+    デイリー 10023: 1 回目成功（達成→ claim）→ 2 回目失敗で中断。未記録の
+    ためギルドフェーズがレシピ全体（3 RPC）を再実行し、成功すれば実行済みの
+    記録が残る。Gift 資源は再消費するが、これは 1 セット全体を再実行する
+    既存仕様（SKILL.md 記載）と整合する。
+    """
+    client = _make_client(
+        [_active(10023), _active_guild(20000111)],
+        player=PlayerStatus(next_day_ts=1786287600),
+    )
+    _enable("Alex", 10023)
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    calls = []
+
+    def _op(action, args):
+        calls.append((action, dict(args)))
+        if len(calls) == 1:
+            return _ok_response({"quests": [{"id": 10023, "state": 2}]})
+        if len(calls) == 2:
+            return _error_response("NotEnough")
+        return _ok_response({"quests": [{"id": 10023, "state": 2}]})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
+        succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    # デイリー 2 RPC（成功+失敗中断）→ ギルドフェーズ 3 RPC（レシピ再実行）
+    assert client.quest_operation.call_count == 5
+    assert [a for a, _ in calls] == [
+        "heroTitanGiftLevelUp",  # デイリー 1 回目（達成・claim）
+        "heroTitanGiftLevelUp",  # デイリー 2 回目（失敗で中断）
+        "heroTitanGiftLevelUp",  # ギルドレシピ 1
+        "heroTitanGiftLevelUp",  # ギルドレシピ 2
+        "heroTitanGiftDrop",  # ギルドレシピ 3
+    ]
+    assert any(f.get("error") == "NotEnough" for f in failed)
+    # ギルドフェーズの成功で実行済み記録が残る
+    assert get_quest_guild_defaults("Alex").get("last_recipe_at") == FIXED_CLOCK
+    # ギルドフェーズでレシピ全体が再実行されている（スキップではない）
+    assert "running recipe to gain Sparks of Power" in out
+    assert "skipping duplicate recipe" not in out
+
+
 def test_guild_dry_run_shows_daily_coverage(capsys):
     """dry-run で 10023 がプランに載っている場合は重複レシピを計画しない。"""
     client = _make_client(

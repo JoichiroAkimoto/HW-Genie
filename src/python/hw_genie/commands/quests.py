@@ -958,6 +958,7 @@ def run_quest_execute(
     for q, steps in targets:
         print(f"\n🔹 Executing {q.id} {q.name} ...")
         all_steps_ok = True
+        claim_attempted = False
         for st in steps:
             resp = _run_quest_step(client, q, st, account, confirm, account_defaults, failures)
             if resp is None:
@@ -965,7 +966,7 @@ def run_quest_execute(
                 break
 
             # レスポンスに含まれる quests 配列から対象クエストの状態を確認
-            if _quest_reached_claimable(resp, q.id):
+            if _quest_reached_claimable(resp, q.id) and not claim_attempted:
                 print(f"   ✅ {q.id} {q.name} completed (step: {_rpc_display(st['rpc'])}). Claiming reward...")
                 claim_res = client.quest_farm(q.id)
                 if claim_res.status == ResponseStatus.SUCCESS:
@@ -974,10 +975,22 @@ def run_quest_execute(
                 else:
                     failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
                     print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
-                break
+                # claim の成否に関わらず「達成は検知済み」として以降の claim を
+                # 抑止する（失敗分は failures に記録され、次回実行時に claimable
+                # として再受領される）。last_recipe_at はレシピ全体の成否で決まる。
+                claim_attempted = True
+                # ギルドレシピ（GUILD_QUEST_RECIPE_ID）はクエスト達成だけが目的
+                # ではない: Sparks of Power を稼ぐレシピ全体（LevelUp ×2 → Drop）
+                # を毎日 1 回実行するのが本来の役割なので、達成しても中断せず
+                # 最後までステップを実行する（1 ステップ目で達成→残り未実行で
+                # 「今日は実行済み扱い」になる従来動作を防ぐ）。
+                if q.id != GUILD_QUEST_RECIPE_ID:
+                    break
+                print("   ℹ️  Recipe quest claim handled; continuing remaining recipe steps (Sparks grinding)...")
             # 全ステップ成功したが、このレスポンス群には対象クエストが含まれなかった
         else:
-            print(f"ℹ️  [{account}] {q.id} {q.name}: steps executed but claim not detected (check questGetAll).")
+            if not claim_attempted:
+                print(f"ℹ️  [{account}] {q.id} {q.name}: steps executed but claim not detected (check questGetAll).")
 
         # デイリー 10023（heroTitanGift レシピと同一）を成功させた場合は、
         # 「ギルドレシピ実行」を兼ねた扱いにしてギルドフェーズでの二重実行を
