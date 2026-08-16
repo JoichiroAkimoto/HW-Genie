@@ -314,7 +314,7 @@ def test_select_maestro_plan_empty_when_nothing_affordable():
 
 
 def test_run_asgard_shop_gold_buffs_purchased(mock_client, mock_sleep):
-    """ゴールド残高が十分ならゴールドバフ（slot 1〜5）を残り回数分購入する。"""
+    """--gold（gold_buffs=True）なら Osh 週でもゴールドバフを購入する。"""
     client, mock_call = mock_client
     status = MagicMock()
     status.gold = 15_000_000
@@ -327,7 +327,7 @@ def test_run_asgard_shop_gold_buffs_purchased(mock_client, mock_sleep):
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
-    result = run_asgard_shop(client)
+    result = run_asgard_shop(client, gold_buffs=True)
 
     assert result.gold_bought == 15
     assert result.gold_spent == 15_000_000
@@ -371,7 +371,7 @@ def test_run_asgard_shop_gold_buffs_insufficient_gold(mock_client, mock_sleep):
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
-    result = run_asgard_shop(client)
+    result = run_asgard_shop(client, gold_buffs=True)
 
     assert result.gold_bought == 0
     assert result.gold_spent == 0
@@ -392,7 +392,7 @@ def test_run_asgard_shop_gold_buffs_zero_balance(mock_client, mock_sleep, capsys
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
-    result = run_asgard_shop(client)
+    result = run_asgard_shop(client, gold_buffs=True)
 
     assert result.gold_bought == 0
     assert result.gold_spent == 0
@@ -417,7 +417,7 @@ def test_run_asgard_shop_gold_buffs_stops_on_not_enough(mock_client, mock_sleep)
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
-    result = run_asgard_shop(client)
+    result = run_asgard_shop(client, gold_buffs=True)
 
     assert result.gold_bought == 1
     assert result.gold_spent == 1_000_000
@@ -440,7 +440,7 @@ def test_run_asgard_shop_gold_buffs_dry_run(mock_client, mock_sleep):
 
     mock_call.side_effect = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
 
-    result = run_asgard_shop(client, dry_run=True)
+    result = run_asgard_shop(client, dry_run=True, gold_buffs=True)
 
     assert result.gold_bought == 15  # 計画上の購入可能数
     assert result.gold_spent == 15_000_000
@@ -458,7 +458,7 @@ def test_run_asgard_shop_gold_fetch_failure_skips_gold_buffs(mock_client, mock_s
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
-    result = run_asgard_shop(client)
+    result = run_asgard_shop(client, gold_buffs=True)
 
     assert result.gold_bought == 0
     assert result.gold_spent == 0
@@ -480,9 +480,69 @@ def test_run_asgard_shop_gold_buffs_all_bought_out_skips_fetch(mock_client, mock
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 0
+    client.fetch_player_status.assert_not_called()
+
+
+def test_run_asgard_shop_gold_buffs_osh_week_default_off(mock_client, mock_sleep, capsys):
+    """Osh 週デフォルト（gold_buffs=None）ではゴールドバフを購入しない。"""
+    client, mock_call = mock_client
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
     result = run_asgard_shop(client)
 
     assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    client.fetch_player_status.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Gold buffs: skipped (default off for Osh week" in out
+    assert "use --gold to enable" in out
+
+
+def test_run_asgard_shop_gold_buffs_maestro_week_default_on(mock_client, mock_sleep):
+    """Maestro 週デフォルト（gold_buffs=None）ではゴールドバフを購入する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    for _ in range(15):  # ゴールドバフ slot 1〜5（Maestro 週も slot 1〜5 がゴールド）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    for _ in range(11):  # Valor 商品（S6 + A3 + B2 = 11 件、残高 1000）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 15
+    assert result.gold_spent == 15_000_000
+    assert result.bought == 11
+    # getInfo(1) + ゴールドバフ(15) + Valor(11) = 27 回
+    assert mock_call.call_count == 27
+
+
+def test_run_asgard_shop_gold_buffs_maestro_week_no_gold(mock_client, mock_sleep):
+    """--no-gold（gold_buffs=False）なら Maestro 週でもゴールドバフを購入しない。"""
+    client, mock_call = mock_client
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    for _ in range(11):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=False)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 11
     client.fetch_player_status.assert_not_called()
 
 
@@ -568,6 +628,7 @@ def test_cmd_asgard_shop_fetch_failure_exits_nonzero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
@@ -600,6 +661,7 @@ def test_cmd_asgard_shop_success_exits_zero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
@@ -629,6 +691,7 @@ def test_cmd_asgard_shop_purchase_error_exits_zero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})

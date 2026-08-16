@@ -2,8 +2,9 @@
 
 ``clanRaid_getInfo`` の ``response.shop``（slotId → 商品）から Valor Emblem
 （コイン ID 30）支払いの商品を読み、Osh / Maestro 週それぞれの購入ルールに
-従って ``clanRaid_shopBuy`` で購入する。ゴールドバフ（slot 1〜5）も
-デフォルトで購入対象（``gold_buffs=False`` で無効化）。
+従って ``clanRaid_shopBuy`` で購入する。ゴールドバフ（slot 1〜5）は週に応じて
+購入する（デフォルト: Osh 週は購入しない、Maestro 週は購入する。
+``gold_buffs=True`` / ``False`` で明示的に上書き）。
 
 - **Osh 週**: ラインナップは固定（slot 1〜5 はゴールドバフ、slot 6〜21 が
   Valor Emblem 商品で buffId 61〜81）。``shop`` の buffId 集合がシグネチャ
@@ -23,10 +24,12 @@
     （= 残コインを多くする）方を選ぶ。
 - **その他の週**: 判定不能（ラインナップ不明・空 shop）の場合は購入対象
   なしとしてスキップし正常完了する（購入は発生しないので実害なし）。
-- **ゴールドバフ**: ``gold_buffs=True``（デフォルト）のとき、slot 1〜5 の
-  ゴールドバフ（100 万ゴールド、buyLimit 5）を残り購入回数分購入する。
-  購入前に ``fetch_player_status`` で最新のゴールド残高を取得し、不足時は
-  スキップする（実際の購入失敗 NotEnough 時もスキップの安全策併用）。
+- **ゴールドバフ**: ``gold_buffs=None``（デフォルト）のとき週依存で購入する
+  （Osh 週は購入しない、Maestro 週は購入する）。``gold_buffs=True`` で常に
+  購入、``False`` で常にスキップ。購入時は slot 1〜5 のゴールドバフ
+  （100 万ゴールド、buyLimit 5）を残り購入回数分購入する。購入前に
+  ``fetch_player_status`` で最新のゴールド残高を取得し、不足時はスキップする
+  （実際の購入失敗 NotEnough 時もスキップの安全策併用）。
 - **残高**: ``response.coins`` の Valor Emblem 残高を追跡し、残高不足の
   商品は購入しない。さらに実際の購入失敗（NotEnough）が起きた場合も
   以降の購入をスキップする（両方併用の安全策）。
@@ -64,9 +67,16 @@ MAESTRO_BUFF_IDS: frozenset[int] = frozenset(range(112, 134))
 # Maestro 週の購入優先度（slot → 順位）。順位 1〜6 が S、7〜9 が A、
 # 10〜11 が B。それ以外（C）は購入対象外（後日検討）。
 # ラインナップ（slot→バフの対応）は週ごとに変わる場合があるため、この表は
-# 確認済みラインナップ（slot→順位・価格は実測: S=11,15,9,7,17,16 /
-# A=14,12,10 / B=19,8、価格 50/100/150 = Uncommon/Rare/Epic）に基づく固定表。
-# 週が変わった際はこの表を更新すること。
+# 確認済みラインナップ（2026-08 実測）に基づく固定表。週が変わった際は更新すること。
+# 実測の slot → バフ名（価格, buffId）:
+#   S: 11 Unbridled Energy (100, 118) / 15 At the Speed of Light (50, 125) /
+#      9 Pillar of Confidence (50, 116) / 7 Effective Tactics (150, 114) /
+#      17 Secret Weapon (150, 128) / 16 Strength in Perseverance (150, 127)
+#   A: 14 At the Limit (50, 122) / 12 Perfect Storm (100, 119) /
+#      10 Charmer's Skill (100, 117)
+#   B: 19 Through a Prism (50, 133) / 8 The Tireless (50, 115)
+#   C: 6 (150, 112) / 13 (100, 120) / 18 (50, 121) / 21 (100, 132)（バフ名不明）
+#   ゴールドバフ（slot 1〜5）: 100 万ゴールド、buffId 113 / 123 / 126 / 129 / 130
 MAESTRO_PRIORITY: dict[int, int] = {
     11: 1, 15: 2, 9: 3, 7: 4, 17: 5, 16: 6,  # S
     14: 7, 12: 8, 10: 9,  # A
@@ -506,7 +516,7 @@ def run_asgard_shop(
     client: HWClient,
     dry_run: bool = False,
     account_alias: str | None = None,
-    gold_buffs: bool = True,
+    gold_buffs: bool | None = None,
 ) -> AsgardRunResult:
     """Asgard ショップの購入を実行（または計画表示）する。
 
@@ -514,7 +524,8 @@ def run_asgard_shop(
         client: HWClient インスタンス。
         dry_run: True の場合は購入せず計画（購入順・合計コスト）のみ表示。
         account_alias: 表示用のアカウント名（None なら省略）。
-        gold_buffs: True（デフォルト）ならゴールドバフ（slot 1〜5）も購入。
+        gold_buffs: None（デフォルト）なら週依存（Osh 週は購入しない、
+            Maestro 週は購入する）。True で常に購入、False で常にスキップ。
 
     Returns:
         AsgardRunResult。Osh / Maestro 以外のラインナップや空 shop の場合は
@@ -565,10 +576,20 @@ def run_asgard_shop(
           f"(total cost: {total_cost}).", flush=True)
 
     # ゴールドバフ（Valor 商品より先に購入。通貨が独立しているため順序は任意）。
+    # gold_buffs=None は週依存: Osh 週は購入しない、Maestro 週は購入する（デフォルト）。
+    gold_enabled = gold_buffs
+    if gold_enabled is None:
+        gold_enabled = lineup == "Maestro"
+        if not gold_enabled:
+            print(
+                f"{Emojis.INFO}{prefix}Gold buffs: skipped (default off for {lineup} week; "
+                "use --gold to enable).",
+                flush=True,
+            )
     gold_results: list[AsgardResult] = []
     gold_bought = 0
     gold_spent = 0
-    if gold_buffs and _gold_buff_slots(shop):
+    if gold_enabled and _gold_buff_slots(shop):
         try:
             gold_budget = _safe_int(client.fetch_player_status().gold)
         except HWAuthError:

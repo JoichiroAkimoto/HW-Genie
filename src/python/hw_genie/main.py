@@ -413,7 +413,7 @@ def cmd_asgard_shop(args):
         client,
         dry_run=bool(args.dry_run),
         account_alias=args.account or None,
-        gold_buffs=not getattr(args, "no_gold", False),
+        gold_buffs=args.gold_buffs,
     )
     if result.error:
         sys.exit(1)
@@ -632,7 +632,7 @@ def cmd_multi(args):
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
-        routine = asgard_shop_routine(gold_buffs=not getattr(args, "no_gold", False))
+        routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
         max_parallel = args.parallel
     elif mode == "consumable":
         routine = consumable_routine(
@@ -743,10 +743,19 @@ def main():
     p_asgard_shop.add_argument(
         "--dry-run", action="store_true", help="Show the purchase plan without buying anything"
     )
-    p_asgard_shop.add_argument(
-        "--no-gold",
+    gold_group = p_asgard_shop.add_mutually_exclusive_group()
+    gold_group.add_argument(
+        "--gold",
+        dest="gold_buffs",
         action="store_true",
-        help="Skip gold buff purchases (slot 1-5; default: buy)",
+        default=None,
+        help="Buy gold buffs (slot 1-5; default: off for Osh week, on for Maestro week)",
+    )
+    gold_group.add_argument(
+        "--no-gold",
+        dest="gold_buffs",
+        action="store_false",
+        help="Skip gold buff purchases (slot 1-5)",
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
 
@@ -797,8 +806,16 @@ def main():
         help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
     )
     p_multi.add_argument(
-        "--no-gold",
+        "--gold",
+        dest="gold_buffs",
         action="store_true",
+        default=None,
+        help="Buy gold buffs (slot 1-5) in the 'asgard-shop' mode (default: off for Osh week, on for Maestro week)",
+    )
+    p_multi.add_argument(
+        "--no-gold",
+        dest="gold_buffs",
+        action="store_false",
         help="Skip gold buff purchases (slot 1-5) in the 'asgard-shop' mode",
     )
     p_multi.add_argument(

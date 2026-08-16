@@ -216,6 +216,24 @@ POST https://heroes-wb.nextersglobal.com/api/
 > 週ごとに変わる場合がある（`hw-genie asgard-shop` は確認済みラインナップに基づく
 > slot→順位の固定優先度表 `MAESTRO_PRIORITY` と組み合わせ最適化で購入プランを選定する。
 > 週が変わった際は表の更新が必要）。
+>
+> 2026-08 実測の slot → バフ名（価格, buffId）:
+>
+> | slot | バフ名 | 価格 | buffId |
+> |------|--------|------|--------|
+> | 11 | Unbridled Energy | 100 | 118 |
+> | 15 | At the Speed of Light | 50 | 125 |
+> | 9 | Pillar of Confidence | 50 | 116 |
+> | 7 | Effective Tactics | 150 | 114 |
+> | 17 | Secret Weapon | 150 | 128 |
+> | 16 | Strength in Perseverance | 150 | 127 |
+> | 14 | At the Limit | 50 | 122 |
+> | 12 | Perfect Storm | 100 | 119 |
+> | 10 | Charmer's Skill | 100 | 117 |
+> | 19 | Through a Prism | 50 | 133 |
+> | 8 | The Tireless | 50 | 115 |
+> | 6 / 13 / 18 / 21 | （バフ名不明・購入対象外） | 150 / 100 / 50 / 100 | 112 / 120 / 121 / 132 |
+> | 1〜5 | ゴールドバフ（バフ名不明） | 100 万ゴールド | 113 / 123 / 126 / 129 / 130 |
 
 ---
 
