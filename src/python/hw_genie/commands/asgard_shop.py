@@ -13,9 +13,9 @@
 - **Maestro 週**: ラインナップは buffId 112〜133 の範囲（slot 1〜5 は
   ゴールドバフ、slot 6〜21 が Valor Emblem 商品）。slot → 効果の対応は週ごとに
   変わる場合があるため、``MAESTRO_PRIORITY``（slot → 順位の固定表）を確認済み
-  ラインナップ（docs/superpowers/Maestro-buff.md）に基づいて定義し、組み合わせ
-  最適化（``select_maestro_plan``）で購入プランを選定する。順位 1〜6 が S、
-  7〜9 が A、10〜11 が B、それ以外（C）は購入対象外。
+  ラインナップ（slot→バフ対応・順位・価格は下表の実測値）に基づいて定義し、
+  組み合わせ最適化（``select_maestro_plan``）で購入プランを選定する。順位 1〜6
+  が S、7〜9 が A、10〜11 が B、それ以外（C）は購入対象外。
   - 残高（Valor Emblem）を上限として、S → A → B の優先度を崩さず、同一優先度
     では高順位を優先し、コイン内で最も優先度の高いバフ構成になる組み合わせを
     購入する。優先度は S クラス数を最優先し（S クラス 1 個の確保は A/B クラスの
@@ -64,7 +64,8 @@ MAESTRO_BUFF_IDS: frozenset[int] = frozenset(range(112, 134))
 # Maestro 週の購入優先度（slot → 順位）。順位 1〜6 が S、7〜9 が A、
 # 10〜11 が B。それ以外（C）は購入対象外（後日検討）。
 # ラインナップ（slot→バフの対応）は週ごとに変わる場合があるため、この表は
-# 確認済みラインナップ（docs/superpowers/Maestro-buff.md）に基づく固定表。
+# 確認済みラインナップ（slot→順位・価格は実測: S=11,15,9,7,17,16 /
+# A=14,12,10 / B=19,8、価格 50/100/150 = Uncommon/Rare/Epic）に基づく固定表。
 # 週が変わった際はこの表を更新すること。
 MAESTRO_PRIORITY: dict[int, int] = {
     11: 1, 15: 2, 9: 3, 7: 4, 17: 5, 16: 6,  # S
@@ -569,15 +570,15 @@ def run_asgard_shop(
         except HWAuthError:
             raise
         except Exception:  # noqa: BLE001 - 残高取得失敗時はゴールドバフをスキップして続行
-            gold_budget = 0
             print(
                 f"{Emojis.WARNING}{prefix}Failed to fetch gold balance - skipping gold buffs.",
                 flush=True,
             )
-        if dry_run:
-            gold_results, gold_bought, gold_spent = _plan_gold_buffs(shop, gold_budget, prefix)
         else:
-            gold_results, gold_bought, gold_spent = _purchase_gold_buffs(client, shop, gold_budget, prefix)
+            if dry_run:
+                gold_results, gold_bought, gold_spent = _plan_gold_buffs(shop, gold_budget, prefix)
+            else:
+                gold_results, gold_bought, gold_spent = _purchase_gold_buffs(client, shop, gold_budget, prefix)
 
     if dry_run:
         print(f"\n{Emojis.STEP}{prefix}--- Purchase Plan (dry-run) ---", flush=True)

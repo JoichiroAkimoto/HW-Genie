@@ -14,8 +14,7 @@ description: HW-Genie を使用して、Asgard（ギルドレイド）の Realm 
   - 優先度の定義・購入順の実装は `src/python/hw_genie/commands/asgard_shop.py` の `OSH_PRIORITY` / `build_buy_queue` がソースです（このファイルを変更した場合はそちらと同期してください）。
 - **Maestro 週の優先度**: バフは週替わりでローテーションするため、slot → 順位の固定優先度表（`MAESTRO_PRIORITY`）を使い、**組み合わせ最適化**（`select_maestro_plan`）で購入プランを選定します。
   - 順位 1〜6 が S（Unbridled Energy / At the Speed of Light / Pillar of Confidence / Effective Tactics / Secret Weapon / Strength in Perseverance）、7〜9 が A（At the Limit / Perfect Storm / Charmer's Skill）、10〜11 が B（Through a Prism / The Tireless）。C（それ以外）は購入対象外。
-  - ルール: 残高を上限として、S → A → B の優先度を崩さず、同一優先度では高順位を優先し、コイン内で最も優先度の高いバフ構成になる組み合わせを購入（同構成なら安い方を優先して残コインを多くする）。「順位の高いバフ 1 個の確保」は「下位バフ複数」より優先。
-  - 詳細仕様は `docs/superpowers/Maestro-buff.md` を参照。
+  - ルール: 残高を上限として、S → A → B の優先度を崩さず、同一優先度では高順位を優先し、コイン内で最も優先度の高いバフ構成になる組み合わせを購入（同構成なら安い方を優先して残コインを多くする）。「S クラス 1 個の確保」は「A/B クラスの複数購入」より優先。
 - **ゴールドバフ**: slot 1〜5（100 万ゴールド、buyLimit 5）を残り購入回数分、Valor 商品より先に購入します。購入前に `fetch_player_status` で最新のゴールド残高を取得し、不足時はスキップします。`--no-gold` でオフにできます。
 - **残高**: `coins`（Valor Emblem 残高）を追跡し、残高不足の商品は購入しません。購入失敗（NotEnough）時も以降をスキップします（両方併用）。残高はこのツールの連続購入内ではローカル減算で追跡します。
 - 購入済み（boughtCount >= buyLimit）は対象外です。

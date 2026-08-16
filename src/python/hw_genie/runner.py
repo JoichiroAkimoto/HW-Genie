@@ -575,7 +575,7 @@ def summarize_asgard_shop(
     failed; accounts skipped because the shop is not a supported lineup
     (Osh / Maestro) are shown in the "Skipped" column and do not fail.
     The "Gold" column shows gold buff purchases as ``bought / spent``
-    (in millions of Gold) when any occurred.
+    (spent formatted with a K/M/T suffix) when any occurred.
     """
     from hw_genie.commands.asgard_shop import AsgardRunResult
     from hw_genie.core.utils import format_number_with_suffix
