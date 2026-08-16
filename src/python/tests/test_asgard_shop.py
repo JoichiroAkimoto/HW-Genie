@@ -709,3 +709,23 @@ def test_cmd_asgard_shop_purchase_error_exits_zero():
 
         mp.setattr("hw_genie.commands.asgard_shop.run_asgard_shop", _run)
         assert main_mod.cmd_asgard_shop(_Args()) is None
+
+
+def test_main_gold_flags_are_mutually_exclusive(monkeypatch):
+    """--gold と --no-gold の同時指定は argparse エラー（exit 2）になる。"""
+    import sys
+
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    for argv in (
+        ["hw-genie", "asgard-shop", "--gold", "--no-gold"],
+        ["hw-genie", "multi", "asgard-shop", "--gold", "--no-gold"],
+        ["hw-genie", "multi", "asgard-shop", "--no-gold", "--gold"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            with monkeypatch.context() as mp:
+                mp.setattr(sys, "argv", argv)
+                main_mod.main()
+        assert exc_info.value.code == 2

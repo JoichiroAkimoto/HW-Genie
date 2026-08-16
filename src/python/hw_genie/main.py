@@ -805,14 +805,15 @@ def main():
         default="daily",
         help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
     )
-    p_multi.add_argument(
+    gold_group = p_multi.add_mutually_exclusive_group()
+    gold_group.add_argument(
         "--gold",
         dest="gold_buffs",
         action="store_true",
         default=None,
         help="Buy gold buffs (slot 1-5) in the 'asgard-shop' mode (default: off for Osh week, on for Maestro week)",
     )
-    p_multi.add_argument(
+    gold_group.add_argument(
         "--no-gold",
         dest="gold_buffs",
         action="store_false",
