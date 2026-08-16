@@ -29,7 +29,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Quest Status**: 現在のクエスト（デイリー・週次・ギルド・メイン・イベント etc.）の状態をカテゴリ別に取得・表示。`--execute` でデイリーの自動完了も可能（実行可否はアカウントごとの `quest_defaults` enabled フラグで制御、`--edit-defaults` の対話的ウィザードで設定、`hw-genie quests`）。`multi quests` で全アカウント一括自動完了（`--dry-run` 予行可）、daily / full ルーチンにも統合済み。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
-- **Asgard Shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh 週）で Valor Emblem を使ったバフを固定優先度で自動購入（`hw-genie asgard-shop` / `multi asgard-shop`。Maestro 週は未対応としてスキップ、`--dry-run` で計画表示のみ）。
+- **Asgard Shop**: Asgard（ギルドレイド）の Realm Traveler ショップで Valor Emblem を使ったバフとゴールドバフを自動購入（`hw-genie asgard-shop` / `multi asgard-shop`。Osh 週は固定優先度、Maestro 週は優先度 S→A→B の組み合わせ最適化で購入。判定不能な週はスキップ、`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on））。
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。`--dry-run` で予行確認可）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
@@ -134,7 +134,7 @@ bin/hwsa
 - `hwda` サービス: `hw-genie multi daily`（全アカウントのデイリールーチン）
 - `hwsa` サービス: `hw-genie multi full`（ヒーローレイド + ショップ + デイリー）
 - `multi quests`: 全アカウントのデイリークエスト自動完了のみ（`--dry-run` で予行確認可）。daily / full は実行後に各アカウントの `quest_defaults.enabled` クエストを自動完了します（enabled のみ、初期状態は無効）
-- `multi asgard-shop`: 全アカウントの Asgard ショップ（Osh 週）自動購入のみ（Maestro 週等はスキップ）
+- `multi asgard-shop`: 全アカウントの Asgard ショップ自動購入のみ（Osh / Maestro 週を自動判定、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 

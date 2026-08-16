@@ -199,7 +199,7 @@ POST https://heroes-wb.nextersglobal.com/api/
 
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
-| `buffId` | int | バフ ID（Osh の Realm Traveler は 61〜81 で固定） |
+| `buffId` | int | バフ ID（Osh の Realm Traveler は 61〜81、Maestro の Phantom Orchestra は 112〜133 で固定） |
 | `buffValue` | int | バフ効果量（% 表示用） |
 | `buyLimit` | int | 購入上限（Valor Emblem 商品は 1） |
 | `cost` | object | 価格。`{"coin": {"30": 価格}}` が Valor Emblem、`{"gold": ...}` がゴールドバフ |
@@ -210,6 +210,30 @@ POST https://heroes-wb.nextersglobal.com/api/
 > **Osh 週のラインナップ**: slot 1〜5 はゴールドバフ（`cost.gold` 100万、buyLimit 5）、
 > slot 6〜21 が Valor Emblem 商品（価格は週替わりで 50/100/150 のいずれか）。
 > ラインナップ（slot→buffId）は全アカウント共通で固定、`boughtCount` と `coins` はアカウント別。
+>
+> **Maestro 週のラインナップ**: slot 構成・価格帯は Osh と同じ（slot 1〜5 はゴールドバフ、
+> slot 6〜21 が Valor Emblem 商品）だが、buffId の範囲は 112〜133 で、slot→バフの対応は
+> 週ごとに変わる場合がある（`hw-genie asgard-shop` は確認済みラインナップに基づく
+> slot→順位の固定優先度表 `MAESTRO_PRIORITY` と組み合わせ最適化で購入プランを選定する。
+> 週が変わった際は表の更新が必要）。
+>
+> 2026-08 実測の slot → バフ名（価格, buffId）:
+>
+> | slot | バフ名 | 価格 | buffId |
+> |------|--------|------|--------|
+> | 11 | Unbridled Energy | 100 | 118 |
+> | 15 | At the Speed of Light | 50 | 125 |
+> | 9 | Pillar of Confidence | 50 | 116 |
+> | 7 | Effective Tactics | 150 | 114 |
+> | 17 | Secret Weapon | 150 | 128 |
+> | 16 | Strength in Perseverance | 150 | 127 |
+> | 14 | At the Limit | 50 | 122 |
+> | 12 | Perfect Storm | 100 | 119 |
+> | 10 | Charmer's Skill | 100 | 117 |
+> | 19 | Through a Prism | 50 | 133 |
+> | 8 | The Tireless | 50 | 115 |
+> | 6 / 13 / 18 / 21 | （バフ名不明・購入対象外） | 150 / 100 / 50 / 100 | 112 / 120 / 121 / 132 |
+> | 1〜5 | ゴールドバフ（バフ名不明） | 100 万ゴールド | 113 / 123 / 126 / 129 / 130 |
 
 ---
 

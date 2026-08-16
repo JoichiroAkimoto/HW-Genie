@@ -4,8 +4,10 @@ from . import dummy_responses as dummy
 from hw_genie.commands.asgard_shop import (
     ResponseStatus,
     build_buy_queue,
+    is_maestro_shop,
     is_osh_shop,
     run_asgard_shop,
+    select_maestro_plan,
 )
 
 
@@ -125,11 +127,49 @@ def test_run_asgard_shop_dry_run_makes_no_buy_calls(mock_client, mock_sleep):
     assert mock_call.call_count == 1  # 購入は実行されない
 
 
-def test_run_asgard_shop_skips_maestro_week(mock_client, mock_sleep):
-    """Maestro 週（Osh シグネチャ不一致）では購入せずスキップすることを検証。"""
+def test_run_asgard_shop_maestro_week_buys(mock_client, mock_sleep):
+    """Maestro 週は組み合わせ最適化で選定した 11 商品（S6+A3+B2）を購入する。"""
     client, mock_call = mock_client
 
-    mock_call.side_effect = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    for _ in range(11):  # S(6) + A(3) + B(2) = 11 件（残高 1000 で全購入可能）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.skipped is False
+    assert result.bought == 11
+    assert result.spent == 1000
+    assert result.remaining == 0
+    assert result.failed_count == 0
+    # ゴールドバフ（conftest の gold=1000）は残高不足で購入されない
+    assert result.gold_bought == 0
+    success = [item for item in result.items if item.status == ResponseStatus.SUCCESS]
+    assert [item.action for item in success] == [
+        f"[Realm Traveler] Slot:{s} -> buff {dummy._MAESTRO_BUFF_IDS[s]} (x{dummy._MAESTRO_BUFF_VALUES[s]}, {dummy._MAESTRO_PRICES[s]} Valor Emblems)"
+        for s in (11, 15, 9, 7, 17, 16, 14, 12, 10, 19, 8)
+    ]
+    # getInfo(1) + 購入(11) = 12 回
+    assert mock_call.call_count == 12
+
+
+def test_run_asgard_shop_skips_unknown_week(mock_client, mock_sleep):
+    """Osh / Maestro 以外のラインナップでは購入せずスキップする。"""
+    client, mock_call = mock_client
+
+    res_unknown = MagicMock()
+    res_unknown.is_success = True
+    res_unknown.detail = {
+        "response": {
+            "shop": {
+                "6": {"branch": "", "buffId": 500, "buffValue": 3, "buyLimit": 1,
+                      "cost": {"coin": {"30": 50}}, "rank": 3, "requirement": "", "boughtCount": 0},
+            },
+            "coins": 1000,
+        }
+    }
+    mock_call.side_effect = [res_unknown]
 
     result = run_asgard_shop(client)
 
@@ -185,6 +225,345 @@ def test_is_osh_shop_subset_of_signature_is_osh():
     assert is_osh_shop(subset_shop) is True
     # 空 shop は判定不能 → Osh とみなさない
     assert is_osh_shop({}) is False
+
+
+def test_is_maestro_shop():
+    """Maestro シグネチャ判定（Osh 週は False）。"""
+    maestro_shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    osh_shop = dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]["shop"]
+    assert is_maestro_shop(maestro_shop) is True
+    assert is_maestro_shop(osh_shop) is False
+    # 一部 slot だけ残った shop（= 部分集合）も Maestro と判定される
+    subset_shop = {k: v for k, v in maestro_shop.items() if int(k) in (6, 7, 11)}
+    assert is_maestro_shop(subset_shop) is True
+    # 空 shop は判定不能 → Maestro とみなさない
+    assert is_maestro_shop({}) is False
+
+
+def test_select_maestro_plan_full_budget():
+    """残高 1000 では S(6) + A(3) + B(2) の全 11 商品が順位順に選ばれる。"""
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    plan = select_maestro_plan(shop, 1000)
+
+    assert [item.slot_id for item in plan] == [11, 15, 9, 7, 17, 16, 14, 12, 10, 19, 8]
+    assert sum(item.price for item in plan) == 1000
+
+
+def test_select_maestro_plan_excludes_c_rank():
+    """C ランク（優先度表にない slot）は残高が足りても購入候補に含まれない。"""
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    plan = select_maestro_plan(shop, 10_000)
+    assert all(item.slot_id not in (6, 13, 18, 21) for item in plan)
+
+
+def test_select_maestro_plan_prioritizes_s_count():
+    """S 数を最優先する（「上位バフ 1 個の確保」は「下位バフ複数」より優先）。
+
+    残高 100 のとき、S 1 個（slot 11 = 100）は S 2 個（slot 15 + 9 = 100）より
+    優先度が低いため、S 2 個の組み合わせが選ばれる。
+    """
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    plan = select_maestro_plan(shop, 100)
+
+    assert [item.slot_id for item in plan] == [15, 9]
+    assert sum(item.price for item in plan) == 100
+
+
+def test_select_maestro_plan_prefers_higher_rank_within_s():
+    """同一ランク内では高順位を優先する。
+
+    残高 150 のとき、S 2 個（slot 11 + 15 = 順位 1+2）は S 2 個 + A 1 個
+    （slot 15 + 9 + 14 = 順位 2+3 + A7）より優先される。
+    """
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    plan = select_maestro_plan(shop, 150)
+
+    assert [item.slot_id for item in plan] == [11, 15]
+    assert sum(item.price for item in plan) == 150
+
+
+def test_maestro_eval_key_tiebreak_by_cost():
+    """評価キーは S/A/B 構成・順位合計が同じならコストが小さい方を優先する。"""
+    from hw_genie.commands.asgard_shop import AsgardItem, _maestro_eval_key
+
+    # S2+S5（200）と S1+S6（250）はどちらも S 2 個・順位合計 7 → コストが小さい方が優先
+    combo_cheap = (
+        AsgardItem(slot_id=15, buff_id=125, buff_value=2, price=50),
+        AsgardItem(slot_id=17, buff_id=128, buff_value=3, price=150),
+    )
+    combo_expensive = (
+        AsgardItem(slot_id=11, buff_id=118, buff_value=10, price=100),
+        AsgardItem(slot_id=16, buff_id=127, buff_value=20, price=150),
+    )
+    assert _maestro_eval_key(combo_cheap) > _maestro_eval_key(combo_expensive)
+
+
+def test_select_maestro_plan_uses_best_combination():
+    """残高 250 では S 3 個 + A 1 個（250）が S 2 個（200）より優先される。"""
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    plan = select_maestro_plan(shop, 250)
+
+    assert sum(item.price for item in plan) == 250
+    assert {item.slot_id for item in plan} == {11, 15, 9, 14}
+
+
+def test_select_maestro_plan_empty_when_nothing_affordable():
+    """残高不足で 1 個も買えない場合は空プランを返す。"""
+    shop = dummy.CLAN_RAID_GET_INFO_MAESTRO["results"][0]["result"]["response"]["shop"]
+    assert select_maestro_plan(shop, 10) == []
+
+
+def test_run_asgard_shop_gold_buffs_purchased(mock_client, mock_sleep):
+    """--gold（gold_buffs=True）なら Osh 週でもゴールドバフを購入する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(15):  # 1500万 / 100万 = slot 1〜5 の 5 回ずつ（15 回）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    for _ in range(13):  # Valor 商品（残高 1000）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 15
+    assert result.gold_spent == 15_000_000
+    assert result.bought == 13
+    assert result.spent == 1000
+    # getInfo(1) + ゴールドバフ(15) + Valor(13) = 29 回
+    assert mock_call.call_count == 29
+    gold_success = [
+        item for item in result.items
+        if item.status == ResponseStatus.SUCCESS and "Gold" in item.action
+    ]
+    assert len(gold_success) == 15
+
+
+def test_run_asgard_shop_gold_buffs_disabled(mock_client, mock_sleep):
+    """gold_buffs=False ではゴールドバフを購入しない（Valor のみ）。"""
+    client, mock_call = mock_client
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=False)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    assert mock_call.call_count == 14
+
+
+def test_run_asgard_shop_gold_buffs_insufficient_gold(mock_client, mock_sleep):
+    """ゴールド残高が 100 万未満ならゴールドバフを購入せず Valor は続行する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 999_999
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    # getInfo(1) + Valor(13) = 14 回（ゴールドバフ購入は発生しない）
+    assert mock_call.call_count == 14
+
+
+def test_run_asgard_shop_gold_buffs_zero_balance(mock_client, mock_sleep, capsys):
+    """ゴールド残高 0（API がエラーを投げず 0 を返すケース）でも Valor は続行する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 0
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    assert "Gold buffs: insufficient gold" in capsys.readouterr().out
+
+
+def test_run_asgard_shop_gold_buffs_stops_on_not_enough(mock_client, mock_sleep):
+    """ゴールドバフ購入中に NotEnough が起きたら残りを打ち切り、Valor は続行する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))  # ゴールドバフ 1 回目
+    res_not_enough = MagicMock()
+    res_not_enough.is_success = False
+    res_not_enough.error_name = "NotEnough"
+    responses.append(res_not_enough)  # ゴールドバフ 2 回目 → 打ち切り
+    for _ in range(13):  # Valor 商品は続行
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 1
+    assert result.gold_spent == 1_000_000
+    assert result.bought == 13
+    gold_failed = [
+        item for item in result.items
+        if item.status == ResponseStatus.ERROR and "Gold" in item.action
+    ]
+    assert len(gold_failed) == 1
+    # getInfo(1) + gold成功(1) + gold失敗(1) + Valor(13) = 16 回
+    assert mock_call.call_count == 16
+
+
+def test_run_asgard_shop_gold_buffs_dry_run(mock_client, mock_sleep):
+    """dry-run ではゴールドバフの計画も表示し、購入は実行しない。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    mock_call.side_effect = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+
+    result = run_asgard_shop(client, dry_run=True, gold_buffs=True)
+
+    assert result.gold_bought == 15  # 計画上の購入可能数
+    assert result.gold_spent == 15_000_000
+    assert result.bought == 13
+    assert mock_call.call_count == 1  # 購入は実行されない
+
+
+def test_run_asgard_shop_gold_fetch_failure_skips_gold_buffs(mock_client, mock_sleep, capsys):
+    """ゴールド残高取得失敗時は警告を出し、Valor 購入は続行する。"""
+    client, mock_call = mock_client
+    client.fetch_player_status = MagicMock(side_effect=RuntimeError("boom"))
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    assert "Failed to fetch gold balance - skipping gold buffs." in capsys.readouterr().out
+
+
+def test_run_asgard_shop_gold_buffs_all_bought_out_skips_fetch(mock_client, mock_sleep):
+    """ゴールドバフが全買い切り済みの場合は残高取得 API を呼ばない。"""
+    client, mock_call = mock_client
+    shop = dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]["shop"]
+    shop = dict(shop)
+    for slot_id in ("1", "2", "3", "4", "5"):
+        shop[slot_id] = dict(shop[slot_id]) | {"boughtCount": 5}
+    dummy_res = dict(dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]) | {"shop": shop}
+    get_info = {"results": [{"result": {"response": dummy_res}}]}
+    responses = [_res_from(get_info)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=True)
+
+    assert result.gold_bought == 0
+    client.fetch_player_status.assert_not_called()
+
+
+def test_run_asgard_shop_gold_buffs_osh_week_default_off(mock_client, mock_sleep, capsys):
+    """Osh 週デフォルト（gold_buffs=None）ではゴールドバフを購入しない。"""
+    client, mock_call = mock_client
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    client.fetch_player_status.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Gold buffs: skipped (default off for Osh week" in out
+    assert "use --gold to enable" in out
+
+
+def test_run_asgard_shop_gold_buffs_maestro_week_default_on(mock_client, mock_sleep):
+    """Maestro 週デフォルト（gold_buffs=None）ではゴールドバフを購入する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    for _ in range(15):  # ゴールドバフ slot 1〜5（Maestro 週も slot 1〜5 がゴールド）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    for _ in range(11):  # Valor 商品（S6 + A3 + B2 = 11 件、残高 1000）
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 15
+    assert result.gold_spent == 15_000_000
+    assert result.bought == 11
+    # getInfo(1) + ゴールドバフ(15) + Valor(11) = 27 回
+    assert mock_call.call_count == 27
+
+
+def test_run_asgard_shop_gold_buffs_maestro_week_no_gold(mock_client, mock_sleep):
+    """--no-gold（gold_buffs=False）なら Maestro 週でもゴールドバフを購入しない。"""
+    client, mock_call = mock_client
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_MAESTRO)]
+    for _ in range(11):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client, gold_buffs=False)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 11
+    client.fetch_player_status.assert_not_called()
+
+
+def test_parse_gold_slot():
+    """parse_gold_slot はゴールド価格の slot のみをパースする。"""
+    from hw_genie.commands.asgard_shop import parse_gold_slot
+
+    parsed = parse_gold_slot("1", {"buffId": 61, "buffValue": 3, "cost": {"gold": 1000000}})
+    assert parsed is not None
+    assert parsed.slot_id == 1
+    assert parsed.buff_id == 61
+    assert parsed.price == 1_000_000
+    # ゴールド価格なし（Valor 商品）は None
+    assert parse_gold_slot("6", {"buffId": 66, "cost": {"coin": {"30": 50}}}) is None
+    # 価格 0 以下は None
+    assert parse_gold_slot("1", {"cost": {"gold": 0}}) is None
+    assert parse_gold_slot("1", {"cost": {"gold": -5}}) is None
+    # 構造不正・数値化不可の slotId は None
+    assert parse_gold_slot("1", "not-a-dict") is None
+    assert parse_gold_slot("1", {"cost": "invalid"}) is None
+    assert parse_gold_slot("x", {"cost": {"gold": 1000000}}) is None
 
 
 def test_build_buy_queue_excludes_malformed_slots():
@@ -249,6 +628,7 @@ def test_cmd_asgard_shop_fetch_failure_exits_nonzero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
@@ -281,6 +661,7 @@ def test_cmd_asgard_shop_success_exits_zero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
@@ -310,6 +691,7 @@ def test_cmd_asgard_shop_purchase_error_exits_zero():
     class _Args:
         account = None
         dry_run = False
+        gold_buffs = None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(main_mod, "_ensure_session", lambda args: {"auth": "dummy"})
@@ -327,3 +709,23 @@ def test_cmd_asgard_shop_purchase_error_exits_zero():
 
         mp.setattr("hw_genie.commands.asgard_shop.run_asgard_shop", _run)
         assert main_mod.cmd_asgard_shop(_Args()) is None
+
+
+def test_main_gold_flags_are_mutually_exclusive(monkeypatch):
+    """--gold と --no-gold の同時指定は argparse エラー（exit 2）になる。"""
+    import sys
+
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    for argv in (
+        ["hw-genie", "asgard-shop", "--gold", "--no-gold"],
+        ["hw-genie", "multi", "asgard-shop", "--gold", "--no-gold"],
+        ["hw-genie", "multi", "asgard-shop", "--no-gold", "--gold"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            with monkeypatch.context() as mp:
+                mp.setattr(sys, "argv", argv)
+                main_mod.main()
+        assert exc_info.value.code == 2

@@ -233,26 +233,50 @@ CLAN_RAID_GET_INFO_OSH_BOUGHT = {
     "results": [{"ident": "body", "result": {"response": {"shop": _osh_shop_slots(bought={8, 17}), "coins": 100}}}]
 }
 
-# Maestro 週（Osh と異なる buffId シグネチャ）→ スキップ対象
-CLAN_RAID_GET_INFO_MAESTRO = {
-    "results": [
-        {
-            "ident": "body",
-            "result": {
-                "response": {
-                    "shop": {
-                        str(slot): {
-                            "branch": "", "buffId": 100 + slot, "buffValue": slot,
-                            "buyLimit": 1, "cost": {"coin": {"30": 50}},
-                            "rank": 3, "requirement": "", "boughtCount": 0,
-                        }
-                        for slot in range(6, 22)
-                    },
-                    "coins": 1000,
-                }
-            },
+# Maestro 週（Phantom Orchestra）の価格表（slot 6〜21。週替わりだがシグネチャは固定）
+_MAESTRO_PRICES = {
+    6: 150, 7: 150, 8: 50, 9: 50, 10: 100, 11: 100, 12: 100, 13: 100,
+    14: 50, 15: 50, 16: 150, 17: 150, 18: 50, 19: 50, 20: 50, 21: 100,
+}
+
+# Maestro 週の slot → buffId（実測値ベース。slot 1〜5 はゴールドバフ）
+_MAESTRO_BUFF_IDS = {
+    1: 113, 2: 123, 3: 126, 4: 129, 5: 130,
+    6: 112, 7: 114, 8: 115, 9: 116, 10: 117, 11: 118, 12: 119, 13: 120,
+    14: 122, 15: 125, 16: 127, 17: 128, 18: 121, 19: 133, 20: 131, 21: 132,
+}
+
+# Maestro 週の slot → buffValue（実測値ベース）
+_MAESTRO_BUFF_VALUES = {
+    1: 5, 2: 5, 3: 5, 4: 5, 5: 5,
+    6: 1, 7: 15, 8: 5, 9: 2, 10: 3, 11: 10, 12: 20, 13: 3,
+    14: 50, 15: 2, 16: 20, 17: 3, 18: 5, 19: 10, 20: 4, 21: 30,
+}
+
+
+def _maestro_shop_slots(bought: set[int] | None = None) -> dict:
+    """Maestro 週（buffId 112〜133、slot 1〜5 はゴールドバフ）のショップスロットを生成する。"""
+    bought = bought or set()
+    slots = {}
+    for slot in range(1, 6):
+        slots[str(slot)] = {
+            "branch": "", "buffId": _MAESTRO_BUFF_IDS[slot], "buffValue": _MAESTRO_BUFF_VALUES[slot],
+            "buyLimit": 5, "cost": {"gold": 1000000}, "rank": 0, "requirement": "", "boughtCount": 0,
         }
-    ]
+    for slot in range(6, 22):
+        price = _MAESTRO_PRICES[slot]
+        slots[str(slot)] = {
+            "branch": "", "buffId": _MAESTRO_BUFF_IDS[slot], "buffValue": _MAESTRO_BUFF_VALUES[slot],
+            "buyLimit": 1, "cost": {"coin": {"30": price}},
+            "rank": 1 if price == 150 else (2 if price == 100 else 3),
+            "requirement": "", "boughtCount": 1 if slot in bought else 0,
+        }
+    return slots
+
+
+# 未購入・残高 1000 の Maestro 週（S 6 + A 3 + B 2 = 11 商品、合計ちょうど 1000）
+CLAN_RAID_GET_INFO_MAESTRO = {
+    "results": [{"ident": "body", "result": {"response": {"shop": _maestro_shop_slots(), "coins": 1000}}}]
 }
 
 CLAN_RAID_SHOP_BUY_SUCCESS = {"results": [{"ident": "buy_6", "result": {"response": {}}}]}
