@@ -578,6 +578,7 @@ def summarize_asgard_shop(
     (in millions of Gold) when any occurred.
     """
     from hw_genie.commands.asgard_shop import AsgardRunResult
+    from hw_genie.core.utils import format_number_with_suffix
 
     ok = 0
     failed: list[str] = []
@@ -585,7 +586,9 @@ def summarize_asgard_shop(
     for account, (res, err) in results:
         if err is None and isinstance(res, AsgardRunResult) and res.error is None:
             gold_cell = (
-                f"{res.gold_bought} / {res.gold_spent // 1_000_000}M" if res.gold_bought else "-"
+                f"{res.gold_bought} / {format_number_with_suffix(res.gold_spent)}"
+                if res.gold_bought
+                else "-"
             )
             rows.append(
                 [

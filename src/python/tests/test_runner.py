@@ -1084,7 +1084,7 @@ def test_summarize_asgard_shop_shows_gold_buffs(capsys):
     failed = summarize_asgard_shop(results)
     out = capsys.readouterr().out
     assert failed == 0
-    assert "15 / 15M" in out
+    assert "15 / 15.0M" in out
 
 
 def test_asgard_shop_routine_forwards_gold_buffs():

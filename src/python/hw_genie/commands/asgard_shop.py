@@ -204,8 +204,9 @@ def is_maestro_shop(shop: dict[str, Any]) -> bool:
 def parse_slot(slot_id: Any, item: Any) -> AsgardItem | None:
     """slot を Valor Emblem 商品としてパースする。
 
-    ゴールドバフ（cost に gold のみ）、価格が 0 以下（パース失敗を含む）、
-    構造不正・slotId が数値でない slot は ``None`` を返す（購入候補から除外される）。
+    ゴールドバフ（cost に Valor コイン ``coin[30]`` を含まない）、価格が
+    0 以下（パース失敗を含む）、構造不正・slotId が数値でない slot は
+    ``None`` を返す（購入候補から除外される）。
     """
     if not isinstance(item, dict):
         return None

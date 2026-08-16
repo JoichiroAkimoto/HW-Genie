@@ -380,6 +380,57 @@ def test_run_asgard_shop_gold_buffs_insufficient_gold(mock_client, mock_sleep):
     assert mock_call.call_count == 14
 
 
+def test_run_asgard_shop_gold_buffs_zero_balance(mock_client, mock_sleep, capsys):
+    """ゴールド残高 0（API がエラーを投げず 0 を返すケース）でも Valor は続行する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 0
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    assert "Gold buffs: insufficient gold" in capsys.readouterr().out
+
+
+def test_run_asgard_shop_gold_buffs_stops_on_not_enough(mock_client, mock_sleep):
+    """ゴールドバフ購入中に NotEnough が起きたら残りを打ち切り、Valor は続行する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))  # ゴールドバフ 1 回目
+    res_not_enough = MagicMock()
+    res_not_enough.is_success = False
+    res_not_enough.error_name = "NotEnough"
+    responses.append(res_not_enough)  # ゴールドバフ 2 回目 → 打ち切り
+    for _ in range(13):  # Valor 商品は続行
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 1
+    assert result.gold_spent == 1_000_000
+    assert result.bought == 13
+    gold_failed = [
+        item for item in result.items
+        if item.status == ResponseStatus.ERROR and "Gold" in item.action
+    ]
+    assert len(gold_failed) == 1
+    # getInfo(1) + gold成功(1) + gold失敗(1) + Valor(13) = 16 回
+    assert mock_call.call_count == 16
+
+
 def test_run_asgard_shop_gold_buffs_dry_run(mock_client, mock_sleep):
     """dry-run ではゴールドバフの計画も表示し、購入は実行しない。"""
     client, mock_call = mock_client
@@ -433,6 +484,26 @@ def test_run_asgard_shop_gold_buffs_all_bought_out_skips_fetch(mock_client, mock
 
     assert result.gold_bought == 0
     client.fetch_player_status.assert_not_called()
+
+
+def test_parse_gold_slot():
+    """parse_gold_slot はゴールド価格の slot のみをパースする。"""
+    from hw_genie.commands.asgard_shop import parse_gold_slot
+
+    parsed = parse_gold_slot("1", {"buffId": 61, "buffValue": 3, "cost": {"gold": 1000000}})
+    assert parsed is not None
+    assert parsed.slot_id == 1
+    assert parsed.buff_id == 61
+    assert parsed.price == 1_000_000
+    # ゴールド価格なし（Valor 商品）は None
+    assert parse_gold_slot("6", {"buffId": 66, "cost": {"coin": {"30": 50}}}) is None
+    # 価格 0 以下は None
+    assert parse_gold_slot("1", {"cost": {"gold": 0}}) is None
+    assert parse_gold_slot("1", {"cost": {"gold": -5}}) is None
+    # 構造不正・数値化不可の slotId は None
+    assert parse_gold_slot("1", "not-a-dict") is None
+    assert parse_gold_slot("1", {"cost": "invalid"}) is None
+    assert parse_gold_slot("x", {"cost": {"gold": 1000000}}) is None
 
 
 def test_build_buy_queue_excludes_malformed_slots():
