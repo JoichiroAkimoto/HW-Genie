@@ -825,3 +825,144 @@ def test_fetch_file_contents_counts_header_in_budget():
     assert "x" * 300 not in result
     assert "x" in result
     assert len(result) <= 250
+
+
+# ---------------------------------------------------------------------------
+# Thinking Config & Execution Metadata Tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_thinking_config_defaults_to_high():
+    """未設定時はデフォルトで最大レベル HIGH の ThinkingConfig が生成される。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        config = ai_review._build_thinking_config({})
+        assert config is not None
+        assert str(config.thinking_level).upper().endswith("HIGH")
+
+
+def test_build_thinking_config_uses_model_info():
+    """models.json に thinking_level がある場合はそのレベルが使われる。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        config_high = ai_review._build_thinking_config({"thinking_level": "HIGH"})
+        assert config_high is not None
+        assert str(config_high.thinking_level).upper().endswith("HIGH")
+
+        config_med = ai_review._build_thinking_config({"thinking_level": "MEDIUM"})
+        assert config_med is not None
+        assert str(config_med.thinking_level).upper().endswith("MEDIUM")
+
+
+def test_build_thinking_config_disabled_for_unsupported_models():
+    """thinking_level が null または false のモデル（Gemma 等）は None を返す。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        config_none = ai_review._build_thinking_config({"thinking_level": None})
+        assert config_none is None
+
+        config_false = ai_review._build_thinking_config({"thinking_level": False})
+        assert config_false is None
+
+        config_off = ai_review._build_thinking_config({"thinking_level": "OFF"})
+        assert config_off is None
+
+
+def test_build_thinking_config_env_override():
+    """環境変数 GEMINI_THINKING_LEVEL が最優先で適用される。"""
+    with mock.patch.dict(os.environ, {"GEMINI_THINKING_LEVEL": "LOW"}):
+        config = ai_review._build_thinking_config({"thinking_level": "HIGH"})
+        assert config is not None
+        assert str(config.thinking_level).upper().endswith("LOW")
+
+    with mock.patch.dict(os.environ, {"GEMINI_THINKING_LEVEL": "OFF"}):
+        config = ai_review._build_thinking_config({"thinking_level": "HIGH"})
+        assert config is None
+
+
+def test_get_thinking_level_display():
+    """ThinkingConfig から表示用レベル文字列が取得できる。"""
+    assert ai_review._get_thinking_level_display(None) is None
+    cfg = ai_review._build_thinking_config({"thinking_level": "HIGH"})
+    assert ai_review._get_thinking_level_display(cfg) == "HIGH"
+
+
+def test_build_execution_metadata_comprehensive():
+    """実行メタデータにモデル、実バージョン、思考レベル、変更規模、コミットリンク、Actions ログが含まれる。"""
+    mock_usage = mock.MagicMock()
+    mock_usage.prompt_token_count = 10000
+    mock_usage.candidates_token_count = 1500
+    mock_usage.thoughts_token_count = 1000
+
+    mock_resp = mock.MagicMock()
+    mock_resp.model_version = "gemini-2.5-flash-001"
+    mock_resp.usage_metadata = mock_usage
+    mock_resp._retry_count = 1
+
+    model_info = {
+        "name": "gemini-flash-latest",
+        "input_cost_per_1m": 1.50,
+        "output_cost_per_1m": 9.00,
+        "thinking_level": "HIGH",
+    }
+    thinking_cfg = ai_review._build_thinking_config(model_info)
+
+    metadata = ai_review.build_execution_metadata(
+        model_name="gemini-flash-latest",
+        resolved_model_name="gemini-2.5-flash",
+        model_info=model_info,
+        response=mock_resp,
+        thinking_config=thinking_cfg,
+        files_modified_count=3,
+        lines_added=120,
+        lines_deleted=45,
+        duration=4.5,
+        repo="JoichiroAkimoto/HW-Genie",
+        server_url="https://github.com",
+        run_id="123456",
+        commit_sha="a1b2c3d",
+    )
+
+    assert "⚡ 今回の実行情報" in metadata
+    # モデル名と実バージョンと正規名
+    assert "gemini-flash-latest" in metadata
+    assert "gemini-2.5-flash-001" in metadata
+    assert "思考: `HIGH`" in metadata
+    # 対象コミットリンクと Actions ログリンク
+    assert "https://github.com/JoichiroAkimoto/HW-Genie/commit/a1b2c3d" in metadata
+    assert "https://github.com/JoichiroAkimoto/HW-Genie/actions/runs/123456" in metadata
+    # 変更規模
+    assert "3 ファイル (+120 / -45 行)" in metadata
+    # トークン内訳（思考トークン含む）
+    assert "うち思考=`1,000`" in metadata
+    # コスト計算 ($0.015000 + $0.013500 = $0.028500)
+    assert "$0.028500" in metadata
+    # リトライ回数
+    assert "APIリトライ" in metadata
+    assert "1 回" in metadata
+
+
+def test_build_execution_metadata_unknown_cost_and_no_thinking():
+    """Thinking なし、コスト不明モデルでの表示が正しく処理される。"""
+    mock_resp = mock.MagicMock()
+    mock_resp.model_version = None
+    mock_resp.usage_metadata = None
+    mock_resp._retry_count = 0
+
+    model_info = {
+        "name": "custom-model",
+        "input_cost_per_1m": None,
+        "output_cost_per_1m": None,
+    }
+
+    metadata = ai_review.build_execution_metadata(
+        model_name="custom-model",
+        resolved_model_name="custom-model",
+        model_info=model_info,
+        response=mock_resp,
+        thinking_config=None,
+        files_modified_count="N/A",
+        duration=2.0,
+    )
+
+    assert "`custom-model`" in metadata
+    assert "思考" not in metadata
+    assert "(取得できませんでした)" in metadata
+

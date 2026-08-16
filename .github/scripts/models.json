@@ -7,7 +7,8 @@
     ],
     "input_cost_per_1m": 1.50,
     "output_cost_per_1m": 9.00,
-    "max_diff_chars": 2000000
+    "max_diff_chars": 2000000,
+    "thinking_level": "HIGH"
   },
   "flash-lite": {
     "name": "gemini-flash-lite-latest",
@@ -17,7 +18,8 @@
     ],
     "input_cost_per_1m": 0.25,
     "output_cost_per_1m": 1.50,
-    "max_diff_chars": 2000000
+    "max_diff_chars": 2000000,
+    "thinking_level": "HIGH"
   },
   "gemma": {
     "name": "gemma-4-31b-it",
@@ -27,6 +29,7 @@
     ],
     "input_cost_per_1m": 0.0,
     "output_cost_per_1m": 0.0,
-    "max_diff_chars": 500000
+    "max_diff_chars": 500000,
+    "thinking_level": null
   }
 }
