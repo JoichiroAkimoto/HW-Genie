@@ -10,7 +10,7 @@ import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy import util
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
@@ -406,6 +406,28 @@ class AccountConfig(Base):
     config_value = Column(JSON)
     __table_args__ = (UniqueConstraint("account_id", "config_key", name="_account_config_uc"),)
     # Using a unique constraint on (account_id, config_key) to ensure Key-Value uniqueness per account
+
+
+class RunLog(Base):
+    """One row per completed ``multi`` execution (daily/full/quests/...).
+
+    Stores the structured outcome (per-account ok/failed + error summary) plus
+    the full console output text, so results are visible from any environment
+    that syncs the Turso replica. Rows are pruned after ``HW_LOG_KEEP_DAYS``
+    (default 7; 0 disables pruning) — see ``record_run_log``.
+    """
+
+    __tablename__ = "run_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    mode = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    exit_code = Column(Integer, nullable=True)
+    accounts = Column(JSON, nullable=False)
+    error_summary = Column(String, nullable=True)
+    log_text = Column(Text, nullable=True)
+    log_file = Column(String, nullable=True)
 
 
 # プロジェクトルートの絶対パスを基点に DB パスを確定させる。

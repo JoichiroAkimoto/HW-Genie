@@ -63,6 +63,29 @@ Unique constraint: `(account_id, config_key)`
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
 | `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
 
+---
+
+### `run_logs`
+
+`multi` 実行（hwda / hwsa / CLI 直実行 / Docker）1 回ごとの結果サマリーと出力全文。
+
+| カラム | 型 | 制約 | 説明 |
+|--------|----|------|------|
+| `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
+| `started_at` | DATETIME | NOT NULL | 実行開始時刻（UTC） |
+| `finished_at` | DATETIME | NOT NULL | 実行終了時刻（UTC） |
+| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `consumable`） |
+| `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。認証切れ等の例外時のみ `failed`） |
+| `exit_code` | INTEGER | | プロセスの終了コード |
+| `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]` |
+| `error_summary` | VARCHAR | | 失敗アカウント一覧とエラー要約（失敗時のみ） |
+| `log_text` | TEXT | | 出力全文（ANSI 除去済み） |
+| `log_file` | VARCHAR | | 対応する `data/logs/` のログファイルパス（`HWGENIE_LOG_FILE` 経由） |
+
+古い行は `record_run_log`（`core/run_log.py`）が記録のたびに
+`HW_LOG_KEEP_DAYS`（デフォルト 7 日、`0` で無効化）より古いものを削除します。
+閲覧は `hw-genie log ls` / `log show <id>`。
+
 ## 型定義
 
 コード上では以下の TypedDict でデータ構造を型付けしています（`repository.py`）。

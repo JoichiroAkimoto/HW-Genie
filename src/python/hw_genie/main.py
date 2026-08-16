@@ -599,6 +599,9 @@ def cmd_db_check(args):
 
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    from datetime import datetime, timezone
+
+    from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
         asgard_shop_routine,
         consumable_routine,
@@ -643,17 +646,114 @@ def cmd_multi(args):
         routine = full_routine if mode == "full" else daily_routine
         max_parallel = args.parallel
 
-    results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
-    if mode == "quests":
-        failed = summarize_quests(results.items(), dry_run=dry_run)
-    elif mode == "asgard-shop":
-        failed = summarize_asgard_shop(results.items())
-    elif mode == "consumable":
-        failed = summarize_consumable(results.items(), dry_run=dry_run)
-    else:
-        failed = summarize(results.items())
+    # 実行ログ（run_logs）記録: 実行中の出力をキャプチャし、終了時に 1 レコード
+    # 書き込む（best-effort: DB 失敗でも実行自体は落とさない）。
+    started_at = datetime.now(timezone.utc)
+    capture = OutputCapture()
+    results: dict = {}
+    failed = 0
+    try:
+        with capture:
+            results = run_all_accounts(
+                routine, accounts=accounts, max_parallel=max_parallel
+            )
+            if mode == "quests":
+                failed = summarize_quests(results.items(), dry_run=dry_run)
+            elif mode == "asgard-shop":
+                failed = summarize_asgard_shop(results.items())
+            elif mode == "consumable":
+                failed = summarize_consumable(results.items(), dry_run=dry_run)
+            else:
+                failed = summarize(results.items())
+    finally:
+        account_logs, error_summary = _build_run_log_summary(results)
+        record_run_log(
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            mode=mode,
+            status="failed" if failed else "ok",
+            exit_code=1 if failed else 0,
+            accounts=account_logs,
+            error_summary=error_summary,
+            log_text=capture.getvalue() or None,
+            log_file=os.environ.get("HWGENIE_LOG_FILE"),
+        )
     if failed:
         sys.exit(1)
+
+
+def _build_run_log_summary(
+    results: dict[str, tuple[object | None, BaseException | None]],
+) -> tuple[list[dict], str | None]:
+    """Build the per-account summary list and error summary for ``run_logs``.
+
+    An entry with ``ok: false`` carries the first line of the exception message
+    (or the exception type name when it has no message) as ``error``.
+    """
+    entries: list[dict] = []
+    failed_accounts: list[str] = []
+    for account, (_, err) in results.items():
+        if err is None:
+            entries.append({"account": account, "ok": True, "error": None})
+            continue
+        message = str(err).strip().splitlines()
+        message = message[0] if message else type(err).__name__
+        entries.append({"account": account, "ok": False, "error": message})
+        failed_accounts.append(f"{account} ({message})")
+    error_summary = None
+    if failed_accounts:
+        error_summary = (
+            f"{len(failed_accounts)} account(s) failed: "
+            + ", ".join(failed_accounts)
+        )
+    return entries, error_summary
+
+
+def cmd_log_ls(args):
+    """List recent run logs (newest first)."""
+    from hw_genie.core.run_log import list_run_logs
+    from hw_genie.core.utils import format_timestamp_for_display
+
+    rows = list_run_logs(limit=args.limit)
+    if not rows:
+        print("No run logs recorded yet.")
+        return
+    for row in rows:
+        ok = sum(1 for a in row.accounts if a.get("ok"))
+        total = len(row.accounts)
+        started = format_timestamp_for_display(row.started_at.isoformat())
+        print(
+            f"{row.id:>4}  {started}  {row.mode:<11} "
+            f"{row.status:<6} {ok}/{total} ok  exit={row.exit_code}"
+        )
+
+
+def cmd_log_show(args):
+    """Show one run log in full (metadata + captured output)."""
+    from hw_genie.core.run_log import get_run_log
+    from hw_genie.core.utils import format_timestamp_for_display
+
+    row = get_run_log(args.run_id)
+    if row is None:
+        print(f"Run log #{args.run_id} not found.")
+        sys.exit(1)
+    print(f"ID:       {row.id}")
+    print(f"Started:  {format_timestamp_for_display(row.started_at.isoformat())}")
+    print(f"Finished: {format_timestamp_for_display(row.finished_at.isoformat())}")
+    print(f"Mode:     {row.mode}")
+    print(f"Status:   {row.status}  (exit code {row.exit_code})")
+    if row.log_file:
+        print(f"Log file: {row.log_file}")
+    if row.error_summary:
+        print(f"Errors:   {row.error_summary}")
+    for entry in row.accounts:
+        if entry.get("ok"):
+            print(f"  - {entry['account']}: ok")
+        else:
+            print(f"  - {entry['account']}: failed ({entry.get('error')})")
+    if row.log_text:
+        print("\n--- Output ---")
+        print(row.log_text, end="" if row.log_text.endswith("\n") else "\n")
 
 
 def main():
@@ -847,6 +947,19 @@ def main():
         help="Show the execution plan without running anything (quests/consumable modes only)",
     )
     p_multi.set_defaults(func=cmd_multi)
+
+    p_log = subparsers.add_parser(
+        "log", help="Show execution run logs (stored in the database)"
+    )
+    log_sub = p_log.add_subparsers(dest="log_command", required=True)
+    p_log_ls = log_sub.add_parser("ls", help="List recent run logs (newest first)")
+    p_log_ls.add_argument(
+        "--limit", "-n", type=int, default=10, help="Max rows to show (default: 10)"
+    )
+    p_log_ls.set_defaults(func=cmd_log_ls)
+    p_log_show = log_sub.add_parser("show", help="Show one run log in full")
+    p_log_show.add_argument("run_id", type=int, help="Run log ID from `log ls`")
+    p_log_show.set_defaults(func=cmd_log_show)
 
     args = parser.parse_args()
     if not args.command:
