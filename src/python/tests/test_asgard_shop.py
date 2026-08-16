@@ -397,6 +397,44 @@ def test_run_asgard_shop_gold_buffs_dry_run(mock_client, mock_sleep):
     assert mock_call.call_count == 1  # 購入は実行されない
 
 
+def test_run_asgard_shop_gold_fetch_failure_skips_gold_buffs(mock_client, mock_sleep, capsys):
+    """ゴールド残高取得失敗時は警告を出し、Valor 購入は続行する。"""
+    client, mock_call = mock_client
+    client.fetch_player_status = MagicMock(side_effect=RuntimeError("boom"))
+
+    responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 0
+    assert result.gold_spent == 0
+    assert result.bought == 13
+    assert "Failed to fetch gold balance - skipping gold buffs." in capsys.readouterr().out
+
+
+def test_run_asgard_shop_gold_buffs_all_bought_out_skips_fetch(mock_client, mock_sleep):
+    """ゴールドバフが全買い切り済みの場合は残高取得 API を呼ばない。"""
+    client, mock_call = mock_client
+    shop = dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]["shop"]
+    shop = dict(shop)
+    for slot_id in ("1", "2", "3", "4", "5"):
+        shop[slot_id] = dict(shop[slot_id]) | {"boughtCount": 5}
+    dummy_res = dict(dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]) | {"shop": shop}
+    get_info = {"results": [{"result": {"response": dummy_res}}]}
+    responses = [_res_from(get_info)]
+    for _ in range(13):
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    mock_call.side_effect = responses
+
+    result = run_asgard_shop(client)
+
+    assert result.gold_bought == 0
+    client.fetch_player_status.assert_not_called()
+
+
 def test_build_buy_queue_excludes_malformed_slots():
     """価格 0 以下・非 dict・cost 不正の slot は購入候補から除外される。"""
     shop = dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]["shop"]

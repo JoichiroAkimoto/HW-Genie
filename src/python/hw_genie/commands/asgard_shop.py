@@ -72,8 +72,8 @@ MAESTRO_PRIORITY: dict[int, int] = {
     19: 10, 8: 11,  # B
 }
 
-# ゴールドバフ（slot 1〜5）の価格（cost.gold）。
-GOLD_BUFF_PRICE = 1_000_000
+# ゴールドバフ（slot 1〜5）の価格は API レスポンスの cost.gold からパースする
+# （100 万ゴールドが通常だが、個別価格に追従する）。
 
 # Valor Emblem のコイン ID（cost["coin"] のキー）。
 VALOR_COIN_ID = 30
@@ -312,9 +312,12 @@ def _maestro_eval_key(items: tuple[AsgardItem, ...]) -> tuple[int, ...]:
     s_rank_sum = a_rank_sum = b_rank_sum = 0
     total = 0
     for item in items:
-        # 優先度表外の slot は C ランク（優先度 0）として扱う（防御的対応。
-        # 呼び出し元 select_maestro_plan は表内 slot のみを渡す）。
+        # 優先度表外の slot は C ランク（優先度 0）として扱い、クラスカウント
+        # にも合計コストにも含めない（防御的対応。呼び出し元 select_maestro_plan
+        # は表内 slot のみを渡す）。
         priority = MAESTRO_PRIORITY.get(item.slot_id, 0)
+        if priority <= 0:
+            continue
         total += item.price
         if priority <= 6:
             s_count += 1
@@ -469,10 +472,10 @@ def _plan_gold_buffs(
     results: list[AsgardResult] = []
     bought = 0
     spent = 0
-    print(f"\n{Emojis.STEP}{prefix}--- Gold Buff Plan (dry-run) ---", flush=True)
     gold_slots = _gold_buff_slots(shop)
     if not gold_slots:
         return results, bought, spent
+    print(f"\n{Emojis.STEP}{prefix}--- Gold Buff Plan (dry-run) ---", flush=True)
     if gold_budget < min(parsed.price for parsed, _ in gold_slots):
         print(f"  {Emojis.WARNING}Insufficient gold ({gold_budget}) - skipping all gold buffs.", flush=True)
         return results, bought, spent
@@ -559,7 +562,7 @@ def run_asgard_shop(
     gold_results: list[AsgardResult] = []
     gold_bought = 0
     gold_spent = 0
-    if gold_buffs:
+    if gold_buffs and _gold_buff_slots(shop):
         try:
             gold_budget = _safe_int(client.fetch_player_status().gold)
         except HWAuthError:

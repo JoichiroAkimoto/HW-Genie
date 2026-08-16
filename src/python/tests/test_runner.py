@@ -1098,3 +1098,9 @@ def test_asgard_shop_routine_forwards_gold_buffs():
         client = MagicMock()
         routine(client, "alpha")
         mock_run.assert_called_once_with(client, dry_run=False, account_alias="alpha", gold_buffs=False)
+
+    with patch("hw_genie.commands.asgard_shop.run_asgard_shop") as mock_run:
+        routine = asgard_shop_routine()
+        client = MagicMock()
+        routine(client, "alpha")
+        mock_run.assert_called_once_with(client, dry_run=False, account_alias="alpha", gold_buffs=True)
