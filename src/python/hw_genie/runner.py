@@ -202,18 +202,26 @@ def quests_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
     return run
 
 
-def asgard_shop_routine(client: HWClient, account: str) -> object:
-    """Run the Asgard Guild Raid shop auto-buy for ``account``.
+def asgard_shop_routine(gold_buffs: bool = True) -> Callable[[HWClient, str], object]:
+    """Build a routine that runs the Asgard Guild Raid shop auto-buy for any account.
 
-    Osh 週のみ購入を実行し、Maestro 週等はスキップする
-    （判定と購入ロジックは :mod:`hw_genie.commands.asgard_shop` に集約）。
+    Osh 週は固定優先度、Maestro 週は優先度 S→A→B の組み合わせ最適化で購入し、
+    その他のラインナップはスキップする（判定と購入ロジックは
+    :mod:`hw_genie.commands.asgard_shop` に集約）。``gold_buffs=False`` で
+    ゴールドバフ（slot 1〜5）の購入をスキップする。
 
     Returns:
-        ``AsgardRunResult``（アカウント別の残高・購入結果サマリ）。
+        A routine whose result per account is the ``AsgardRunResult``
+        returned by ``run_asgard_shop``.
     """
     from hw_genie.commands.asgard_shop import run_asgard_shop
 
-    return run_asgard_shop(client, dry_run=False, account_alias=account)
+    def run(client: HWClient, account: str) -> object:
+        return run_asgard_shop(
+            client, dry_run=False, account_alias=account, gold_buffs=gold_buffs
+        )
+
+    return run
 
 
 def full_routine(client: HWClient, account: str) -> object:

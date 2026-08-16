@@ -199,7 +199,7 @@ POST https://heroes-wb.nextersglobal.com/api/
 
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
-| `buffId` | int | バフ ID（Osh の Realm Traveler は 61〜81 で固定） |
+| `buffId` | int | バフ ID（Osh の Realm Traveler は 61〜81、Maestro の Phantom Orchestra は 112〜133 で固定） |
 | `buffValue` | int | バフ効果量（% 表示用） |
 | `buyLimit` | int | 購入上限（Valor Emblem 商品は 1） |
 | `cost` | object | 価格。`{"coin": {"30": 価格}}` が Valor Emblem、`{"gold": ...}` がゴールドバフ |
@@ -210,6 +210,12 @@ POST https://heroes-wb.nextersglobal.com/api/
 > **Osh 週のラインナップ**: slot 1〜5 はゴールドバフ（`cost.gold` 100万、buyLimit 5）、
 > slot 6〜21 が Valor Emblem 商品（価格は週替わりで 50/100/150 のいずれか）。
 > ラインナップ（slot→buffId）は全アカウント共通で固定、`boughtCount` と `coins` はアカウント別。
+>
+> **Maestro 週のラインナップ**: slot 構成・価格帯は Osh と同じ（slot 1〜5 はゴールドバフ、
+> slot 6〜21 が Valor Emblem 商品）だが、buffId の範囲は 112〜133 で、slot→バフの対応は
+> 週替わりでローテーションする（`hw-genie asgard-shop` は slot→順位の優先度表
+> `MAESTRO_PRIORITY` と組み合わせ最適化で購入プランを選定する。詳細は
+> `docs/superpowers/Maestro-buff.md`）。
 
 ---
 

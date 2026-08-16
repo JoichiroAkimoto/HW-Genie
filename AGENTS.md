@@ -13,7 +13,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **daily-raid**: レイド＋ショッピングの連続実行（アイテムのスタミナ限界収集対応）。
 *   **hero-raid**: 指定ミッションのヒーローレイド。
 *   **hero-shopping**: ヒーローソウルとソウルショップの一括購入。
-*   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh 週）で Valor Emblem を使ったバフの自動購入。
+*   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh / Maestro 週）で Valor Emblem を使ったバフとゴールドバフの自動購入。
 *   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認）。
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
@@ -25,7 +25,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 
 *   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
 *   **ショップ購入**: `uv run hw-genie shop`
-*   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh 週のみ。`--dry-run` で計画表示のみ。詳細は `.agents/skills/asgard-shop/SKILL.md`）
+*   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh / Maestro 週を自動判定。`--dry-run` で計画表示のみ、`--no-gold` でゴールドバフ購入オフ。詳細は `.agents/skills/asgard-shop/SKILL.md`）
 *   **デイリールーチン**: `uv run hw-genie daily`
 *   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
 *   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）

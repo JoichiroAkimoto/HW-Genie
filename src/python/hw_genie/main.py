@@ -403,14 +403,17 @@ def cmd_consumable_run(args):
 
 
 def cmd_asgard_shop(args):
-    """Asgard（ギルドレイド）ショップの自動購入（Osh 週のみ）"""
+    """Asgard（ギルドレイド）ショップの自動購入（Osh / Maestro 週）"""
     headers = _ensure_session(args)
 
     client = HWClient(headers)
     from hw_genie.commands.asgard_shop import run_asgard_shop
 
     result = run_asgard_shop(
-        client, dry_run=bool(args.dry_run), account_alias=args.account or None
+        client,
+        dry_run=bool(args.dry_run),
+        account_alias=args.account or None,
+        gold_buffs=not getattr(args, "no_gold", False),
     )
     if result.error:
         sys.exit(1)
@@ -629,7 +632,7 @@ def cmd_multi(args):
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
-        routine = asgard_shop_routine
+        routine = asgard_shop_routine(gold_buffs=not getattr(args, "no_gold", False))
         max_parallel = args.parallel
     elif mode == "consumable":
         routine = consumable_routine(
@@ -731,14 +734,19 @@ def main():
     )
     p_consumable_run.set_defaults(func=cmd_consumable_run)
 
-    # Asgard Shop (Guild Raid merchant, Osh week only)
+    # Asgard Shop (Guild Raid merchant; Osh / Maestro weeks)
     p_asgard_shop = subparsers.add_parser(
         "asgard-shop",
         parents=[parent_parser],
-        help="Asgard Guild Raid shop operations (Osh week only; Maestro skipped)",
+        help="Asgard Guild Raid shop operations (Osh / Maestro weeks)",
     )
     p_asgard_shop.add_argument(
         "--dry-run", action="store_true", help="Show the purchase plan without buying anything"
+    )
+    p_asgard_shop.add_argument(
+        "--no-gold",
+        action="store_true",
+        help="Skip gold buff purchases (slot 1-5; default: buy)",
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
 
@@ -786,7 +794,12 @@ def main():
         choices=["daily", "full", "quests", "asgard-shop", "consumable"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
+    )
+    p_multi.add_argument(
+        "--no-gold",
+        action="store_true",
+        help="Skip gold buff purchases (slot 1-5) in the 'asgard-shop' mode",
     )
     p_multi.add_argument(
         "--lib",
