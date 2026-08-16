@@ -307,6 +307,47 @@ def _is_retryable_api_error(e: Exception) -> tuple[bool, int | None]:
     return False, None
 
 
+def _build_thinking_config(model_info: dict) -> types.ThinkingConfig | None:
+    """モデル設定および環境変数から ThinkingConfig を構築する。
+
+    優先順位:
+    1. 環境変数 GEMINI_THINKING_LEVEL が明示されていれば最優先。
+       - "OFF", "NONE", "FALSE", "0", "DISABLED" の場合は None（思考無効化）。
+       - "HIGH", "MEDIUM", "LOW", "MINIMAL" の場合は該当レベル。
+    2. models.json の model_info.get("thinking_level")。
+       - None や False の場合は None（明示的に無効化・非対応）。
+       - "HIGH" などの場合は該当レベル。
+    3. 未指定の場合はデフォルト "HIGH"（最大思考レベル）。
+    """
+    env_level = os.environ.get("GEMINI_THINKING_LEVEL")
+    if env_level is not None:
+        level_str = env_level.strip().upper()
+        if level_str in ("OFF", "NONE", "FALSE", "0", "DISABLED"):
+            return None
+        return types.ThinkingConfig(thinking_level=level_str)
+
+    if "thinking_level" in model_info:
+        model_level = model_info.get("thinking_level")
+        if model_level is None or model_level is False:
+            return None
+        level_str = str(model_level).strip().upper()
+        if level_str in ("OFF", "NONE", "FALSE", "0", "DISABLED"):
+            return None
+        return types.ThinkingConfig(thinking_level=level_str)
+
+    return types.ThinkingConfig(thinking_level="HIGH")
+
+
+def _get_thinking_level_display(thinking_config: types.ThinkingConfig | None) -> str | None:
+    """ThinkingConfig から表示用の思考レベル名（HIGH / MEDIUM 等）を抽出する。"""
+    if not thinking_config or not getattr(thinking_config, "thinking_level", None):
+        return None
+    level = str(thinking_config.thinking_level)
+    if "." in level:
+        level = level.split(".")[-1]
+    return level
+
+
 def _generate_with_retry(client, model_name: str, prompt: str, config):
     """Gemini API 呼び出しをリトライ付きで実行する。
 
@@ -319,9 +360,14 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
     """
     for attempt in range(MAX_ATTEMPTS):
         try:
-            return client.models.generate_content(
+            resp = client.models.generate_content(
                 model=model_name, contents=prompt, config=config
             )
+            try:
+                resp._retry_count = attempt
+            except Exception:
+                pass
+            return resp
         except Exception as e:  # noqa: BLE001 - リトライ可否は _is_retryable_api_error で判定
             retryable, code = _is_retryable_api_error(e)
             if not retryable or attempt >= MAX_ATTEMPTS - 1:
@@ -339,6 +385,119 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
                     f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
                 )
             time.sleep(delay)
+
+
+def build_execution_metadata(
+    *,
+    model_name: str,
+    resolved_model_name: str,
+    model_info: dict,
+    response,
+    thinking_config: types.ThinkingConfig | None = None,
+    files_modified_count: int | str = "N/A",
+    lines_added: int | None = None,
+    lines_deleted: int | None = None,
+    end_time: datetime.datetime | None = None,
+    duration: float = 0.0,
+    previous_exec_info: str = "",
+    is_truncated: bool = False,
+    repo: str = "",
+    server_url: str = "https://github.com",
+    run_id: str | None = None,
+    commit_sha: str = "",
+) -> str:
+    """今回の実行情報セクションの Markdown を組み立てる。"""
+    if end_time is None:
+        JST = datetime.timezone(datetime.timedelta(hours=9), "JST")
+        end_time = datetime.datetime.now(JST)
+
+    metadata = "\n\n---\n"
+
+    # 前回の実行情報がある場合、折りたたんだ状態で表示
+    if previous_exec_info:
+        prev_section = re.sub(r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info)
+        prev_section = re.sub(r"<details\s+open\s*>", "<details>", prev_section)
+        metadata += f"\n{prev_section}\n\n"
+
+    metadata += "<details open><summary>⚡ 今回の実行情報</summary>\n\n"
+
+    # 1. モデル表示（指定名、実バージョン、正規名、思考レベル）
+    actual_version = getattr(response, "model_version", None) if response else None
+    if actual_version and actual_version != model_name:
+        if resolved_model_name and resolved_model_name not in (model_name, actual_version):
+            model_str = f"`{model_name}` (`{actual_version}` / `{resolved_model_name}`)"
+        else:
+            model_str = f"`{model_name}` (`{actual_version}`)"
+    elif resolved_model_name and resolved_model_name != model_name:
+        model_str = f"`{model_name}` (`{resolved_model_name}`)"
+    else:
+        model_str = f"`{resolved_model_name or model_name}`"
+
+    thinking_disp = _get_thinking_level_display(thinking_config)
+    if thinking_disp:
+        model_str += f" (思考: `{thinking_disp}`)"
+    metadata += f"- **モデル**: {model_str}\n"
+
+    # 2. トレーサビリティ（対象コミット & Actions ログ）
+    trace_parts = []
+    clean_server_url = (server_url or "https://github.com").rstrip("/")
+    if commit_sha:
+        if repo:
+            trace_parts.append(f"対象コミット: [`{commit_sha}`]({clean_server_url}/{repo}/commit/{commit_sha})")
+        else:
+            trace_parts.append(f"対象コミット: `{commit_sha}`")
+    if run_id and repo:
+        trace_parts.append(f"[Actions 実行ログ]({clean_server_url}/{repo}/actions/runs/{run_id})")
+    if trace_parts:
+        metadata += f"- **実行情報**: {' / '.join(trace_parts)}\n"
+
+    # 3. 完了日時 & 所要時間
+    metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}` (所要時間: `{duration:.2f} 秒`)\n"
+
+    # 4. 変更規模
+    if isinstance(files_modified_count, int) and lines_added is not None and lines_deleted is not None:
+        metadata += f"- **変更規模**: `{files_modified_count} ファイル (+{lines_added:,} / -{lines_deleted:,} 行)`\n"
+    elif files_modified_count != "N/A":
+        metadata += f"- **変更ファイル数**: `{files_modified_count}`\n"
+
+    # 5. トークン & コスト
+    try:
+        usage = getattr(response, "usage_metadata", None) if response else None
+        if usage:
+            in_tokens = getattr(usage, "prompt_token_count", 0) or 0
+            out_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            thoughts_tokens = getattr(usage, "thoughts_token_count", None)
+
+            if thoughts_tokens:
+                metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}` (うち思考=`{thoughts_tokens:,}`)\n"
+            else:
+                metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}`\n"
+
+            in_rate = model_info.get("input_cost_per_1m")
+            out_rate = model_info.get("output_cost_per_1m")
+            if in_rate is not None and out_rate is not None:
+                in_cost = (in_tokens / 1_000_000) * in_rate
+                out_cost = (out_tokens / 1_000_000) * out_rate
+                total_cost = in_cost + out_cost
+                metadata += f"- **推定コスト**: `${total_cost:.6f}`\n"
+            else:
+                metadata += "- **推定コスト**: (不明: 手動確認を推奨)\n"
+        else:
+            metadata += "- **トークン/コスト**: (取得できませんでした)\n"
+    except Exception:
+        metadata += "- **トークン/コスト**: (取得できませんでした)\n"
+
+    # 6. リトライ情報
+    retry_count = getattr(response, "_retry_count", 0) if response else 0
+    if retry_count and retry_count > 0:
+        metadata += f"- **APIリトライ**: `{retry_count} 回` (レート制限または一時エラーからの回復)\n"
+
+    # 7. 切り詰め警告
+    if is_truncated:
+        metadata += "- **ステータス**: ⚠️ 差分が長すぎるため切り詰められました。\n"
+
+    metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
+    return metadata
 
 
 def _fetch_pr_metadata(repo: str, pr_number: str) -> str:
@@ -661,6 +820,8 @@ def main():
         filtered_diff = ""
         changed_paths = []
         files_modified_count = 0
+        lines_added = 0
+        lines_deleted = 0
         for file in patch:
             path = file.path if hasattr(file, "path") and file.path else ""
             if re.search(
@@ -674,11 +835,15 @@ def main():
             if not getattr(file, "is_removed_file", False):
                 changed_paths.append(path)
             files_modified_count += 1
+            lines_added += getattr(file, "added", 0) or 0
+            lines_deleted += getattr(file, "removed", 0) or 0
         diff = filtered_diff
     except Exception as e:
         print(f"Failed to parse diff with unidiff: {e}")
         diff = raw_diff
         files_modified_count = "N/A"
+        lines_added = None
+        lines_deleted = None
         changed_paths = []
 
     if not diff.strip():
@@ -733,12 +898,12 @@ def main():
     try:
         start_time = datetime.datetime.now(JST)
 
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            thinking_config=types.ThinkingConfig(
-                thinking_level=os.environ.get("GEMINI_THINKING_LEVEL", "HIGH")
-            )
-        )
+        thinking_config = _build_thinking_config(model_info)
+        config_kwargs = {"system_instruction": system_instruction}
+        if thinking_config is not None:
+            config_kwargs["thinking_config"] = thinking_config
+
+        config = types.GenerateContentConfig(**config_kwargs)
 
         # 429 / 5xx のリトライ付きで生成を実行（429: 30s+ジッター指数バックオフ、5xx: 5s 倍々）
         response = _generate_with_retry(client, model_name, prompt, config)
@@ -755,47 +920,44 @@ def main():
             )
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
+        # トレーサビリティ情報（対象コミット & GitHub Actions Run ログ）
+        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+        run_id = os.environ.get("GITHUB_RUN_ID")
+        head_sha = os.environ.get("GITHUB_SHA", "")
+        commit_sha = ""
+        pr_ref = f"refs/remotes/pull/{pr_number}/head"
+        for ref_candidate in [pr_ref, "HEAD"]:
+            try:
+                commit_sha = subprocess.check_output(
+                    ["git", "rev-parse", "--short=7", ref_candidate],
+                    stderr=subprocess.DEVNULL,
+                ).decode("utf-8").strip()
+                if commit_sha:
+                    break
+            except Exception:
+                continue
+        if not commit_sha and head_sha:
+            commit_sha = head_sha[:7]
+
         # 今回の実行情報
-        metadata = "\n\n---\n"
-
-        # 前回の実行情報がある場合、折りたたんだ状態で表示
-        if previous_exec_info:
-            # 「⚡ 今回の実行情報」や「⚡ 実行情報」を「📝 前回の実行情報」に変更
-            # かつ、<details open> があれば <details>（openなし）に変更して折りたたむ
-            prev_section = re.sub(r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info)
-            prev_section = re.sub(r"<details\s+open\s*>", "<details>", prev_section)
-            metadata += f"\n{prev_section}\n\n"
-
-        metadata += "<details open><summary>⚡ 今回の実行情報</summary>\n\n"
-        metadata += f"- **モデル**: `{resolved_model_name}`\n"
-        metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}`\n"
-        metadata += f"- **所要時間**: `{duration:.2f} 秒`\n"
-        metadata += f"- **変更ファイル数**: `{files_modified_count}`\n"
-
-        try:
-            usage = response.usage_metadata
-            in_tokens = usage.prompt_token_count or 0
-            out_tokens = usage.candidates_token_count or 0
-
-            # コスト計算 (1M tokens あたりの単価)
-            in_rate = model_info.get("input_cost_per_1m")
-            out_rate = model_info.get("output_cost_per_1m")
-            if in_rate is not None and out_rate is not None:
-                in_cost = (in_tokens / 1_000_000) * in_rate
-                out_cost = (out_tokens / 1_000_000) * out_rate
-                total_cost = in_cost + out_cost
-                metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
-                metadata += f"- **推定コスト**: `${total_cost:.6f}`\n"
-            else:
-                # 単価不明（未知モデル等）: 誤った安価表示を避ける
-                metadata += f"- **トークン**: 入力={in_tokens}, 出力={out_tokens}\n"
-                metadata += "- **推定コスト**: (不明: 手動確認を推奨)\n"
-        except Exception:
-            metadata += "- **トークン/コスト**: (取得できませんでした)\n"
-
-        if is_truncated:
-            metadata += "- **ステータス**: ⚠️ 差分が長すぎるため切り詰められました。\n"
-        metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
+        metadata = build_execution_metadata(
+            model_name=model_name,
+            resolved_model_name=resolved_model_name,
+            model_info=model_info,
+            response=response,
+            thinking_config=thinking_config,
+            files_modified_count=files_modified_count,
+            lines_added=lines_added,
+            lines_deleted=lines_deleted,
+            end_time=end_time,
+            duration=duration,
+            previous_exec_info=previous_exec_info,
+            is_truncated=is_truncated,
+            repo=repo,
+            server_url=server_url,
+            run_id=run_id,
+            commit_sha=commit_sha,
+        )
 
         review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"
 
