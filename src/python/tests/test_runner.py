@@ -1071,3 +1071,30 @@ def test_summarize_asgard_shop_fetch_error_marks_failed(capsys):
     assert failed == 1
     assert "alpha (shop fetch failed: clanRaid_getInfo failed (notFound))" in out
     assert "0 account(s) completed, ❌ 1 failed." in out
+
+
+def test_summarize_asgard_shop_shows_gold_buffs(capsys):
+    """ゴールドバフ購入があった場合、サマリ表に bought / spent が表示される。"""
+    from hw_genie.commands.asgard_shop import AsgardRunResult
+    from hw_genie.runner import summarize_asgard_shop
+
+    results = [
+        ("alpha", (AsgardRunResult(coins=1000, spent=1000, remaining=0, bought=13, skipped=False, items=[], gold_bought=15, gold_spent=15_000_000), None)),
+    ]
+    failed = summarize_asgard_shop(results)
+    out = capsys.readouterr().out
+    assert failed == 0
+    assert "15 / 15M" in out
+
+
+def test_asgard_shop_routine_forwards_gold_buffs():
+    """asgard_shop_routine は gold_buffs フラグを run_asgard_shop に伝播する。"""
+    from unittest.mock import MagicMock, patch
+
+    from hw_genie.runner import asgard_shop_routine
+
+    with patch("hw_genie.commands.asgard_shop.run_asgard_shop") as mock_run:
+        routine = asgard_shop_routine(gold_buffs=False)
+        client = MagicMock()
+        routine(client, "alpha")
+        mock_run.assert_called_once_with(client, dry_run=False, account_alias="alpha", gold_buffs=False)

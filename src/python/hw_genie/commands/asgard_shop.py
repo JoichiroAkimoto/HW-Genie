@@ -11,15 +11,16 @@
   （``OSH_PRIORITY``）に従って購入する。優先度 1 → 2 → 3 の slot を順に
   購入し、残りの未購入商品は価格昇順（同額は slot 昇順）で購入する。
 - **Maestro 週**: ラインナップは buffId 112〜133 の範囲（slot 1〜5 は
-  ゴールドバフ、slot 6〜21 が Valor Emblem 商品）。バフは週替わりで
-  ローテーションするため、slot → 効果の対応を ``MAESTRO_PRIORITY``
-  （slot → 順位）で定義し、組み合わせ最適化（``select_maestro_plan``）で
-  購入プランを選定する。順位 1〜6 が S、7〜9 が A、10〜11 が B、それ以外
-  （C）は購入対象外。
-  - 1000 コインを上限として、S → A → B の優先度を崩さず、同一優先度では
-    高順位を優先し、コイン内で最も優先度の高いバフ構成になる組み合わせを
-    購入する（「順位の高いバフ 1 個の確保」は「下位バフ複数」より優先）。
-    同じ優先度の組み合わせなら安い方を優先して残コインを多くする。
+  ゴールドバフ、slot 6〜21 が Valor Emblem 商品）。slot → 効果の対応は週ごとに
+  変わる場合があるため、``MAESTRO_PRIORITY``（slot → 順位の固定表）を確認済み
+  ラインナップ（docs/superpowers/Maestro-buff.md）に基づいて定義し、組み合わせ
+  最適化（``select_maestro_plan``）で購入プランを選定する。順位 1〜6 が S、
+  7〜9 が A、10〜11 が B、それ以外（C）は購入対象外。
+  - 残高（Valor Emblem）を上限として、S → A → B の優先度を崩さず、同一優先度
+    では高順位を優先し、コイン内で最も優先度の高いバフ構成になる組み合わせを
+    購入する。優先度は S クラス数を最優先し（S クラス 1 個の確保は A/B クラスの
+    複数購入より優先）、次に同一クラス内の順位合計、最後に合計コストが小さい
+    （= 残コインを多くする）方を選ぶ。
 - **その他の週**: 判定不能（ラインナップ不明・空 shop）の場合は購入対象
   なしとしてスキップし正常完了する（購入は発生しないので実害なし）。
 - **ゴールドバフ**: ``gold_buffs=True``（デフォルト）のとき、slot 1〜5 の
@@ -62,7 +63,9 @@ MAESTRO_BUFF_IDS: frozenset[int] = frozenset(range(112, 134))
 
 # Maestro 週の購入優先度（slot → 順位）。順位 1〜6 が S、7〜9 が A、
 # 10〜11 が B。それ以外（C）は購入対象外（後日検討）。
-# 仕様は docs/superpowers/Maestro-buff.md を参照。
+# ラインナップ（slot→バフの対応）は週ごとに変わる場合があるため、この表は
+# 確認済みラインナップ（docs/superpowers/Maestro-buff.md）に基づく固定表。
+# 週が変わった際はこの表を更新すること。
 MAESTRO_PRIORITY: dict[int, int] = {
     11: 1, 15: 2, 9: 3, 7: 4, 17: 5, 16: 6,  # S
     14: 7, 12: 8, 10: 9,  # A
@@ -113,6 +116,7 @@ class AsgardRunResult:
     bought: int
     skipped: bool
     items: list[AsgardResult]
+    # ゴールドバフ購入を実行した場合は実行順（ゴールドバフ → Valor 商品）で並ぶ。
     # 在庫取得失敗など、購入処理自体を実行できなかった場合の理由（成功時は None）。
     error: str | None = None
     # ゴールドバフ（slot 1〜5）の購入数・消費ゴールド（購入対象外・残高不足時は 0）。
@@ -299,8 +303,8 @@ def _maestro_eval_key(items: tuple[AsgardItem, ...]) -> tuple[int, ...]:
     """購入プランの辞書式評価キーを計算する。
 
     (S 数, -S 順位合計, A 数, -A 順位合計, B 数, -B 順位合計, -合計コスト)
-    のタプルで、大きいほど良い。S 数を最優先し（「上位バフ 1 個の確保」は
-    「下位バフ複数」より優先）、同一ランク内では順位合計が小さい
+    のタプルで、大きいほど良い。S 数を最優先し（S クラス 1 個の確保は
+    A/B クラスの複数購入より優先）、同一クラス内では順位合計が小さい
     （= 高順位を多く含む）ものを優先し、最後に合計コストが小さい
     （= 残コインを多くする）ものを優先する。
     """
@@ -308,7 +312,9 @@ def _maestro_eval_key(items: tuple[AsgardItem, ...]) -> tuple[int, ...]:
     s_rank_sum = a_rank_sum = b_rank_sum = 0
     total = 0
     for item in items:
-        priority = MAESTRO_PRIORITY[item.slot_id]
+        # 優先度表外の slot は C ランク（優先度 0）として扱う（防御的対応。
+        # 呼び出し元 select_maestro_plan は表内 slot のみを渡す）。
+        priority = MAESTRO_PRIORITY.get(item.slot_id, 0)
         total += item.price
         if priority <= 6:
             s_count += 1
@@ -395,8 +401,8 @@ def _purchase_gold_buffs(
 ) -> tuple[list[AsgardResult], int, int]:
     """ゴールドバフ（slot 1〜5）を残り購入回数分購入する。
 
-    ``gold_budget`` が 1 回分未満の場合は何も購入しない。購入失敗
-    （NotEnough）時は以降のゴールドバフ購入をすべて打ち切る（Valor 商品の
+    ``gold_budget`` が対象商品の最低価格未満の場合は何も購入しない。購入
+    失敗（NotEnough）時は以降のゴールドバフ購入をすべて打ち切る（Valor 商品の
     残高不足時と同じ安全策）。
 
     Returns:
@@ -405,7 +411,10 @@ def _purchase_gold_buffs(
     results: list[AsgardResult] = []
     bought = 0
     spent = 0
-    if gold_budget < GOLD_BUFF_PRICE:
+    gold_slots = _gold_buff_slots(shop)
+    if not gold_slots:
+        return results, bought, spent
+    if gold_budget < min(parsed.price for parsed, _ in gold_slots):
         print(
             f"{Emojis.INFO}{prefix}Gold buffs: insufficient gold ({gold_budget}) - skipping.",
             flush=True,
@@ -414,7 +423,7 @@ def _purchase_gold_buffs(
 
     print(f"\n{Emojis.STEP}{prefix}--- Purchasing Gold Buffs ---", flush=True)
     funds_exhausted = False
-    for parsed, remaining in _gold_buff_slots(shop):
+    for parsed, remaining in gold_slots:
         for _ in range(remaining):
             if funds_exhausted or gold_budget < parsed.price:
                 print(
@@ -461,10 +470,13 @@ def _plan_gold_buffs(
     bought = 0
     spent = 0
     print(f"\n{Emojis.STEP}{prefix}--- Gold Buff Plan (dry-run) ---", flush=True)
-    if gold_budget < GOLD_BUFF_PRICE:
+    gold_slots = _gold_buff_slots(shop)
+    if not gold_slots:
+        return results, bought, spent
+    if gold_budget < min(parsed.price for parsed, _ in gold_slots):
         print(f"  {Emojis.WARNING}Insufficient gold ({gold_budget}) - skipping all gold buffs.", flush=True)
         return results, bought, spent
-    for parsed, remaining in _gold_buff_slots(shop):
+    for parsed, remaining in gold_slots:
         for _ in range(remaining):
             affordable = gold_budget >= parsed.price
             if affordable:
@@ -554,6 +566,10 @@ def run_asgard_shop(
             raise
         except Exception:  # noqa: BLE001 - 残高取得失敗時はゴールドバフをスキップして続行
             gold_budget = 0
+            print(
+                f"{Emojis.WARNING}{prefix}Failed to fetch gold balance - skipping gold buffs.",
+                flush=True,
+            )
         if dry_run:
             gold_results, gold_bought, gold_spent = _plan_gold_buffs(shop, gold_budget, prefix)
         else:
@@ -591,7 +607,7 @@ def run_asgard_shop(
             remaining=budget,
             bought=planned_bought,
             skipped=False,
-            items=results + gold_results,
+            items=gold_results + results,
             gold_bought=gold_bought,
             gold_spent=gold_spent,
         )
@@ -644,7 +660,7 @@ def run_asgard_shop(
         remaining=budget,
         bought=bought,
         skipped=False,
-        items=results + gold_results,
+        items=gold_results + results,
         gold_bought=gold_bought,
         gold_spent=gold_spent,
     )

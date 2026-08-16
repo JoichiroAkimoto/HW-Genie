@@ -213,9 +213,9 @@ POST https://heroes-wb.nextersglobal.com/api/
 >
 > **Maestro 週のラインナップ**: slot 構成・価格帯は Osh と同じ（slot 1〜5 はゴールドバフ、
 > slot 6〜21 が Valor Emblem 商品）だが、buffId の範囲は 112〜133 で、slot→バフの対応は
-> 週替わりでローテーションする（`hw-genie asgard-shop` は slot→順位の優先度表
-> `MAESTRO_PRIORITY` と組み合わせ最適化で購入プランを選定する。詳細は
-> `docs/superpowers/Maestro-buff.md`）。
+> 週ごとに変わる場合がある（`hw-genie asgard-shop` は確認済みラインナップに基づく
+> slot→順位の固定優先度表 `MAESTRO_PRIORITY` と組み合わせ最適化で購入プランを選定する。
+> 週が変わった際は表の更新が必要。詳細は `docs/superpowers/Maestro-buff.md`）。
 
 ---
 

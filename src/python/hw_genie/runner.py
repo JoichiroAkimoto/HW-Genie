@@ -548,8 +548,8 @@ def summarize_quests(
     return len(failed)
 
 
-# Asgard shop summary table (per-account bought / spent / remaining).
-_ASGARD_HEADERS = ["Account", "✅ Bought", "💰 Spent", "🪙 Left", "⏭️ Skipped"]
+# Asgard shop summary table (per-account bought / spent / remaining / gold buffs).
+_ASGARD_HEADERS = ["Account", "✅ Bought", "💰 Spent", "🪙 Left", "🪙 Gold", "⏭️ Skipped"]
 
 
 def _asgard_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
@@ -572,8 +572,10 @@ def summarize_asgard_shop(
     Results come from :func:`asgard_shop_routine`: per account an
     ``AsgardRunResult``. Accounts whose routine errored, whose shop fetch
     failed (``result.error`` set), or with any purchase error count as
-    failed; accounts skipped because the shop is not the Osh lineup (Maestro
-    week) are shown in the "Skipped" column and do not fail.
+    failed; accounts skipped because the shop is not a supported lineup
+    (Osh / Maestro) are shown in the "Skipped" column and do not fail.
+    The "Gold" column shows gold buff purchases as ``bought / spent``
+    (in millions of Gold) when any occurred.
     """
     from hw_genie.commands.asgard_shop import AsgardRunResult
 
@@ -582,12 +584,16 @@ def summarize_asgard_shop(
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None and isinstance(res, AsgardRunResult) and res.error is None:
+            gold_cell = (
+                f"{res.gold_bought} / {res.gold_spent // 1_000_000}M" if res.gold_bought else "-"
+            )
             rows.append(
                 [
                     account,
                     str(res.bought),
                     str(res.spent),
                     str(res.remaining),
+                    gold_cell,
                     "⏭️" if res.skipped else "-",
                 ]
             )
