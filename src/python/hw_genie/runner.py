@@ -549,7 +549,7 @@ def summarize_quests(
 
 
 # Asgard shop summary table (per-account bought / spent / remaining / gold buffs).
-_ASGARD_HEADERS = ["Account", "✅ Bought", "💰 Spent", "🪙 Left", "🪙 Gold", "⏭️ Skipped"]
+_ASGARD_HEADERS = ["Account", "✅ Bought", "💰 Spent", "🪙 Left", "💰 Gold", "⏭️ Skipped"]
 
 
 def _asgard_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:

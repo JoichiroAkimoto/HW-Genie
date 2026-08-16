@@ -321,7 +321,7 @@ def test_run_asgard_shop_gold_buffs_purchased(mock_client, mock_sleep):
     client.fetch_player_status = MagicMock(return_value=status)
 
     responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
-    for _ in range(15):  # 300万 / 100万 = slot 1〜3 の 5 回ずつ
+    for _ in range(15):  # 1500万 / 100万 = slot 1〜5 の 5 回ずつ（15 回）
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     for _ in range(13):  # Valor 商品（残高 1000）
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))

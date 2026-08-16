@@ -381,6 +381,10 @@ def _gold_buff_remaining(item: dict[str, Any]) -> int:
 def _gold_buff_slots(shop: dict[str, Any]) -> list[tuple[AsgardItem, int]]:
     """ゴールドバフ（cost.gold 支払い・未購入）の購入候補を slot 昇順で返す。
 
+    現在の仕様では slot 1〜5 がゴールドバフ（それ以外は Valor Emblem 商品）
+    だが、slot は限定せず ``cost.gold`` の有無で判定する（API のラインナップ
+    変更に追従するため）。
+
     Returns:
         ``(parse 済み商品, 残り購入回数)`` のリスト。
     """
