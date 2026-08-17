@@ -1,6 +1,8 @@
 import argparse
+import getpass
 import logging
 import os
+import socket
 import sys
 import json
 from hw_genie.core.client import (
@@ -50,10 +52,12 @@ def _run_host_identifier() -> str:
     :func:`socket.gethostname`. The ``HWGENIE_USER`` / ``HWGENIE_MACHINE``
     pair lets Docker Compose forward the host's own ``USERNAME`` /
     ``COMPUTERNAME`` (Windows) without any .env setup.
-    """
-    import getpass
-    import socket
 
+    Exception-safe: user lookup can raise in containers (e.g. ``--user`` with
+    no matching passwd entry and no USER vars), where the identifier falls
+    back to ``unknown``. Never raises, so run-log recording (best-effort)
+    cannot crash the actual run.
+    """
     explicit = os.environ.get("HWGENIE_HOST")
     if explicit:
         return explicit
@@ -61,14 +65,22 @@ def _run_host_identifier() -> str:
         os.environ.get("HWGENIE_USER")
         or os.environ.get("USER")
         or os.environ.get("USERNAME")
-        or getpass.getuser()
     )
     machine = (
         os.environ.get("HWGENIE_MACHINE")
         or os.environ.get("COMPUTERNAME")
         or os.environ.get("HOSTNAME")
-        or socket.gethostname()
     )
+    if not user:
+        try:
+            user = getpass.getuser()
+        except Exception:  # noqa: BLE001 - best-effort identifier
+            user = "unknown"
+    if not machine:
+        try:
+            machine = socket.gethostname()
+        except Exception:  # noqa: BLE001 - best-effort identifier
+            machine = "unknown"
     return f"{user}@{machine}"
 
 
@@ -848,9 +860,10 @@ def cmd_log_ls(args):
         ok = sum(1 for a in row.accounts if a.get("ok"))
         total = len(row.accounts)
         started = format_timestamp_for_display(row.started_at.isoformat())
+        host = row.hostname or "-"
         print(
             f"{row.id:>4}  {started}  {row.mode:<11} "
-            f"{row.status:<6} {ok}/{total} ok  exit={row.exit_code}"
+            f"{row.status:<6} {ok}/{total} ok  exit={row.exit_code}  {host}"
         )
 
 
@@ -868,6 +881,8 @@ def cmd_log_show(args):
     print(f"Finished: {format_timestamp_for_display(row.finished_at.isoformat())}")
     print(f"Mode:     {row.mode}")
     print(f"Status:   {row.status}  (exit code {row.exit_code})")
+    if row.hostname:
+        print(f"Host:     {row.hostname}")
     if row.log_file:
         print(f"Log file: {row.log_file}")
     if row.error_summary:

@@ -852,6 +852,8 @@ def _apply_light_migrations(engine) -> None:
         for column, col_type in columns.items():
             if column in existing:
                 continue
+            # 存在確認と ALTER の間に競合窓がある（別プロセスが同時に ALTER する
+            # 可能性）が、失敗時は warning で握りつぶされるだけなので冪等性は保たれる。
             try:
                 with engine.begin() as conn:
                     conn.exec_driver_sql(

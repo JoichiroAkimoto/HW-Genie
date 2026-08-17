@@ -359,6 +359,18 @@ def test_run_host_identifier_fallback():
         )
 
 
+def test_run_host_identifier_getpass_failure():
+    """getpass が失敗する環境（Docker --user 等）でもクラッシュせず unknown になる。"""
+    import socket
+
+    from hw_genie.main import _run_host_identifier
+
+    with patch("getpass.getuser", side_effect=OSError("no passwd entry")):
+        with patch.dict("os.environ", {}, clear=True):
+            value = _run_host_identifier()
+    assert value == f"unknown@{socket.gethostname()}"
+
+
 def test_output_capture_inherits_existing_filters():
     """既存ハンドラの TokenMaskingFilter がキャプチャ内ログにも適用される。"""
     from hw_genie.core.database import install_token_masking_filter
