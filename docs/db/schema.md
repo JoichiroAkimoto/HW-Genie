@@ -75,10 +75,10 @@ Unique constraint: `(account_id, config_key)`
 | `started_at` | DATETIME | NOT NULL | 実行開始時刻（UTC） |
 | `finished_at` | DATETIME | NOT NULL | 実行終了時刻（UTC） |
 | `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `consumable`） |
-| `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。認証切れ等の例外時のみ `failed`） |
+| `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。クエスト失敗・consumable 失敗・購入エラー・ステータス取得不能・例外・割り込みは `failed`） |
 | `exit_code` | INTEGER | | プロセスの終了コード |
-| `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]` |
-| `error_summary` | VARCHAR | | 失敗アカウント一覧とエラー要約（失敗時のみ） |
+| `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]`（`error` は失敗理由） |
+| `error_summary` | VARCHAR | | 失敗アカウント一覧とエラー要約（1 件以上失敗した場合のみ） |
 | `log_text` | TEXT | | 出力全文（ANSI 除去済み） |
 | `log_file` | VARCHAR | | 対応する `data/logs/` のログファイルパス（`HWGENIE_LOG_FILE` 経由） |
 

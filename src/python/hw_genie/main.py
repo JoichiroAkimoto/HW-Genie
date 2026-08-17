@@ -27,6 +27,19 @@ def _prepare_info_for_json(info: dict) -> dict:
     return info
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: a positive integer (rejects 0 and negatives)."""
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid positive int value: {value!r}"
+        ) from exc
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive: {value!r}")
+    return n
+
+
 def _ensure_session(args) -> dict[str, str]:
     """セッションヘッダーを検証し、なければエラーを出して終了する"""
     from hw_genie.core.session_manager import SessionManager
@@ -599,6 +612,7 @@ def cmd_db_check(args):
 
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    import traceback
     from datetime import datetime, timezone
 
     from hw_genie.core.run_log import OutputCapture, record_run_log
@@ -651,7 +665,6 @@ def cmd_multi(args):
     started_at = datetime.now(timezone.utc)
     capture = OutputCapture()
     results: dict = {}
-    failed = 0
     try:
         with capture:
             results = run_all_accounts(
@@ -665,41 +678,120 @@ def cmd_multi(args):
                 failed = summarize_consumable(results.items(), dry_run=dry_run)
             else:
                 failed = summarize(results.items())
-    finally:
-        account_logs, error_summary = _build_run_log_summary(results)
+    except BaseException as exc:
+        # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
+        # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
+        # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
+        # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
+        trace = traceback.format_exc()
+        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+            exit_code = exc.code
+        elif isinstance(exc, KeyboardInterrupt):
+            exit_code = 130
+        else:
+            exit_code = 1
+        try:
+            accounts = _build_run_log_summary(mode, results)[0]
+        except Exception:  # pragma: no cover - defensive
+            accounts = []
         record_run_log(
             started_at=started_at,
             finished_at=datetime.now(timezone.utc),
             mode=mode,
-            status="failed" if failed else "ok",
-            exit_code=1 if failed else 0,
-            accounts=account_logs,
-            error_summary=error_summary,
-            log_text=capture.getvalue() or None,
+            status="failed",
+            exit_code=exit_code,
+            accounts=accounts,
+            error_summary=str(exc) or type(exc).__name__,
+            log_text=(capture.getvalue() + "\n" + trace).strip() or None,
             log_file=os.environ.get("HWGENIE_LOG_FILE"),
         )
+        raise
+    account_logs, error_summary = _build_run_log_summary(mode, results)
+    record_run_log(
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+        mode=mode,
+        status="failed" if failed else "ok",
+        exit_code=1 if failed else 0,
+        accounts=account_logs,
+        error_summary=error_summary,
+        log_text=capture.getvalue() or None,
+        log_file=os.environ.get("HWGENIE_LOG_FILE"),
+    )
     if failed:
         sys.exit(1)
 
 
+def _run_log_account_failure(
+    mode: str, result: object | None, err: BaseException | None
+) -> str | None:
+    """Return the failure reason for one account's run-log entry, or None when ok.
+
+    Mirrors the per-account failure judgement of the runner's ``summarize_*``
+    functions so ``run_logs`` rows stay consistent with the printed summary:
+    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
+    and unavailable statuses all count as failures, matching the ``failed``
+    counter returned by ``summarize``. Exceptions are reported by their first
+    message line.
+    """
+    if err is not None:
+        message = str(err).strip().splitlines()
+        return message[0] if message else type(err).__name__
+    if mode == "quests":
+        if isinstance(result, tuple) and len(result) == 3:
+            return f"{len(result[1])} quest(s) failed" if result[1] else None
+        return "quest result unavailable"
+    if mode == "consumable":
+        from hw_genie.core.client import ResponseStatus
+
+        if isinstance(result, list):
+            errors = sum(
+                1
+                for r in result
+                if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED)
+            )
+            return f"{errors} consumable use(s) failed" if errors else None
+        return "consumable result unavailable"
+    if mode == "asgard-shop":
+        from hw_genie.commands.asgard_shop import AsgardRunResult
+
+        if isinstance(result, AsgardRunResult):
+            if result.error is not None:
+                return f"shop fetch failed: {result.error}"
+            return (
+                f"{result.failed_count} purchase error(s)"
+                if result.failed_count
+                else None
+            )
+        return "asgard-shop result unavailable"
+    # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
+    from hw_genie.core.client import PlayerStatus
+
+    if not isinstance(result, PlayerStatus) or not result.is_valid:
+        return "status unavailable"
+    return None
+
+
 def _build_run_log_summary(
+    mode: str,
     results: dict[str, tuple[object | None, BaseException | None]],
 ) -> tuple[list[dict], str | None]:
     """Build the per-account summary list and error summary for ``run_logs``.
 
-    An entry with ``ok: false`` carries the first line of the exception message
-    (or the exception type name when it has no message) as ``error``.
+    An entry with ``ok: false`` carries the failure reason (exception message,
+    quest/consumable/Asgard failure count, or unavailable status). Returns
+    ``(entries, error_summary)``; ``error_summary`` is ``None`` when no account
+    failed.
     """
     entries: list[dict] = []
     failed_accounts: list[str] = []
-    for account, (_, err) in results.items():
-        if err is None:
+    for account, (res, err) in results.items():
+        reason = _run_log_account_failure(mode, res, err)
+        if reason is None:
             entries.append({"account": account, "ok": True, "error": None})
             continue
-        message = str(err).strip().splitlines()
-        message = message[0] if message else type(err).__name__
-        entries.append({"account": account, "ok": False, "error": message})
-        failed_accounts.append(f"{account} ({message})")
+        entries.append({"account": account, "ok": False, "error": reason})
+        failed_accounts.append(f"{account} ({reason})")
     error_summary = None
     if failed_accounts:
         error_summary = (
@@ -954,7 +1046,11 @@ def main():
     log_sub = p_log.add_subparsers(dest="log_command", required=True)
     p_log_ls = log_sub.add_parser("ls", help="List recent run logs (newest first)")
     p_log_ls.add_argument(
-        "--limit", "-n", type=int, default=10, help="Max rows to show (default: 10)"
+        "--limit",
+        "-n",
+        type=_positive_int,
+        default=10,
+        help="Max rows to show (default: 10)",
     )
     p_log_ls.set_defaults(func=cmd_log_ls)
     p_log_show = log_sub.add_parser("show", help="Show one run log in full")

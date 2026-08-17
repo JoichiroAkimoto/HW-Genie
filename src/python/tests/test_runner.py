@@ -424,6 +424,120 @@ def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
     assert callable(captured["routine"])
 
 
+def test_cmd_multi_records_run_log_ok(monkeypatch):
+    """cmd_multi は成功時に status=ok / error_summary=None で run_logs に記録する。"""
+    from hw_genie import main
+    from hw_genie.core.client import PlayerStatus
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return 1
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        print("progress line")
+        return {"a": (PlayerStatus(name="Alpha", level=130), None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
+    # cmd_multi imports record_run_log inside the function, so patch the
+    # run_log module (the import source) rather than main's namespace.
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+    main.cmd_multi(args)
+
+    assert records["mode"] == "daily"
+    assert records["status"] == "ok"
+    assert records["exit_code"] == 0
+    assert records["accounts"] == [{"account": "a", "ok": True, "error": None}]
+    assert records["error_summary"] is None
+    assert "progress line" in records["log_text"]
+
+
+def test_cmd_multi_records_run_log_business_failure(monkeypatch):
+    """quests の失敗は例外なしでも failed として per-account に記録される。"""
+    from hw_genie import main
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {
+            "a": ((["q1"], ["q10024"], []), None)
+        },
+    )
+    monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 1)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type("A", (), {"mode": "quests", "accounts": ["a"], "parallel": 1, "debug": False, "dry_run": False})()
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(args)
+    assert exc.value.code == 1
+
+    assert records["status"] == "failed"
+    assert records["exit_code"] == 1
+    assert records["accounts"] == [
+        {"account": "a", "ok": False, "error": "1 quest(s) failed"}
+    ]
+    assert records["error_summary"] == "1 account(s) failed: a (1 quest(s) failed)"
+
+
+def test_cmd_multi_records_run_log_on_exception(monkeypatch):
+    """run_all_accounts が例外を投げたら failed で記録し、例外は再送出される。"""
+    from hw_genie import main
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return None
+
+    def boom(routine, accounts=None, max_parallel=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", boom)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+    with pytest.raises(RuntimeError):
+        main.cmd_multi(args)
+
+    assert records["status"] == "failed"
+    assert records["exit_code"] == 1
+    assert records["error_summary"] == "boom"
+    assert "Traceback" in records["log_text"]
+
+
+def test_cmd_multi_records_run_log_on_interrupt(monkeypatch):
+    """KeyboardInterrupt は exit_code=130 で failed 記録され、再送出される。"""
+    from hw_genie import main
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return None
+
+    def interrupt(routine, accounts=None, max_parallel=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", interrupt)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+    with pytest.raises(KeyboardInterrupt):
+        main.cmd_multi(args)
+
+    assert records["status"] == "failed"
+    assert records["exit_code"] == 130
+
+
 def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
     """--dry-run is forwarded to quests_routine (getattr keeps old args safe)."""
 

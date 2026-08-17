@@ -17,18 +17,22 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 
 from .database import (
     RunLog,
     _wal_io_lock,
+    get_engine,
     get_session_local,
     get_write_session_local,
+    is_hrana_stream_error,
     retry_on_transient_db_error,
     retry_on_wal_contention,
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # bin/hwda の perl 除去と同じ ANSI SGR エスケープ（\x1b[...m）パターン
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -120,11 +124,14 @@ class OutputCapture:
         sys.stdout = _TeeStream(self._stdout, self._buffer)
         handler = _BufferHandler(self._buffer)
         # basicConfig のフォーマッタ（"%(levelname)s: %(message)s"）と同じ表示に
-        # するため、既存ハンドラのフォーマッタを流用する。
+        # するため、既存ハンドラのフォーマッタを流用する。トークン等の機密情報
+        # がログに漏れないよう、既存ハンドラに付与されたフィルタ
+        # （TokenMaskingFilter 等）も引き継ぐ。
         for existing in logging.getLogger().handlers:
-            if existing.formatter is not None:
+            if existing.formatter is not None and handler.formatter is None:
                 handler.setFormatter(existing.formatter)
-                break
+            for f in existing.filters:
+                handler.addFilter(f)
         logging.getLogger().addHandler(handler)
         self._handler = handler
         return self
@@ -138,6 +145,31 @@ class OutputCapture:
     def getvalue(self) -> str:
         """Buffered output with ANSI escape sequences removed."""
         return strip_ansi("".join(self._buffer))
+
+
+def _prune_old_rows() -> None:
+    """Delete ``run_logs`` rows older than ``HW_LOG_KEEP_DAYS`` (best-effort).
+
+    Runs in its own transaction so a pruning failure can never lose the run log
+    being recorded by :func:`record_run_log`.
+    """
+    keep_days = log_keep_days()
+    if keep_days <= 0:
+        return
+    cutoff = _utcnow_naive() - timedelta(days=keep_days)
+
+    def _attempt() -> None:
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                db.query(RunLog).filter(
+                    RunLog.started_at < cutoff
+                ).delete(synchronize_session=False)
+                db.commit()
+
+    try:
+        retry_on_wal_contention(_attempt, logger=logger)
+    except Exception as exc:  # pragma: no cover - best-effort
+        logger.warning("Failed to prune old run logs: %s", exc)
 
 
 def record_run_log(
@@ -161,15 +193,9 @@ def record_run_log(
     started_at = started_at.replace(tzinfo=None)
     finished_at = finished_at.replace(tzinfo=None)
 
-    def _attempt() -> int | None:
+    def _attempt() -> int:
         with _wal_io_lock:
             with get_write_session_local()() as db:
-                keep_days = log_keep_days()
-                if keep_days > 0:
-                    cutoff = _utcnow_naive() - timedelta(days=keep_days)
-                    db.query(RunLog).filter(
-                        RunLog.started_at < cutoff
-                    ).delete(synchronize_session=False)
                 row = RunLog(
                     started_at=started_at,
                     finished_at=finished_at,
@@ -186,10 +212,41 @@ def record_run_log(
                 return row.id
 
     try:
-        return retry_on_wal_contention(_attempt, logger=logger)
+        run_id = retry_on_wal_contention(_attempt, logger=logger)
+        _prune_old_rows()
+        return run_id
     except Exception as exc:  # pragma: no cover - best-effort
         logger.warning("Failed to record run log: %s", exc)
         return None
+
+
+def _read_with_retry(fn: Callable[[], T]) -> T:
+    """Run a read ``fn``, retrying transient DB errors (Hrana stream death).
+
+    Mirrors ``SessionRepository._read_with_retry``: on a dead Hrana stream the
+    read pool is disposed so the next checkout opens a fresh connection (a
+    long-idle remote stream cannot be revived in place).
+    """
+
+    def _attempt() -> T:
+        try:
+            return fn()
+        except Exception as exc:
+            if is_hrana_stream_error(exc):
+                logger.warning(
+                    "Transient Hrana stream error on run_logs read; disposing "
+                    "read pool before retry: %s",
+                    exc,
+                )
+                try:
+                    get_engine().pool.dispose()
+                except Exception:
+                    logger.warning(
+                        "Failed to dispose read pool", exc_info=True
+                    )
+            raise
+
+    return retry_on_transient_db_error(_attempt, logger=logger)
 
 
 def list_run_logs(limit: int = 10) -> list[RunLog]:
@@ -204,7 +261,7 @@ def list_run_logs(limit: int = 10) -> list[RunLog]:
                 .all()
             )
 
-    return retry_on_transient_db_error(_read, logger=logger)
+    return _read_with_retry(_read)
 
 
 def get_run_log(run_id: int) -> RunLog | None:
@@ -214,4 +271,4 @@ def get_run_log(run_id: int) -> RunLog | None:
         with get_session_local()() as db:
             return db.query(RunLog).filter(RunLog.id == run_id).first()
 
-    return retry_on_transient_db_error(_read, logger=logger)
+    return _read_with_retry(_read)

@@ -172,3 +172,119 @@ def test_record_best_effort_on_db_error():
             )
             is None
         )
+
+
+def test_build_run_log_summary_quests_failure():
+    from hw_genie.main import _build_run_log_summary
+
+    results = {
+        "Joe": ((["q1"], ["q2"], []), None),
+        "Ace": ((["q1"], [], []), None),
+        "Bug": (([], [], []), RuntimeError("auth failed")),
+    }
+    entries, error_summary = _build_run_log_summary("quests", results)
+    assert entries == [
+        {"account": "Joe", "ok": False, "error": "1 quest(s) failed"},
+        {"account": "Ace", "ok": True, "error": None},
+        {"account": "Bug", "ok": False, "error": "auth failed"},
+    ]
+    assert error_summary == (
+        "2 account(s) failed: Joe (1 quest(s) failed), Bug (auth failed)"
+    )
+
+
+def test_build_run_log_summary_consumable_failure():
+    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.inventory import ConsumableUseResult
+    from hw_genie.main import _build_run_log_summary
+
+    results = {
+        "Joe": ([ConsumableUseResult(lib_id=1, status=ResponseStatus.SUCCESS)], None),
+        "Ace": ([ConsumableUseResult(lib_id=2, status=ResponseStatus.ERROR)], None),
+        "Bug": ([ConsumableUseResult(lib_id=3, status=ResponseStatus.UNEXPECTED)], None),
+    }
+    entries, error_summary = _build_run_log_summary("consumable", results)
+    assert entries[0]["ok"] is True
+    assert entries[1] == {
+        "account": "Ace",
+        "ok": False,
+        "error": "1 consumable use(s) failed",
+    }
+    assert entries[2] == {
+        "account": "Bug",
+        "ok": False,
+        "error": "1 consumable use(s) failed",
+    }
+    assert error_summary == (
+        "2 account(s) failed: Ace (1 consumable use(s) failed), "
+        "Bug (1 consumable use(s) failed)"
+    )
+
+
+def test_build_run_log_summary_asgard_failure():
+    from hw_genie.commands.asgard_shop import AsgardResult, AsgardRunResult
+    from hw_genie.core.client import ResponseStatus
+    from hw_genie.main import _build_run_log_summary
+
+    ok = AsgardRunResult(
+        coins=1, spent=0, remaining=1, bought=0, skipped=False, items=[]
+    )
+    fetch_err = AsgardRunResult(
+        coins=1, spent=0, remaining=1, bought=0, skipped=False, items=[],
+        error="fetch boom",
+    )
+    purchase_err = AsgardRunResult(
+        coins=1, spent=0, remaining=1, bought=0, skipped=False,
+        items=[AsgardResult(action="x", status=ResponseStatus.ERROR)],
+    )
+    results = {"Joe": (ok, None), "Ace": (fetch_err, None), "Bug": (purchase_err, None)}
+    entries, error_summary = _build_run_log_summary("asgard-shop", results)
+    assert entries[0]["ok"] is True
+    assert entries[1] == {"account": "Ace", "ok": False, "error": "shop fetch failed: fetch boom"}
+    assert entries[2] == {"account": "Bug", "ok": False, "error": "1 purchase error(s)"}
+    assert error_summary == (
+        "2 account(s) failed: Ace (shop fetch failed: fetch boom), "
+        "Bug (1 purchase error(s))"
+    )
+
+
+def test_build_run_log_summary_daily_status_unavailable():
+    from hw_genie.core.client import PlayerStatus
+    from hw_genie.main import _build_run_log_summary
+
+    results = {
+        "Joe": (PlayerStatus(name="Alpha", level=130), None),
+        "Ace": (None, None),
+        "Bug": (PlayerStatus(name="Unknown", level=0), None),
+    }
+    entries, error_summary = _build_run_log_summary("daily", results)
+    assert entries[0]["ok"] is True
+    assert entries[1] == {"account": "Ace", "ok": False, "error": "status unavailable"}
+    assert entries[2] == {"account": "Bug", "ok": False, "error": "status unavailable"}
+    assert error_summary == (
+        "2 account(s) failed: Ace (status unavailable), Bug (status unavailable)"
+    )
+
+
+def test_output_capture_inherits_existing_filters():
+    """既存ハンドラの TokenMaskingFilter がキャプチャ内ログにも適用される。"""
+    from hw_genie.core.database import install_token_masking_filter
+    from hw_genie.core.run_log import OutputCapture
+
+    root = logging.getLogger()
+    previous_level = root.level
+    previous_handlers = list(root.handlers)
+    root.setLevel(logging.INFO)
+    try:
+        if not root.handlers:
+            logging.basicConfig()
+        install_token_masking_filter()
+        capture = OutputCapture()
+        with capture:
+            logging.getLogger("hw_genie.tests").info(
+                "connecting to sqlite:///x?auth_token=SECRET123"
+            )
+        assert "SECRET123" not in capture.getvalue()
+    finally:
+        root.setLevel(previous_level)
+        root.handlers = previous_handlers
