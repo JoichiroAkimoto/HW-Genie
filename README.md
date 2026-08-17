@@ -34,6 +34,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
+- **Run Log**: `multi` 実行（hwda / hwsa / Docker / 別ホストの CLI 直実行）の結果サマリーと出力全文を DB（`run_logs` テーブル）に保存し、Turso 同期経由で全環境から閲覧可能（`hw-genie log ls` / `log show <id>`。実行環境識別子 `ユーザー名@ホスト名` を自動記録。保持日数は `HW_LOG_KEEP_DAYS`、デフォルト 7 日）。
 - **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
@@ -169,6 +170,37 @@ uv run hw-genie --help
 uv run hw-genie sync
 ```
 
+#### 実行ログの確認
+
+`multi` 実行（hwda / hwsa / CLI 直実行 / Docker）は、終了時に結果サマリーと出力全文を
+DB の `run_logs` テーブルへ保存します（best-effort: DB 書き込みが失敗しても実行自体は
+中断されません）。Turso 同期を利用している場合、別ホストからも同じログを確認できます。
+
+```bash
+uv run hw-genie log ls          # 直近の実行一覧（--limit N で件数指定）
+uv run hw-genie log show 42     # ID 指定で詳細（メタデータ + 出力全文）
+```
+
+保持日数は `HW_LOG_KEEP_DAYS`（デフォルト 7 日、`0` で無効化）。フルログのファイル
+（`data/logs/`）は従来どおり `bin/hwda` / `bin/hwsa` が保存します。
+
+各レコードには実行環境識別子（`ユーザー名@ホスト名`、例: `ak@ak-mac`）が自動記録され、
+Turso 同期で混在する複数環境の実行を切り分けられます（`log ls` の最終列・`log show` の
+`Host:` 行で確認）。識別子は次の優先順位で決まります:
+
+1. `HWGENIE_HOST`（明示指定）→ 最優先（例: `HWGENIE_HOST=win-pc uv run hw-genie multi daily`）
+2. Docker 実行時はホストのシェル環境変数が Compose 補間で自動反映されるため、`.env` の設定は不要
+   - WSL・Mac・Linux（シェル実行）: `USER` / `HOSTNAME` が自動反映
+     （ホスト名は bash 実行時のみ。zsh 等では `HOSTNAME` が環境変数にならないため、
+     `.env` の `HWGENIE_HOST` 指定を推奨）
+   - ネイティブ Windows（PowerShell / cmd）: `USERNAME` / `COMPUTERNAME` が自動反映
+3. 環境変数: ユーザーは `HWGENIE_USER` → `HWGENIE_USER_UNIX` → `USER` → `USERNAME` → `getpass.getuser()`、
+   ホストは `HWGENIE_MACHINE` → `HWGENIE_MACHINE_UNIX` → `COMPUTERNAME` → `HOSTNAME` → `socket.gethostname()`
+   （取得できない場合は `unknown` にフォールバック）
+
+また `log_file` 列には、ラッパーが `HWGENIE_LOG_FILE` を export した場合のみファイル
+パスが記録されます（現行は `bin/hwda` / `bin/hwsa`。CLI 直実行・Docker では `NULL`）。
+
 #### Turso Embedded Replicas (Syncs) の利用
 
 `TURSO_SYNC_URL` を設定すると、ローカルの SQLite ファイルをリモート DB の
@@ -242,7 +274,7 @@ export TURSO_WRITE_REMOTE="true"
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
 | `HWGENIE_TZ` | `UTC` | `auth --list` の `Updated` 列の表示タイムゾーン（IANA 名、例: `Asia/Tokyo`）。DB には常に UTC で保存され、表示時のみ変換されます。 |
-| `HW_LOG_KEEP_DAYS` | `7` | `bin/hwda` / `bin/hwsa` が `data/logs/` の古いログ（`hwda_*.log` / `hwsa_*.log`）を自動削除する保持日数。`0` で削除を無効化。 |
+| `HW_LOG_KEEP_DAYS` | `7` | `bin/hwda` / `bin/hwsa` が `data/logs/` の古いログ（`hwda_*.log` / `hwsa_*.log`）を自動削除する保持日数。DB 上の実行ログ（`run_logs` テーブル）の保持日数も兼ねる（`hw-genie multi` が記録のたびに古い行を削除）。`0` で削除を無効化。 |
 
 ### 認証方法
 

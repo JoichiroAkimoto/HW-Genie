@@ -10,7 +10,7 @@ import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy import util
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
@@ -408,6 +408,30 @@ class AccountConfig(Base):
     # Using a unique constraint on (account_id, config_key) to ensure Key-Value uniqueness per account
 
 
+class RunLog(Base):
+    """One row per completed ``multi`` execution (daily/full/quests/...).
+
+    Stores the structured outcome (per-account ok/failed + error summary) plus
+    the full console output text, so results are visible from any environment
+    that syncs the Turso replica. Rows are pruned after ``HW_LOG_KEEP_DAYS``
+    (default 7; 0 disables pruning) — see ``record_run_log``.
+    """
+
+    __tablename__ = "run_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    mode = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    exit_code = Column(Integer, nullable=True)
+    accounts = Column(JSON, nullable=False)
+    error_summary = Column(String, nullable=True)
+    log_text = Column(Text, nullable=True)
+    log_file = Column(String, nullable=True)
+    # 実行環境識別子（例: "ak@ak-mac"）。HWGENIE_HOST で明示上書き可能。
+    hostname = Column(String, nullable=True)
+
+
 # プロジェクトルートの絶対パスを基点に DB パスを確定させる。
 # 開発環境では src/python/hw_genie/core/database.py、コンテナでは
 # /app/hw_genie/core/database.py のようにネスト深さが異なるため、固定の
@@ -796,6 +820,52 @@ engine = None  # replaced lazily; accessible for introspection / patching
 SessionLocal = _LazySessionLocal()
 
 
+# 既存テーブルに後から追加されたカラム（create_all はテーブル作成のみで、
+# 既存テーブルへのカラム追加は行わないため、init_db で ALTER する）。
+_RUN_LOGS_ADDITIONAL_COLUMNS: dict[str, dict[str, str]] = {
+    "run_logs": {"hostname": "VARCHAR"},
+}
+
+
+def _apply_light_migrations(engine) -> None:
+    """Add columns introduced after table creation (idempotent, best-effort).
+
+    ``Base.metadata.create_all`` only creates missing tables, so columns added
+    later (e.g. ``run_logs.hostname``) must be applied with ``ALTER TABLE``.
+    A missing column would otherwise make every ``record_run_log`` INSERT fail
+    (and be swallowed, since run-log recording is best-effort by design).
+    """
+    for table_name, columns in _RUN_LOGS_ADDITIONAL_COLUMNS.items():
+        try:
+            with engine.connect() as conn:
+                existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql(
+                        f"PRAGMA table_info({table_name})"
+                    )
+                }
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning(
+                "Failed to inspect table %s for migrations: %s", table_name, exc
+            )
+            continue
+        for column, col_type in columns.items():
+            if column in existing:
+                continue
+            # 存在確認と ALTER の間に競合窓がある（別プロセスが同時に ALTER する
+            # 可能性）が、失敗時は warning で握りつぶされるだけなので冪等性は保たれる。
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}"
+                    )
+                logger.info("Migrated %s: added column %s", table_name, column)
+            except Exception as exc:  # pragma: no cover - best-effort
+                logger.warning(
+                    "Failed to add column %s to %s: %s", column, table_name, exc
+                )
+
+
 def init_db():
     # Ensure the schema exists on BOTH the read (replica) and write (remote,
     # when TURSO_WRITE_REMOTE is enabled) engines so that writes can persist
@@ -831,5 +901,6 @@ def init_db():
         def _locked_create_all(eng=eng):
             with _wal_io_lock:
                 Base.metadata.create_all(eng)
+                _apply_light_migrations(eng)
 
         retry_on_wal_contention(_locked_create_all, logger=logger)

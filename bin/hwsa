@@ -27,6 +27,8 @@ fi
 LOG_DIR="data/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hwsa_$(date '+%Y%m%d_%H%M%S').log"
+# Python 側（hw-genie multi）が run_logs の log_file 列に記録するためのパス。
+export HWGENIE_LOG_FILE="$LOG_FILE"
 
 # Prune old logs. Delete hwda_/hwsa_ logs older than HW_LOG_KEEP_DAYS*24h
 # (default 7; find's -mtime +N keeps roughly the last N days). Set to 0 to

@@ -1,6 +1,8 @@
 import argparse
+import getpass
 import logging
 import os
+import socket
 import sys
 import json
 from hw_genie.core.client import (
@@ -25,6 +27,65 @@ def _prepare_info_for_json(info: dict) -> dict:
         output["player"] = info["player"].to_dict()
         return output
     return info
+
+
+def _positive_int(value: str) -> int:
+    """argparse type: a positive integer (rejects 0 and negatives)."""
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid positive int value: {value!r}"
+        ) from exc
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive: {value!r}")
+    return n
+
+
+def _run_host_identifier() -> str:
+    """Return the execution environment identifier (``user@host``) for run_logs.
+
+    ``HWGENIE_HOST`` explicitly overrides everything (used when a custom label
+    is desired). Otherwise the user comes from ``HWGENIE_USER`` →
+    ``HWGENIE_USER_UNIX`` → ``USER`` → ``USERNAME`` →
+    :func:`getpass.getuser`, and the host from ``HWGENIE_MACHINE`` →
+    ``HWGENIE_MACHINE_UNIX`` → ``COMPUTERNAME`` → ``HOSTNAME`` →
+    :func:`socket.gethostname`. The ``HWGENIE_USER`` / ``HWGENIE_MACHINE``
+    pair lets Docker Compose forward the host's own ``USERNAME`` /
+    ``COMPUTERNAME`` (Windows), and the ``*_UNIX`` pair the ``USER`` /
+    ``HOSTNAME`` (Mac/Linux), without any .env setup.
+
+    Exception-safe: user lookup can raise in containers (e.g. ``--user`` with
+    no matching passwd entry and no USER vars), where the identifier falls
+    back to ``unknown``. Never raises, so run-log recording (best-effort)
+    cannot crash the actual run.
+    """
+    explicit = os.environ.get("HWGENIE_HOST")
+    if explicit:
+        return explicit
+    user = (
+        os.environ.get("HWGENIE_USER")
+        or os.environ.get("HWGENIE_USER_UNIX")
+        or os.environ.get("USER")
+        or os.environ.get("USERNAME")
+    )
+    machine = (
+        os.environ.get("HWGENIE_MACHINE")
+        or os.environ.get("HWGENIE_MACHINE_UNIX")
+        or os.environ.get("COMPUTERNAME")
+        or os.environ.get("HOSTNAME")
+    )
+    if not user:
+        try:
+            user = getpass.getuser()
+        except Exception:  # noqa: BLE001 - best-effort identifier
+            user = "unknown"
+    if not machine:
+        try:
+            machine = socket.gethostname()
+        except Exception:  # noqa: BLE001 - best-effort identifier
+            machine = "unknown"
+    return f"{user}@{machine}"
 
 
 def _ensure_session(args) -> dict[str, str]:
@@ -599,6 +660,10 @@ def cmd_db_check(args):
 
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    import traceback
+    from datetime import datetime, timezone
+
+    from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
         asgard_shop_routine,
         consumable_routine,
@@ -643,17 +708,197 @@ def cmd_multi(args):
         routine = full_routine if mode == "full" else daily_routine
         max_parallel = args.parallel
 
-    results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
-    if mode == "quests":
-        failed = summarize_quests(results.items(), dry_run=dry_run)
-    elif mode == "asgard-shop":
-        failed = summarize_asgard_shop(results.items())
-    elif mode == "consumable":
-        failed = summarize_consumable(results.items(), dry_run=dry_run)
-    else:
-        failed = summarize(results.items())
+    # 実行ログ（run_logs）記録: 実行中の出力をキャプチャし、終了時に 1 レコード
+    # 書き込む（best-effort: DB 失敗でも実行自体は落とさない）。
+    started_at = datetime.now(timezone.utc)
+    capture = OutputCapture()
+    results: dict = {}
+    try:
+        with capture:
+            results = run_all_accounts(
+                routine, accounts=accounts, max_parallel=max_parallel
+            )
+            if mode == "quests":
+                failed = summarize_quests(results.items(), dry_run=dry_run)
+            elif mode == "asgard-shop":
+                failed = summarize_asgard_shop(results.items())
+            elif mode == "consumable":
+                failed = summarize_consumable(results.items(), dry_run=dry_run)
+            else:
+                failed = summarize(results.items())
+    except BaseException as exc:
+        # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
+        # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
+        # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
+        # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
+        trace = traceback.format_exc()
+        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+            exit_code = exc.code
+        elif isinstance(exc, KeyboardInterrupt):
+            exit_code = 130
+        else:
+            exit_code = 1
+        try:
+            accounts = _build_run_log_summary(mode, results)[0]
+        except Exception:  # pragma: no cover - defensive
+            accounts = []
+        record_run_log(
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            mode=mode,
+            status="failed",
+            exit_code=exit_code,
+            accounts=accounts,
+            error_summary=str(exc) or type(exc).__name__,
+            log_text=(capture.getvalue() + "\n" + trace).strip() or None,
+            log_file=os.environ.get("HWGENIE_LOG_FILE"),
+            hostname=_run_host_identifier(),
+        )
+        raise
+    account_logs, error_summary = _build_run_log_summary(mode, results)
+    record_run_log(
+        started_at=started_at,
+        finished_at=datetime.now(timezone.utc),
+        mode=mode,
+        status="failed" if failed else "ok",
+        exit_code=1 if failed else 0,
+        accounts=account_logs,
+        error_summary=error_summary,
+        log_text=capture.getvalue() or None,
+        log_file=os.environ.get("HWGENIE_LOG_FILE"),
+        hostname=_run_host_identifier(),
+    )
     if failed:
         sys.exit(1)
+
+
+def _run_log_account_failure(
+    mode: str, result: object | None, err: BaseException | None
+) -> str | None:
+    """Return the failure reason for one account's run-log entry, or None when ok.
+
+    Mirrors the per-account failure judgement of the runner's ``summarize_*``
+    functions so ``run_logs`` rows stay consistent with the printed summary:
+    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
+    and unavailable statuses all count as failures, matching the ``failed``
+    counter returned by ``summarize``. Exceptions are reported by their first
+    message line.
+    """
+    if err is not None:
+        message = str(err).strip().splitlines()
+        return message[0] if message else type(err).__name__
+    if mode == "quests":
+        if isinstance(result, tuple) and len(result) == 3:
+            return f"{len(result[1])} quest(s) failed" if result[1] else None
+        return "quest result unavailable"
+    if mode == "consumable":
+        from hw_genie.core.client import ResponseStatus
+
+        if isinstance(result, list):
+            errors = sum(
+                1
+                for r in result
+                if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED)
+            )
+            return f"{errors} consumable use(s) failed" if errors else None
+        return "consumable result unavailable"
+    if mode == "asgard-shop":
+        from hw_genie.commands.asgard_shop import AsgardRunResult
+
+        if isinstance(result, AsgardRunResult):
+            if result.error is not None:
+                return f"shop fetch failed: {result.error}"
+            return (
+                f"{result.failed_count} purchase error(s)"
+                if result.failed_count
+                else None
+            )
+        return "asgard-shop result unavailable"
+    # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
+    from hw_genie.core.client import PlayerStatus
+
+    if not isinstance(result, PlayerStatus) or not result.is_valid:
+        return "status unavailable"
+    return None
+
+
+def _build_run_log_summary(
+    mode: str,
+    results: dict[str, tuple[object | None, BaseException | None]],
+) -> tuple[list[dict], str | None]:
+    """Build the per-account summary list and error summary for ``run_logs``.
+
+    An entry with ``ok: false`` carries the failure reason (exception message,
+    quest/consumable/Asgard failure count, or unavailable status). Returns
+    ``(entries, error_summary)``; ``error_summary`` is ``None`` when no account
+    failed.
+    """
+    entries: list[dict] = []
+    failed_accounts: list[str] = []
+    for account, (res, err) in results.items():
+        reason = _run_log_account_failure(mode, res, err)
+        if reason is None:
+            entries.append({"account": account, "ok": True, "error": None})
+            continue
+        entries.append({"account": account, "ok": False, "error": reason})
+        failed_accounts.append(f"{account} ({reason})")
+    error_summary = None
+    if failed_accounts:
+        error_summary = (
+            f"{len(failed_accounts)} account(s) failed: "
+            + ", ".join(failed_accounts)
+        )
+    return entries, error_summary
+
+
+def cmd_log_ls(args):
+    """List recent run logs (newest first)."""
+    from hw_genie.core.run_log import list_run_logs
+    from hw_genie.core.utils import format_timestamp_for_display
+
+    rows = list_run_logs(limit=args.limit)
+    if not rows:
+        print("No run logs recorded yet.")
+        return
+    for row in rows:
+        ok = sum(1 for a in row.accounts if a.get("ok"))
+        total = len(row.accounts)
+        started = format_timestamp_for_display(row.started_at.isoformat())
+        host = row.hostname or "-"
+        print(
+            f"{row.id:>4}  {started}  {row.mode:<11} "
+            f"{row.status:<6} {ok}/{total} ok  exit={row.exit_code}  {host}"
+        )
+
+
+def cmd_log_show(args):
+    """Show one run log in full (metadata + captured output)."""
+    from hw_genie.core.run_log import get_run_log
+    from hw_genie.core.utils import format_timestamp_for_display
+
+    row = get_run_log(args.run_id)
+    if row is None:
+        print(f"Run log #{args.run_id} not found.")
+        sys.exit(1)
+    print(f"ID:       {row.id}")
+    print(f"Started:  {format_timestamp_for_display(row.started_at.isoformat())}")
+    print(f"Finished: {format_timestamp_for_display(row.finished_at.isoformat())}")
+    print(f"Mode:     {row.mode}")
+    print(f"Status:   {row.status}  (exit code {row.exit_code})")
+    if row.hostname:
+        print(f"Host:     {row.hostname}")
+    if row.log_file:
+        print(f"Log file: {row.log_file}")
+    if row.error_summary:
+        print(f"Errors:   {row.error_summary}")
+    for entry in row.accounts:
+        if entry.get("ok"):
+            print(f"  - {entry['account']}: ok")
+        else:
+            print(f"  - {entry['account']}: failed ({entry.get('error')})")
+    if row.log_text:
+        print("\n--- Output ---")
+        print(row.log_text, end="" if row.log_text.endswith("\n") else "\n")
 
 
 def main():
@@ -847,6 +1092,23 @@ def main():
         help="Show the execution plan without running anything (quests/consumable modes only)",
     )
     p_multi.set_defaults(func=cmd_multi)
+
+    p_log = subparsers.add_parser(
+        "log", help="Show execution run logs (stored in the database)"
+    )
+    log_sub = p_log.add_subparsers(dest="log_command", required=True)
+    p_log_ls = log_sub.add_parser("ls", help="List recent run logs (newest first)")
+    p_log_ls.add_argument(
+        "--limit",
+        "-n",
+        type=_positive_int,
+        default=10,
+        help="Max rows to show (default: 10)",
+    )
+    p_log_ls.set_defaults(func=cmd_log_ls)
+    p_log_show = log_sub.add_parser("show", help="Show one run log in full")
+    p_log_show.add_argument("run_id", type=int, help="Run log ID from `log ls`")
+    p_log_show.set_defaults(func=cmd_log_show)
 
     args = parser.parse_args()
     if not args.command:
