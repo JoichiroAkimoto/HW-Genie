@@ -54,6 +54,11 @@ services:
       # バックグラウンド sync が WAL 競合を招く）。
       TURSO_SYNC_INTERVAL: "30"
       HW_MAX_PARALLEL: ${HW_MAX_PARALLEL:-}
+      # run_logs の実行環境識別子（user@host）。ホストの Windows 標準環境変数
+      # （USERNAME / COMPUTERNAME）を自動展開する。.env の HWGENIE_HOST で
+      # 明示上書きも可能。
+      HWGENIE_USER: ${USERNAME:-}
+      HWGENIE_MACHINE: ${COMPUTERNAME:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie
@@ -67,6 +72,11 @@ services:
       <<: *db-env
       TURSO_SYNC_INTERVAL: "30"
       HW_MAX_PARALLEL: ${HW_MAX_PARALLEL:-}
+      # run_logs の実行環境識別子（user@host）。ホストの Windows 標準環境変数
+      # （USERNAME / COMPUTERNAME）を自動展開する。.env の HWGENIE_HOST で
+      # 明示上書きも可能。
+      HWGENIE_USER: ${USERNAME:-}
+      HWGENIE_MACHINE: ${COMPUTERNAME:-}
     volumes:
       - ./data:/app/data
       - ./src/python/hw_genie:/app/hw_genie

@@ -28,6 +28,7 @@ def _record(now=None, **kwargs):
         error_summary=kwargs.get("error_summary"),
         log_text=kwargs.get("log_text", "line1\nline2\n"),
         log_file=kwargs.get("log_file"),
+        hostname=kwargs.get("hostname"),
     )
 
 
@@ -264,6 +265,98 @@ def test_build_run_log_summary_daily_status_unavailable():
     assert error_summary == (
         "2 account(s) failed: Ace (status unavailable), Bug (status unavailable)"
     )
+
+
+def test_light_migration_adds_missing_column():
+    """既存 DB（hostname 列なし）にマイグレーションで列が追加される。"""
+    from sqlalchemy import text
+
+    from hw_genie.core.database import (
+        Base,
+        _apply_light_migrations,
+        get_engine,
+    )
+
+    eng = get_engine()
+    # setup_db が hostname 込みで run_logs を作るため、hostname なしの
+    # 旧スキーマを再現する。
+    Base.metadata.drop_all(eng)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE run_logs ("
+                "id INTEGER PRIMARY KEY, mode VARCHAR NOT NULL, status VARCHAR NOT NULL)"
+            )
+        )
+    _apply_light_migrations(eng)
+    with eng.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(run_logs)"))}
+    assert "hostname" in columns
+    _apply_light_migrations(eng)  # 冪等
+
+
+def test_record_hostname():
+    run_id = _record(hostname="ak@ak-mac")
+    row = get_run_log(run_id)
+    assert row is not None
+    assert row.hostname == "ak@ak-mac"
+
+
+def test_run_host_identifier_explicit():
+    """HWGENIE_HOST による明示上書きが最優先される。"""
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict("os.environ", {"HWGENIE_HOST": "win-pc"}, clear=True):
+        assert _run_host_identifier() == "win-pc"
+
+
+def test_run_host_identifier_compose_env():
+    """Docker Compose 経由（HWGENIE_USER / HWGENIE_MACHINE）を優先する。"""
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict(
+        "os.environ",
+        {"HWGENIE_USER": "joe", "HWGENIE_MACHINE": "WIN-PC"},
+        clear=True,
+    ):
+        assert _run_host_identifier() == "joe@WIN-PC"
+
+
+def test_run_host_identifier_unix_env():
+    """ホスト直接実行時は USER / HOSTNAME（Unix 標準）を使う。"""
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict(
+        "os.environ",
+        {"USER": "ak", "HOSTNAME": "ak-mac"},
+        clear=True,
+    ):
+        assert _run_host_identifier() == "ak@ak-mac"
+
+
+def test_run_host_identifier_windows_env():
+    """Windows の USERNAME / COMPUTERNAME にも対応する。"""
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict(
+        "os.environ",
+        {"USERNAME": "joe", "COMPUTERNAME": "WIN-PC"},
+        clear=True,
+    ):
+        assert _run_host_identifier() == "joe@WIN-PC"
+
+
+def test_run_host_identifier_fallback():
+    """環境変数が無い場合も getpass / socket でフォールバックする。"""
+    import getpass
+    import socket
+
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict("os.environ", {}, clear=True):
+        assert _run_host_identifier() == (
+            f"{getpass.getuser()}@{socket.gethostname()}"
+        )
 
 
 def test_output_capture_inherits_existing_filters():

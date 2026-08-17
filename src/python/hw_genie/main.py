@@ -40,6 +40,38 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _run_host_identifier() -> str:
+    """Return the execution environment identifier (``user@host``) for run_logs.
+
+    ``HWGENIE_HOST`` explicitly overrides everything (used when a custom label
+    is desired). Otherwise the user comes from ``HWGENIE_USER`` →
+    ``USER`` → ``USERNAME`` → :func:`getpass.getuser`, and the host from
+    ``HWGENIE_MACHINE`` → ``COMPUTERNAME`` → ``HOSTNAME`` →
+    :func:`socket.gethostname`. The ``HWGENIE_USER`` / ``HWGENIE_MACHINE``
+    pair lets Docker Compose forward the host's own ``USERNAME`` /
+    ``COMPUTERNAME`` (Windows) without any .env setup.
+    """
+    import getpass
+    import socket
+
+    explicit = os.environ.get("HWGENIE_HOST")
+    if explicit:
+        return explicit
+    user = (
+        os.environ.get("HWGENIE_USER")
+        or os.environ.get("USER")
+        or os.environ.get("USERNAME")
+        or getpass.getuser()
+    )
+    machine = (
+        os.environ.get("HWGENIE_MACHINE")
+        or os.environ.get("COMPUTERNAME")
+        or os.environ.get("HOSTNAME")
+        or socket.gethostname()
+    )
+    return f"{user}@{machine}"
+
+
 def _ensure_session(args) -> dict[str, str]:
     """セッションヘッダーを検証し、なければエラーを出して終了する"""
     from hw_genie.core.session_manager import SessionManager
@@ -704,6 +736,7 @@ def cmd_multi(args):
             error_summary=str(exc) or type(exc).__name__,
             log_text=(capture.getvalue() + "\n" + trace).strip() or None,
             log_file=os.environ.get("HWGENIE_LOG_FILE"),
+            hostname=_run_host_identifier(),
         )
         raise
     account_logs, error_summary = _build_run_log_summary(mode, results)
@@ -717,6 +750,7 @@ def cmd_multi(args):
         error_summary=error_summary,
         log_text=capture.getvalue() or None,
         log_file=os.environ.get("HWGENIE_LOG_FILE"),
+        hostname=_run_host_identifier(),
     )
     if failed:
         sys.exit(1)

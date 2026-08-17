@@ -80,7 +80,8 @@ Unique constraint: `(account_id, config_key)`
 | `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]`（`error` は失敗理由） |
 | `error_summary` | VARCHAR | | 失敗アカウント一覧とエラー要約（1 件以上失敗した場合のみ） |
 | `log_text` | TEXT | | 出力全文（ANSI 除去済み） |
-| `log_file` | VARCHAR | | 対応する `data/logs/` のログファイルパス（`HWGENIE_LOG_FILE` 経由） |
+| `log_file` | VARCHAR | | 対応する `data/logs/` のログファイルパス（`HWGENIE_LOG_FILE` 経由。ラッパーが export した場合のみ記録され、CLI 直実行・Docker では `NULL`） |
+| `hostname` | VARCHAR | | 実行環境識別子（`user@host` 形式。`HWGENIE_HOST` で明示上書き可能。既存行は `NULL`） |
 
 古い行は `record_run_log`（`core/run_log.py`）が記録のたびに
 `HW_LOG_KEEP_DAYS`（デフォルト 7 日、`0` で無効化）より古いものを削除します。

@@ -183,6 +183,7 @@ def record_run_log(
     error_summary: str | None,
     log_text: str | None,
     log_file: str | None = None,
+    hostname: str | None = None,
 ) -> int | None:
     """Insert one ``run_logs`` row and prune expired rows.
 
@@ -206,6 +207,7 @@ def record_run_log(
                     error_summary=error_summary,
                     log_text=log_text,
                     log_file=log_file,
+                    hostname=hostname,
                 )
                 db.add(row)
                 db.commit()

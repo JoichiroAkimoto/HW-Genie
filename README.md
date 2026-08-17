@@ -34,7 +34,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
-- **Run Log**: `multi` 実行（hwda / hwsa / Docker / 別ホストの CLI 直実行）の結果サマリーと出力全文を DB（`run_logs` テーブル）に保存し、Turso 同期経由で全環境から閲覧可能（`hw-genie log ls` / `log show <id>`。保持日数は `HW_LOG_KEEP_DAYS`、デフォルト 7 日）。
+- **Run Log**: `multi` 実行（hwda / hwsa / Docker / 別ホストの CLI 直実行）の結果サマリーと出力全文を DB（`run_logs` テーブル）に保存し、Turso 同期経由で全環境から閲覧可能（`hw-genie log ls` / `log show <id>`。実行環境識別子 `ユーザー名@ホスト名` を自動記録。保持日数は `HW_LOG_KEEP_DAYS`、デフォルト 7 日）。
 - **Auth & Session Sync**: `curl` コマンドを利用したセッション情報の管理・更新。ユーザースクリプトを使用した自動同期機能に対応。
 
 ## クイックスタート
@@ -183,6 +183,18 @@ uv run hw-genie log show 42     # ID 指定で詳細（メタデータ + 出力�
 
 保持日数は `HW_LOG_KEEP_DAYS`（デフォルト 7 日、`0` で無効化）。フルログのファイル
 （`data/logs/`）は従来どおり `bin/hwda` / `bin/hwsa` が保存します。
+
+各レコードには実行環境識別子（`ユーザー名@ホスト名`、例: `ak@ak-mac`）が自動記録され、
+Turso 同期で混在する複数環境の実行を切り分けられます。識別子は次の優先順位で決まります:
+
+- `HWGENIE_HOST`（明示指定）→ 優先される（例: `HWGENIE_HOST=win-pc uv run hw-genie multi daily`）
+- Docker 実行時はホストの `USERNAME` / `COMPUTERNAME`（Windows 標準環境変数）が
+  Compose 補間で自動反映されるため、`.env` の設定は不要
+- それ以外は環境変数（`USER` / `USERNAME` / `COMPUTERNAME` / `HOSTNAME`）→
+  `getpass.getuser()` / `socket.gethostname()` の順にフォールバック
+
+また `log_file` 列には、ラッパーが `HWGENIE_LOG_FILE` を export した場合のみファイル
+パスが記録されます（現行は `bin/hwda` / `bin/hwsa`。CLI 直実行・Docker では `NULL`）。
 
 #### Turso Embedded Replicas (Syncs) の利用
 

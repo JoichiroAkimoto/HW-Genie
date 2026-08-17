@@ -40,7 +40,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **DB 整合性チェック**: `uv run hw-genie db-check`（壊れた config JSON を検出・一覧表示。壊れがあれば exit 1）
 *   **デバッグ出力**: 各コマンドに `--debug` を付与（例: `uv run hw-genie --debug daily`）
 
-> **環境変数・表示設定**: `HWGENIE_TZ` / `FORCE_COLOR` / `NO_COLOR` / `HW_LOG_KEEP_DAYS` / Turso 関連（`TURSO_WRITE_REMOTE` / `TURSO_SYNC_INTERVAL` 等）の詳細は README.md の環境変数表・「libSQL (Turso) の利用」セクションを参照してください。
+> **環境変数・表示設定**: `HWGENIE_TZ` / `FORCE_COLOR` / `NO_COLOR` / `HW_LOG_KEEP_DAYS` / `HWGENIE_HOST` / Turso 関連（`TURSO_WRITE_REMOTE` / `TURSO_SYNC_INTERVAL` 等）の詳細は README.md の環境変数表・「libSQL (Turso) の利用」セクションを参照してください。
 
 ### 3. API 仕様とメソッドの理解
 Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、以下のドキュメントを参照してください。

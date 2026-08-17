@@ -428,6 +428,8 @@ class RunLog(Base):
     error_summary = Column(String, nullable=True)
     log_text = Column(Text, nullable=True)
     log_file = Column(String, nullable=True)
+    # 実行環境識別子（例: "ak@ak-mac"）。HWGENIE_HOST で明示上書き可能。
+    hostname = Column(String, nullable=True)
 
 
 # プロジェクトルートの絶対パスを基点に DB パスを確定させる。
@@ -818,6 +820,50 @@ engine = None  # replaced lazily; accessible for introspection / patching
 SessionLocal = _LazySessionLocal()
 
 
+# 既存テーブルに後から追加されたカラム（create_all はテーブル作成のみで、
+# 既存テーブルへのカラム追加は行わないため、init_db で ALTER する）。
+_RUN_LOGS_ADDITIONAL_COLUMNS: dict[str, dict[str, str]] = {
+    "run_logs": {"hostname": "VARCHAR"},
+}
+
+
+def _apply_light_migrations(engine) -> None:
+    """Add columns introduced after table creation (idempotent, best-effort).
+
+    ``Base.metadata.create_all`` only creates missing tables, so columns added
+    later (e.g. ``run_logs.hostname``) must be applied with ``ALTER TABLE``.
+    A missing column would otherwise make every ``record_run_log`` INSERT fail
+    (and be swallowed, since run-log recording is best-effort by design).
+    """
+    for table_name, columns in _RUN_LOGS_ADDITIONAL_COLUMNS.items():
+        try:
+            with engine.connect() as conn:
+                existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql(
+                        f"PRAGMA table_info({table_name})"
+                    )
+                }
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning(
+                "Failed to inspect table %s for migrations: %s", table_name, exc
+            )
+            continue
+        for column, col_type in columns.items():
+            if column in existing:
+                continue
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}"
+                    )
+                logger.info("Migrated %s: added column %s", table_name, column)
+            except Exception as exc:  # pragma: no cover - best-effort
+                logger.warning(
+                    "Failed to add column %s to %s: %s", column, table_name, exc
+                )
+
+
 def init_db():
     # Ensure the schema exists on BOTH the read (replica) and write (remote,
     # when TURSO_WRITE_REMOTE is enabled) engines so that writes can persist
@@ -853,5 +899,6 @@ def init_db():
         def _locked_create_all(eng=eng):
             with _wal_io_lock:
                 Base.metadata.create_all(eng)
+                _apply_light_migrations(eng)
 
         retry_on_wal_contention(_locked_create_all, logger=logger)
