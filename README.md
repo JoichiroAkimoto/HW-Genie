@@ -189,15 +189,14 @@ Turso 同期で混在する複数環境の実行を切り分けられます（`l
 `Host:` 行で確認）。識別子は次の優先順位で決まります:
 
 1. `HWGENIE_HOST`（明示指定）→ 最優先（例: `HWGENIE_HOST=win-pc uv run hw-genie multi daily`）
-2. Docker 実行時はホストの `USERNAME` / `COMPUTERNAME`（Windows 標準環境変数）が
-   Compose 補間で自動反映されるため、`.env` の設定は不要
-3. 環境変数: ユーザーは `HWGENIE_USER` → `USER` → `USERNAME` → `getpass.getuser()`、
-   ホストは `HWGENIE_MACHINE` → `COMPUTERNAME` → `HOSTNAME` → `socket.gethostname()`
+2. Docker 実行時はホストのシェル環境変数が Compose 補間で自動反映されるため、`.env` の設定は不要
+   - WSL・Mac・Linux（シェル実行）: `USER` / `HOSTNAME` が自動反映
+     （ホスト名は bash 実行時のみ。zsh 等では `HOSTNAME` が環境変数にならないため、
+     `.env` の `HWGENIE_HOST` 指定を推奨）
+   - ネイティブ Windows（PowerShell / cmd）: `USERNAME` / `COMPUTERNAME` が自動反映
+3. 環境変数: ユーザーは `HWGENIE_USER` → `HWGENIE_USER_UNIX` → `USER` → `USERNAME` → `getpass.getuser()`、
+   ホストは `HWGENIE_MACHINE` → `HWGENIE_MACHINE_UNIX` → `COMPUTERNAME` → `HOSTNAME` → `socket.gethostname()`
    （取得できない場合は `unknown` にフォールバック）
-
-注意: `USERNAME` / `COMPUTERNAME` は **Windows ホスト限定**の標準変数です。
-Mac / Linux ホストで Docker 実行する場合は、コンテナ ID が識別子に混入しないよう
-`.env` の `HWGENIE_HOST` を設定してください。
 
 また `log_file` 列には、ラッパーが `HWGENIE_LOG_FILE` を export した場合のみファイル
 パスが記録されます（現行は `bin/hwda` / `bin/hwsa`。CLI 直実行・Docker では `NULL`）。

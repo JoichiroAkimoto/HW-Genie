@@ -334,6 +334,18 @@ def test_run_host_identifier_unix_env():
         assert _run_host_identifier() == "ak@ak-mac"
 
 
+def test_run_host_identifier_compose_unix_env():
+    """Docker Compose 経由（HWGENIE_USER_UNIX / HWGENIE_MACHINE_UNIX）を使う。"""
+    from hw_genie.main import _run_host_identifier
+
+    with patch.dict(
+        "os.environ",
+        {"HWGENIE_USER_UNIX": "ak", "HWGENIE_MACHINE_UNIX": "ak-mac"},
+        clear=True,
+    ):
+        assert _run_host_identifier() == "ak@ak-mac"
+
+
 def test_run_host_identifier_windows_env():
     """Windows の USERNAME / COMPUTERNAME にも対応する。"""
     from hw_genie.main import _run_host_identifier

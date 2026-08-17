@@ -47,11 +47,13 @@ def _run_host_identifier() -> str:
 
     ``HWGENIE_HOST`` explicitly overrides everything (used when a custom label
     is desired). Otherwise the user comes from ``HWGENIE_USER`` →
-    ``USER`` → ``USERNAME`` → :func:`getpass.getuser`, and the host from
-    ``HWGENIE_MACHINE`` → ``COMPUTERNAME`` → ``HOSTNAME`` →
+    ``HWGENIE_USER_UNIX`` → ``USER`` → ``USERNAME`` →
+    :func:`getpass.getuser`, and the host from ``HWGENIE_MACHINE`` →
+    ``HWGENIE_MACHINE_UNIX`` → ``COMPUTERNAME`` → ``HOSTNAME`` →
     :func:`socket.gethostname`. The ``HWGENIE_USER`` / ``HWGENIE_MACHINE``
     pair lets Docker Compose forward the host's own ``USERNAME`` /
-    ``COMPUTERNAME`` (Windows) without any .env setup.
+    ``COMPUTERNAME`` (Windows), and the ``*_UNIX`` pair the ``USER`` /
+    ``HOSTNAME`` (Mac/Linux), without any .env setup.
 
     Exception-safe: user lookup can raise in containers (e.g. ``--user`` with
     no matching passwd entry and no USER vars), where the identifier falls
@@ -63,11 +65,13 @@ def _run_host_identifier() -> str:
         return explicit
     user = (
         os.environ.get("HWGENIE_USER")
+        or os.environ.get("HWGENIE_USER_UNIX")
         or os.environ.get("USER")
         or os.environ.get("USERNAME")
     )
     machine = (
         os.environ.get("HWGENIE_MACHINE")
+        or os.environ.get("HWGENIE_MACHINE_UNIX")
         or os.environ.get("COMPUTERNAME")
         or os.environ.get("HOSTNAME")
     )
