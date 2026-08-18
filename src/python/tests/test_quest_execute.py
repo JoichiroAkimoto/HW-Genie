@@ -7,7 +7,10 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hw_genie.commands.quests import (
+    GUILD_QUEST_CLAIM_EXCLUDE,
     get_quest_defaults,
     get_quest_guild_defaults,
     run_quest_execute,
@@ -90,16 +93,44 @@ def _active_guild(qid: int) -> dict:
 
 def test_guild_claimable_farmed_without_defaults(capsys):
     """state=2 のギルドクエストは quest_defaults 設定なしでも questFarm で受領される。"""
-    client = _make_client([_claimable_guild(20010002)])
+    client = _make_client([_claimable_guild(20000082)])
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
     assert len(succeeded) == 1
-    assert succeeded[0]["quest_id"] == 20010002
+    assert succeeded[0]["quest_id"] == 20000082
     assert failed == []
-    client.quest_farm.assert_called_once_with(20010002)
+    client.quest_farm.assert_called_once_with(20000082)
+
+
+@pytest.mark.parametrize("excluded_id", sorted(GUILD_QUEST_CLAIM_EXCLUDE))
+def test_guild_claimable_excluded_not_farmed(capsys, excluded_id):
+    """GUILD_QUEST_CLAIM_EXCLUDE の全クエスト（20010002-20010005）は claim されない。"""
+    client = _make_client([_claimable_guild(excluded_id), _claimable_guild(20000082)])
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20000082]
+    assert failed == []
+    client.quest_farm.assert_called_once_with(20000082)
+    assert f"Skipping claim for {excluded_id}" in out
+
+
+def test_guild_claimable_exclude_boundary_still_farmed(capsys):
+    """除外セットの境界（20010000/20010001）は従来通り claim される。"""
+    client = _make_client([_claimable_guild(20010000), _claimable_guild(20010001), _claimable_guild(20010002)])
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20010000, 20010001]
+    assert failed == []
+    assert client.quest_farm.call_count == 2
 
 
 def test_guild_active_skipped_when_disabled(capsys):
@@ -149,8 +180,31 @@ def test_guild_active_runs_recipe_and_claims_reached(capsys):
     assert ops == [ApiAction.HERO_TITAN_GIFT_LEVEL_UP, ApiAction.HERO_TITAN_GIFT_LEVEL_UP, ApiAction.HERO_TITAN_GIFT_DROP]
 
 
+def test_guild_claimable_excluded_not_farmed_after_recipe(capsys):
+    """レシピ実行後の再取得で除外対象（20010002）が claimable になっても claim しない。"""
+    client = _make_client([_active_guild(20000111)])
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    def _op(action: ApiAction, args: dict):
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    res_first = _ok_response({"response": [_active_guild(20000111)]})
+    res_after = _ok_response({"response": [_claimable_guild(20000111), _claimable_guild(20010002)]})
+    client.quest_get_all = MagicMock(side_effect=[res_first, res_after])
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20000111]
+    assert failed == []
+    client.quest_farm.assert_called_once_with(20000111)
+    assert "Skipping claim for 20010002" in out
+
+
 def test_guild_dry_run_plan(capsys):
-    """dry-run では active/claimable のギルドクエストがプランに現れる。"""
+    """dry-run では active/claimable のギルドクエストがプランに現れる。除外対象は SKIP 表示。"""
     client = _make_client([_claimable_guild(20010002), _active_guild(20000111)])
     set_quest_guild_defaults("Alex", "enabled", True)
     _ = client
@@ -161,6 +215,7 @@ def test_guild_dry_run_plan(capsys):
     assert succeeded == []
     assert failed == []
     assert "20010002" in out
+    assert "SKIP (GUILD_QUEST_CLAIM_EXCLUDE)" in out
     assert "Guild quests (Sparks of Power)" in out
     assert "heroTitanGiftLevelUp" in out
 

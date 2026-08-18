@@ -54,6 +54,27 @@ title: Quest API Reference
 `10050`=Earn 1750 Guild Activity points（報酬: consumable 3×10 + gold 10000。target 1750、questGetAll では progress 1858 と超過が含まれる）。
 `10033` は dungeonActivity 報酬だが Daily タブには表示されない未分類。
 
+#### ギルドクエスト（2000xxxx/2001xxxx = Sparks of Power）
+- ID ファミリは 2 種: `2000xxxx`（日次のギルドクエスト。ID はアカウント・日次で
+  動的に進む）と `2001xxxx`（ギルドアクティビティ到達報酬。固定 ID・全アカウント
+  共通・日次リセットで再出現）。
+- 「Obtain xxx Sparks of Power」等の達成はギルド全体の累積ポイントで進行し、
+  `questGetAll` の state=2 になったものを `questFarm` で受領する。
+- 報酬は questGetAll では見えず、**questFarm 応答の `quests` 配列でのみ判明する**。
+  実測で確認済みの達成報酬（ギルドアクティビティ 838 到達時）:
+  | クエスト ID | 報酬 |
+  |---|---|
+  | 20010000 | clanActivity 150 |
+  | 20010001 | dungeonActivity 75 |
+  | 20010002 | stamina 200（エナジー回復） |
+  | 20010003 | consumable 81 ×5（オラクルカード） |
+  | 20010004 | coin 38 ×1（SOUL クリスタル） |
+  | 20010005 | refillable 45 ×1（ポータル） |
+- `hw-genie` は **`GUILD_QUEST_CLAIM_EXCLUDE`（20010002 / 20010003 / 20010004 / 20010005）の
+  報酬を自動受領しない**（エナジー 200 回復・オラクルカード・SOUL クリスタル・ポータルは
+  自動取得しない方針）。除外対象は dry-run で `SKIP (GUILD_QUEST_CLAIM_EXCLUDE)`、
+  実行時は `Skipping claim for ...` として表示され、未受領のまま残る。
+
 ---
 
 ### questFarm - クエスト報酬確定（自動化用、破壊的）
