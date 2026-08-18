@@ -176,12 +176,18 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
 # quest_defaults の設定キー
 QUEST_DEFAULTS_KEY = "quest_defaults"
 
-# ギルドクエスト（「Obtain xxx Sparks of Power」等、ID がアカウント・日次で
-# 動的な 2000xxxx/2001xxxx ファミリ）専用の実行制御設定キー。
+# ギルドクエスト（「Obtain xxx Sparks of Power」等）専用の実行制御設定キー。
+# ID ファミリは 2 種:
+# ・2000xxxx … 日次のギルドクエスト。ID はアカウント・日次で動的に進む
+#              （例: 20000082 → 20000083）。
+# ・2001xxxx … ギルドアクティビティ到達報酬。20010000〜20010005 等の固定 ID
+#              で全アカウント共通・日次リセットで再出現する。
+#              claim 除外対象は下記 GUILD_QUEST_CLAIM_EXCLUDE 参照。
 # ・enabled      … true のときのみギルドクエスト達成用の操作（heroTitanGift
 #                  LevelUp ×2 → Drop）を実行する。false / 未設定なら active
 #                  （state=1）のギルドクエストは操作せずスキップする
-#                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う）。
+#                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う。
+#                  ただし GUILD_QUEST_CLAIM_EXCLUDE に含まれる報酬は除外）。
 # ・heroId     … ギフト操作の対象ヒーロー（既定は QUEST_OPERATIONS[10023] と同一。
 #                 優先度は quest_defaults[10023].heroId が先、未設定なら本設定）。
 # ・last_recipe_at … 最後にギルドレシピを実行した Unix 秒。userGetInfo の
@@ -193,6 +199,18 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 #                 （Gift 資源の二重消費防止）。
 # ・note       … 操作 RPC 名の連結メモ（可読性専用）
 QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
+
+# 自動受領しないギルドクエスト ID（questFarm の claim 対象から除外する）。
+# ギルドクエストの報酬は questGetAll では見えず、questFarm 応答の quests
+# 配列でのみ判明する。実測で確認済みの報酬（20010000-20010005）:
+#   20010000: clanActivity 150（受領 OK）
+#   20010001: dungeonActivity 75（受領 OK）
+#   20010002: stamina 200（エナジー回復 → 自動取得しない）
+#   20010003: consumable 81 ×5（オラクルカード → 自動取得しない）
+#   20010004: coin 38 ×1（SOUL クリスタル → 自動取得しない）
+#   20010005: refillable 45 ×1（ポータル → 自動取得しない）
+# 2001xxxx は日次リセットで毎日再出現するため、除外は翌日以降も有効。
+GUILD_QUEST_CLAIM_EXCLUDE: set[int] = {20010002, 20010003, 20010004, 20010005}
 
 # ギルドクエスト達成レシピのテンプレート（10023 = heroTitanGift 3 連続操作）
 GUILD_QUEST_RECIPE_ID = 10023
@@ -265,6 +283,11 @@ class Quest:
     def is_done(self) -> bool:
         """報酬受領済みかどうか。"""
         return self.state == STATE_DONE
+
+
+def _guild_claim_excluded(q: Quest) -> bool:
+    """報酬が不要なため claim（questFarm）対象から除外されたギルドクエストかどうか。"""
+    return is_guild_quest(q.id) and q.id in GUILD_QUEST_CLAIM_EXCLUDE
 
 
 def parse_quests(raw: Any) -> list[Quest]:
@@ -815,7 +838,9 @@ def run_quest_execute(
       在庫取得失敗時（認証以外）は既定値をフォールバックする。
     - **報酬受取可能（state=2、または target 到達済み）のクエストは操作を
       実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
-      操作リソースを消費しないため）。
+      操作リソースを消費しないため）。ギルドクエストのうち
+      ``GUILD_QUEST_CLAIM_EXCLUDE`` に含まれる報酬（stamina 200 等）は
+      受領せずスキップする。
     - 失敗した項目は ``{account, quest_id, quest_name, step, error}`` として
       返り値と標準出力の両方に報告される。
 
@@ -847,9 +872,11 @@ def run_quest_execute(
     #   target 不明（None）のクエスト（10023 等）はこの判定に掛からない。
     # ※ バトルパス（26xx）等、QUEST_OPERATIONS 未登録の受領待ちクエストは
     #   execute の対象外（dry-run の表示ノイズも排除）。
-    # ※ ギルドクエスト（2000xxxx/2001xxxx、"Obtain xxx Sparks of Power" 等、
-    #   ID が日次・アカウントで動的）は QUEST_OPERATIONS と別扱い:
+    # ※ ギルドクエスト（2000xxxx/2001xxxx、"Obtain xxx Sparks of Power" 等。
+    #    ID ファミリは quest_guild_defaults のコメント参照）は QUEST_OPERATIONS
+    #    と別扱い:
     #     - state=2（報酬受取可能）→ 無条件に claim 対象
+    #       （ただし GUILD_QUEST_CLAIM_EXCLUDE の報酬は claim しない）
     #     - state=1（進行中）→ quest_guild_defaults.enabled=true のとき
     #       heroTitanGift レシピ（10023 と同一）を実行して Sparks を稼ぐ。
     #       実行後 questGetAll を取り直し、達成（state=2）になったものを claim。
@@ -921,6 +948,9 @@ def run_quest_execute(
             print("    - questFarm (claim reward, no operation needed)")
         for q in guild_claimable:
             print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+            if _guild_claim_excluded(q):
+                print("    - SKIP (GUILD_QUEST_CLAIM_EXCLUDE)")
+                continue
             print("    - questFarm (claim reward, no operation needed)")
         for q, steps in targets:
             print(f"\n🔹 {q.id} {q.name}")
@@ -1034,6 +1064,9 @@ def _claim_quests(
 ) -> None:
     """操作不要な claimable クエストをまとめて questFarm で受領する。"""
     for q in quests:
+        if _guild_claim_excluded(q):
+            print(f"   ℹ️  Skipping claim for {q.id} {q.name} (GUILD_QUEST_CLAIM_EXCLUDE)")
+            continue
         print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
         claim_res = client.quest_farm(q.id)
         if claim_res.status == ResponseStatus.SUCCESS:
