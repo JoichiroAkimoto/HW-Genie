@@ -22,6 +22,7 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -45,8 +46,11 @@ jobs:
           IMAGE="ghcr.io/joichiroakimoto/hw-genie"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             TAGS="$IMAGE:${GITHUB_REF_NAME}"
-          else
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="$IMAGE:latest"
+          else
+            echo "ERROR: Image push is only allowed from main or version tags (ref: ${{ github.ref }})" >&2
+            exit 1
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
