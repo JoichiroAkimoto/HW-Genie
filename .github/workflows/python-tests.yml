@@ -27,8 +27,8 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Install uv
-      # NOTE: setup-uv はメジャータグ（v8/v9/v10）が切られていないため
-      # 完全版タグ（v10.0.1）を指定する（@v10 だと resolve エラーになる）
+      # NOTE: setup-uv v8/v9 系はメジャータグ（v8/v9）が切られていないため
+      # 完全版タグ v9.0.0 を指定する（@v9 だと resolve エラーになる）
       uses: astral-sh/setup-uv@v10.0.1
       with:
         enable-cache: true

@@ -11,6 +11,7 @@ on:
       - 'pyproject.toml'
       - 'src/python/**'
       - '.github/workflows/docker-image.yml'
+      - '.github/scripts/compute_image_tag.py'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -21,8 +22,6 @@ concurrency:
 
 jobs:
   build:
-    outputs:
-      merge_tags: ${{ steps.meta.outputs.merge_tags }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,21 +58,8 @@ jobs:
           SUFFIX: ${{ matrix.suffix }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/joichiroakimoto/hw-genie"
-          if [[ "$REF_TYPE" == "tag" ]]; then
-            if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "ERROR: Invalid tag '$REF_NAME'. Must be in format vX.Y.Z" >&2
-              exit 1
-            fi
-            MERGE_TAG="$IMAGE:$REF_NAME"
-          elif [[ "$REF" == "refs/heads/main" ]]; then
-            MERGE_TAG="$IMAGE:latest"
-          else
-            echo "ERROR: Image push is only allowed from main or version tags (ref: $REF)" >&2
-            exit 1
-          fi
+          MERGE_TAG="$(python3 .github/scripts/compute_image_tag.py "$REF_TYPE" "$REF" "$REF_NAME")"
           echo "tags=$MERGE_TAG$SUFFIX" >> "$GITHUB_OUTPUT"
-          echo "merge_tags=$MERGE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build
         uses: docker/build-push-action@v7
@@ -108,16 +94,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # latest / vX.Y.Z はスモークテスト合格済みの suffix タグを統合して作成する。
-      # cancel-in-progress で旧 run が中断された場合、suffix タグと統合タグが
-      # 一時的に食い違うことがあるが、次の成功 run で収束する。
+      # cancel-in-progress や片方のアーキの Push 失敗時は、suffix タグと統合タグが
+      # 一時的に不整合になり得るが、次の成功 run で収束する。
       - name: Merge per-arch images into a multi-arch manifest
         env:
-          MERGE_TAGS: ${{ needs.build.outputs.merge_tags }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # MERGE_TAGS は needs.build.outputs から env 経由で注入されるため SC2153 は誤検知
-          # shellcheck disable=SC2153
-          MERGE_TAG="$MERGE_TAGS"
+          MERGE_TAG="$(python3 .github/scripts/compute_image_tag.py "$REF_TYPE" "$REF" "$REF_NAME")"
           docker buildx imagetools create \
             -t "$MERGE_TAG" \
             "$MERGE_TAG-amd64" \
