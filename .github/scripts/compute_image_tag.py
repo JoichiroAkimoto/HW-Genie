@@ -5,9 +5,12 @@ build ジョブと merge-manifest ジョブの両方から呼び出され、タ�
 生成ロジックの不整合を防ぐ。
 
 Usage:
-  python compute_image_tag.py <ref_type> <ref> <ref_name>
+  python compute_image_tag.py <ref_type> <ref> <ref_name> [arch ...]
 
-標準出力に統合タグ（アーキ suffix なし）を 1 行出力する。
+標準出力:
+  1 行目: 統合タグ（アーキ suffix なし、例: ghcr.io/...:latest）
+  2 行目以降: 各 arch の suffix 付きタグ（例: ghcr.io/...:latest-amd64）
+
 不正な ref は exit 1 で終了する。
 """
 
@@ -30,15 +33,18 @@ def compute_image_tag(ref_type: str, ref: str, ref_name: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        print(f"Usage: {sys.argv[0]} <ref_type> <ref> <ref_name>", file=sys.stderr)
+    args = sys.argv[1:]
+    if len(args) < 3:
+        print(f"Usage: {sys.argv[0]} <ref_type> <ref> <ref_name> [arch ...]", file=sys.stderr)
         return 2
     try:
-        tag = compute_image_tag(sys.argv[1], sys.argv[2], sys.argv[3])
+        merge_tag = compute_image_tag(args[0], args[1], args[2])
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(tag)
+    print(merge_tag)
+    for arch in args[3:]:
+        print(f"{merge_tag}-{arch}")
     return 0
 
 
