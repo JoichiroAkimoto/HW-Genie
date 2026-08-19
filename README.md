@@ -107,8 +107,9 @@ uv run --locked ruff check .
 > バージョンタグ → `vX.Y.Z`）。ローカルに無い場合は自動 pull され、
 > ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド。
 > フォールバック後は `docker compose pull` を実行するまで最新化されません）。
-> 初回公開時、GHCR のパッケージ可視性はデフォルトで private のため、
-> パッケージ設定で **public** に変更してください（未設定だと匿名 pull が失敗します）。
+> 初回公開時、GHCR パッケージの可視性はデフォルトで **private** のため、
+> パッケージ設定で一度 public に変更してください（未設定だと匿名 pull が失敗します。
+> 一度 public にすれば、以後の push も public のままです）。
 > 最新イメージへ更新するには:
 >
 >     docker compose pull
