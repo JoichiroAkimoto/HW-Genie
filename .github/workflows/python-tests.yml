@@ -29,7 +29,7 @@ jobs:
     - name: Install uv
       # NOTE: setup-uv v8/v9 系はメジャータグ（v8/v9）が切られていないため
       # 完全版タグ v9.0.0 を指定する（@v9 だと resolve エラーになる）
-      uses: astral-sh/setup-uv@v9.0.0
+      uses: astral-sh/setup-uv@v10.0.1
       with:
         enable-cache: true
         prune-cache: true
