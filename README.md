@@ -103,10 +103,12 @@ uv run --locked ruff check .
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
 > **イメージの取得**: Docker イメージは GitHub Actions でビルドされ GHCR
-> （`ghcr.io/joichiroakimoto/hw-genie`）に公開されています（main 更新 → `latest`、
+> （`ghcr.io/joichiroakimoto/hw-genie`）に公開されています（コード更新時の main → `latest`、
 > バージョンタグ → `vX.Y.Z`）。ローカルに無い場合は自動 pull され、
 > ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド。
 > フォールバック後は `docker compose pull` を実行するまで最新化されません）。
+> 初回公開時、GHCR のパッケージ可視性はデフォルトで private のため、
+> パッケージ設定で **public** に変更してください（未設定だと匿名 pull が失敗します）。
 > 最新イメージへ更新するには:
 >
 >     docker compose pull
