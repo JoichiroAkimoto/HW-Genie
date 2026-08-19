@@ -102,6 +102,15 @@ uv run --locked ruff check .
 
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
+> **イメージの取得**: Docker イメージは GitHub Actions でビルドされ GHCR
+> （`ghcr.io/joichiroakimoto/hw-genie`）に公開されています（main 更新 → `latest`、
+> バージョンタグ → `vX.Y.Z`）。`docker compose up` 時に自動 pull され、
+> ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド）。
+> 最新イメージへ更新するには:
+>
+>     docker compose pull
+>     docker compose up -d
+
 ```bash
 # 1. 認証サーバーのビルドと起動
 docker compose up --build -d auth-server
