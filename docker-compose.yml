@@ -12,6 +12,8 @@ x-db-env: &db-env
 services:
   auth-server:
     build: .
+    image: ghcr.io/joichiroakimoto/hw-genie:latest
+    pull_policy: missing
     user: "1000:1000"
     ports:
       - "8765:8765"
@@ -46,6 +48,8 @@ services:
   # HW_MAX_PARALLEL caps concurrency (0/unset = unbounded).
   hwda:
     build: .
+    image: ghcr.io/joichiroakimoto/hw-genie:latest
+    pull_policy: missing
     user: "1000:1000"
     environment:
       <<: *db-env
@@ -70,6 +74,8 @@ services:
 
   hwsa:
     build: .
+    image: ghcr.io/joichiroakimoto/hw-genie:latest
+    pull_policy: missing
     user: "1000:1000"
     environment:
       <<: *db-env
