@@ -325,7 +325,7 @@ hw-genie auth-server
 HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
-**起動方法の使い分け**: 認証サーバーはホスト直接実行（上記 `hw-genie auth-server`）と Docker 実行（`docker compose up --build -d auth-server`）のどちらでも起動できます。
+**起動方法の使い分け**: 認証サーバーはホスト直接実行（上記 `hw-genie auth-server`）と Docker 実行（`docker compose up -d auth-server`）のどちらでも起動できます。
 
 | 方法 | 推奨ケース | 備考 |
 | --- | --- | --- |
