@@ -53,6 +53,7 @@ gh release edit v1.0.5 --latest
 ### 仕組み
 
 - タグのプッシュ (`v*`) により `.github/workflows/release.yml` が `normal` モードで起動
+- タグのプッシュにより `.github/workflows/docker-image.yml` も起動し、`ghcr.io/joichiroakimoto/hw-genie:vX.Y.Z` として Docker イメージを公開
 - 事前検証 (`release-metadata.sh`) で `@version` とタグ名の一致、およびバージョン昇順チェックを実施
 - GitHub Release に `.user.js` をアセットとしてアップロードし、ネットワーク公開状態を検証
 - Tampermonkey が `@updateURL` に基づいて自動更新を検知

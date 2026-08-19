@@ -102,9 +102,25 @@ uv run --locked ruff check .
 
 環境構築なしでコンテナを使用して認証サーバーや一括実行を起動できます。
 
+> **イメージの取得**: Docker イメージは GitHub Actions でビルドされ GHCR
+> （`ghcr.io/joichiroakimoto/hw-genie`）に公開されています（コード更新時の main → `latest`、
+> バージョンタグ → `vX.Y.Z`）。ローカルに無い場合は自動 pull され、
+> ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド。
+> フォールバック後は `docker compose pull` を実行するまで最新化されません）。
+> 初回公開時、GHCR パッケージの可視性はデフォルトで **private** のため、
+> パッケージ設定で一度 public に変更してください（未設定だと匿名 pull が失敗します。
+> 一度 public にすれば、以後の push も public のままです）。
+> 最新イメージへ更新するには:
+>
+>     docker compose pull
+>     docker compose up -d
+>
+> hwda / hwsa（bulk プロファイル）も更新する場合は `--profile bulk` を付けます
+> （例: `docker compose --profile bulk pull`）。
+
 ```bash
-# 1. 認証サーバーのビルドと起動
-docker compose up --build -d auth-server
+# 1. 認証サーバーの起動（イメージは初回に自動取得される）
+docker compose up -d auth-server
 
 # 2. ログの確認
 docker compose logs -f
@@ -120,7 +136,7 @@ docker compose logs -f
 
 ```bash
 # 認証サーバーとは別に、全アカウントのデイリーを並列実行するサービスを起動
-docker compose --profile bulk up --build -d hwda
+docker compose --profile bulk up -d hwda
 
 # あるいは都度実行（指定アカウントのみ / 同時実行数を制限）
 # サービスの command に既に `multi daily`/`multi full` が含まれるため、
@@ -309,7 +325,7 @@ hw-genie auth-server
 HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 ```
 
-**起動方法の使い分け**: 認証サーバーはホスト直接実行（上記 `hw-genie auth-server`）と Docker 実行（`docker compose up --build -d auth-server`）のどちらでも起動できます。
+**起動方法の使い分け**: 認証サーバーはホスト直接実行（上記 `hw-genie auth-server`）と Docker 実行（`docker compose up -d auth-server`）のどちらでも起動できます。
 
 | 方法 | 推奨ケース | 備考 |
 | --- | --- | --- |
