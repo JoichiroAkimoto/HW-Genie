@@ -3,15 +3,18 @@ FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
-# Install build tools for native extensions (libsql-experimental needs a C compiler)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install build tools for native extensions only on arm64
+# (libsql-experimental 0.0.55 has manylinux x86_64 wheels but no aarch64 wheels)
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # Install uv for fast dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
 
 # 1. Copy only dependency files first to leverage Docker cache
 COPY pyproject.toml uv.lock ./
