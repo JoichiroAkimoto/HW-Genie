@@ -39,7 +39,7 @@ services:
   # so the DB (and optional Turso Syncs) is already present.
   #
   # Examples (run with the service's profile enabled, or `docker compose run`):
-  #   docker compose --profile bulk up --build -d hwda
+  #   docker compose --profile bulk up -d hwda
   #   docker compose run --rm hwda --parallel 4 account1 account2   # daily
   #   docker compose run --rm hwsa                                   # full
   #

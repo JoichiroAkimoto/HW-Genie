@@ -105,7 +105,8 @@ uv run --locked ruff check .
 > **イメージの取得**: Docker イメージは GitHub Actions でビルドされ GHCR
 > （`ghcr.io/joichiroakimoto/hw-genie`）に公開されています（main 更新 → `latest`、
 > バージョンタグ → `vX.Y.Z`）。ローカルに無い場合は自動 pull され、
-> ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド）。
+> ローカルビルドは原則不要です（pull 失敗時のみフォールバックでローカルビルド。
+> フォールバック後は `docker compose pull` を実行するまで最新化されません）。
 > 最新イメージへ更新するには:
 >
 >     docker compose pull
@@ -115,8 +116,8 @@ uv run --locked ruff check .
 > （例: `docker compose --profile bulk pull`）。
 
 ```bash
-# 1. 認証サーバーのビルドと起動
-docker compose up --build -d auth-server
+# 1. 認証サーバーの起動（イメージは初回に自動取得される）
+docker compose up -d auth-server
 
 # 2. ログの確認
 docker compose logs -f
@@ -132,7 +133,7 @@ docker compose logs -f
 
 ```bash
 # 認証サーバーとは別に、全アカウントのデイリーを並列実行するサービスを起動
-docker compose --profile bulk up --build -d hwda
+docker compose --profile bulk up -d hwda
 
 # あるいは都度実行（指定アカウントのみ / 同時実行数を制限）
 # サービスの command に既に `multi daily`/`multi full` が含まれるため、

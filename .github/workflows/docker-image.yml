@@ -42,14 +42,22 @@ jobs:
 
       - name: Compute image tags
         id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           IMAGE="ghcr.io/joichiroakimoto/hw-genie"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAGS="$IMAGE:${GITHUB_REF_NAME}"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: Invalid tag '$REF_NAME'. Must be in format vX.Y.Z" >&2
+              exit 1
+            fi
+            TAGS="$IMAGE:$REF_NAME"
+          elif [[ "$REF" == "refs/heads/main" ]]; then
             TAGS="$IMAGE:latest"
           else
-            echo "ERROR: Image push is only allowed from main or version tags (ref: ${{ github.ref }})" >&2
+            echo "ERROR: Image push is only allowed from main or version tags (ref: $REF)" >&2
             exit 1
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
@@ -61,5 +69,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=main
+          cache-to: type=gha,mode=max,scope=main
+
+      - name: Smoke test
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          IMAGE_TAG="${TAGS%%,*}"
+          docker run --rm "$IMAGE_TAG" hw-genie --help
