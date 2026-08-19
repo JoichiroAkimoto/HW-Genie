@@ -110,6 +110,9 @@ uv run --locked ruff check .
 >
 >     docker compose pull
 >     docker compose up -d
+>
+> hwda / hwsa（bulk プロファイル）も更新する場合は `--profile bulk` を付けます
+> （例: `docker compose --profile bulk pull`）。
 
 ```bash
 # 1. 認証サーバーのビルドと起動
