@@ -140,7 +140,13 @@ def _actual_consumed(detail: Any, requested: int) -> int:
     return requested
 
 
-def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> ConsumableUseResult:
+def use_consumable(
+    client: HWClient,
+    lib_id: int,
+    amount: int,
+    method: str,
+    player_reward_choice_index: int | None = None,
+) -> ConsumableUseResult:
     """consumableUse* を 1 回呼び、その実行結果を返す。
 
     Args:
@@ -148,17 +154,22 @@ def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> C
         lib_id: 消費対象の consumable libId。
         amount: 消費する数量（在庫全量を渡す想定）。
         method: 消費 RPC メソッド名（``consumableUseLootBox`` 等）。
+        player_reward_choice_index: 選択式報酬ボックスの報酬選択インデックス。
+            ``playerRewardChoiceIndex`` として args に含める（``None`` なら含めない）。
 
     Raises:
         HWAuthError: 認証エラー（握りつぶさず再送出）
     """
+    args: dict[str, Any] = {"libId": lib_id, "amount": amount}
+    if player_reward_choice_index is not None:
+        args["playerRewardChoiceIndex"] = player_reward_choice_index
     try:
         res = client.call(
             {
                 "calls": [
                     {
                         "name": method,
-                        "args": {"libId": lib_id, "amount": amount},
+                        "args": args,
                         "context": {"actionTs": 0},
                         "ident": "consumable_use",
                     }

@@ -127,6 +127,28 @@ def test_use_consumable_success(mock_client):
     assert result.rewards["fragmentScroll"] == 35
 
 
+def test_use_consumable_includes_reward_choice_index(mock_client):
+    """選択式ボックスは playerRewardChoiceIndex を args に含めて送信する。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS)
+
+    result = use_consumable(
+        client,
+        lib_id=47,
+        amount=3,
+        method="consumableUseLootBox",
+        player_reward_choice_index=2,
+    )
+
+    call_args = mock_call.call_args.args[0]
+    assert call_args["calls"][0]["args"] == {
+        "libId": 47,
+        "amount": 3,
+        "playerRewardChoiceIndex": 2,
+    }
+    assert result.status == ResponseStatus.SUCCESS
+
+
 def test_use_consumable_api_error(mock_client):
     """API エラー（limitReached 等）は status=ERROR で返す。"""
     client, mock_call = mock_client
@@ -181,10 +203,13 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 
 def test_registry_covers_all_use_targets():
-    """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 40  # 215 + Add-Consumables.md 記載の 39 種
+    """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで正しいメソッドを持つ。"""
+    assert len(CONSUMABLE_USE_TARGETS) == 49  # 215 + Stamina Potion (17) + Add-Consumables.md 記載の 47 種
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
+    # Stamina は専用メソッド、それ以外は lootbox
+    assert CONSUMABLE_REGISTRY[17].method == "consumableUseStamina"
+    for lib_id in set(CONSUMABLE_USE_TARGETS) - {17}:
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
     # 1000 分割対象（ドキュメント記載の 7 種と完全一致）
     chunked = {
@@ -196,6 +221,15 @@ def test_registry_covers_all_use_targets():
     # 分割対象以外は上限なし（在庫全量を 1 リクエストで消費）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - chunked:
         assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
+    # 選択式報酬ボックス（playerRewardChoiceIndex 指定、Add-Consumables.md 記載）
+    choices = {
+        lib_id: CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index
+        for lib_id in (47, 48, 49, 50, 328, 62, 63, 64)
+    }
+    assert choices == {47: 2, 48: 2, 49: 2, 50: 2, 328: 0, 62: 4, 63: 4, 64: 4}
+    # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
+    for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
+        assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
     # マトリョーシカ（再帰開封）対象
     for lib_id in (149, 469, 492, 497):
         assert lib_id in CONSUMABLE_USE_TARGETS
@@ -229,6 +263,36 @@ def test_run_consumable_use_consumes_registered_targets(mock_client, mock_sleep)
     assert result.name == CONSUMABLE_REGISTRY[215].name
     # inventory(1) + use(1) + 検証 inventory(1)
     assert mock_call.call_count == 3
+
+
+def test_run_consumable_use_passes_reward_choice_index(mock_client, mock_sleep):
+    """選択式ボックスはレジストリの playerRewardChoiceIndex を args に含めて消費する。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"47": 3}}}
+    mock_call.side_effect = [
+        inv,  # ラウンド1: 在庫取得
+        _lootbox_success(3),  # 消費 3
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[47])
+
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 3
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert len(use_calls) == 1
+    assert use_calls[0].args[0]["calls"][0]["args"] == {
+        "libId": 47,
+        "amount": 3,
+        "playerRewardChoiceIndex": 2,
+    }
 
 
 def test_run_consumable_use_loops_until_no_stock(mock_client, mock_sleep):
@@ -600,15 +664,22 @@ def test_consumable_routine_wraps_run(mock_client, mock_sleep):
     """routine は account_alias 付きで run_consumable_use を呼ぶ。"""
     routine = consumable_routine()
     client, mock_call = mock_client
+    empty = MagicMock()
+    empty.is_success = True
+    empty.error_name = None
+    empty.detail = {"response": {"consumable": {}}}
     mock_call.side_effect = [
-        _res_from(dummy.INVENTORY_GET_CONSUMABLE),
-        _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),
-        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 17 x327, 215 x48
+        _lootbox_success(327),  # 17 消費
+        _lootbox_success(48),  # 215 消費
+        empty,  # 検証: 残りなし
     ]
 
     result = routine(client, "The Best")
 
     assert isinstance(result, list)
     assert len(result) == len(CONSUMABLE_USE_TARGETS)
-    assert result[0].status == ResponseStatus.SUCCESS
-    assert all(r.status == ResponseStatus.SKIPPED for r in result[1:])
+    by_id = {r.lib_id: r for r in result}
+    assert by_id[17].status == ResponseStatus.SUCCESS  # 17 は先頭で消費
+    assert by_id[215].status == ResponseStatus.SUCCESS  # 215 も消費
+    assert sum(r.status == ResponseStatus.SKIPPED for r in result) == len(result) - 2

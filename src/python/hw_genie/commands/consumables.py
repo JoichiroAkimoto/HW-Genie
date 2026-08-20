@@ -32,6 +32,7 @@ from hw_genie.core.consumables import (
     CONSUMABLE_USE_TARGETS,
     display_name,
     max_amount,
+    player_reward_choice_index,
     resolve_use_method,
 )
 from hw_genie.core.inventory import (
@@ -279,7 +280,13 @@ def run_consumable_use(
                 lib_id=lib_id, name=name, stock=stock, status=ResponseStatus.SUCCESS
             )
             for amount in chunks:
-                result = use_consumable(client, lib_id, amount, method)
+                result = use_consumable(
+                    client,
+                    lib_id,
+                    amount,
+                    method,
+                    player_reward_choice_index=player_reward_choice_index(lib_id),
+                )
                 client.sleep()
                 if result.status != ResponseStatus.SUCCESS:
                     item.status = result.status

@@ -201,6 +201,12 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 （`fragmentScroll` 等）ごとに `{libId: 報酬量}` として報酬が返ります。
 `hw-genie` ではこのカテゴリごとの合計を `ConsumableUseResult.rewards` に集計します。
 
+選択式報酬ボックス（Chest of X Titans / Titan of Your Choice / Artifact 系
+Chest 等）は args に `playerRewardChoiceIndex` を追加して報酬を選択します
+（例: Titan チェストは `2`、Titan of Your Choice は `0`、Artifact チェストは
+`4`）。`hw-genie` では `ConsumableInfo.player_reward_choice_index` で
+アイテムごとに固定し、消費時に自動で args へ含めます。
+
 他の consumable 種別（`consumableUseStamina` 等）はアイテムごとにメソッドが
 異なるため、実測で判明したものだけ `core/consumables.py` のレジストリに
 登録しています。未登録アイテムは `consumable run --method <method>` で
