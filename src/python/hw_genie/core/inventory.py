@@ -44,7 +44,7 @@ class ConsumableUseResult:
 
     lib_id: int
     name: str | None = None
-    stock: int = 0  # 実行時点の在庫（dry-run では消費予定数）
+    stock: int = 0  # 直近ラウンドの在庫（dry-run では消費予定数）
     consumed: int = 0  # 実際に消費した数（dry-run では 0）
     rewards: dict[str, int] = field(default_factory=dict)  # カテゴリ → 合計報酬量
     status: ResponseStatus = ResponseStatus.ERROR
@@ -121,6 +121,25 @@ def _merge_rewards(rewards: dict[str, int], payload: dict[str, Any]) -> None:
             rewards[category] = rewards.get(category, 0) + total
 
 
+def _actual_consumed(detail: Any, requested: int) -> int:
+    """レスポンスから実際の消費数を導出する。
+
+    通常は ``response[str(requested)]`` が存在するため requested を返す。
+    サーバーが消費数を amount 未満にキャップして応答した場合は、応答内の
+    数値キー（実際の消費数）の合計を返す。判別不能な場合は requested に
+    フォールバックする（報酬なし成功の偽装より過大計上の方が安全）。
+    """
+    response = detail.get("response") if isinstance(detail, dict) else None
+    if not isinstance(response, dict):
+        return requested
+    if str(requested) in response:
+        return requested
+    keys = [key for key, value in response.items() if isinstance(value, dict) and _safe_int(key) > 0]
+    if keys:
+        return sum(_safe_int(key) for key in keys)
+    return requested
+
+
 def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> ConsumableUseResult:
     """consumableUse* を 1 回呼び、その実行結果を返す。
 
@@ -158,5 +177,9 @@ def use_consumable(client: HWClient, lib_id: int, amount: int, method: str) -> C
         )
     rewards = parse_use_rewards(res.detail, amount)
     return ConsumableUseResult(
-        lib_id=lib_id, stock=amount, consumed=amount, rewards=rewards, status=ResponseStatus.SUCCESS
+        lib_id=lib_id,
+        stock=amount,
+        consumed=_actual_consumed(res.detail, amount),
+        rewards=rewards,
+        status=ResponseStatus.SUCCESS,
     )

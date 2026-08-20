@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from . import dummy_responses as dummy
-from hw_genie.commands.consumables import run_consumable_use, run_inventory
+from hw_genie.commands.consumables import run_consumable_use, run_inventory, _chunk_sizes
 from hw_genie.core.client import HWAuthError, ResponseStatus
 from hw_genie.core.consumables import CONSUMABLE_USE_TARGETS, CONSUMABLE_REGISTRY
 from hw_genie.core.inventory import (
@@ -21,6 +21,22 @@ def _res_from(dummy_response: dict, is_success: bool = True, error_name: str | N
     res.is_success = is_success
     res.error_name = error_name
     res.detail = dummy_response["results"][0].get("result")
+    return res
+
+
+def _lootbox_success(amount: int) -> MagicMock:
+    """amount 分の消費成功レスポンス（応答キー = 消費数）を生成する。"""
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "response": {
+            str(amount): {
+                "fragmentScroll": {"218": 5, "192": 10, "193": 15, "216": 5},
+                "fragmentGear": {"91": 10, "93": 10, "171": 5, "94": 5},
+            }
+        }
+    }
     return res
 
 
@@ -125,28 +141,288 @@ def test_use_consumable_api_error(mock_client):
     assert result.consumed == 0
 
 
+def test_use_consumable_capped_response_counts_actual(mock_client):
+    """サーバーが消費数をキャップしたレスポンスでは実際の消費数を集計する。"""
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "response": {  # 1000 要求 → 48 でキャップ応答
+            "48": {"fragmentScroll": {"218": 5}, "fragmentGear": {"91": 10}},
+        }
+    }
+    mock_call.return_value = res
+
+    result = use_consumable(client, lib_id=169, amount=1000, method="consumableUseLootBox")
+
+    assert result.status == ResponseStatus.SUCCESS
+    assert result.consumed == 48  # requested (1000) ではなく実際の消費数
+    assert result.rewards["fragmentScroll"] == 5
+
+
+def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
+    """消費数キーの無い成功応答は requested にフォールバックする（挙動の固定）。"""
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {"response": {}}
+    mock_call.return_value = res
+
+    result = use_consumable(client, lib_id=215, amount=48, method="consumableUseLootBox")
+
+    assert result.status == ResponseStatus.SUCCESS
+    assert result.consumed == 48
+    assert result.rewards == {}
+
+
 # --- run_consumable_use（CLI コマンド本体） ---
 
 
+def test_registry_covers_all_use_targets():
+    """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
+    assert len(CONSUMABLE_USE_TARGETS) == 40  # 215 + Add-Consumables.md 記載の 39 種
+    for lib_id in CONSUMABLE_USE_TARGETS:
+        assert lib_id in CONSUMABLE_REGISTRY
+        assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
+    # 1000 分割対象（ドキュメント記載の 7 種と完全一致）
+    chunked = {
+        lib_id
+        for lib_id in CONSUMABLE_USE_TARGETS
+        if CONSUMABLE_REGISTRY[lib_id].max_amount > 0
+    }
+    assert chunked == {169, 170, 171, 172, 173, 271, 272}
+    # 分割対象以外は上限なし（在庫全量を 1 リクエストで消費）
+    for lib_id in set(CONSUMABLE_USE_TARGETS) - chunked:
+        assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
+    # マトリョーシカ（再帰開封）対象
+    for lib_id in (149, 469, 492, 497):
+        assert lib_id in CONSUMABLE_USE_TARGETS
+
+
+def test_chunk_sizes_boundaries():
+    """_chunk_sizes の境界値: 上限ちょうど・上限なし・在庫 0・端数。"""
+    assert _chunk_sizes(1000, 1000) == [1000]
+    assert _chunk_sizes(999, 1000) == [999]
+    assert _chunk_sizes(2500, 1000) == [1000, 1000, 500]
+    assert _chunk_sizes(100, 0) == [100]
+    assert _chunk_sizes(0, 1000) == [0]
+
+
 def test_run_consumable_use_consumes_registered_targets(mock_client, mock_sleep):
-    """登録済み対象（215）を在庫全量（48）消費し、在庫 0 のアイテムはスキップする。"""
+    """登録済み対象（215）を在庫全量（48）消費し、検証ラウンドまで実行する。"""
     client, mock_call = mock_client
     mock_call.side_effect = [
-        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # 在庫取得
-        _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),  # 消費
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 在庫取得
+        _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),  # 消費 48
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
     ]
 
-    results = run_consumable_use(client)
+    results = run_consumable_use(client, lib_ids=[215])
 
-    assert CONSUMABLE_USE_TARGETS == [215]
     assert len(results) == 1
     result = results[0]
     assert result.lib_id == 215
     assert result.status == ResponseStatus.SUCCESS
     assert result.consumed == 48
     assert result.name == CONSUMABLE_REGISTRY[215].name
-    # inventory(1) + use(1)
-    assert mock_call.call_count == 2
+    # inventory(1) + use(1) + 検証 inventory(1)
+    assert mock_call.call_count == 3
+
+
+def test_run_consumable_use_loops_until_no_stock(mock_client, mock_sleep):
+    """マトリョーシカ: 消費後に再出現した対象はラウンドを繰り返して全消費する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 215 x48
+        _lootbox_success(48),  # 48 消費
+        _res_from(dummy.INVENTORY_GET_LEFTOVER),  # ラウンド2: 215 x10 再出現
+        _lootbox_success(10),  # 10 消費
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[215])
+
+    assert len(results) == 1
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 58
+    assert results[0].stock == 10  # 直近ラウンドの在庫を反映
+    assert mock_call.call_count == 5
+
+
+def test_run_consumable_use_chunks_at_max_amount(mock_client, mock_sleep):
+    """上限 1000 のアイテムは 1000 ずつ分割し、端数を最後に消費する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CHUNKED),  # 169: 2500
+        _lootbox_success(1000),
+        _lootbox_success(1000),
+        _lootbox_success(500),
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[169])
+
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 2500
+    use_calls = [
+        c.args[0]
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert [c["calls"][0]["args"]["amount"] for c in use_calls] == [1000, 1000, 500]
+    assert mock_call.call_count == 5
+
+
+def test_run_consumable_use_chunk_partial_failure(mock_client, mock_sleep):
+    """チャンク途中で失敗した場合、成功分のみ集計し ERROR で報告する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CHUNKED),  # 169: 2500
+        _lootbox_success(1000),  # 1000 成功
+        _res_from(
+            dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"
+        ),  # 2 個目失敗
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 失敗済みのため再試行なし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[169])
+
+    assert results[0].status == ResponseStatus.ERROR
+    assert results[0].error_name == "limitReached"
+    assert results[0].consumed == 1000  # 成功したチャンクのみ集計
+    assert results[0].stock == 2500
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert len(use_calls) == 2  # 3 個目のチャンクは試行しない
+    assert mock_call.call_count == 4
+
+
+def test_run_consumable_use_matryoshka_and_chunking(mock_client, mock_sleep):
+    """マトリョーシカ × 1000 分割: 開封で出現した分割対象も分割消費する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_NESTED_BOX),  # ラウンド1: 271 x1200
+        _lootbox_success(1000),  # 1000
+        _lootbox_success(200),  # 200
+        _res_from(dummy.INVENTORY_GET_CHUNKED),  # ラウンド2: 169 x2500 出現
+        _lootbox_success(1000),  # 1000
+        _lootbox_success(1000),  # 1000
+        _lootbox_success(500),  # 500
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[271, 169])
+
+    by_id = {r.lib_id: r for r in results}
+    assert by_id[271].status == ResponseStatus.SUCCESS
+    assert by_id[271].consumed == 1200
+    assert by_id[169].status == ResponseStatus.SUCCESS
+    assert by_id[169].consumed == 2500
+    amounts = [
+        c.args[0]["calls"][0]["args"]["amount"]
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert amounts == [1000, 200, 1000, 1000, 500]
+    assert mock_call.call_count == 8
+
+
+def test_run_consumable_use_stops_at_max_rounds(mock_client, mock_sleep, capsys):
+    """在庫が減らない場合（マトリョーシカ無限）は max_rounds で停止し警告する。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1
+        _lootbox_success(48),
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド2（再出現）
+        _lootbox_success(48),
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド3: 上限超過
+    ]
+
+    results = run_consumable_use(client, lib_ids=[215], max_rounds=2)
+
+    assert results[0].status == ResponseStatus.ERROR  # 未完了のため失敗扱い
+    assert results[0].error_name == "maxRoundsReached"
+    assert results[0].consumed == 96
+    assert results[0].stock == 48  # 打ち切り時点の残り在庫
+    assert mock_call.call_count == 5  # inventory(3) + use(2)
+    assert "Stopped after 2 rounds" in capsys.readouterr().out
+
+
+def test_run_consumable_use_max_rounds_zero(mock_client, mock_sleep, capsys):
+    """max_rounds=0 は消費せず即停止する（安全弁の境界）。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.INVENTORY_GET_CONSUMABLE)
+
+    results = run_consumable_use(client, lib_ids=[215], max_rounds=0)
+
+    assert results[0].status == ResponseStatus.ERROR  # 何も消費していない
+    assert results[0].error_name == "maxRoundsReached"
+    assert results[0].consumed == 0
+    assert results[0].stock == 48  # 実在庫を報告
+    assert mock_call.call_count == 1  # inventoryGet のみ
+    assert "Stopped after 0 rounds" in capsys.readouterr().out
+
+
+def test_run_consumable_use_retries_unexpected(mock_client, mock_sleep):
+    """UNEXPECTED（一時障害）は次ラウンドで再試行し、最終的に全量消費する。"""
+    client, mock_call = mock_client
+
+    def _inv(consumable: dict) -> MagicMock:
+        res = MagicMock()
+        res.is_success = True
+        res.error_name = None
+        res.detail = {"response": {"consumable": consumable}}
+        return res
+
+    mock_call.side_effect = [
+        _inv({"169": 2500}),  # ラウンド1
+        _lootbox_success(1000),  # 1000 成功
+        Exception("boom"),  # 2 個目 UNEXPECTED
+        _inv({"169": 1500}),  # ラウンド2: 残り 1500
+        _lootbox_success(1000),
+        _lootbox_success(500),
+        _inv({}),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[169])
+
+    assert results[0].status == ResponseStatus.SUCCESS  # 再試行成功で最終 SUCCESS
+    assert results[0].consumed == 2500
+    amounts = [
+        c.args[0]["calls"][0]["args"]["amount"]
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    # ラウンド1: 1000 成功 + 1000 失敗 → ラウンド2: 残り 1500 を [1000, 500] で再試行
+    assert amounts == [1000, 1000, 1000, 500]
+    assert mock_call.call_count == 7
+
+
+def test_run_consumable_use_does_not_retry_hard_failures(mock_client, mock_sleep):
+    """失敗（limitReached）したアイテムは後続ラウンドで再試行しない。"""
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 在庫取得
+        _res_from(dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"),
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # 検証: 在庫は残っているが失敗済み
+    ]
+
+    results = run_consumable_use(client, lib_ids=[215])
+
+    assert results[0].status == ResponseStatus.ERROR
+    assert results[0].error_name == "limitReached"
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert len(use_calls) == 1
+    assert mock_call.call_count == 3
 
 
 def test_run_consumable_use_skips_no_stock(mock_client, mock_sleep):
@@ -154,7 +430,7 @@ def test_run_consumable_use_skips_no_stock(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.return_value = _res_from(dummy.INVENTORY_GET_NO_STOCK)
 
-    results = run_consumable_use(client)
+    results = run_consumable_use(client, lib_ids=[215])
 
     assert len(results) == 1
     assert results[0].status == ResponseStatus.SKIPPED
@@ -166,17 +442,21 @@ def test_run_consumable_use_not_registered_needs_method(mock_client, mock_sleep)
     client, mock_call = mock_client
 
     # 未登録（201）を在庫ありで明示指定
-    mock_call.return_value = _res_from(dummy.INVENTORY_GET_UNREGISTERED)
+    mock_call.side_effect = [
+        _res_from(dummy.INVENTORY_GET_UNREGISTERED),  # ラウンド1: 在庫取得
+        _res_from(dummy.INVENTORY_GET_UNREGISTERED),  # 検証: 失敗済みのため再試行なし
+    ]
     results = run_consumable_use(client, lib_ids=[201])
     assert results[0].status == ResponseStatus.ERROR
     assert results[0].error_name == "unknownMethod"
-    assert mock_call.call_count == 1
+    assert mock_call.call_count == 2
 
     # --method 上書きなら在庫全量（360）を消費できる
     mock_call.reset_mock()
     mock_call.side_effect = [
         _res_from(dummy.INVENTORY_GET_UNREGISTERED),
-        _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),
+        _lootbox_success(360),
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
     ]
     results = run_consumable_use(client, lib_ids=[201], method_override="consumableUseLootBox")
     assert results[0].status == ResponseStatus.SUCCESS
@@ -189,13 +469,14 @@ def test_run_consumable_use_dedupes_lib_ids(mock_client, mock_sleep):
     mock_call.side_effect = [
         _res_from(dummy.INVENTORY_GET_CONSUMABLE),
         _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
     ]
 
     results = run_consumable_use(client, lib_ids=[215, 215, 215])
 
     assert len(results) == 1
     assert results[0].status == ResponseStatus.SUCCESS
-    assert mock_call.call_count == 2  # inventory(1) + use(1)
+    assert mock_call.call_count == 3  # inventory(1) + use(1) + 検証 inventory(1)
 
 
 def test_run_consumable_use_propagates_inventory_error(mock_client, mock_sleep):
@@ -219,7 +500,7 @@ def test_run_consumable_use_dry_run(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.return_value = _res_from(dummy.INVENTORY_GET_CONSUMABLE)
 
-    results = run_consumable_use(client, dry_run=True)
+    results = run_consumable_use(client, lib_ids=[215], dry_run=True)
 
     assert results[0].status == ResponseStatus.SUCCESS
     assert results[0].consumed == 0
@@ -233,9 +514,10 @@ def test_run_consumable_use_reports_api_error(mock_client, mock_sleep):
     mock_call.side_effect = [
         _res_from(dummy.INVENTORY_GET_CONSUMABLE),
         _res_from(dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"),
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 失敗済みのため再試行なし
     ]
 
-    results = run_consumable_use(client)
+    results = run_consumable_use(client, lib_ids=[215])
 
     assert results[0].status == ResponseStatus.ERROR
     assert results[0].error_name == "limitReached"
@@ -321,10 +603,12 @@ def test_consumable_routine_wraps_run(mock_client, mock_sleep):
     mock_call.side_effect = [
         _res_from(dummy.INVENTORY_GET_CONSUMABLE),
         _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS),
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
     ]
 
     result = routine(client, "The Best")
 
     assert isinstance(result, list)
-    assert len(result) == 1
+    assert len(result) == len(CONSUMABLE_USE_TARGETS)
     assert result[0].status == ResponseStatus.SUCCESS
+    assert all(r.status == ResponseStatus.SKIPPED for r in result[1:])
