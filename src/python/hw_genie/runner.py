@@ -138,7 +138,9 @@ def run_all_accounts(
 # --- Convenience routines usable with run_all_accounts / run_for_account ---
 
 
-def daily_routine(client: HWClient, account: str) -> object:
+def daily_routine(
+    client: HWClient, account: str, item_max_iterations: int = 9999
+) -> object:
     """Run the full daily routine for ``account``.
 
     Returns the final :class:`PlayerStatus` so the runner can render a
@@ -162,7 +164,12 @@ def daily_routine(client: HWClient, account: str) -> object:
     # runner just consumes it. Returns None when no mission id is configured.
     item_payload = SessionManager.build_item_raid_payload(account=account)
 
-    run_daily_raid(client, item_payload=item_payload, account_alias=account)
+    run_daily_raid(
+        client,
+        item_payload=item_payload,
+        account_alias=account,
+        item_max_iterations=item_max_iterations,
+    )
     # Quest auto-completion: non-interactive (confirm=True), gated per account
     # by quest_defaults enabled flags. Failures are printed by the command, not
     # raised, so a quest hiccup never fails the whole daily run.
@@ -225,7 +232,9 @@ def asgard_shop_routine(gold_buffs: bool | None = None) -> Callable[[HWClient, s
     return run
 
 
-def full_routine(client: HWClient, account: str) -> object:
+def full_routine(
+    client: HWClient, account: str, item_max_iterations: int = 9999
+) -> object:
     """Run raid-hero + shop + daily, the equivalent of ``bin/hwsa``."""
     from hw_genie.commands.hero_raid import run_hero_raid
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS, run_hero_shopping
@@ -235,7 +244,7 @@ def full_routine(client: HWClient, account: str) -> object:
         client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS
     )
     client.exchange_stones()
-    return daily_routine(client, account)
+    return daily_routine(client, account, item_max_iterations=item_max_iterations)
 
 
 def consumable_routine(

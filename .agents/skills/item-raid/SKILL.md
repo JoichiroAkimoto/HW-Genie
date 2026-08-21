@@ -16,7 +16,7 @@ description: HW-Genie を使用して特定のアイテムを収集します。�
    ```bash
    uv run hw-genie raid item --curl 'PASTE_CURL_COMMAND_HERE'
    ```
-   - 特定の回数（例：「5回やって」）が指定されている場合は、`--times` オプションを追加します。
+   - 特定の回数（例：「5回やって」）が指定されている場合は、`--times`（または `--iterations`）オプションを追加します。
 
 ## 終了条件
 - ゲーム側からエラー（`notEnoughStamina`, `limitReached` 等）が返された場合。

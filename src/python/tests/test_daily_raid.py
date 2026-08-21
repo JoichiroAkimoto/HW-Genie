@@ -81,3 +81,21 @@ def test_daily_raid_item_payload_from_calls(mock_hero_raid, mock_item_raid, mock
     called_payload = mock_item_raid.call_args[0][1]
     assert called_payload["mission_id"] == 176
 
+
+@patch("hw_genie.commands.daily_raid.run_item_raid")
+@patch("hw_genie.commands.daily_raid.run_hero_raid")
+def test_daily_raid_passes_item_max_iterations(mock_hero_raid, mock_item_raid, mock_client, mock_sleep):
+    """run_daily_raid の item_max_iterations が run_item_raid の max_iterations に渡ること。"""
+    client, _ = mock_client
+    mock_hero_raid.return_value = ([MagicMock(status=ResponseStatus.SUCCESS)], 0, MagicMock())
+
+    item_payload = {
+        "calls": [{"name": "missionRaid", "args": {"id": 176, "times": 10}, "ident": "body"}]
+    }
+    with patch("hw_genie.commands.daily_raid.resolve_account", return_value="daily_user"):
+        run_daily_raid(client, item_payload=item_payload, item_max_iterations=5)
+
+    mock_item_raid.assert_called_once()
+    _, kwargs = mock_item_raid.call_args
+    assert kwargs["max_iterations"] == 5
+

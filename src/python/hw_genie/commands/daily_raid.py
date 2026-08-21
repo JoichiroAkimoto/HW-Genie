@@ -9,7 +9,12 @@ from hw_genie.core.session_manager import SessionManager
 HERO_MISSION_IDS = [76, 116, 193, 198, 203, 204, 214]
 
 
-def run_daily_raid(client_or_headers, item_payload=None, account_alias=None):
+def run_daily_raid(
+    client_or_headers,
+    item_payload=None,
+    account_alias=None,
+    item_max_iterations: int = 9999,
+):
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -52,7 +57,9 @@ def run_daily_raid(client_or_headers, item_payload=None, account_alias=None):
             item_payload["mission_id"] = mission_id
             print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
             client.sleep()
-            run_item_raid(client, item_payload, account=account)
+            run_item_raid(
+                client, item_payload, account=account, max_iterations=item_max_iterations
+            )
 
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()

@@ -300,7 +300,7 @@ def test_daily_routine_runs_quest_completion(monkeypatch):
     fake_client = type("C", (), {})()
     fake_client.fetch_player_status = lambda: "status_ok"
 
-    def fake_daily(client, item_payload=None, account_alias=None):
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
         return "ok"
 
     def fake_quests(client, account_alias=None, dry_run=False, confirm=False):
@@ -595,7 +595,7 @@ def test_daily_routine_invokes_run_daily_raid(monkeypatch):
     fake_client = type("C", (), {})()
     fake_client.fetch_player_status = lambda: "status_ok"
 
-    def fake_daily(client, item_payload=None, account_alias=None):
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
         calls["client"] = client
         calls["account"] = account_alias
         calls["item_payload"] = item_payload
@@ -621,6 +621,61 @@ def test_daily_routine_invokes_run_daily_raid(monkeypatch):
     assert calls["item_payload"]["calls"][0]["args"]["id"] == 123
 
 
+def test_daily_routine_threads_item_max_iterations(monkeypatch):
+    from hw_genie import runner
+
+    fake_client = type("C", (), {})()
+    fake_client.fetch_player_status = lambda: "status_ok"
+    captured = {}
+
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
+        captured["item_max_iterations"] = item_max_iterations
+        return "ok"
+
+    monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], [])
+    )
+    monkeypatch.setattr(
+        "hw_genie.core.session_manager.SessionManager.build_item_raid_payload",
+        lambda account="default": {"mission_id": 123, "calls": [{"args": {"id": 123}}]},
+    )
+
+    runner.daily_routine(fake_client, "acc", item_max_iterations=7)
+    assert captured["item_max_iterations"] == 7
+
+
+def test_full_routine_threads_item_max_iterations(monkeypatch):
+    from hw_genie import runner
+
+    fake_client = MagicMock()
+
+    def fake_hero_raid(client, mission_ids, times=3, allow_recovery=True):
+        return ("hero_res", 0, None)
+
+    def fake_shop(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True):
+        pass
+
+    captured = {}
+
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
+        captured["item_max_iterations"] = item_max_iterations
+        return "ok"
+
+    monkeypatch.setattr("hw_genie.commands.hero_raid.run_hero_raid", fake_hero_raid)
+    monkeypatch.setattr("hw_genie.commands.hero_shopping.run_hero_shopping", fake_shop)
+    monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
+    monkeypatch.setattr(
+        "hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], [])
+    )
+    monkeypatch.setattr(
+        "hw_genie.commands.hero_shopping.TARGET_SHOP_IDS", ["SHOP1"]
+    )
+
+    runner.full_routine(fake_client, "acc", item_max_iterations=3)
+    assert captured["item_max_iterations"] == 3
+
+
 def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
     from hw_genie import runner
 
@@ -628,7 +683,7 @@ def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
     fake_client = type("C", (), {})()
     fake_client.fetch_player_status = lambda: "status_ok"
 
-    def fake_daily(client, item_payload=None, account_alias=None):
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
         calls["item_payload"] = item_payload
         return "ok"
 
@@ -714,7 +769,7 @@ def test_full_routine_runs_hero_raid_twice(monkeypatch):
         hero_calls.append((mission_ids, allow_recovery))
         return ("hero_res", 0, None)
 
-    def spy_daily_raid(client, item_payload=None, account_alias=None):
+    def spy_daily_raid(client, item_payload=None, account_alias=None, item_max_iterations=9999):
         # Faithfully mirror run_daily_raid: it calls run_hero_raid with the
         # fixed HERO_MISSION_IDS and allow_recovery=False. By invoking the
         # (patched) hero_raid module reference we exercise the real contract.
@@ -1218,3 +1273,101 @@ def test_asgard_shop_routine_forwards_gold_buffs():
         client = MagicMock()
         routine(client, "alpha")
         mock_run.assert_called_once_with(client, dry_run=False, account_alias="alpha", gold_buffs=None)
+
+
+def test_cmd_item_raid_prefers_iterations_over_times(monkeypatch):
+    from hw_genie import main
+    import json
+
+    payload = json.dumps({"calls": [{"name": "missionRaid", "args": {"id": 1}, "ident": "body"}]})
+    args = MagicMock()
+    args.account = None
+    args.curl = None
+    args.payload = payload
+    args.iterations = 5
+    args.times = 9999
+
+    monkeypatch.setattr("hw_genie.main._ensure_session", lambda a: {"headers": {}})
+    monkeypatch.setattr("hw_genie.main.HWClient", MagicMock())
+    captured = {}
+
+    def fake_item_raid(client, payload, max_iterations=9999, account=None):
+        captured["max_iterations"] = max_iterations
+
+    monkeypatch.setattr("hw_genie.main.run_item_raid", fake_item_raid)
+
+    main.cmd_raid_item(args)
+    assert captured["max_iterations"] == 5
+
+
+def test_cmd_item_raid_falls_back_to_times(monkeypatch):
+    from hw_genie import main
+    import json
+
+    payload = json.dumps({"calls": [{"name": "missionRaid", "args": {"id": 1}, "ident": "body"}]})
+    args = MagicMock()
+    args.account = None
+    args.curl = None
+    args.payload = payload
+    args.iterations = None
+    args.times = 3
+
+    monkeypatch.setattr("hw_genie.main._ensure_session", lambda a: {"headers": {}})
+    monkeypatch.setattr("hw_genie.main.HWClient", MagicMock())
+    captured = {}
+
+    def fake_item_raid(client, payload, max_iterations=9999, account=None):
+        captured["max_iterations"] = max_iterations
+
+    monkeypatch.setattr("hw_genie.main.run_item_raid", fake_item_raid)
+
+    main.cmd_raid_item(args)
+    assert captured["max_iterations"] == 3
+
+
+def test_cmd_daily_passes_iterations(monkeypatch):
+    from hw_genie import main
+
+    args = MagicMock()
+    args.curl = None
+    args.account = "acc"
+    args.iterations = 4
+
+    monkeypatch.setattr("hw_genie.main._ensure_session", lambda a: {"headers": {}})
+    monkeypatch.setattr("hw_genie.main.HWClient", MagicMock())
+    captured = {}
+
+    def fake_daily(client, item_payload=None, account_alias=None, item_max_iterations=9999):
+        captured["item_max_iterations"] = item_max_iterations
+        captured["account_alias"] = account_alias
+
+    monkeypatch.setattr("hw_genie.main.run_daily_raid", fake_daily)
+
+    main.cmd_daily(args)
+    assert captured["item_max_iterations"] == 4
+    assert captured["account_alias"] == "acc"
+
+
+def test_cmd_multi_daily_threads_iterations(monkeypatch):
+    from hw_genie import main
+    from hw_genie import runner
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["routine"] = routine
+        return {}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.main.summarize", lambda items: 0)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda *a, **k: None)
+
+    args = type(
+        "A",
+        (),
+        {"mode": "daily", "accounts": None, "parallel": None, "debug": False, "iterations": 9},
+    )()
+
+    main.cmd_multi(args)
+    assert captured["routine"].func is runner.daily_routine
+    assert captured["routine"].keywords["item_max_iterations"] == 9
