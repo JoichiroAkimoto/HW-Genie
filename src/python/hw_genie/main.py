@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import json
+from functools import partial
 from hw_genie.core.client import (
     HWClient,
     AccountResolutionError,
@@ -417,7 +418,15 @@ def cmd_raid_item(args):
         sys.exit(1)
 
     client = HWClient(headers)
-    run_item_raid(client, payload, max_iterations=args.times, account=account_alias or curl_player_name)
+    max_iterations = (
+        args.iterations if args.iterations is not None else args.times
+    )
+    run_item_raid(
+        client,
+        payload,
+        max_iterations=max_iterations,
+        account=account_alias or curl_player_name,
+    )
 
 
 def cmd_shop(args):
@@ -593,6 +602,7 @@ def cmd_daily(args):
         client,
         item_payload=item_payload,
         account_alias=args.account or curl_player_name,
+        item_max_iterations=args.iterations,
     )
 
 
@@ -705,7 +715,10 @@ def cmd_multi(args):
         )
         max_parallel = 1 if dry_run else args.parallel
     else:
-        routine = full_routine if mode == "full" else daily_routine
+        routine = partial(
+            full_routine if mode == "full" else daily_routine,
+            item_max_iterations=getattr(args, "iterations", 9999),
+        )
         max_parallel = args.parallel
 
     # 実行ログ（run_logs）記録: 実行中の出力をキャプチャし、終了時に 1 レコード
@@ -944,7 +957,8 @@ def main():
     p_raid_item = raid_sub.add_parser("item", parents=[parent_parser], help="Item raid using payload")
     p_raid_item.add_argument("payload", nargs="?", help="JSON payload string or path to JSON file")
     p_raid_item.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
-    p_raid_item.add_argument("--times", "-t", type=int, default=9999, help="Number of raids")
+    p_raid_item.add_argument("--times", "-t", type=int, default=9999, help="Number of raids (alias of --iterations)")
+    p_raid_item.add_argument("--iterations", type=int, default=None, help="Item raid iteration count (alias of --times)")
     p_raid_item.set_defaults(func=cmd_raid_item)
 
     # Shop
@@ -1007,6 +1021,12 @@ def main():
     # Daily
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
+    p_daily.add_argument(
+        "--iterations",
+        type=int,
+        default=9999,
+        help="Item raid iteration count (each request raids 10 times). Default: until stamina runs out.",
+    )
     p_daily.set_defaults(func=cmd_daily)
 
     # Quests
@@ -1090,6 +1110,12 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show the execution plan without running anything (quests/consumable modes only)",
+    )
+    p_multi.add_argument(
+        "--iterations",
+        type=int,
+        default=9999,
+        help="Item raid iteration count for 'daily'/'full' modes (each request raids 10 times). Default: until stamina runs out.",
     )
     p_multi.set_defaults(func=cmd_multi)
 
