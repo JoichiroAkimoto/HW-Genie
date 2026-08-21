@@ -957,7 +957,7 @@ def main():
     p_raid_item = raid_sub.add_parser("item", parents=[parent_parser], help="Item raid using payload")
     p_raid_item.add_argument("payload", nargs="?", help="JSON payload string or path to JSON file")
     p_raid_item.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
-    p_raid_item.add_argument("--times", "-t", type=int, default=9999, help="Number of raids (alias of --iterations)")
+    p_raid_item.add_argument("--times", "-t", type=int, default=9999, help="Item raid iteration count (alias of --iterations)")
     p_raid_item.add_argument("--iterations", type=int, default=None, help="Item raid iteration count (alias of --times)")
     p_raid_item.set_defaults(func=cmd_raid_item)
 
