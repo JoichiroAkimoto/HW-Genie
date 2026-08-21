@@ -160,8 +160,6 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
 #: 一括消費（``consumable run``・``multi consumable``）の対象 libId。
 #: セクション構成と並びは CONSUMABLE_REGISTRY と一致させる。
 CONSUMABLE_USE_TARGETS: list[int] = [
-    # --- Stamina ---
-    17,
     # --- Titan / Artifact Chests（playerRewardChoiceIndex 指定）---
     47,
     48,
