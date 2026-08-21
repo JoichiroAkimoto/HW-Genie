@@ -105,6 +105,54 @@ INVENTORY_GET_UNREGISTERED = {
     "date": 1786306606,
 }
 
+# 初回消費後も 215 が残っている在庫（マトリョーシカ系の再出現を模擬）。
+INVENTORY_GET_LEFTOVER = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {"17": 327, "215": 10},
+                    "gear": {"4": 866},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+# 上限 1000 分割対象（169）を大量所持している在庫。
+INVENTORY_GET_CHUNKED = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {"169": 2500, "215": 0},
+                    "gear": {"4": 866},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
+# マトリョーシカの親（271）を所持している在庫（開封で 169 等が出現する想定）。
+INVENTORY_GET_NESTED_BOX = {
+    "results": [
+        {
+            "ident": "inventory",
+            "result": {
+                "response": {
+                    "consumable": {"271": 1200},
+                    "gear": {"4": 866},
+                }
+            },
+        }
+    ],
+    "date": 1786306606,
+}
+
 # --- Consumable Use (LootBox) ---
 # 実測の consumableUseLootBox レスポンス（libId 215 を 48 個消費）。
 CONSUMABLE_USE_LOOT_BOX_SUCCESS = {
