@@ -203,14 +203,14 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 
 def test_registry_covers_all_use_targets():
-    """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで正しいメソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 49  # 215 + Stamina Potion (17) + Add-Consumables.md 記載の 47 種
+    """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
+    assert len(CONSUMABLE_USE_TARGETS) == 48  # 215 + Add-Consumables.md 記載の 47 種
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
-    # Stamina は専用メソッド、それ以外は lootbox
-    assert CONSUMABLE_REGISTRY[17].method == "consumableUseStamina"
-    for lib_id in set(CONSUMABLE_USE_TARGETS) - {17}:
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
+    # 17（Stamina Potion）はレジストリ登録のみで一括消費対象外
+    assert 17 not in CONSUMABLE_USE_TARGETS
+    assert CONSUMABLE_REGISTRY[17].method == "consumableUseStamina"
     # 1000 分割対象（ドキュメント記載の 7 種と完全一致）
     chunked = {
         lib_id
@@ -669,8 +669,7 @@ def test_consumable_routine_wraps_run(mock_client, mock_sleep):
     empty.error_name = None
     empty.detail = {"response": {"consumable": {}}}
     mock_call.side_effect = [
-        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 17 x327, 215 x48
-        _lootbox_success(327),  # 17 消費
+        _res_from(dummy.INVENTORY_GET_CONSUMABLE),  # ラウンド1: 215 x48（17 は targets 外）
         _lootbox_success(48),  # 215 消費
         empty,  # 検証: 残りなし
     ]
@@ -680,6 +679,5 @@ def test_consumable_routine_wraps_run(mock_client, mock_sleep):
     assert isinstance(result, list)
     assert len(result) == len(CONSUMABLE_USE_TARGETS)
     by_id = {r.lib_id: r for r in result}
-    assert by_id[17].status == ResponseStatus.SUCCESS  # 17 は先頭で消費
-    assert by_id[215].status == ResponseStatus.SUCCESS  # 215 も消費
-    assert sum(r.status == ResponseStatus.SKIPPED for r in result) == len(result) - 2
+    assert by_id[215].status == ResponseStatus.SUCCESS
+    assert sum(r.status == ResponseStatus.SKIPPED for r in result) == len(result) - 1

@@ -35,7 +35,10 @@ class ConsumableInfo:
 #: カテゴリ別にセクション分けして管理する（登録順 = CONSUMABLE_USE_TARGETS
 #: の実行順。追加時は両方に同じセクション順で追記すること）。
 #:
-#: - Stamina: スタミナ回復（consumableUseStamina）
+#: 17（Stamina Potion）はレジストリに登録するが一括消費の対象外（手動消費の
+#: ため）とし、CONSUMABLE_USE_TARGETS には含めない。
+#:
+#: - Stamina: スタミナ回復（consumableUseStamina、targets 外）
 #: - Titan / Artifact Chests: 選択式報酬ボックス（playerRewardChoiceIndex 指定）
 #: - Crystals: 1000 分割対象（max_amount=1000）
 #: - Equipment Fragment Boxes: 装備片ボックス
