@@ -33,7 +33,7 @@ ls -lh docs/assets/hw-genie-demo.gif
 
 ## 収録内容
 
-1. `uv run hw-genie auth --list` — 4 アカウント表（Arthur 436 / Morgana 178 / Elyndra 142 / Kaito 88。Arena 1位を含む黄色ハイライト、Energy over cap は赤、Updated は `2026-08-24 10:27:48` フル形式。Kaito は Arena 15 / GA 18 で色なし）
+1. `uv run hw-genie auth --list` — 4 アカウント表（Arthur 436 / Morgana 178 / Elyndra 142 / Kaito 188。Arena 1位を含む黄色ハイライト、Energy over cap は赤、Updated は `2026-08-24 10:27:48` フル形式。Kaito は Arena 15 / GA 18 で色なし）
 2. ↓ 改行3回で間を空け → `uv run hw-genie daily --account Arthur` — Hero Raid 3件 Skipping + 4件実行 → Exchanging Soul Stones → Item Raid 2回 → Soul Shop Slot 2-6 購入 5件 → Account Status（212/190 → 42/190 に減少、表の 436 から徐々に減少）→ 10028 Titan Artifact 実行 → 完了。入力時は `zsh-autosuggestions` によるグレー ghost 補完が表示されます
 
 最後は `🏁 Daily Routine Completed.` を約 4 秒静止してから終了します。
