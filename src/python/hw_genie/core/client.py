@@ -24,20 +24,43 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def resolve_account(account_alias: str | None = None) -> str:
     """Resolve the effective account alias for a command.
 
-    An explicit alias is used as-is. When ``None`` (no ``--account`` given) the
-    behaviour is:
+    An explicit alias is used as-is when it exactly matches a registered
+    alias. When the casing or surrounding whitespace differs, the canonical
+    (registered) alias is returned so downstream ``update_config_merged``
+    calls do not fail with ``Account not found`` (see run_logs failed cases
+    for ``champion`` / ``Champion␣``). When ``None`` (no ``--account`` given)
+    the behaviour is:
 
     - exactly one registered account -> that account is used automatically;
     - multiple registered accounts -> raise ``AccountAmbiguityError`` asking for
       an explicit ``--account``;
     - no registered accounts -> raise ``AccountNotFoundError``.
 
+    An alias that is blank after stripping (e.g. ``"   "``) is treated as no
+    account at all and raises ``AccountNotFoundError`` as well.
+
     The ``default`` pseudo-alias is gone: every account is stored under its real
     player name (or an explicitly chosen alias), so nothing falls back to a
     literal ``"default"`` row.
     """
     if account_alias:
-        return account_alias
+        stripped = account_alias.strip()
+        # 空白のみの入力は None 指定と同じ扱いにする: このまま通すと
+        # ``Account not found`` / 空文字エイリアスの新規行作成につながる。
+        if not stripped:
+            # None 指定時と同じ ``AccountNotFoundError``
+            raise AccountNotFoundError(
+                f"Account alias is blank after trimming ({account_alias!r}). "
+                "Pass an explicit --account."
+            )
+        accounts = SessionManager.list_accounts()
+        if stripped in accounts:
+            return stripped
+        # case-insensitive / whitespace-insensitive fallback to canonical alias
+        match = next((a for a in accounts if a.strip().lower() == stripped.lower()), None)
+        if match:
+            return match
+        return stripped
     accounts = SessionManager.list_accounts()
     if len(accounts) == 1:
         return accounts[0]

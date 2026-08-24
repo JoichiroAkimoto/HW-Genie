@@ -63,6 +63,38 @@ class AccountData(TypedDict, total=False):
 logger = logging.getLogger(__name__)
 
 
+def _find_account_by_alias(db, alias: str):
+    """Find an Account row by alias with canonical fallback.
+
+    Exact (stripped) match is tried first. If not found, a
+    case-insensitive, whitespace-insensitive fallback is used so that
+    inputs like ``champion`` / ``Champion `` resolve to the registered
+    ``Champion`` (see run_logs failed cases id 54/55/59). Returns None
+    when no account matches.
+    """
+    if not isinstance(alias, str):
+        return None
+    stripped = alias.strip()
+    if not stripped:
+        return None
+    rec = db.query(Account).filter(Account.alias == stripped).order_by(Account.id).first()
+    if rec is not None:
+        return rec
+    # fallback: case-insensitive, whitespace-insensitive
+    #
+    # あえて Python 側で ``.lower()`` している: SQLite の SQL ``LOWER()`` は
+    # ASCII 専用のため、非 ASCII（日本語など）のエイリアスを SQL 側で
+    # 小文字比較すると一致しなくなる。走査は id/alias の 2 列に限定し、
+    # Account 行全体のロード（JSON カラムのデシリアライズ含む）を避ける。
+    # ``order_by(Account.id)`` で複数ヒット時の決定性も保証する。
+    rows = db.query(Account.id, Account.alias).order_by(Account.id).all()
+    target = stripped.lower()
+    for account_id, cand_alias in rows:
+        if isinstance(cand_alias, str) and cand_alias.strip().lower() == target:
+            return db.get(Account, account_id)
+    return None
+
+
 def _deserialize_config_value(raw_value: Any) -> Any:
     """生 SQL で取得した ``config_value`` を Python オブジェクトへ復元する。
 
@@ -141,7 +173,7 @@ class SessionRepository:
 
         def _read() -> AccountData:
             with get_session_local()() as db:
-                account_rec = db.query(Account).filter(Account.alias == account).first()
+                account_rec = _find_account_by_alias(db, account)
                 if not account_rec:
                     return {}
 
@@ -329,11 +361,7 @@ class SessionRepository:
             try:
                 with _wal_io_lock:
                     with get_write_session_local()() as db:
-                        account_rec = (
-                            db.query(Account)
-                            .filter(Account.alias == account)
-                            .first()
-                        )
+                        account_rec = _find_account_by_alias(db, account)
                         existing: Any = None
                         if account_rec is not None:
                             row = db.execute(
@@ -390,24 +418,43 @@ class SessionRepository:
                     player_id = player.get("id")
                     if player_id is None or player_id == "":
                         # Fallback to alias for compatibility
-                        account_rec = db.query(Account).filter(Account.alias == account).first()
+                        account_rec = _find_account_by_alias(db, account)
                     else:
                         account_rec = db.query(Account).filter(Account.player_id == player_id).first()
 
                     if not account_rec:
                         if player_id is not None and player_id != "":
-                            account_rec = Account(player_id=player_id, alias=account)
+                            account_rec = Account(player_id=player_id, alias=account.strip())
                         else:
                             raise ValueError(f"player_id is required for new account alias: {account}")
                         db.add(account_rec)
                         db.flush()
 
                     # Update alias and basic info using model method
-                    account_rec.alias = account.strip()
+                    new_alias = account.strip()
+                    existing_alias = (
+                        account_rec.alias if isinstance(account_rec.alias, str) else None
+                    )
+                    # case/whitespace-insensitive に既存行へ一致した場合、大文字
+                    # 小文字のみの差なら既存（正規）alias を保持する。入力値で
+                    # 無条件に上書きすると ``save("champion")`` が正規行 ``Champion``
+                    # を小文字へリネームしてしまい、エイリアス揺れ防止の目的が
+                    # 無効化される。
+                    # - 前後空白のみの差 -> トリム済み入力で正規化
+                    #   （test_save_normalizes_trailing_space_existing_alias の回帰防止）
+                    # - それ以外の不一致 -> 意図的なリネームとして入力を採用
+                    #   （test_prevent_account_duplication のリネーム経路）
+                    if (
+                        not existing_alias
+                        or existing_alias.strip().lower() != new_alias.lower()
+                    ):
+                        account_rec.alias = new_alias
+                    elif existing_alias != new_alias and existing_alias.strip() == new_alias:
+                        account_rec.alias = new_alias
                     account_rec.update_from_dict(player)
 
                 elif player is None:
-                    account_rec = db.query(Account).filter(Account.alias == account).first()
+                    account_rec = _find_account_by_alias(db, account)
                     if not account_rec:
                         raise ValueError(f"Account not found for alias: {account}")
 

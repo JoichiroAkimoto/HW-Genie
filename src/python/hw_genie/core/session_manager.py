@@ -10,12 +10,17 @@ class SessionManager:
         account = account.strip()
         resolved_account = account
         accounts = cls.list_accounts()
-        # 大文字小文字・前後の空白を区別せずに一致するものを探す。
-        # 一致した既存エイリアスに空白が含まれていても、保存時はトリム済みの
-        # account を優先して使う（DB への空白混入を防ぐ）。
-        match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
-        if match and match.strip() != account.strip():
-            resolved_account = account.strip()
+        # 完全一致（トリム済み）を最優先する。``Champion`` と ``champion`` が
+        # 別アカウントとして登録されている場合、case-insensitive の最初の一致
+        # （id 順）に任せると ``save("champion")`` が Champion 行を書き換えて
+        # しまうため。完全一致が無ければ大文字小文字・前後空白を区別せずに
+        # 一致する既存エイリアスへ解決し、DB のエイリアス揺れを防ぐ。
+        # 未登録ならトリム済みの入力をそのまま使う。
+        if account in accounts:
+            resolved_account = account
+        else:
+            match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
+            resolved_account = match if match else account
 
         # PlayerStatus などのオブジェクトを辞書に変換して JSON シリアライズ可能にする
         save_data = data.copy()

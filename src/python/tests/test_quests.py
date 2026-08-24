@@ -182,3 +182,34 @@ def test_run_quest_status_failure(capsys):
     out = capsys.readouterr().out
     assert quests == []
     assert "Failed to fetch quests" in out
+
+
+# --- ensure_* のエイリアス正規化（run_logs failed の回帰防止） ---
+
+
+def test_ensure_defaults_resolve_casing_variant_alias():
+    """小文字エイリアスでも ensure_quest_defaults / guild が成功し、
+    正規（登録済み）エイリアスの行に保存されること。"""
+    from hw_genie.commands.quests import (
+        ensure_quest_defaults,
+        ensure_quest_guild_defaults,
+    )
+    from hw_genie.core.session_manager import SessionManager
+
+    SessionManager.repo.save_data(
+        "Champion",
+        {"headers": {"x-auth-token": "t"}, "player": {"id": "c1", "name": "Champion"}},
+    )
+
+    defaults = ensure_quest_defaults("champion")
+    assert defaults and all("enabled" in conf for conf in defaults.values())
+
+    guild = ensure_quest_guild_defaults("Champion ")
+    assert guild["enabled"] is False
+
+    # 正規エイリアス Champion の行に保存され、別行は作られていないこと
+    # （DB 保存時に JSON キーが文字列化されるため int 化して比較）
+    data = SessionManager.repo.get_data("Champion")
+    assert {int(k): v for k, v in data["quest_defaults"].items()} == defaults
+    assert data["quest_guild_defaults"] == guild
+    assert SessionManager.list_accounts() == ["Champion"]
