@@ -10,6 +10,10 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 
 📚 プロジェクトサイト (GitHub Pages): [https://joichiroakimoto.github.io/HW-Genie/](https://joichiroakimoto.github.io/HW-Genie/)
 
+<p align="center">
+  <img src="docs/assets/hw-genie-demo.gif" alt="HW-Genie demo — auth --list and daily routine" width="800" />
+</p>
+
 ## 目次
 
 - [主な機能](#主な機能)
