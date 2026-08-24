@@ -378,7 +378,8 @@ class Account(Base):
             player_data (dict): Dictionary containing player info (name, level, gold, etc.)
         """
         if "name" in player_data:
-            self.player_name = player_data["name"]
+            name_val = player_data["name"]
+            self.player_name = name_val.strip() if isinstance(name_val, str) else name_val
         if "memo" in player_data:
             self.memo = player_data["memo"]
         

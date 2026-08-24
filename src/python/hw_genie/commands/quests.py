@@ -587,6 +587,7 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
     Returns:
         保存後の ``quest_guild_defaults``（dict）。
     """
+    account = resolve_account(account)
     recipe = QUEST_OPERATIONS.get(GUILD_QUEST_RECIPE_ID)
     if not recipe:
         return get_quest_guild_defaults(account)
@@ -631,6 +632,7 @@ def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     Returns:
         保存後の ``quest_defaults``（quest_id → 設定 dict）。
     """
+    account = resolve_account(account)
     if not QUEST_OPERATIONS:
         return get_quest_defaults(account)
 
