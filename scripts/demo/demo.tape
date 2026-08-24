@@ -22,8 +22,8 @@ Output docs/assets/hw-genie-demo.gif
 Set Shell zsh
 Set FontFamily "Menlo, JetBrains Mono, monospace"
 Set FontSize 16
-Set Width 1200
-Set Height 1050
+Set Width 1100
+Set Height 800
 Set Framerate 12
 Set Theme Dracula
 Set Padding 24
