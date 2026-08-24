@@ -23,7 +23,7 @@ Set Shell zsh
 Set FontFamily "Menlo, JetBrains Mono, monospace"
 Set FontSize 16
 Set Width 1100
-Set Height 800
+Set Height 750
 Set Framerate 12
 Set Theme Dracula
 Set Padding 24
