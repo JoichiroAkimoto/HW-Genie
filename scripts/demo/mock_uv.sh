@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mock `uv run hw-genie ...` shim used only for VHS demo recording.
 # Replays canned CLI output so the GIF never touches the real API or DB.
-# Bash-compatible (POSIX-friendly): works on macOS (bash 3.2) and Linux.
+# Bash 3.2+ required (macOS default bash). Not POSIX sh compatible (uses bashisms).
+# NOTE: Shop/quest output is mocked and may diverge from real CLI if upstream changes.
 #
 # Usage (from repo root):
 #   vhs scripts/demo/demo.tape
@@ -34,11 +35,11 @@ pause() { sleep "$1"; }
 case "$cmd:$sub" in
 auth:--list)
   say $'\e[1;36mName    | Arena | GA | Gold   | Gems  | Mission | Energy | Updated (Asia/Tokyo) | Memo      \e[0m' 0.05
-  say $'\e[2m---------------------------------------------------------------------------------------------\e[0m' 0.05
-  say $'\e[1mArthur  \e[0m | \e[33m1    \e[0m | \e[32m6 \e[0m | 148.2M | 12.5K | 179     | 152    | 08-24 07:31         | Main      ' 0.12
-  say $'\e[1;2mMorgana \e[0m | \e[32m13   \e[0m | \e[33m1 \e[0m | \e[2m96.4M \e[0m | \e[2m8.1K \e[0m | \e[2m208    \e[0m | \e[2m78    \e[0m | \e[2m08-24 07:31         \e[0m | \e[2mAlt       \e[0m' 0.12
-  say $'\e[1mElyndra \e[0m | 16    | \e[32m8 \e[0m | 201.5M | 18.3K | 135     | \e[31m70046 \e[0m | 08-24 07:32         | Event     ' 0.12
-  say $'\e[1;2mKaito   \e[0m | \e[32m8    \e[0m | \e[32m12\e[0m | \e[2m42.1M \e[0m | \e[2m2.4K \e[0m | \e[2m118    \e[0m | \e[31m46732 \e[0m | \e[2m08-24 08:32         \e[0m | \e[2mLow-res   \e[0m' 0.12
+  say $'\e[2m--------------------------------------------------------------------------------------------\e[0m' 0.05
+  say $'\e[1mArthur \e[0m | \e[33m1    \e[0m | \e[32m6 \e[0m | 148.2M | 12.5K | 179     | \e[31m212   \e[0m | 2026-08-24 10:27:48  | Main      ' 0.12
+  say $'\e[1;2mMorgana\e[0m | \e[32m13   \e[0m | \e[33m1 \e[0m | \e[2m96.4M \e[0m | \e[2m8.1K \e[0m | \e[2m208    \e[0m | \e[2m178   \e[0m | \e[2m2026-08-24 10:27:48 \e[0m | \e[2mAlt       \e[0m' 0.12
+  say $'\e[1mElyndra\e[0m | 16    | \e[32m8 \e[0m | 201.5M | 18.3K | 135     | 142    | 2026-08-24 10:27:48  | Event     ' 0.12
+  say $'\e[1;2mKaito  \e[0m | \e[32m8    \e[0m | \e[32m12\e[0m | \e[2m42.1M \e[0m | \e[2m2.4K \e[0m | \e[2m118    \e[0m | \e[2m188   \e[0m | \e[2m2026-08-24 10:27:48 \e[0m | \e[2mLow-res   \e[0m' 0.12
   ;;
 daily:*|daily:)
   say $'\n🚀 Starting Daily Routine...' 0.6
@@ -88,7 +89,7 @@ daily:*|daily:)
   say '  Result: ✅ Success' 0.16
   pause 0.2
   say $'\n🏁 --- Shopping Results Summary ---' 0.3
-  say '  ✅ Total Hero Souls Purchased: 10' 0.35
+  say '  ✅ Total Hero Souls Purchased: 25' 0.35
 
   say $'\n📊 --- Account Status ---' 0.15
   say '  👤 Name: Arthur (Lv.130)' 0.10

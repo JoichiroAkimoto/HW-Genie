@@ -2,9 +2,9 @@
 * text=auto
 
 # Binary / generated assets must not be normalized (text=auto would corrupt them)
-*.gif binary linguist-generated
-*.png binary linguist-generated
-*.jpg binary linguist-generated
+*.gif binary linguist-generated=true
+*.png binary linguist-generated=true
+*.jpg binary linguist-generated=true
 
 # Force LF for VHS tapes and shell scripts (CRLF would break vhs parsing)
 *.tape text eol=lf

@@ -6,23 +6,25 @@
 #
 # Requires:
 #   - vhs 0.11.0+ (`brew install vhs` — 依存で ffmpeg/ttyd も導入)
-#   - bash 3.2+ / sleep (POSIX)
-#   - 再生成後は docs/assets/hw-genie-demo.gif をコミット
+#   - zsh + zsh-autosuggestions (補完) のみを読み込み（ユーザ環境は読まない）
+#   - gifsicle (`brew install gifsicle`) — 生成後の圧縮に使用
+#   - 再生成後は docs/assets/hw-genie-demo.gif をコミット（自動で gifsicle 圧縮）
 #
 # Notes:
 #   - 実API/DBは叩かない（scripts/demo/mock_uv.sh がダミー出力を再生）。
 #   - フォントは Menlo を優先し無ければ JetBrains Mono / monospace にフォールバック。
-#   - Sleep 値は mock 内部の say 合計(~10.9s) + TypingSpeed を考慮して設定。
+#   - Sleep 値は mock 内部の say 合計(~13s) + TypingSpeed を考慮して設定。
 #   - --iterations 等の実行例は本GIFでは簡潔さのため daily の固定出力に絞っている。
+#   - 圧縮: vhs 生成後に `gifsicle -O3 --lossy=30 --colors 128` で約 30-40% 削減
 
 Output docs/assets/hw-genie-demo.gif
 
-Set Shell bash
+Set Shell zsh
 Set FontFamily "Menlo, JetBrains Mono, monospace"
-Set FontSize 17
+Set FontSize 16
 Set Width 1200
-Set Height 700
-Set Framerate 20
+Set Height 1050
+Set Framerate 12
 Set Theme Dracula
 Set Padding 24
 Set Margin 32
@@ -33,11 +35,21 @@ Set TypingSpeed 60ms
 Set CursorBlink false
 
 Hide
-Type 'MOCK_BIN_DIR=$(mktemp -d /tmp/hwg-vhs-XXXXXX) && cp "$PWD/scripts/demo/mock_uv.sh" "$MOCK_BIN_DIR/uv" && chmod +x "$MOCK_BIN_DIR/uv" && export PATH="$MOCK_BIN_DIR:$PATH"'
+Type 'MOCK_BIN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hwg-vhs-XXXXXX") || { echo "mock setup failed" >&2; exit 1; } && cp "$PWD/scripts/demo/mock_uv.sh" "$MOCK_BIN_DIR/uv" && chmod +x "$MOCK_BIN_DIR/uv" && export PATH="$MOCK_BIN_DIR:$PATH"'
 Enter
 Type 'trap "rm -rf $MOCK_BIN_DIR" EXIT'
 Enter
-Type "export PS1='\[\e[32m\]➜ \[\e[36m\]~/dev/HW-Genie\[\e[0m\] $ '"
+Type 'if command -v brew >/dev/null 2>&1 && [[ -f "$(brew --prefix 2>/dev/null)/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]]; then source "$(brew --prefix 2>/dev/null)/share/zsh-autosuggestions/zsh-autosuggestions.zsh"; elif [[ -f /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh; elif [[ -f /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then source /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh; fi'
+Enter
+Type 'export PS1="%F{green}➜%f %F{cyan}~/dev/HW-Genie%f $ "'
+Enter
+Type 'HISTFILE="$MOCK_BIN_DIR/.zsh_history" && touch "$HISTFILE"'
+Enter
+Type 'print -s "uv run hw-genie auth --list"'
+Enter
+Type 'print -s "uv run hw-genie daily --account Arthur"'
+Enter
+Type 'print -s "uv run hw-genie multi full --help"'
 Enter
 Type 'clear'
 Enter
@@ -47,16 +59,25 @@ Type "uv run hw-genie auth --list"
 Enter
 Sleep 5500ms
 
-Type 'clear'
 Enter
+Sleep 300ms
+Enter
+Sleep 300ms
+Enter
+Sleep 800ms
 
 Type "uv run hw-genie daily --account Arthur"
 Enter
-Sleep 15500ms
+Sleep 16500ms
 
-Sleep 4000ms
+Sleep 2000ms
+
+# 匂わせ: 次に multi full を実行しそうなところで止める
+Type "uv run hw-genie multi full"
+Sleep 1200ms
+
+Sleep 1500ms
 
 Hide
-Type 'rm -rf "$MOCK_BIN_DIR" 2>/dev/null; clear'
+Type 'rm -rf "$MOCK_BIN_DIR" 2>/dev/null'
 Enter
-Show
