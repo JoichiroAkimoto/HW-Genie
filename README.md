@@ -35,6 +35,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
 - **Asgard Shop**: Asgard（ギルドレイド）の Realm Traveler ショップで Valor Emblem を使ったバフとゴールドバフを自動購入（`hw-genie asgard-shop` / `multi asgard-shop`。Osh 週は固定優先度、Maestro 週は優先度 S→A→B の組み合わせ最適化で購入。判定不能な週はスキップ、`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on））。
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。
+- **Guild Chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`、`docs/api/CHAT_API.md` 参照）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
