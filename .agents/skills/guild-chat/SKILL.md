@@ -46,8 +46,8 @@ description: Fetch guild chat history (chatGetAll / chatType=clan) and display a
 取得したチャットを表形式で要約し、特に**期間・参加者・発言数Top・活発時間帯**を中心に、**ユーザーの言語に翻訳して**報告してください。メッセージ本文もユーザーの言語に翻訳すること（`--raw` / `--json` の場合は翻訳せず原文のまま）。
 
 ## 使用例
-**ユーザーの入力**: 「Joe のギルドチャット最新50件を見せて」
+**ユーザーの入力**: 「ギルドチャット最新50件を見せて」
 
 **AI の動作**:
-1. `uv run hw-genie chat -a Joe --count 50` を実行し、表＋要約を報告。
-2. 必要に応じて `uv run hw-genie chat -a Joe --raw` で生レスポンスを提示。
+1. `uv run hw-genie chat -a <account> --count 50` を実行し、表＋要約を報告（アカウント未指定なら自動解決、複数なら要指定）。
+2. 必要に応じて `uv run hw-genie chat -a <account> --raw` で生レスポンスを提示。
