@@ -331,10 +331,16 @@ def run_chat(
         return ChatResult([], success=False)
 
     if raw:
+        # raw はサーバーレスポンスをそのまま表示（count はサーバー側で無視される場合があるため raw は全件表示）
         print(json.dumps(raw_data, ensure_ascii=False, indent=1))
+        # 戻り値はパース済みだが、count でのスライシングは行わない（raw はデバッグ用）
         return ChatResult(parse_chat_response(raw_data), success=True)
 
     messages = parse_chat_response(raw_data)
+    # サーバーが count を無視して常に 50 件返す場合があるため、クライアント側でスライシングして count を尊重する
+    # messages は ctime 昇順にソート済みなので、最新 count 件は末尾のスライスになる
+    if count_int is not None and len(messages) > count_int:
+        messages = messages[-count_int:]
     if not messages:
         print(f"ℹ️  [{account}] No chat history found ({chat_type}).")
         return ChatResult([], success=True)
