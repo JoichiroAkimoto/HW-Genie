@@ -1,8 +1,8 @@
 ---
-name: chat
-description: Fetch guild chat history (chatGetAll) and display as table with summary.
+name: guild-chat
+description: Fetch guild chat history (chatGetAll / chatType=clan) and display as table with summary. Translates to user's language.
 ---
-# Chat Skill (HW-Genie)
+# Guild Chat Skill (HW-Genie)
 
 ## ワークフロー
 > **Tip**: 複数のアカウントを使用している場合は、事前に `uv run hw-genie auth --list` で正しいアカウント別名を確認することを推奨します。
