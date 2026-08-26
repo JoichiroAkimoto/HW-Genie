@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # 1. Python dependency check (src/python/pyproject.toml)
+  # 1. Python dependency check (uv workspace root)
   - package-ecosystem: "uv"
-    directory: "/src/python"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10

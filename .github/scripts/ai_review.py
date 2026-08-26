@@ -824,15 +824,28 @@ def main():
         lines_deleted = 0
         for file in patch:
             path = file.path if hasattr(file, "path") and file.path else ""
-            if re.search(
+            is_removed = getattr(file, "is_removed_file", False)
+            is_ignored = re.search(
                 r"(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$",
                 path,
                 re.IGNORECASE,
-            ):
+            )
+            if is_ignored:
+                # lock/バイナリは差分本文が巨大なため LLM コンテキスト節約のため省略するが、
+                # 削除等の重要な変更が AI に伝わるよう統計はカウントしプレースホルダを残す
+                files_modified_count += 1
+                lines_added += getattr(file, "added", 0) or 0
+                lines_deleted += getattr(file, "removed", 0) or 0
+                # 削除ファイル以外は file_contents 取得対象外のまま（巨大な lock 全文は不要）
+                status = "削除" if is_removed else "変更"
+                filtered_diff += (
+                    f"[注: `{path}` は {status} されましたが、lock/バイナリ等のため diff 本体は省略されています "
+                    f"(+{getattr(file, 'added', 0) or 0} / -{getattr(file, 'removed', 0) or 0})]\n"
+                )
                 continue
             filtered_diff += str(file) + "\n"
             # 削除ファイルはヘッド時点に存在せず 404 になるため全文取得対象から除外
-            if not getattr(file, "is_removed_file", False):
+            if not is_removed:
                 changed_paths.append(path)
             files_modified_count += 1
             lines_added += getattr(file, "added", 0) or 0
