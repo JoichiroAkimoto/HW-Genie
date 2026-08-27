@@ -27,7 +27,12 @@ on:
         type: choice
         options:
           - flash-lite
+          - flash
           - gemma
+          - openrouter-gemini-flash-free
+          - openrouter-qwen3-8b-free
+          - openrouter-llama-3-8b-free
+          - openrouter-deepseek-r1-free
         default: 'flash-lite'
 
 permissions:
@@ -40,9 +45,10 @@ concurrency:
 
 jobs:
   review:
-    # Skip bot PRs (dependabot, renovate, etc.) - automated dependency bumps
-    # do not benefit from AI review and add meaningless cost.
+    # Skip bot PRs and fork PRs — automated dependency bumps do not benefit from AI review;
+    # fork PRs have no access to secrets (GEMINI_API_KEY) and would fail with exit 1.
     if: |-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) &&
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -68,7 +74,13 @@ jobs:
 
       - name: Run AI Review
         env:
+          # Backward compat: single key
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Key rotation: comma-separated (empty secrets become "" and are filtered in Python)
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEY }},${{ secrets.GEMINI_API_KEY_2 }},${{ secrets.GEMINI_API_KEY_3 }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_FALLBACK_MODELS: ${{ vars.OPENROUTER_FALLBACK_MODELS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # workflow_call: dispatch 経由 (issue_comment/pull_request イベント)
           # workflow_dispatch: Actions UI から手動実行
