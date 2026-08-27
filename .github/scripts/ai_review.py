@@ -1,16 +1,17 @@
+import datetime
+import io
+import json
 import os
-import time
 import random
+import re
+import subprocess
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
+
 from google import genai
 from google.genai import types
-import subprocess
-import json
-import sys
-import datetime
-import re
-import io
-from html.parser import HTMLParser
 from unidiff import PatchSet
 
 # Marker used to identify comments posted by this reviewer.
@@ -385,7 +386,7 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
             except Exception:
                 pass
             return resp
-        except Exception as e:  # noqa: BLE001 - リトライ可否は _is_retryable_api_error で判定
+        except Exception as e:
             retryable, code = _is_retryable_api_error(e)
             if not retryable or attempt >= MAX_ATTEMPTS - 1:
                 raise
@@ -598,7 +599,7 @@ def _generate_with_openrouter(
                         method="POST",
                     )
                     try:
-                        with urllib.request.urlopen(req, timeout=OPENROUTER_TIMEOUT) as uresp:  # noqa: S310
+                        with urllib.request.urlopen(req, timeout=OPENROUTER_TIMEOUT) as uresp:
                             status = uresp.status
                             body_text = uresp.read().decode("utf-8", errors="replace")
                             if status == 429 or 500 <= status < 600:
@@ -616,7 +617,8 @@ def _generate_with_openrouter(
                         err.code = he.code  # type: ignore[attr-defined]
                         raise err from he
 
-                # レスポンス解析: choices[0].message.content
+                # レスポンス解析: choices[0].message.content / reasoning 対応
+                # OpenRouter free モデルは reasoning を返す場合がある (例: liquid/lfm-2.5:free)
                 text = ""
                 try:
                     choices = data.get("choices") or []
@@ -624,8 +626,23 @@ def _generate_with_openrouter(
                         msg = choices[0].get("message") or {}
                         text = msg.get("content") or ""
                         if not text:
+                            text = msg.get("reasoning") or ""
+                        if not text:
+                            # reasoning_details: [{"type":"reasoning.text","text":"..."}]
+                            rd = msg.get("reasoning_details")
+                            if isinstance(rd, list):
+                                for r in rd:
+                                    if isinstance(r, dict):
+                                        t = r.get("text") or r.get("reasoning") or ""
+                                        if t and isinstance(t, str) and t.strip():
+                                            text = t
+                                            break
+                        if not text:
                             # 一部プロバイダは choices[0].text を返す場合
                             text = choices[0].get("text") or ""
+                            if not text:
+                                # choices[0].reasoning 直下の場合
+                                text = choices[0].get("reasoning") or ""
                     if not text:
                         # フォールバック: 全体を文字列化
                         text = json.dumps(data, ensure_ascii=False)[:8000]
@@ -665,7 +682,7 @@ def _generate_with_openrouter(
                 print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})")
                 return resp_obj
 
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 retryable, code = _is_retryable_api_error(e)
                 last_exc = e
                 is_last_key = key_idx == len(api_keys) - 1
@@ -1294,8 +1311,7 @@ def main():
                         and api_model_info.name
                     ):
                         fetched_name = api_model_info.name
-                        if fetched_name.startswith("models/"):
-                            fetched_name = fetched_name[len("models/") :]
+                        fetched_name = fetched_name.removeprefix("models/")
                         resolved_model_name = fetched_name
                         print(f"Resolved canonical model name from API: {resolved_model_name}")
                 except Exception as ce:
