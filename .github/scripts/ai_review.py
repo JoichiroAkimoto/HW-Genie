@@ -32,13 +32,13 @@ RETRY_MAX_DELAY_429 = 120
 FILE_CONTENTS_BUDGET = 200000
 
 # OpenRouter フォールバック用（環境変数で上書き可能）
+# 2026-07時点: 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
+# `openrouter/free` を最優先にし、フォールバックとして少数の安定 free モデルを残す。
+# 環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
 OPENROUTER_API_URL = os.environ.get("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
 OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60") or 60)
 OPENROUTER_FALLBACK_MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "qwen/qwen3-8b:free",
-    "meta-llama/llama-3.1-8b-instruct:free",
-    "deepseek/deepseek-r1:free",
+    "openrouter/free",
 ]
 OPENROUTER_DEFAULT_MAX_TOKENS = 8000
 
