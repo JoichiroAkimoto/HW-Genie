@@ -1101,11 +1101,12 @@ def main():
 
     model_key = env_model_key
     # Parse --model from additional_context (must be start of line or preceded by whitespace)
+    # Allow slash and colon for openrouter models (e.g. openrouter/free, google/gemini-2.0-flash-exp:free)
     model_match = re.search(
-        r"(?m)(?:^|\s+)--model\s+([\w.-]+)", additional_context, re.IGNORECASE
+        r"(?m)(?:^|\s+)--model\s+([\w./:\-]+)", additional_context, re.IGNORECASE
     )
     if model_match:
-        model_key = model_match.group(1)
+        model_key = model_match.group(1).strip().strip(",").strip()
 
     # models.json のキー/name/aliases に基づいて model_info と model_name を解決
     model_info, model_name = resolve_model(model_key, model_config)
@@ -1117,6 +1118,11 @@ def main():
     # エイリアス解決は Gemini キー回転ループ内で各キーごとに試行する（API 呼び出しが必要なため）。
     # ここでは初期値のみ設定。
     resolved_model_name = model_name
+
+    # openrouter/free は OpenRouter 経由の無料モデルルーターを直接利用するメタモデル
+    is_openrouter_primary = model_info.get("provider") == "openrouter"
+    if is_openrouter_primary:
+        print(f"OpenRouter primary selected (model={model_name})")
 
     pr_number = os.environ.get("PR_NUMBER")
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -1240,11 +1246,43 @@ def main():
 
         config = types.GenerateContentConfig(**config_kwargs)
 
-        # Gemini キー回転 + OpenRouter フォールバック付き生成（attempt レベルでキー回転。sleep は全キー失敗後のみ）
+        # 生成: provider に応じて Gemini / OpenRouter を選択
         response = None
         last_exc: Exception | None = None
 
-        if gemini_keys:
+        if is_openrouter_primary:
+            if not openrouter_keys:
+                print("Error: OPENROUTER_API_KEY is not set for openrouter/free.")
+                sys.exit(1)
+            if model_info.get("name") == "openrouter/free":
+                fallback_models = _get_openrouter_fallback_models()
+                print(f"Trying OpenRouter free router ({len(fallback_models)} models)...")
+            else:
+                fallback_models = [model_name]
+                print(f"Trying OpenRouter model {model_name}...")
+            for fb_model in fallback_models:
+                try:
+                    fb_resp = _generate_with_openrouter(
+                        fb_model, prompt, system_instruction, openrouter_keys
+                    )
+                    response = fb_resp
+                    model_name = fb_model
+                    resolved_model_name = fb_model
+                    model_info = {
+                        "name": fb_model,
+                        "input_cost_per_1m": None,
+                        "output_cost_per_1m": None,
+                        "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                    }
+                    thinking_config = None
+                    print(f"OpenRouter succeeded with model {fb_model}")
+                    break
+                except Exception as fe:  # noqa: BLE001
+                    last_exc = fe
+                    print(f"OpenRouter model {fb_model} failed: {fe}")
+                    continue
+
+        if not is_openrouter_primary and gemini_keys:
             # エイリアス解決は最初のキーで一度だけ試行（API 呼び出しが必要なため）。失敗しても続行
             if model_key != model_name:
                 try:
@@ -1326,7 +1364,7 @@ def main():
                 time.sleep(delay)
 
         # 2) Gemini 全滅時は OpenRouter フォールバック（無料モデル）
-        if response is None and openrouter_keys:
+        if not is_openrouter_primary and response is None and openrouter_keys:
             fallback_models = _get_openrouter_fallback_models()
             print(f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
             for fb_model in fallback_models:

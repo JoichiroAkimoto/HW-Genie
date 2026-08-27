@@ -38,50 +38,12 @@
     "provider": "gemini",
     "fallback": false
   },
-  "openrouter-gemini-flash-free": {
-    "name": "google/gemini-2.0-flash-exp:free",
+  "openrouter-free": {
+    "name": "openrouter/free",
     "aliases": [
-      "openrouter-gemini-flash-free",
-      "google/gemini-2.0-flash-exp:free"
-    ],
-    "input_cost_per_1m": 0.0,
-    "output_cost_per_1m": 0.0,
-    "max_diff_chars": 500000,
-    "thinking_level": null,
-    "provider": "openrouter",
-    "fallback": true
-  },
-  "openrouter-qwen3-8b-free": {
-    "name": "qwen/qwen3-8b:free",
-    "aliases": [
-      "openrouter-qwen3-8b-free",
-      "qwen/qwen3-8b:free"
-    ],
-    "input_cost_per_1m": 0.0,
-    "output_cost_per_1m": 0.0,
-    "max_diff_chars": 500000,
-    "thinking_level": null,
-    "provider": "openrouter",
-    "fallback": true
-  },
-  "openrouter-llama-3-8b-free": {
-    "name": "meta-llama/llama-3.1-8b-instruct:free",
-    "aliases": [
-      "openrouter-llama-3-8b-free",
-      "meta-llama/llama-3.1-8b-instruct:free"
-    ],
-    "input_cost_per_1m": 0.0,
-    "output_cost_per_1m": 0.0,
-    "max_diff_chars": 500000,
-    "thinking_level": null,
-    "provider": "openrouter",
-    "fallback": true
-  },
-  "openrouter-deepseek-r1-free": {
-    "name": "deepseek/deepseek-r1:free",
-    "aliases": [
-      "openrouter-deepseek-r1-free",
-      "deepseek/deepseek-r1:free"
+      "openrouter/free",
+      "openrouter-free",
+      "openrouter_free"
     ],
     "input_cost_per_1m": 0.0,
     "output_cost_per_1m": 0.0,

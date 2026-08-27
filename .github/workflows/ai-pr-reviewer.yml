@@ -28,11 +28,7 @@ on:
         options:
           - flash-lite
           - flash
-          - gemma
-          - openrouter-gemini-flash-free
-          - openrouter-qwen3-8b-free
-          - openrouter-llama-3-8b-free
-          - openrouter-deepseek-r1-free
+          - openrouter/free
         default: 'flash-lite'
 
 permissions:
