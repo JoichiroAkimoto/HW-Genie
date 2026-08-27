@@ -33,9 +33,8 @@ RETRY_MAX_DELAY_429 = 120
 FILE_CONTENTS_BUDGET = 200000
 
 # OpenRouter フォールバック用（環境変数で上書き可能）
-# 2026-07時点: 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
-# `openrouter/free` を最優先にし、フォールバックとして少数の安定 free モデルを残す。
-# 環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
+# 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
+# `openrouter/free` のみを使用。環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
 OPENROUTER_API_URL = os.environ.get("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
 OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60") or 60)
 OPENROUTER_FALLBACK_MODELS = [
@@ -523,7 +522,7 @@ def _generate_with_openrouter(
     フォールバックする。429 / 5xx は ``MAX_ATTEMPTS`` までリトライし、キー回転を行う。
 
     Args:
-        model_name: OpenRouter 上のモデル名 (例: ``google/gemini-2.0-flash-exp:free``)。
+        model_name: OpenRouter 上のモデル名 (例: ``openrouter/free``)。
         prompt: ユーザープロンプト。
         system_instruction: システムインストラクション。
         api_keys: OpenRouter API キーのリスト（先頭から順に試行）。
@@ -1118,7 +1117,7 @@ def main():
 
     model_key = env_model_key
     # Parse --model from additional_context (must be start of line or preceded by whitespace)
-    # Allow slash and colon for openrouter models (e.g. openrouter/free, google/gemini-2.0-flash-exp:free)
+    # Allow slash and colon for openrouter models (e.g. openrouter/free)
     model_match = re.search(
         r"(?m)(?:^|\s+)--model\s+([\w./:\-]+)", additional_context, re.IGNORECASE
     )
