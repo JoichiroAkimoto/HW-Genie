@@ -1,15 +1,15 @@
 name: '🔀 Gemini Dispatch'
 
 on:
+  # Auto PR review is handled directly by ai-pr-reviewer.yml (pull_request trigger).
+  # This dispatch workflow is for manual @gemini-cli commands and issue triage only,
+  # to avoid duplicate execution (dispatch -> review + direct ai-pr-reviewer).
   pull_request_review_comment:
     types:
       - 'created'
   pull_request_review:
     types:
       - 'submitted'
-  pull_request:
-    types:
-      - 'opened'
   issues:
     types:
       - 'opened'
@@ -49,22 +49,18 @@ jobs:
           env | grep '^DEBUG_'
 
   dispatch:
-    # For PRs: only if not from a fork and author is a human collaborator
-    # (excludes dependabot[bot] and other bots)
     # For issues: only on open/reopen
     # For comments: only if user types @gemini-cli and is OWNER/MEMBER/COLLABORATOR
+    # Note: PR auto-review (pull_request.opened) is handled directly by ai-pr-reviewer.yml,
+    # so this dispatch workflow skips pull_request events to avoid duplicate runs.
     if: |-
       github.event.sender.type == 'User' &&
       (
         (
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.fork == false &&
-          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
-        ) || (
           github.event_name == 'issues' &&
           contains(fromJSON('["opened", "reopened"]'), github.event.action)
         ) || (
-          startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '@gemini-cli') &&
+          contains(github.event.comment.body || github.event.review.body || github.event.issue.body, '@gemini-cli') &&
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
         )
       )
@@ -100,12 +96,14 @@ jobs:
         with:
           script: |
             const eventType = process.env.EVENT_TYPE;
-            const request = process.env.REQUEST;
+            const rawRequest = process.env.REQUEST || "";
+            // Trim leading/trailing whitespace to handle comments with leading space (e.g. " @gemini-cli ...")
+            const request = rawRequest.trimStart();
             core.setOutput('request', request);
 
-            if (eventType === 'pull_request.opened') {
-              core.setOutput('command', 'review');
-            } else if (['issues.opened', 'issues.reopened'].includes(eventType)) {
+            // Auto PR review (pull_request.opened) is handled directly by ai-pr-reviewer.yml,
+            // so dispatch no longer triggers 'review' on PR open to avoid duplicate runs.
+            if (['issues.opened', 'issues.reopened'].includes(eventType)) {
               core.setOutput('command', 'triage');
             } else if (request.startsWith("@gemini-cli /quick-review")) {
               core.setOutput('command', 'quick-review');
