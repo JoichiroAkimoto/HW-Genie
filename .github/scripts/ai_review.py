@@ -31,6 +31,17 @@ RETRY_MAX_DELAY_429 = 120
 # 変更ファイル全文の合計バッファ上限（文字数）。モデル別のコンテキスト予算とも連動する。
 FILE_CONTENTS_BUDGET = 200000
 
+# OpenRouter フォールバック用（環境変数で上書き可能）
+OPENROUTER_API_URL = os.environ.get("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60") or 60)
+OPENROUTER_FALLBACK_MODELS = [
+    "google/gemini-2.0-flash-exp:free",
+    "qwen/qwen3-8b:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "deepseek/deepseek-r1:free",
+]
+OPENROUTER_DEFAULT_MAX_TOKENS = 8000
+
 
 class _DetailsExtractor(HTMLParser):
     """HTMLパーサーを用いて、特定の <summary> を持つ <details> ブロックを
@@ -302,8 +313,14 @@ def _is_retryable_api_error(e: Exception) -> tuple[bool, int | None]:
     err = str(e)
     if re.search(r"\b429\b", err):
         return True, 429
-    if re.search(r"\b(500|502|503|504)\b", err):
-        return True, 503
+    m = re.search(r"\b5\d\d\b", err)
+    if m:
+        try:
+            code_int = int(m.group())
+            if 500 <= code_int < 600:
+                return True, code_int
+        except Exception:
+            return True, 503
     return False, None
 
 
@@ -385,6 +402,323 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
                     f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
                 )
             time.sleep(delay)
+
+
+def _collect_gemini_keys() -> list[str]:
+    """Gemini API キーのリストを環境変数から収集する。
+
+    優先順位:
+    1. ``GEMINI_API_KEYS`` (カンマ区切り) が空でなければそれを分割して使用。
+    2. そうでなければ ``GEMINI_API_KEY`` 単体 (後方互換)。
+    3. さらに ``GEMINI_API_KEY_2``, ``GEMINI_API_KEY_3`` があれば追加。
+
+    Returns:
+        有効な API キーのリスト（空の場合は空リスト）。
+    """
+    raw = os.environ.get("GEMINI_API_KEYS", "")
+    if raw.strip():
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if keys:
+            return keys
+    keys: list[str] = []
+    single = os.environ.get("GEMINI_API_KEY", "").strip()
+    if single:
+        keys.append(single)
+    for suffix in ("GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
+        v = os.environ.get(suffix, "").strip()
+        if v:
+            keys.append(v)
+    return keys
+
+
+def _collect_openrouter_keys() -> list[str]:
+    """OpenRouter API キーのリストを環境変数から収集する。
+
+    優先順位:
+    1. ``OPENROUTER_API_KEYS`` (カンマ区切り) が空でなければそれを分割して使用。
+    2. そうでなければ ``OPENROUTER_API_KEY`` 単体。
+    3. さらに ``OPENROUTER_API_KEY_2``, ``OPENROUTER_API_KEY_3`` があれば追加。
+
+    Returns:
+        有効な API キーのリスト（空の場合は空リスト）。
+    """
+    raw = os.environ.get("OPENROUTER_API_KEYS", "")
+    if raw.strip():
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if keys:
+            return keys
+    keys: list[str] = []
+    single = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if single:
+        keys.append(single)
+    for suffix in ("OPENROUTER_API_KEY_2", "OPENROUTER_API_KEY_3"):
+        v = os.environ.get(suffix, "").strip()
+        if v:
+            keys.append(v)
+    return keys
+
+
+def _get_openrouter_fallback_models() -> list[str]:
+    """OpenRouter フォールバックモデル一覧を取得する。
+
+    環境変数 ``OPENROUTER_FALLBACK_MODELS`` が設定されていればカンマ区切りで
+    パースし、そうでなければ定数 ``OPENROUTER_FALLBACK_MODELS`` を返す。
+    GEMMA は含めない方針のため、環境変数で gemma が指定されても除外する。
+    """
+    raw = os.environ.get("OPENROUTER_FALLBACK_MODELS", "")
+    if raw.strip():
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+        # GEMMA を除外
+        models = [m for m in models if "gemma" not in m.lower()]
+        if models:
+            return models
+    return [m for m in OPENROUTER_FALLBACK_MODELS if "gemma" not in m.lower()]
+
+
+class _OpenRouterUsage:
+    """OpenRouter レスポンスの usage を Gemini 互換で保持する。"""
+
+    def __init__(
+        self,
+        prompt_token_count: int = 0,
+        candidates_token_count: int = 0,
+        thoughts_token_count: int | None = None,
+    ) -> None:
+        self.prompt_token_count = prompt_token_count
+        self.candidates_token_count = candidates_token_count
+        self.thoughts_token_count = thoughts_token_count
+
+
+class OpenRouterResponse:
+    """OpenRouter のレスポンスを Gemini レスポンス互換でラップする。
+
+    既存の ``build_execution_metadata`` が期待する属性
+    (``text``, ``usage_metadata``, ``model_version``, ``_retry_count``) を提供する。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        usage_metadata: _OpenRouterUsage | None = None,
+        model_version: str | None = None,
+        retry_count: int = 0,
+    ) -> None:
+        self.text = text
+        self.usage_metadata = usage_metadata
+        self.model_version = model_version
+        self._retry_count = retry_count
+        self.candidates: list = []
+
+
+def _generate_with_openrouter(
+    model_name: str,
+    prompt: str,
+    system_instruction: str,
+    api_keys: list[str],
+) -> OpenRouterResponse:
+    """OpenRouter (OpenAI 互換) 経由で生成を実行する。
+
+    ``httpx`` が利用可能ならそれを使用し、なければ stdlib の ``urllib.request`` に
+    フォールバックする。429 / 5xx は ``MAX_ATTEMPTS`` までリトライし、キー回転を行う。
+
+    Args:
+        model_name: OpenRouter 上のモデル名 (例: ``google/gemini-2.0-flash-exp:free``)。
+        prompt: ユーザープロンプト。
+        system_instruction: システムインストラクション。
+        api_keys: OpenRouter API キーのリスト（先頭から順に試行）。
+
+    Returns:
+        ``OpenRouterResponse`` オブジェクト。
+
+    Raises:
+        Exception: 全キー・全リトライで失敗した場合。
+    """
+    if not api_keys:
+        raise ValueError("No OpenRouter API keys provided")
+
+    # httpx 利用可否を事前判定
+    try:
+        import httpx as _httpx  # type: ignore[import-not-found]
+
+        has_httpx = True
+    except ImportError:
+        _httpx = None  # type: ignore[assignment]
+        has_httpx = False
+
+    last_exc: Exception | None = None
+
+    for attempt in range(MAX_ATTEMPTS):
+        for key_idx, api_key in enumerate(api_keys):
+            try:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": OPENROUTER_DEFAULT_MAX_TOKENS,
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": os.environ.get(
+                        "OPENROUTER_REFERER", "https://github.com/JoichiroAkimoto/HW-Genie"
+                    ),
+                    "X-Title": os.environ.get("OPENROUTER_TITLE", "HW-Genie AI Review"),
+                }
+
+                if has_httpx:
+                    assert _httpx is not None
+                    resp = _httpx.post(
+                        OPENROUTER_API_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=OPENROUTER_TIMEOUT,
+                    )
+                    status = resp.status_code
+                    body_text = resp.text
+                    if status == 429 or 500 <= status < 600:
+                        err = Exception(f"OpenRouter API Error {status}: {body_text[:500]}")
+                        err.code = status  # type: ignore[attr-defined]
+                        raise err
+                    resp.raise_for_status()
+                    try:
+                        data = resp.json()
+                    except Exception as je:
+                        raise Exception(f"OpenRouter invalid JSON: {je}: {body_text[:500]}") from je
+                else:
+                    import urllib.error
+                    import urllib.request
+
+                    req_body = json.dumps(payload).encode("utf-8")
+                    req = urllib.request.Request(
+                        OPENROUTER_API_URL,
+                        data=req_body,
+                        headers=headers,
+                        method="POST",
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=OPENROUTER_TIMEOUT) as uresp:  # noqa: S310
+                            status = uresp.status
+                            body_text = uresp.read().decode("utf-8", errors="replace")
+                            if status == 429 or 500 <= status < 600:
+                                err = Exception(f"OpenRouter API Error {status}: {body_text[:500]}")
+                                err.code = status  # type: ignore[attr-defined]
+                                raise err
+                            data = json.loads(body_text)
+                    except urllib.error.HTTPError as he:
+                        err_body = ""
+                        try:
+                            err_body = he.read().decode("utf-8", errors="replace")[:500]
+                        except Exception:
+                            err_body = str(he)
+                        err = Exception(f"OpenRouter API Error {he.code}: {err_body}")
+                        err.code = he.code  # type: ignore[attr-defined]
+                        raise err from he
+
+                # レスポンス解析: choices[0].message.content
+                text = ""
+                try:
+                    choices = data.get("choices") or []
+                    if choices:
+                        msg = choices[0].get("message") or {}
+                        text = msg.get("content") or ""
+                        if not text:
+                            # 一部プロバイダは choices[0].text を返す場合
+                            text = choices[0].get("text") or ""
+                    if not text:
+                        # フォールバック: 全体を文字列化
+                        text = json.dumps(data, ensure_ascii=False)[:8000]
+                except Exception as pe:
+                    raise Exception(f"OpenRouter response parse error: {pe}: {data}") from pe
+
+                usage_raw = data.get("usage") or {}
+                prompt_tokens = usage_raw.get("prompt_tokens")
+                if prompt_tokens is None:
+                    prompt_tokens = usage_raw.get("prompt_token_count")
+                if prompt_tokens is None:
+                    prompt_tokens = 0
+                completion_tokens = usage_raw.get("completion_tokens")
+                if completion_tokens is None:
+                    completion_tokens = usage_raw.get("candidates_token_count")
+                if completion_tokens is None:
+                    total = usage_raw.get("total_tokens")
+                    if total is not None:
+                        try:
+                            completion_tokens = int(total) - int(prompt_tokens or 0)
+                        except Exception:
+                            completion_tokens = 0
+                    else:
+                        completion_tokens = 0
+                usage = _OpenRouterUsage(
+                    prompt_token_count=int(prompt_tokens or 0),
+                    candidates_token_count=int(completion_tokens or 0),
+                )
+                model_version = data.get("model") or model_name
+                resp_obj = OpenRouterResponse(
+                    text=text,
+                    usage_metadata=usage,
+                    model_version=model_version,
+                    retry_count=attempt,
+                )
+                # 成功ログ
+                print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})")
+                return resp_obj
+
+            except Exception as e:  # noqa: BLE001
+                retryable, code = _is_retryable_api_error(e)
+                last_exc = e
+                is_last_key = key_idx == len(api_keys) - 1
+                is_last_attempt = attempt >= MAX_ATTEMPTS - 1
+                if not retryable:
+                    if not is_last_key:
+                        print(
+                            f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed non-retryable ({e}), "
+                            f"trying next key..."
+                        )
+                        continue
+                    # 最後のキーの非リトライエラー
+                    if is_last_attempt:
+                        raise
+                    # 非リトライエラーでも次の試行へ（再試行しても同じだが、他キーで既に全滅なので）
+                    print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed non-retryable: {e}")
+                    break
+                # retryable
+                if not is_last_key:
+                    print(
+                        f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed ({e}), trying next key..."
+                    )
+                    continue
+                # 最後のキーで retryable -> 外側ループのバックオフへ
+                print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed ({e})")
+                break
+
+        # 全キー試行後のバックオフ（最後の試行以外）
+        if attempt < MAX_ATTEMPTS - 1 and last_exc is not None:
+            retryable, code = _is_retryable_api_error(last_exc)
+            if retryable:
+                if code == 429:
+                    delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                    print(
+                        f"OpenRouter API 429 (Rate limited). Retrying in {delay:.1f}s... "
+                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                    )
+                else:
+                    delay = RETRY_DELAY_5XX * (2**attempt)
+                    print(
+                        f"OpenRouter API Error ({last_exc}). Retrying in {delay}s... "
+                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                    )
+                time.sleep(delay)
+            else:
+                # 非リトライエラーで全キー失敗 → 即終了
+                if last_exc:
+                    raise last_exc
+                break
+
+    if last_exc:
+        raise last_exc
+    raise Exception("OpenRouter: all retries exhausted")
 
 
 def build_execution_metadata(
@@ -748,12 +1082,15 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
 
 
 def main():
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("Error: GEMINI_API_KEY is not set.")
-        sys.exit(1)
-
-    client = genai.Client(api_key=api_key)
+    gemini_keys = _collect_gemini_keys()
+    openrouter_keys = _collect_openrouter_keys()
+    if not gemini_keys and not openrouter_keys:
+        print("No Gemini/OpenRouter API keys configured — skipping (fork PR or missing secrets).")
+        sys.exit(0)
+    if not gemini_keys:
+        print("No Gemini API keys configured — skipping (fork PR or missing secrets), will try OpenRouter fallback if available.")
+    if openrouter_keys:
+        print(f"OpenRouter fallback enabled ({len(openrouter_keys)} key(s))")
 
     # 日本時間のタイムゾーン設定
     JST = datetime.timezone(datetime.timedelta(hours=9), "JST")
@@ -764,37 +1101,28 @@ def main():
 
     model_key = env_model_key
     # Parse --model from additional_context (must be start of line or preceded by whitespace)
+    # Allow slash and colon for openrouter models (e.g. openrouter/free, google/gemini-2.0-flash-exp:free)
     model_match = re.search(
-        r"(?m)(?:^|\s+)--model\s+([\w.-]+)", additional_context, re.IGNORECASE
+        r"(?m)(?:^|\s+)--model\s+([\w./:\-]+)", additional_context, re.IGNORECASE
     )
     if model_match:
-        model_key = model_match.group(1)
+        model_key = model_match.group(1).strip().strip(",").strip()
 
     # models.json のキー/name/aliases に基づいて model_info と model_name を解決
     model_info, model_name = resolve_model(model_key, model_config)
 
     print(f"Using model: {model_key} ({model_name})")
+    if len(gemini_keys) > 1:
+        print(f"Gemini keys available: {len(gemini_keys)} (rotation enabled)")
 
-    # エイリアス（gemini-flash-lite-latest 等）が指定された場合、API で正規名を解決して
-    # 表示用に正式名（gemini-3.1-flash-lite 等）へ正規化する。失敗時はそのまま表示。
+    # エイリアス解決は Gemini キー回転ループ内で各キーごとに試行する（API 呼び出しが必要なため）。
+    # ここでは初期値のみ設定。
     resolved_model_name = model_name
-    if model_key != model_name:
-        try:
-            api_model_info = client.models.get(model=model_name)
-            if (
-                api_model_info
-                and hasattr(api_model_info, "name")
-                and api_model_info.name
-            ):
-                fetched_name = api_model_info.name
-                if fetched_name.startswith("models/"):
-                    fetched_name = fetched_name[len("models/"):]
-                resolved_model_name = fetched_name
-                print(f"Resolved canonical model name from API: {resolved_model_name}")
-        except Exception as e:
-            print(
-                f"Note: Could not resolve canonical model name via API ({e}). Using: {model_name}"
-            )
+
+    # openrouter/free は OpenRouter 経由の無料モデルルーターを直接利用するメタモデル
+    is_openrouter_primary = model_info.get("provider") == "openrouter"
+    if is_openrouter_primary:
+        print(f"OpenRouter primary selected (model={model_name})")
 
     pr_number = os.environ.get("PR_NUMBER")
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -918,8 +1246,156 @@ def main():
 
         config = types.GenerateContentConfig(**config_kwargs)
 
-        # 429 / 5xx のリトライ付きで生成を実行（429: 30s+ジッター指数バックオフ、5xx: 5s 倍々）
-        response = _generate_with_retry(client, model_name, prompt, config)
+        # 生成: provider に応じて Gemini / OpenRouter を選択
+        response = None
+        last_exc: Exception | None = None
+
+        if is_openrouter_primary:
+            if not openrouter_keys:
+                print("Error: OPENROUTER_API_KEY is not set for openrouter/free.")
+                sys.exit(1)
+            if model_info.get("name") == "openrouter/free":
+                fallback_models = _get_openrouter_fallback_models()
+                print(f"Trying OpenRouter free router ({len(fallback_models)} models)...")
+            else:
+                fallback_models = [model_name]
+                print(f"Trying OpenRouter model {model_name}...")
+            for fb_model in fallback_models:
+                try:
+                    fb_resp = _generate_with_openrouter(
+                        fb_model, prompt, system_instruction, openrouter_keys
+                    )
+                    response = fb_resp
+                    model_name = fb_model
+                    resolved_model_name = fb_model
+                    model_info = {
+                        "name": fb_model,
+                        "input_cost_per_1m": None,
+                        "output_cost_per_1m": None,
+                        "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                    }
+                    thinking_config = None
+                    print(f"OpenRouter succeeded with model {fb_model}")
+                    break
+                except Exception as fe:  # noqa: BLE001
+                    last_exc = fe
+                    print(f"OpenRouter model {fb_model} failed: {fe}")
+                    continue
+
+        if not is_openrouter_primary and gemini_keys:
+            # エイリアス解決は最初のキーで一度だけ試行（API 呼び出しが必要なため）。失敗しても続行
+            if model_key != model_name:
+                try:
+                    _alias_client = genai.Client(api_key=gemini_keys[0])
+                    api_model_info = _alias_client.models.get(model=model_name)
+                    if (
+                        api_model_info
+                        and hasattr(api_model_info, "name")
+                        and api_model_info.name
+                    ):
+                        fetched_name = api_model_info.name
+                        if fetched_name.startswith("models/"):
+                            fetched_name = fetched_name[len("models/") :]
+                        resolved_model_name = fetched_name
+                        print(f"Resolved canonical model name from API: {resolved_model_name}")
+                except Exception as ce:
+                    print(
+                        f"Note: Could not resolve canonical model name via API ({ce}). "
+                        f"Using: {model_name}"
+                    )
+
+            # 1) Gemini: attempt ごとに全キーを順に試行。retryable エラーは即次キーへ、sleep は attempt 完了後のみ
+            for attempt in range(MAX_ATTEMPTS):
+                if response is not None:
+                    break
+                for idx, gemini_key in enumerate(gemini_keys):
+                    try:
+                        client = genai.Client(api_key=gemini_key)
+                        resp = client.models.generate_content(
+                            model=model_name, contents=prompt, config=config
+                        )
+                        try:
+                            resp._retry_count = attempt
+                        except Exception:
+                            pass
+                        response = resp
+                        print(f"Gemini key {idx + 1}/{len(gemini_keys)} succeeded (attempt {attempt + 1})")
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        retryable, code = _is_retryable_api_error(e)
+                        last_exc = e
+                        is_last_key = idx == len(gemini_keys) - 1
+                        if not retryable:
+                            if not is_last_key:
+                                print(
+                                    f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable ({e}), trying next key..."
+                                )
+                                continue
+                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable: {e}")
+                            break
+                        # retryable
+                        if not is_last_key:
+                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e}), trying next key...")
+                            continue
+                        print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e})")
+                        break
+                if response is not None:
+                    break
+                if last_exc is None:
+                    break
+                retryable, code = _is_retryable_api_error(last_exc)
+                if not retryable:
+                    # 非リトライエラーで全キー失敗 → OpenRouter フォールバックへ
+                    break
+                if attempt >= MAX_ATTEMPTS - 1:
+                    break
+                if code == 429:
+                    delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                    print(
+                        f"Gemini API 429 (Rate limited). Retrying in {delay:.1f}s... "
+                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                    )
+                else:
+                    delay = RETRY_DELAY_5XX * (2**attempt)
+                    print(
+                        f"Gemini API Error ({last_exc}). Retrying in {delay}s... "
+                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                    )
+                time.sleep(delay)
+
+        # 2) Gemini 全滅時は OpenRouter フォールバック（無料モデル）
+        if not is_openrouter_primary and response is None and openrouter_keys:
+            fallback_models = _get_openrouter_fallback_models()
+            print(f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
+            for fb_model in fallback_models:
+                try:
+                    fb_resp = _generate_with_openrouter(
+                        fb_model, prompt, system_instruction, openrouter_keys
+                    )
+                    response = fb_resp
+                    # メタデータ用にモデル情報を更新（コスト不明として扱う）
+                    model_name = fb_model
+                    resolved_model_name = fb_model
+                    model_info = {
+                        "name": fb_model,
+                        "input_cost_per_1m": None,
+                        "output_cost_per_1m": None,
+                        "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                    }
+                    # OpenRouter は思考非対応のため表示から除外
+                    thinking_config = None
+                    print(f"OpenRouter fallback succeeded with model {fb_model}")
+                    break
+                except Exception as fe:  # noqa: BLE001
+                    last_exc = fe
+                    print(f"OpenRouter fallback model {fb_model} failed: {fe}")
+                    continue
+
+        if response is None:
+            if last_exc is not None:
+                raise last_exc
+            raise Exception("All Gemini keys and OpenRouter fallbacks exhausted without response")
+
         end_time = datetime.datetime.now(JST)
         duration = (end_time - start_time).total_seconds()
 

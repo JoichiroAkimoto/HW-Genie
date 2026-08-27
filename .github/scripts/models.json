@@ -8,7 +8,9 @@
     "input_cost_per_1m": 1.50,
     "output_cost_per_1m": 9.00,
     "max_diff_chars": 2000000,
-    "thinking_level": "HIGH"
+    "thinking_level": "HIGH",
+    "provider": "gemini",
+    "fallback": true
   },
   "flash-lite": {
     "name": "gemini-flash-lite-latest",
@@ -19,7 +21,9 @@
     "input_cost_per_1m": 0.25,
     "output_cost_per_1m": 1.50,
     "max_diff_chars": 2000000,
-    "thinking_level": "HIGH"
+    "thinking_level": "HIGH",
+    "provider": "gemini",
+    "fallback": true
   },
   "gemma": {
     "name": "gemma-4-31b-it",
@@ -30,6 +34,22 @@
     "input_cost_per_1m": 0.0,
     "output_cost_per_1m": 0.0,
     "max_diff_chars": 500000,
-    "thinking_level": null
+    "thinking_level": null,
+    "provider": "gemini",
+    "fallback": false
+  },
+  "openrouter-free": {
+    "name": "openrouter/free",
+    "aliases": [
+      "openrouter/free",
+      "openrouter-free",
+      "openrouter_free"
+    ],
+    "input_cost_per_1m": 0.0,
+    "output_cost_per_1m": 0.0,
+    "max_diff_chars": 500000,
+    "thinking_level": null,
+    "provider": "openrouter",
+    "fallback": true
   }
 }
