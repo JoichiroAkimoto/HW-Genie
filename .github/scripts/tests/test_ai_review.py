@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from unittest import mock
@@ -966,3 +967,672 @@ def test_build_execution_metadata_unknown_cost_and_no_thinking():
     assert "思考" not in metadata
     assert "(取得できませんでした)" in metadata
 
+
+
+# ---------------------------------------------------------------------------
+# Context7 integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_has_dep_file_matches_toml_lock_requirements():
+    """依存関係ファイル (.toml / .lock / requirements*) の検知。"""
+    assert ai_review._has_dep_file(["pyproject.toml"]) is True
+    assert ai_review._has_dep_file(["src/python/uv.lock"]) is True
+    assert ai_review._has_dep_file(["requirements.txt"]) is True
+    assert ai_review._has_dep_file(["requirements-ai.txt"]) is True
+    assert ai_review._has_dep_file(["src/foo.py", "pyproject.toml"]) is True
+    # 依存関係ファイルを含まない
+    assert ai_review._has_dep_file(["src/foo.py"]) is False
+    assert ai_review._has_dep_file([]) is False
+    assert ai_review._has_dep_file(None) is False
+
+
+def test_extract_libraries_from_dependency_name_marker():
+    """Dependabot 形式 `dependency-name: xyz` から抽出できる。"""
+    diff = """
+    some context
+    dependency-name: "pytest-cov"
+    other: foo
+    """
+    libs = ai_review._extract_libraries_from_diff(diff, [".github/dependabot.yml"])
+    assert libs == ["pytest-cov"]
+
+
+def test_extract_libraries_skips_empty_numeric_and_common_words():
+    """空 / 数字のみ / 一般的すぎる単語は除外される。"""
+    diff = """
+    dependency-name: "123"
+    dependency-name: "fix"
+    dependency-name: "1.2.3"
+    """
+    libs = ai_review._extract_libraries_from_diff(diff, [".github/dependabot.yml"])
+    assert libs == []
+
+
+def test_extract_libraries_toml_quoted_only_when_dep_file_changed():
+    """pyproject.toml / uv.lock 変更時のみ quoted-library パターンが有効。"""
+    diff = '+ "pytest-cov"\n+ "ruff"\n'
+    # dep file が無いと quoted パターンは適用されない
+    assert ai_review._extract_libraries_from_diff(diff, ["src/foo.py"]) == []
+    libs = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    assert libs == ["pytest-cov", "ruff"]
+
+
+def test_extract_libraries_excludes_stdlib_from_toml_pattern():
+    """quoted パターンは stdlib 名を除外する（誤検出防止）。"""
+    diff = '+ "json"\n+ "os"\n+ "httpx"\n'
+    libs = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    assert "json" not in libs
+    assert "os" not in libs
+    assert "httpx" in libs
+
+
+def test_extract_libraries_toml_key_value_format():
+    """pyproject.toml の PEP 621 クォート形式 `+ "library>=version"` は抽出する。
+    ベアな `+ key = "value"` 形式は iteration 2 でこのブランチを削除済みのため
+    抽出されない（バグ修正 #2）。
+    """
+    diff = (
+        '+ "pytest>=8.0.0"\n'
+        '+ "ruff>=0.6.0"\n'
+    )
+    libs = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    # PEP 621 形式では抽出される
+    assert "pytest" in libs
+    assert "ruff" in libs
+
+
+def test_extract_libraries_import_fallback_only_without_dep_libs():
+    """依存関係由来が無いときのみ import 文から抽出する。"""
+    # 依存ライブラリが見つかった場合、import パターンは無視される
+    diff_with_dep = (
+        'dependency-name: "pytest-cov"\n'
+        "+import json\n"
+        "+from pathlib import Path\n"
+        "+import httpx\n"
+    )
+    libs = ai_review._extract_libraries_from_diff(diff_with_dep, [".github/dependabot.yml"])
+    assert "httpx" not in libs
+    assert libs == ["pytest-cov"]
+
+    # 依存ライブラリが無い場合は import 由来を採用
+    diff_import_only = "+import httpx\n+from pathlib import Path\n"
+    libs = ai_review._extract_libraries_from_diff(diff_import_only, ["src/foo.py"])
+    assert "httpx" in libs
+    assert "pathlib" not in libs  # stdlib 除外
+
+
+def test_extract_libraries_respects_max_libraries():
+    """最大 CONTEXT7_MAX_LIBRARIES 件までに制限される。"""
+    diff = "\n".join(f'dependency-name: "lib{i}"' for i in range(10))
+    libs = ai_review._extract_libraries_from_diff(diff, [".github/dependabot.yml"])
+    assert len(libs) == ai_review.CONTEXT7_MAX_LIBRARIES
+    assert len(libs) == 3
+
+
+def test_extract_libraries_empty_diff():
+    """空 diff では空リストを返す。"""
+    assert ai_review._extract_libraries_from_diff("", ["pyproject.toml"]) == []
+    assert ai_review._extract_libraries_from_diff("   \n", []) == []
+
+
+def test_parse_mcp_body_plain_json():
+    """通常の JSON レスポンスをパースする。"""
+    body = '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+    parsed = ai_review._parse_mcp_body(body)
+    assert parsed == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+
+
+def test_parse_mcp_body_sse_format():
+    """SSE 形式 (data: {...}) をパースする。"""
+    body = (
+        'event: message\n'
+        'data: {"jsonrpc":"2.0","id":1,"result":{"foo":"bar"}}\n\n'
+    )
+    parsed = ai_review._parse_mcp_body(body)
+    assert parsed == {"jsonrpc": "2.0", "id": 1, "result": {"foo": "bar"}}
+
+
+def test_parse_mcp_body_sse_with_done_marker():
+    """SSE 末尾の [DONE] マーカーはスキップされる。"""
+    body = (
+        'data: {"jsonrpc":"2.0","id":1,"result":{"v":1}}\n\n'
+        'data: [DONE]\n\n'
+    )
+    parsed = ai_review._parse_mcp_body(body)
+    assert parsed == {"jsonrpc": "2.0", "id": 1, "result": {"v": 1}}
+
+
+def test_parse_mcp_body_invalid_returns_none():
+    """不正な JSON / 空文字は None を返す。"""
+    assert ai_review._parse_mcp_body("") is None
+    assert ai_review._parse_mcp_body("not json {") is None
+    assert ai_review._parse_mcp_body("   ") is None
+
+
+def test_is_valid_context7_id_accepts_valid():
+    """正しい /org/name 形式を受け入れる。"""
+    assert ai_review._is_valid_context7_id("/pytest-dev/pytest") is True
+    assert ai_review._is_valid_context7_id("/pydantic/pydantic") is True
+
+
+def test_is_valid_context7_id_rejects_filesystem_paths():
+    """ファイルパスは除外される。"""
+    assert ai_review._is_valid_context7_id("/usr/local/bin") is False
+    assert ai_review._is_valid_context7_id("/etc/passwd") is False
+    assert ai_review._is_valid_context7_id("/home/user/repo") is False
+    assert ai_review._is_valid_context7_id("/opt/whatever") is False
+
+
+def test_is_valid_context7_id_rejects_malformed():
+    """セグメント数や文字種の不正な形式を拒否する。"""
+    assert ai_review._is_valid_context7_id("pytest-dev/pytest") is False  # 先頭 /
+    assert ai_review._is_valid_context7_id("/only-one") is False  # 1 セグメント
+    assert ai_review._is_valid_context7_id("/a/b/c/d/e") is False  # 多すぎ
+    assert ai_review._is_valid_context7_id("/a/b$c") is False  # 禁止文字
+    assert ai_review._is_valid_context7_id("") is False
+
+
+def test_extract_library_id_from_structured_content():
+    """structuredContent.libraryId から直接抽出できる。"""
+    result = {"structuredContent": {"libraryId": "/pytest-dev/pytest"}}
+    assert ai_review._extract_library_id_from_mcp_result(result) == "/pytest-dev/pytest"
+
+
+def test_extract_library_id_from_blob_fallback():
+    """structuredContent がない場合、JSON blob 全体から抽出する。"""
+    result = {"content": [{"text": 'See /pydantic/pydantic for details'}]}
+    assert ai_review._extract_library_id_from_mcp_result(result) == "/pydantic/pydantic"
+
+
+def test_extract_library_id_returns_none_for_invalid():
+    """不正な ID は None を返す。"""
+    assert ai_review._extract_library_id_from_mcp_result(None) is None
+    assert ai_review._extract_library_id_from_mcp_result({}) is None
+    assert ai_review._extract_library_id_from_mcp_result({"structuredContent": {"libraryId": "/etc/passwd"}}) is None
+
+
+def test_extract_docs_from_content_list():
+    """content[].text から結合して返す。"""
+    result = {"content": [{"text": "hello"}, {"text": "world"}]}
+    assert ai_review._extract_docs_from_mcp_result(result) == "hello\n\nworld"
+
+
+def test_extract_docs_from_structured_content():
+    """structuredContent.docs もサポートする。"""
+    result = {"structuredContent": {"docs": "documentation text"}}
+    assert ai_review._extract_docs_from_mcp_result(result) == "documentation text"
+
+
+def test_extract_docs_returns_none_for_empty():
+    """ドキュメントが見つからない場合 None を返す。"""
+    assert ai_review._extract_docs_from_mcp_result(None) is None
+    assert ai_review._extract_docs_from_mcp_result({}) is None
+    assert ai_review._extract_docs_from_mcp_result({"content": []}) is None
+    assert ai_review._extract_docs_from_mcp_result({"structuredContent": {"docs": ""}}) is None
+
+
+def test_fetch_context7_docs_empty_libraries():
+    """空 libraries では空文字を返す（ネットワークコールしない）。"""
+    assert ai_review._fetch_context7_docs([], timeout=5.0) == ""
+
+
+def test_fetch_context7_docs_merges_and_truncates_to_budget():
+    """複数ライブラリの結果を結合し、TOTAL_BUDGET で切る。"""
+    fake_doc_a = "A" * 5000
+    fake_doc_b = "B" * 5000
+
+    def fake_fetch(lib, query, api_key, timeout):
+        if lib == "lib-a":
+            return fake_doc_a
+        if lib == "lib-b":
+            return fake_doc_b
+        return None
+
+    with mock.patch.object(ai_review, "_fetch_context7_for_library", side_effect=fake_fetch):
+        result = ai_review._fetch_context7_docs(["lib-a", "lib-b"], timeout=5.0)
+    assert len(result) <= ai_review.CONTEXT7_TOTAL_BUDGET
+    assert "### lib-a" in result
+    assert "### lib-b" in result
+
+
+def test_fetch_context7_docs_skips_libraries_with_no_docs():
+    """doc が None のライブラリはスキップされる。"""
+    def fake_fetch(lib, query, api_key, timeout):
+        return None if lib == "lib-empty" else "ok docs"
+
+    with mock.patch.object(ai_review, "_fetch_context7_for_library", side_effect=fake_fetch):
+        result = ai_review._fetch_context7_docs(["lib-empty", "lib-good"], timeout=5.0)
+    assert "lib-empty" not in result
+    assert "### lib-good" in result
+
+
+def test_fetch_context7_docs_per_lib_truncation():
+    """per-lib 上限が効く（header 込みで CONTEXT7_MAX_CHARS_PER_LIB 以下）。"""
+    big = "X" * 10000  # 上限 3000 を超える
+
+    def fake_fetch(lib, query, api_key, timeout):
+        return big
+
+    with mock.patch.object(ai_review, "_fetch_context7_for_library", side_effect=fake_fetch):
+        result = ai_review._fetch_context7_docs(["lib-big"], timeout=5.0)
+    # header "### lib-big\n" + body (3000 - header 程度) でおさまる
+    # 余裕を見て CONTENT 全体でも per-lib 上限 + ヘッダ長以下であるべき
+    assert len(result) <= ai_review.CONTEXT7_MAX_CHARS_PER_LIB + len("### lib-big\n")
+
+
+# ---------------------------------------------------------------------------
+# _extract_libraries_from_diff / _parse_mcp_body の回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_extract_libraries_pep621_versioned_deps():
+    """PEP 621 の versioned dependencies（+ "httpx>=0.27", など）も抽出できる。"""
+    diff = '+ "httpx>=0.27",\n+ "pydantic>=2.0",\n+ "ruff==0.6.0"\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    assert result == ["httpx", "pydantic", "ruff"]
+
+
+def test_extract_libraries_uv_lock():
+    """uv.lock の name = "library" から value（ライブラリ名）を抽出する。"""
+    diff = '+ name = "httpx"\n+ version = "0.27.0"\n+ name = "pydantic"\n+ version = "2.0"\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert result == ["httpx", "pydantic"]
+
+
+def test_extract_libraries_uv_lock_dedup():
+    """uv.lock 内で同じライブラリが複数回現れても重複排除される。"""
+    diff = (
+        '+ name = "httpx"\n'
+        '+ version = "0.27.0"\n'
+        '+ name = "httpx"\n'
+        '+ version = "0.27.1"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert result == ["httpx"]
+
+
+def test_extract_libraries_requirements_txt():
+    """requirements.txt の + httpx>=0.27 形式も抽出できる（json は stdlib なので除外）。"""
+    diff = "+ httpx>=0.27\n+ pydantic==2.0\n+ json\n"
+    result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
+    assert result == ["httpx", "pydantic"]
+
+
+def test_extract_libraries_toml_key_value_excludes_stdlib():
+    """PEP 621 クォート形式で stdlib（json）は除外される。
+    ベアな `+ key = "value"` ブランチは iteration 2 で削除された。
+    """
+    diff = '+ "json"\n+ "httpx>=0.27"\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    assert "json" not in result
+    assert "httpx" in result
+
+
+def test_parse_mcp_body_json_with_data_substring_in_payload():
+    """本文中に \\ndata: を含む JSON は SSE と誤判定せず JSON としてパースされる。
+
+    body 内の \\n は JSON 文字列のエスケープ（バックスラッシュ + n の 2 文字）で、
+    パース後は実際の改行になる。
+    """
+    body = r'{"text": "line1\ndata: not SSE"}'
+    result = ai_review._parse_mcp_body(body)
+    assert result == {"text": "line1\ndata: not SSE"}
+
+
+def test_parse_mcp_body_sse_first_line_marker():
+    """先頭行が data: で始まる SSE は JSON としてパースされる。"""
+    body = 'data: {"v": 1}\n\n'
+    result = ai_review._parse_mcp_body(body)
+    assert result == {"v": 1}
+
+
+def test_parse_mcp_body_sse_does_not_match_arbitrary_substring():
+    """JSON 値内の "data:" 部分文字列だけでは SSE と判定しない。"""
+    body = '{"x": "data: foo"}'
+    result = ai_review._parse_mcp_body(body)
+    assert result == {"x": "data: foo"}
+
+
+# ---------------------------------------------------------------------------
+# Iteration 2: クリティカルレビューで指摘されたバグの回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_extract_libraries_uv_lock_skips_project_name():
+    """uv.lock の最上位の + name = "..." はプロジェクト自身の名前なので
+    抽出から除外する。[[package]] 内の name のみ拾う（バグ修正 #1）。"""
+    diff = (
+        '+name = "my-project"\n'
+        '+version = "0.1.0"\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+version = "0.27"\n'
+        '+[[package]]\n'
+        '+name = "anyio"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "my-project" not in result, f"project name leaked: {result}"
+    assert "httpx" in result
+    assert "anyio" in result
+    # 順序は保持される
+    assert result.index("httpx") < result.index("anyio")
+
+
+def test_extract_libraries_uv_lock_no_package_marker():
+    """+[[package]] マーカーが diff に無い場合はフォールバックで
+    すべての + name = "..." を抽出する（バグ修正 #1 の後方互換）。"""
+    diff = '+ name = "httpx"\n+ name = "pydantic"\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "httpx" in result
+    assert "pydantic" in result
+
+
+def test_extract_libraries_toml_key_value_branch_removed_or_restricted():
+    """pyproject.toml の [tool.pytest.ini_options] 等の設定キー
+    (minversion / addopts / target-version) は依存ではないため抽出されない。
+    同じ diff 内の httpx は PEP 621 のクォート形式 ""httpx >= ...""
+    ではなく生の + httpx = "0.27" なので、
+    バグ修正 #2 でこのブランチを削除した結果、httpx も抽出されない可能性がある。
+    重要なのは偽陽性（minversion / addopts / target-version）がゼロになること。
+    テストでは minversion / addopts / target-version が result に含まれないことを
+    厳密に確認する。"""
+    diff = (
+        '+ minversion = "6.0"\n'
+        '+ addopts = "-ra -q"\n'
+        '+ target-version = "py310"\n'
+        '+ httpx = "0.27"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
+    for false_positive in ("minversion", "addopts", "target-version"):
+        assert false_positive not in result, (
+            f"false positive '{false_positive}' in result: {result}"
+        )
+
+
+def test_parse_mcp_body_sse_with_comment_line():
+    """SSE のコメント行（":" 始まり）で本文が始まっても、続く data: 行を
+    正しく検出して JSON としてパースする（バグ修正 #3）。"""
+    body = ': keep-alive\ndata: {"v": 1}\n\n'
+    result = ai_review._parse_mcp_body(body)
+    assert result == {"v": 1}, f"expected SSE detection, got {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Iteration 3: クリティカルレビューで指摘されたバグの回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_extract_libraries_uv_lock_project_in_first_package_block():
+    """uv.lock ではプロジェクト自身が最初の [[package]] ブロックに
+    `+source = { virtual = "." }` 付きで表れる。その name は依存ではないので
+    スキップし、続く依存 ([[package]] ブロック) の name のみを抽出する
+    （バグ修正 iteration-3 #1）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "hw-genie"\n'
+        '+version = "0.1.0"\n'
+        '+source = { virtual = "." }\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+version = "0.27"\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "anyio"\n'
+        '+version = "4.0"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "hw-genie" not in result, f"project name leaked: {result}"
+    assert "httpx" in result
+    assert "anyio" in result
+    assert result == ["httpx", "anyio"], f"unexpected order/contents: {result}"
+
+
+def test_extract_libraries_uv_lock_first_block_no_virtual_marker():
+    """最初の [[package]] ブロックが `virtual = "..."` マーカーを持たない場合、
+    プロジェクト自身ではないと判断し、フォールバックで全 name を抽出する
+    （バグ修正 iteration-3 #1 の後方互換）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "pydantic"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "httpx" in result
+    assert "pydantic" in result
+    assert result == ["httpx", "pydantic"]
+
+
+def test_extract_libraries_requirements_txt_bare_names():
+    """requirements.txt でバージョン指定なしの `+ httpx` / `+ pydantic` のような
+    行も抽出対象になる（バグ修正 iteration-3 #2）。
+    元のパターンはオペレータを必須にしていたため bare name を取りこぼしていた。"""
+    diff = '+ httpx\n+ pydantic\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
+    assert result == ["httpx", "pydantic"], f"unexpected: {result}"
+
+
+def test_extract_libraries_requirements_txt_comments_and_includes():
+    """requirements.txt で `#` コメント行や `-r other.txt` インクルード指示は
+    依存ではないので抽出されず、`+httpx>=0.27` のような行のみが抽出される
+    （バグ修正 iteration-3 #2 の偽陽性ガード）。"""
+    diff = (
+        '+# this is a comment\n'
+        '+-r other-requirements.txt\n'
+        '+httpx>=0.27\n'
+        '+pydantic\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
+    # コメント / インクルード指示に起因する偽陽性がないこと
+    for false_positive in ("# this is a comment", "r", "other-requirements.txt"):
+        assert false_positive not in result, (
+            f"false positive '{false_positive}' in result: {result}"
+        )
+    assert "httpx" in result
+    assert "pydantic" in result
+    assert result == ["httpx", "pydantic"]
+
+
+# ---------------------------------------------------------------------------
+# Iteration 4: クリティカルレビューで指摘されたバグの回帰テスト
+# ---------------------------------------------------------------------------
+
+
+def test_extract_libraries_uv_lock_editable_source_marker():
+    """uv.lock のプロジェクト自身が `source = { editable = "src/python" }` で
+    表れる場合、その [[package]] ブロックの name は依存ではないので
+    スキップする（バグ修正 iteration-4 #2）。
+    実プロジェクトの uv.lock（hw-genie など）は `editable` を使う形式が主流。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "hw-genie"\n'
+        '+version = "0.1.0"\n'
+        '+source = { editable = "src/python" }\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "new-lib"\n'
+        '+version = "0.1.0"\n'
+        '+source = { registry = "https://pypi.org/simple" }\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "hw-genie" not in result, f"project name leaked: {result}"
+    assert "new-lib" in result, f"new-lib missing: {result}"
+    assert result == ["new-lib"], f"unexpected: {result}"
+
+
+def test_extract_libraries_uv_lock_path_source_marker():
+    """uv.lock のプロジェクト / workspace メンバーが `source = { path = "..." }`
+    で表れる場合も、そのブロックの name は依存ではないのでスキップする
+    （バグ修正 iteration-4 #2）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "proj"\n'
+        '+version = "0.1.0"\n'
+        '+source = { path = "../shared-lib" }\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+version = "0.27"\n'
+        '+source = { registry = "https://pypi.org/simple" }\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "proj" not in result, f"project name leaked: {result}"
+    assert "httpx" in result, f"httpx missing: {result}"
+    assert result == ["httpx"], f"unexpected: {result}"
+
+
+def test_extract_libraries_uv_lock_url_source_marker():
+    """uv.lock で `source = { url = "..." }` の [[package]] ブロックは
+    URL 依存なので、依存（registry）に該当しないため name は抽出しない
+    （バグ修正 iteration-4 #2）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "url-only"\n'
+        '+version = "0.1.0"\n'
+        '+source = { url = "https://example.com/foo.tar.gz" }\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "pydantic"\n'
+        '+version = "2.0"\n'
+        '+source = { registry = "https://pypi.org/simple" }\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "url-only" not in result, f"url-only leaked: {result}"
+    assert "pydantic" in result, f"pydantic missing: {result}"
+    assert result == ["pydantic"], f"unexpected: {result}"
+
+
+def test_extract_libraries_uv_lock_virtual_marker_still_works():
+    """iteration-3 で導入した `source = { virtual = "..." }` 形式の
+    プロジェクトマーカーも引き続き機能することを保証する
+    （iteration-4 の正規表現拡張で virtual が壊れていないこと）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "hw-genie"\n'
+        '+version = "0.1.0"\n'
+        '+source = { virtual = "." }\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+version = "0.27"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert "hw-genie" not in result
+    assert result == ["httpx"], f"unexpected: {result}"
+
+
+def test_extract_libraries_uv_lock_fallback_when_no_project_marker():
+    """最初の [[package]] ブロックが project マーカー（virtual/editable/path/url
+    のいずれも）を持たない場合は、フォールバックで全 name を抽出する
+    （iteration-3 #1 の後方互換を iteration-4 でも維持）。"""
+    diff = (
+        '+[[package]]\n'
+        '+name = "httpx"\n'
+        '+\n'
+        '+[[package]]\n'
+        '+name = "pydantic"\n'
+    )
+    result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
+    assert result == ["httpx", "pydantic"], f"unexpected: {result}"
+
+
+def test_extract_libraries_requirements_txt_numeric_filter():
+    """requirements.txt で `+ 1.2.3` のようなバージョン番号だけの行は
+    ライブラリ名ではないので除外する（バグ修正 iteration-4 #5）。
+    pyproject ブランチと挙動を揃えるための一貫性修正。"""
+    diff = '+ 1.2.3\n+ httpx\n+ 0.27.0\n+ pydantic\n'
+    result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
+    # バージョン番号だけの行は依存ではないので抽出されないこと
+    assert "1.2.3" not in result, f"numeric leaked: {result}"
+    assert "0.27.0" not in result, f"numeric leaked: {result}"
+    assert "httpx" in result
+    assert "pydantic" in result
+    assert result == ["httpx", "pydantic"], f"unexpected: {result}"
+
+
+# バグ修正 iteration-4 #1: メイン関数の path filter は uv.lock を `is_ignored`
+# として LLM コンテキストから除外するが、ライブラリ抽出のためには別途
+# `dep_extraction_paths` を介して _extract_libraries_from_diff に渡す。
+# 統合テストは main() の full flow（PatchSet 構築・file_contents 取得等）を
+# 含むためモックが複雑になる。代わりに上記のユニットテスト群で
+# _extract_libraries_from_diff が uv.lock ブランチの入力を受け取り、
+# 期待通り動作することを直接検証する。integration テストが必要になった場合は
+# #4 の本コメント位置に end-to-end テストを追加すること。
+
+
+# ---------------------------------------------------------------------------
+# Integration test: extraction_diff flow (iteration-5 bug)
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_diff_contains_lock_body_for_uv_lock_only_pr(monkeypatch):
+    """PR #120 iteration-5 バグ修正: uv.lock のみの変更でもライブラリ抽出できる。
+
+    修正前: filtered_diff は lock 本文をプレースホルダに置換してしまうため、
+    _extract_libraries_from_diff は uv.lock 内の `+ name = "..."` も
+    `{ name = "..." }` も見つけられず何も抽出できなかった。
+    修正後: extraction_diff に実本文を保持し、抽出関数に渡す。
+    """
+    import io
+    from pathlib import Path
+    from unidiff import PatchSet
+
+    real_diff_path = Path("/tmp/real_uv_full.diff")
+    if not real_diff_path.exists():
+        pytest.skip("real_uv_full.diff fixture not available")
+    raw_diff = real_diff_path.read_text()
+
+    patch = PatchSet(io.StringIO(raw_diff))
+    assert len(patch) == 1
+    assert patch[0].path == "uv.lock"
+
+    is_lock_or_manifest_re = re.compile(
+        r"(\.lock$|requirements.*\.txt$|pyproject\.toml$|package\.json$|Cargo\.toml$|go\.mod$|Pipfile$|poetry\.lock$)",
+        re.IGNORECASE,
+    )
+
+    filtered_diff = ""
+    extraction_diff = ""
+    changed_paths = []
+    dep_extraction_paths = []
+
+    for f in patch:
+        path = f.path
+        is_removed = getattr(f, "is_removed_file", False)
+        is_ignored = re.search(
+            r"(package-lock\.json|yarn\.lock|bun\.lockb|pnpm-lock\.yaml|poetry\.lock|\.lock|\.svg|\.png|\.jpg|\.jpeg|\.gif|\.mp4|\.zip)$",
+            path,
+            re.IGNORECASE,
+        )
+        is_dep_manifest = bool(is_lock_or_manifest_re.search(path))
+        if is_ignored:
+            filtered_diff += "[注: ...省略...]\n"
+            if is_dep_manifest and not is_removed:
+                dep_extraction_paths.append(path)
+                extraction_diff += str(f) + "\n"
+            continue
+        filtered_diff += str(f) + "\n"
+        extraction_diff += str(f) + "\n"
+        if not is_removed:
+            changed_paths.append(path)
+            if is_dep_manifest:
+                dep_extraction_paths.append(path)
+
+    assert "uv.lock" in dep_extraction_paths
+    assert "name = \"fastapi\"" in extraction_diff
+    assert "name = \"fastapi\"" not in filtered_diff
+
+    extraction_paths = list(dict.fromkeys(changed_paths + dep_extraction_paths))
+    libs = ai_review._extract_libraries_from_diff(extraction_diff, extraction_paths)
+    # fastapi と pytest は root プロジェクトの [package.dependencies] に直接 dep として
+    # 記載されているため、`{ name = "fastapi", specifier = "..." }` パターンがマッチする
+    assert "fastapi" in libs, f"Expected fastapi, got {libs}"
+    assert "pytest" in libs, f"Expected pytest, got {libs}"
+
+    # 旧フロー（filtered_diff を渡した場合）は何も抽出できない
+    libs_old = ai_review._extract_libraries_from_diff(filtered_diff, extraction_paths)
+    assert libs_old == [], f"Old flow should extract nothing for lock-only PR, got {libs_old}"
