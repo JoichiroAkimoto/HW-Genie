@@ -77,6 +77,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEY }},${{ secrets.OPENROUTER_API_KEY_2 }}
           OPENROUTER_FALLBACK_MODELS: ${{ vars.OPENROUTER_FALLBACK_MODELS }}
+          # Context7 free: no API key required, but CONTEXT7_API_KEY increases rate limit if set
+          CONTEXT7_ENABLED: ${{ vars.CONTEXT7_ENABLED || 'true' }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CONTEXT7_TIMEOUT: ${{ vars.CONTEXT7_TIMEOUT || '10' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # workflow_call: dispatch 経由 (issue_comment/pull_request イベント)
           # workflow_dispatch: Actions UI から手動実行
