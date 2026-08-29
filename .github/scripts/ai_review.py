@@ -873,9 +873,13 @@ def _has_dep_file(changed_paths: list[str]) -> bool:
 def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[str]:
     """差分からライブラリ名を抽出する。
 
+    対応パターン:
     - ``dependency-name: xyz`` 形式（Dependabot 等）
-    - pyproject.toml / uv.lock の ``+ "library"`` 形式（.toml/.lock 変更時のみ）
-    - import 文 ``import xyz`` / ``from xyz import``（依存関係由来が 0 件時のみ）
+    - PEP 621 quoted: ``+ "httpx>=0.27"``（pyproject.toml 等の toml 変更時のみ）
+    - uv.lock: ``+ name = "library"`` および ``+ { name = "lib", specifier = "..." }``
+      （プロジェクトの source = { virtual|editable|path|url } ブロックは除外）
+    - requirements.txt: ``+ httpx>=0.27`` / バージョン無し ``+ httpx``
+    - import 文 ``+import xyz`` / ``+from xyz import``（依存関係由来が 0 件時のみ）
 
     重複を除去し、小文字化して最大 CONTEXT7_MAX_LIBRARIES 件を返す。
     """
@@ -925,20 +929,10 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
             if len(libs) >= CONTEXT7_MAX_LIBRARIES:
                 return libs[:CONTEXT7_MAX_LIBRARIES]
 
-        # uv.lock は "name = "library"" 形式で値を抽出（key=ではなく value=を拾う）
-        # 重要: uv.lock のプロジェクト自身の name は依存ではないため、以下の
-        # いずれかに該当する行はスキップする（バグ修正 iteration-4 #2 / iteration-3 #1 / iteration-2 #1）。
-        #   (a) 最初の +[[package...]] マーカーよりも前にある + name = "..."
-        #       （旧 uv.lock 形式: プロジェクトメタがファイルの先頭に直置きされる）
-        #   (b) +[[package...]] ブロックのうち、ブロック内に
-        #       +source\s*=\s*\{[^}]*(?:virtual|editable|path|url)\s*=\s*"
-        #       または +(?:virtual|editable|path|url)\s*=\s*"
-        #       を含むもの。uv の `source = { ... }` はプロジェクト／workspace 自身を
-        #       表す複数形式（virtual / editable / path / url）を持ち、いずれも
-        #       「PyPI レジストリではない＝依存ではない」マーカーとして扱う。
-        # +[[package...]] マーカーが diff に一切存在しない場合、
-        # または project マーカーがどのブロックにも無い場合はフォールバックで
-        # すべての + name = "..." を抽出する（後方互換）。
+        # uv.lock: `+ name = "library"` から値（=ライブラリ名）を抽出。
+        # ただしプロジェクト自身のブロックは除外する。プロジェクトの source は
+        # `source = { virtual|editable|path|url = "..." }` のいずれかで示される
+        # (registry は通常の依存)。
         if any("uv.lock" in p.lower() for p in (changed_paths or [])):
             pkg_starts = [
                 m.start()
@@ -947,21 +941,10 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
             name_pat = re.compile(
                 r'^\+\s*name\s*=\s*["\']([a-zA-Z0-9_.\-]+)["\']', re.MULTILINE
             )
-            # プロジェクト自身に該当する [[package]] ブロックのインデックス（1-based）。
-            # 1 以上の [[package]] ブロックのうち、最初に `virtual = "..."` を含むもの。
             project_block_idx: int | None = None
             for blk_idx, ps in enumerate(pkg_starts, start=1):
                 next_ps = pkg_starts[blk_idx] if blk_idx < len(pkg_starts) else len(diff)
                 block_text = diff[ps:next_ps]
-                # バグ修正 iteration-4 #2: uv の `source = { ... }` には複数の形式があり、
-                # プロジェクト自身を示すのは `virtual` だけではない:
-                #   - `source = { virtual = "." }`           旧形式
-                #   - `source = { editable = "src/python" }` 現在のこのプロジェクト (hw-genie)
-                #   - `source = { path = "../shared" }`      ワークスペース path dep
-                #   - `source = { url = "https://..." }`     URL 依存
-                # いずれも「PyPI レジストリではない＝依存ではない」ことを示すマーカーとして
-                # 扱う。`registry` は逆に通常の PyPI 依存側の source なので、ここでは
-                # 拾わない (誤ってプロジェクト扱いしない)。
                 if re.search(
                     r'^\+\s*(?:source\s*=\s*\{[^}]*(?:virtual|editable|path|url)\s*=\s*"|(?:virtual|editable|path|url)\s*=\s*")',
                     block_text,
@@ -983,11 +966,9 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
 
             for m in name_pat.finditer(diff):
                 bi = _block_idx_of(m.start())
-                # (a) 最初の +[[package]] よりも前の name はプロジェクト自身の name
+                # プロジェクト自身の name（先頭 or project ブロック内）は除外
                 if pkg_starts and m.start() < pkg_starts[0]:
                     continue
-                # (b) virtual マーカー付きの [[package]] ブロックの name は
-                #     プロジェクト自身の name
                 if bi != 0 and bi == project_block_idx:
                     continue
                 raw = m.group(1).strip().lower()
@@ -1000,12 +981,10 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
                 if len(libs) >= CONTEXT7_MAX_LIBRARIES:
                     return libs[:CONTEXT7_MAX_LIBRARIES]
 
-            # バグ修正 iteration-5 #2: uv.lock アップグレードでは package ブロックの
-            # `name` 行は変更されない（バージョンだけ変わる）ため、`+ name = "..."`
-            # パターンでは絶対にマッチしない。代わりに、ルートプロジェクトの
-            # `[package.dependencies]` セクションに現れる依存リファレンス
-            # （例: `+    { name = "fastapi", specifier = ">=0.135.3,<0.142.0" }`）
-            # から抽出する。これが「PR が direct dep を変更した」最も強いシグナル。
+            # 依存リファレンス: ルートプロジェクトの [package.dependencies] に
+            # 現れる `{ name = "lib", specifier = "..." }` 形式。
+            # uv.lock の upgrade では package ブロックの name は不変なので、
+            # 上記 `+ name = "..."` では絶対にマッチしないため別途パターンを用意。
             for m in re.finditer(
                 r'^\+\s*\{\s*name\s*=\s*"([a-zA-Z0-9_.\-]+)"',
                 diff,
@@ -1021,10 +1000,7 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
                 if len(libs) >= CONTEXT7_MAX_LIBRARIES:
                     return libs[:CONTEXT7_MAX_LIBRARIES]
 
-        # requirements.txt: + httpx>=0.27 のような行（バージョン無し + httpx も対象）
-        # バージョン指定子のオペレータ + `=` は完全に任意（バグ修正 iteration-3 #2）。
-        # 元のパターン `[><=!~]=?` はオペレータ自体を必須にしていたため、
-        # `+ httpx` のような行がマッチせず取りこぼされていた。
+        # requirements.txt: `+ httpx>=0.27` のような行（バージョン無し + httpx も対象）
         if any(
             "requirements" in p.lower() and p.lower().endswith(".txt")
             for p in (changed_paths or [])
@@ -1041,23 +1017,13 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
                     continue
                 if len(raw) < 2:
                     continue
-                # バグ修正 iteration-4 #5: pyproject.toml ブランチと挙動を揃え、
-                # 純粋なバージョン番号だけの行（例: `+ 1.2.3` のような単独行）は
-                # ライブラリ名ではないので除外する。
+                # バージョン番号だけの行（`+ 1.2.3`）は除外
                 if re.fullmatch(r"[\d.\-]+", raw):
                     continue
                 seen.add(raw)
                 libs.append(raw)
                 if len(libs) >= CONTEXT7_MAX_LIBRARIES:
                     return libs[:CONTEXT7_MAX_LIBRARIES]
-
-        # 削除: + library = "version" 形式ブランチ（バグ修正 #2）
-        # pyproject.toml の [tool.pytest.ini_options] 等にある
-        # `+ minversion = "6.0"` / `+ addopts = "-ra -q"` / `+ target-version = "py310"`
-        # などを依存と誤検出する致命的な偽陽性源だった。
-        # 単一正規表現で「httpx = "0.27"」と「minversion = "6.0"」を区別するヒューリスティクスは
-        # 存在しない（どちらも値で digit から始まる）ため、このブランチを完全削除する。
-        # pyproject.toml の PEP 621 依存は既に上の `+ "library"` クォートブランチで捕捉される。
 
     # 3. import 文: +import xyz / +from xyz import
     #    依存関係由来が 1 件以上ある場合は import 由来をスキップ（context bloat 防止）
@@ -1086,10 +1052,9 @@ def _parse_mcp_body(body_text: str) -> dict | None:
     body_text = body_text.strip()
     if not body_text:
         return None
-    # SSE 形式: 先頭の非空行が SSE フィールドマーカー (event:/id:/data:/retry:/": comment")
-    # で始まる場合のみ SSE とみなす。本文中に "data:" を含む通常 JSON を誤検出しないため。
-    # バグ修正 #3: SSE のコメント行（":" のみ）はフィールドマーカーではないが、SSE 仕様では
-    # 任意の位置に挿入可能。先頭がコメント行でも次行が data: なら正しく SSE と判定する。
+    # SSE 判定: 先頭行が event:/id:/data:/retry: で始まる場合のみ SSE とみなす
+    # （JSON 本文中の "data:" 部分文字列での誤検出を防ぐ）。
+    # ":" 始まりのコメント行は SSE 仕様で任意位置に挿入可能なので、判定時は飛ばす。
     first_line = next(
         (
             ln.strip()
@@ -1879,13 +1844,9 @@ def main():
         print("No diff found.")
         sys.exit(0)
 
-    # バグ修正 iteration-4 #1: lock/マニフェスト系のファイル（uv.lock, requirements.txt 等）は
-    # diff 本体が大きいため LLM プロンプトからは除外するが、ライブラリ抽出のためには
-    # _extract_libraries_from_diff に「変更された dep-manifest パス」を伝える必要がある。
-    # `changed_paths` は LLM コンテキスト用（file_contents 取得や参考情報提示）に絞り、
-    # `dep_extraction_paths` を別途用意して抽出ステージでのみ dep-manifest を含める。
-    # これにより `if any("uv.lock" in p.lower() ...)` ガードが true になり、
-    # uv.lock 抽出ブランチ（~65 行）が production で初めて実行されるようになる。
+    # lock/マニフェスト系（uv.lock, requirements.txt 等）は diff 本体が巨大なので
+    # LLM プロンプトからは除外するが、ライブラリ抽出のため dep_extraction_paths /
+    # extraction_diff に別途保持して _extract_libraries_from_diff に渡す。
     is_lock_or_manifest_re = re.compile(
         r"(\.lock$|requirements.*\.txt$|pyproject\.toml$|package\.json$|Cargo\.toml$|go\.mod$|Pipfile$|poetry\.lock$)",
         re.IGNORECASE,
@@ -1921,10 +1882,7 @@ def main():
                     f"[注: `{path}` は {status} されましたが、lock/バイナリ等のため diff 本体は省略されています "
                     f"(+{getattr(file, 'added', 0) or 0} / -{getattr(file, 'removed', 0) or 0})]\n"
                 )
-                # バグ修正 iteration-4 #1: lock/マニフェスト系は本文を LLM には渡さないが、
-                # ライブラリ抽出のため dep_extraction_paths には残す（削除ファイルは対象外）。
-                # バグ修正 iteration-5: 抽出ステージでは実本文（プレースホルダではなく）を
-                # extraction_diff に保持し、_extract_libraries_from_diff に渡す。
+                # 抽出用: 削除ファイルは対象外だが、dep-manifest の本文は保持
                 if is_dep_manifest and not is_removed:
                     dep_extraction_paths.append(path)
                     extraction_diff += str(file) + "\n"
@@ -1985,10 +1943,6 @@ def main():
     context7_docs = ""
     if os.environ.get("CONTEXT7_ENABLED", "true").strip().lower() not in ("false", "0", "off", "disabled"):
         try:
-            # バグ修正 iteration-4 #1: 抽出ステージでは dep-manifest パスも含めた
-            # 統合リストを渡す（lock ファイル本文は LLM には渡さないが抽出は行う）。
-            # バグ修正 iteration-5: extraction_diff を使い、lock 等の実本文を
-            # プレースホルダ置換されずに抽出関数に渡す（filtered_diff ではない）。
             extraction_paths = list(dict.fromkeys(changed_paths + dep_extraction_paths))
             libs = _extract_libraries_from_diff(extraction_diff, extraction_paths)
             if libs:

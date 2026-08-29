@@ -1027,10 +1027,10 @@ def test_extract_libraries_excludes_stdlib_from_toml_pattern():
     assert "httpx" in libs
 
 
-def test_extract_libraries_toml_key_value_format():
+def test_extract_libraries_pep621_quoted_format():
     """pyproject.toml の PEP 621 クォート形式 `+ "library>=version"` は抽出する。
-    ベアな `+ key = "value"` 形式は iteration 2 でこのブランチを削除済みのため
-    抽出されない（バグ修正 #2）。
+    ベアな `+ key = "value"` 形式はブランチを削除済みのため抽出されない
+    （`minversion = "6.0"` 等の設定キーとの区別が不可能なため）。
     """
     diff = (
         '+ "pytest>=8.0.0"\n'
@@ -1259,9 +1259,9 @@ def test_extract_libraries_requirements_txt():
     assert result == ["httpx", "pydantic"]
 
 
-def test_extract_libraries_toml_key_value_excludes_stdlib():
+def test_extract_libraries_pep621_quoted_excludes_stdlib():
     """PEP 621 クォート形式で stdlib（json）は除外される。
-    ベアな `+ key = "value"` ブランチは iteration 2 で削除された。
+    ベアな `+ key = "value"` ブランチは削除済み。
     """
     diff = '+ "json"\n+ "httpx>=0.27"\n'
     result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
@@ -1295,13 +1295,13 @@ def test_parse_mcp_body_sse_does_not_match_arbitrary_substring():
 
 
 # ---------------------------------------------------------------------------
-# Iteration 2: クリティカルレビューで指摘されたバグの回帰テスト
+# uv.lock extraction edge cases
 # ---------------------------------------------------------------------------
 
 
 def test_extract_libraries_uv_lock_skips_project_name():
     """uv.lock の最上位の + name = "..." はプロジェクト自身の名前なので
-    抽出から除外する。[[package]] 内の name のみ拾う（バグ修正 #1）。"""
+    抽出から除外する。[[package]] 内の name のみ拾う。"""
     diff = (
         '+name = "my-project"\n'
         '+version = "0.1.0"\n'
@@ -1322,7 +1322,7 @@ def test_extract_libraries_uv_lock_skips_project_name():
 
 def test_extract_libraries_uv_lock_no_package_marker():
     """+[[package]] マーカーが diff に無い場合はフォールバックで
-    すべての + name = "..." を抽出する（バグ修正 #1 の後方互換）。"""
+    すべての + name = "..." を抽出する。"""
     diff = '+ name = "httpx"\n+ name = "pydantic"\n'
     result = ai_review._extract_libraries_from_diff(diff, ["uv.lock"])
     assert "httpx" in result
@@ -1332,12 +1332,7 @@ def test_extract_libraries_uv_lock_no_package_marker():
 def test_extract_libraries_toml_key_value_branch_removed_or_restricted():
     """pyproject.toml の [tool.pytest.ini_options] 等の設定キー
     (minversion / addopts / target-version) は依存ではないため抽出されない。
-    同じ diff 内の httpx は PEP 621 のクォート形式 ""httpx >= ...""
-    ではなく生の + httpx = "0.27" なので、
-    バグ修正 #2 でこのブランチを削除した結果、httpx も抽出されない可能性がある。
-    重要なのは偽陽性（minversion / addopts / target-version）がゼロになること。
-    テストでは minversion / addopts / target-version が result に含まれないことを
-    厳密に確認する。"""
+    ベアな `+ key = "value"` ブランチは偽陽性過多のため削除済み。"""
     diff = (
         '+ minversion = "6.0"\n'
         '+ addopts = "-ra -q"\n'
@@ -1353,22 +1348,21 @@ def test_extract_libraries_toml_key_value_branch_removed_or_restricted():
 
 def test_parse_mcp_body_sse_with_comment_line():
     """SSE のコメント行（":" 始まり）で本文が始まっても、続く data: 行を
-    正しく検出して JSON としてパースする（バグ修正 #3）。"""
+    正しく検出して JSON としてパースする。"""
     body = ': keep-alive\ndata: {"v": 1}\n\n'
     result = ai_review._parse_mcp_body(body)
     assert result == {"v": 1}, f"expected SSE detection, got {result!r}"
 
 
 # ---------------------------------------------------------------------------
-# Iteration 3: クリティカルレビューで指摘されたバグの回帰テスト
+# uv.lock project source markers
 # ---------------------------------------------------------------------------
 
 
 def test_extract_libraries_uv_lock_project_in_first_package_block():
     """uv.lock ではプロジェクト自身が最初の [[package]] ブロックに
     `+source = { virtual = "." }` 付きで表れる。その name は依存ではないので
-    スキップし、続く依存 ([[package]] ブロック) の name のみを抽出する
-    （バグ修正 iteration-3 #1）。"""
+    スキップし、続く依存の name のみを抽出する。"""
     diff = (
         '+[[package]]\n'
         '+name = "hw-genie"\n'
@@ -1392,8 +1386,7 @@ def test_extract_libraries_uv_lock_project_in_first_package_block():
 
 def test_extract_libraries_uv_lock_first_block_no_virtual_marker():
     """最初の [[package]] ブロックが `virtual = "..."` マーカーを持たない場合、
-    プロジェクト自身ではないと判断し、フォールバックで全 name を抽出する
-    （バグ修正 iteration-3 #1 の後方互換）。"""
+    プロジェクト自身ではないと判断し、フォールバックで全 name を抽出する。"""
     diff = (
         '+[[package]]\n'
         '+name = "httpx"\n'
@@ -1409,8 +1402,7 @@ def test_extract_libraries_uv_lock_first_block_no_virtual_marker():
 
 def test_extract_libraries_requirements_txt_bare_names():
     """requirements.txt でバージョン指定なしの `+ httpx` / `+ pydantic` のような
-    行も抽出対象になる（バグ修正 iteration-3 #2）。
-    元のパターンはオペレータを必須にしていたため bare name を取りこぼしていた。"""
+    行も抽出対象になる。"""
     diff = '+ httpx\n+ pydantic\n'
     result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
     assert result == ["httpx", "pydantic"], f"unexpected: {result}"
@@ -1418,8 +1410,7 @@ def test_extract_libraries_requirements_txt_bare_names():
 
 def test_extract_libraries_requirements_txt_comments_and_includes():
     """requirements.txt で `#` コメント行や `-r other.txt` インクルード指示は
-    依存ではないので抽出されず、`+httpx>=0.27` のような行のみが抽出される
-    （バグ修正 iteration-3 #2 の偽陽性ガード）。"""
+    依存ではないので抽出されず、`+httpx>=0.27` のような行のみが抽出される。"""
     diff = (
         '+# this is a comment\n'
         '+-r other-requirements.txt\n'
@@ -1438,15 +1429,14 @@ def test_extract_libraries_requirements_txt_comments_and_includes():
 
 
 # ---------------------------------------------------------------------------
-# Iteration 4: クリティカルレビューで指摘されたバグの回帰テスト
+# uv.lock project source marker variants (editable / path / url)
 # ---------------------------------------------------------------------------
 
 
 def test_extract_libraries_uv_lock_editable_source_marker():
     """uv.lock のプロジェクト自身が `source = { editable = "src/python" }` で
-    表れる場合、その [[package]] ブロックの name は依存ではないので
-    スキップする（バグ修正 iteration-4 #2）。
-    実プロジェクトの uv.lock（hw-genie など）は `editable` を使う形式が主流。"""
+    表れる場合、その [[package]] ブロックの name は依存ではないのでスキップする。
+    実プロジェクトの uv.lock は `editable` を使う形式が主流。"""
     diff = (
         '+[[package]]\n'
         '+name = "hw-genie"\n'
@@ -1466,8 +1456,7 @@ def test_extract_libraries_uv_lock_editable_source_marker():
 
 def test_extract_libraries_uv_lock_path_source_marker():
     """uv.lock のプロジェクト / workspace メンバーが `source = { path = "..." }`
-    で表れる場合も、そのブロックの name は依存ではないのでスキップする
-    （バグ修正 iteration-4 #2）。"""
+    で表れる場合も、そのブロックの name は依存ではないのでスキップする。"""
     diff = (
         '+[[package]]\n'
         '+name = "proj"\n'
@@ -1487,8 +1476,7 @@ def test_extract_libraries_uv_lock_path_source_marker():
 
 def test_extract_libraries_uv_lock_url_source_marker():
     """uv.lock で `source = { url = "..." }` の [[package]] ブロックは
-    URL 依存なので、依存（registry）に該当しないため name は抽出しない
-    （バグ修正 iteration-4 #2）。"""
+    URL 依存（registry ではない）ため name は抽出しない。"""
     diff = (
         '+[[package]]\n'
         '+name = "url-only"\n'
@@ -1507,9 +1495,8 @@ def test_extract_libraries_uv_lock_url_source_marker():
 
 
 def test_extract_libraries_uv_lock_virtual_marker_still_works():
-    """iteration-3 で導入した `source = { virtual = "..." }` 形式の
-    プロジェクトマーカーも引き続き機能することを保証する
-    （iteration-4 の正規表現拡張で virtual が壊れていないこと）。"""
+    """`source = { virtual = "..." }` 形式のプロジェクトマーカーが
+    正規表現拡張後も引き続き機能することを保証する。"""
     diff = (
         '+[[package]]\n'
         '+name = "hw-genie"\n'
@@ -1527,8 +1514,7 @@ def test_extract_libraries_uv_lock_virtual_marker_still_works():
 
 def test_extract_libraries_uv_lock_fallback_when_no_project_marker():
     """最初の [[package]] ブロックが project マーカー（virtual/editable/path/url
-    のいずれも）を持たない場合は、フォールバックで全 name を抽出する
-    （iteration-3 #1 の後方互換を iteration-4 でも維持）。"""
+    のいずれも）を持たない場合は、フォールバックで全 name を抽出する。"""
     diff = (
         '+[[package]]\n'
         '+name = "httpx"\n'
@@ -1542,8 +1528,7 @@ def test_extract_libraries_uv_lock_fallback_when_no_project_marker():
 
 def test_extract_libraries_requirements_txt_numeric_filter():
     """requirements.txt で `+ 1.2.3` のようなバージョン番号だけの行は
-    ライブラリ名ではないので除外する（バグ修正 iteration-4 #5）。
-    pyproject ブランチと挙動を揃えるための一貫性修正。"""
+    ライブラリ名ではないので除外する。"""
     diff = '+ 1.2.3\n+ httpx\n+ 0.27.0\n+ pydantic\n'
     result = ai_review._extract_libraries_from_diff(diff, ["requirements.txt"])
     # バージョン番号だけの行は依存ではないので抽出されないこと
@@ -1554,28 +1539,16 @@ def test_extract_libraries_requirements_txt_numeric_filter():
     assert result == ["httpx", "pydantic"], f"unexpected: {result}"
 
 
-# バグ修正 iteration-4 #1: メイン関数の path filter は uv.lock を `is_ignored`
-# として LLM コンテキストから除外するが、ライブラリ抽出のためには別途
-# `dep_extraction_paths` を介して _extract_libraries_from_diff に渡す。
-# 統合テストは main() の full flow（PatchSet 構築・file_contents 取得等）を
-# 含むためモックが複雑になる。代わりに上記のユニットテスト群で
-# _extract_libraries_from_diff が uv.lock ブランチの入力を受け取り、
-# 期待通り動作することを直接検証する。integration テストが必要になった場合は
-# #4 の本コメント位置に end-to-end テストを追加すること。
-
-
 # ---------------------------------------------------------------------------
-# Integration test: extraction_diff flow (iteration-5 bug)
+# Integration: extraction_diff flow (uv.lock-only PR)
 # ---------------------------------------------------------------------------
 
 
 def test_extraction_diff_contains_lock_body_for_uv_lock_only_pr(monkeypatch):
-    """PR #120 iteration-5 バグ修正: uv.lock のみの変更でもライブラリ抽出できる。
+    """uv.lock のみの変更でもライブラリ抽出できる。
 
-    修正前: filtered_diff は lock 本文をプレースホルダに置換してしまうため、
-    _extract_libraries_from_diff は uv.lock 内の `+ name = "..."` も
-    `{ name = "..." }` も見つけられず何も抽出できなかった。
-    修正後: extraction_diff に実本文を保持し、抽出関数に渡す。
+    filtered_diff は lock 本文をプレースホルダに置換するため、抽出用には
+    extraction_diff を別途保持して _extract_libraries_from_diff に渡す。
     """
     import io
     from pathlib import Path
