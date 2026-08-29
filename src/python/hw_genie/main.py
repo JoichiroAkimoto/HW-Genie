@@ -914,6 +914,96 @@ def cmd_log_show(args):
         print(row.log_text, end="" if row.log_text.endswith("\n") else "\n")
 
 
+def cmd_titan_arena(args):
+    """タイタンアリーナ自動バトル実行"""
+    headers = None
+    # "default" リテラルを作らず resolve_account 経由で解決する
+    try:
+        account_alias: str | None = resolve_account(args.account)
+    except AccountResolutionError:
+        account_alias = args.account
+
+    # curlコマンドから認証情報を抽出
+    if args.curl:
+        auth_headers = extract_headers_from_curl(args.curl)
+        if auth_headers:
+            info = update_session_with_headers(auth_headers, account_alias)
+            if info["status"] == "success":
+                headers = info["headers"]
+                print(f"Successfully updated session for {info['player'].name} from curl.")
+                # curl 登録で実名が確定したら account_alias を更新
+                try:
+                    account_alias = resolve_account(info["player"].name)
+                except AccountResolutionError:
+                    account_alias = info["player"].name
+            else:
+                print(f"Warning: Could not update session from curl: {info.get('message')}")
+
+    # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
+    if not headers:
+        headers = _ensure_session(args)
+        # _ensure_session 後に canonical な account_alias を再解決
+        try:
+            account_alias = resolve_account(args.account)
+        except AccountResolutionError:
+            pass
+
+    client = HWClient(headers)
+
+    # 任意の編成リスト（--teams で "4023,4043,4024,4022,4040;..." のように指定）
+    team_rotation = None
+    if getattr(args, "teams", None):
+        try:
+            team_rotation = []
+            for group in args.teams.split(";"):
+                ids = [int(x.strip()) for x in group.split(",") if x.strip()]
+                if ids:
+                    team_rotation.append(ids)
+            if team_rotation is not None and len(team_rotation) == 0:
+                print("Error: Invalid --teams value: empty", file=sys.stderr)
+                sys.exit(1)
+        except ValueError as e:
+            print(f"Error: Invalid --teams value: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    rival_id = args.rival or "default"
+    if rival_id in (None, "default", ""):
+        from hw_genie.commands.titan_arena import DEFAULT_RIVAL_ID
+        rival_id = DEFAULT_RIVAL_ID
+
+    # 戦闘シミュレーター（正しい progress 生成のため）
+    battle_sim = None
+    if getattr(args, "battle_sim", None) == "hwh":
+        # HWH 拡張の BattleCalc を CDP 経由で呼ぶ戦闘シミュレーター
+        from hw_genie.commands.titan_sim_hwh import TitanSimulatorHWH
+
+        battle_sim = TitanSimulatorHWH(headers=headers)
+
+    if getattr(args, "auto", False):
+        from hw_genie.commands.titan_arena import run_titan_arena_auto
+
+        run_titan_arena_auto(
+            client,
+            initial_rival_id=rival_id,
+            team_rotation=team_rotation,
+            max_attempts_per_team=args.max_attempts,
+            max_stages=getattr(args, "max_stages", 20),
+            account=account_alias,
+            battle_sim=battle_sim,
+        )
+    else:
+        from hw_genie.commands.titan_arena import run_titan_arena
+
+        run_titan_arena(
+            client,
+            rival_id=rival_id,
+            team_rotation=team_rotation,
+            max_attempts_per_team=args.max_attempts,
+            account=account_alias,
+            battle_sim=battle_sim,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(prog="hw-genie", description="Hero Wars Genie CLI")
 
@@ -1028,6 +1118,46 @@ def main():
         help="Item raid iteration count (each request raids 10 times). Default: until stamina runs out.",
     )
     p_daily.set_defaults(func=cmd_daily)
+
+    # Titan Arena
+    p_titan = subparsers.add_parser("titan-arena", parents=[parent_parser], help="Titan Arena auto-battle")
+    p_titan.add_argument("--curl", "-c", help="Curl command to extract auth headers")
+    p_titan.add_argument("--rival", "-r", help="Rival ID (default: built-in constant)")
+    p_titan.add_argument(
+        "--teams",
+        help="Semicolon-separated titan team compositions, e.g. '4023,4043,4024,4022,4040;4023,4043,4024,4022,4044'",
+    )
+    p_titan.add_argument(
+        "--max-attempts",
+        "-m",
+        type=int,
+        default=10,
+        help="Max attempts per team before switching to next team (default: 10)",
+    )
+    p_titan.add_argument(
+        "--auto",
+        "-A",
+        action="store_true",
+        help="Auto-advance through stages: after each win, call titanArenaCompleteTier to "
+        "progress; stops at the final stage (tier == maxTier).",
+    )
+    p_titan.add_argument(
+        "--max-stages",
+        "-S",
+        type=int,
+        default=20,
+        help="Auto mode: maximum number of stages to attempt (safety cap, default: 20)",
+    )
+    p_titan.add_argument(
+        "--battle-sim",
+        choices=["hwh"],
+        default=None,
+        help="Battle simulator: 'hwh' uses the Hero Wars Helper extension "
+        "(Chrome remote-debugging) to compute the real battle progress. "
+        "Required for the server to accept wins (the server recomputes the "
+        "battle from seed+placement and verifies the submitted HP).",
+    )
+    p_titan.set_defaults(func=cmd_titan_arena)
 
     # Quests
     p_quests = subparsers.add_parser("quests", parents=[parent_parser], help="Quest status (daily quests)")

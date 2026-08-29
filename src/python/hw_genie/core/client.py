@@ -192,6 +192,8 @@ class ErrorName(str, Enum):
     NOT_ENOUGH_STAMINA = "notEnoughStamina"
     LIMIT_REACHED = "limitReached"
     NOT_ENOUGH = "NotEnough"
+    NOT_FOUND = "NotFound"
+    NOT_AVAILABLE = "NotAvailable"
 
 
 @dataclass
