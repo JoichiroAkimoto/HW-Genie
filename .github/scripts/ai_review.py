@@ -876,10 +876,6 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
     対応パターン:
     - ``dependency-name: xyz`` 形式（Dependabot 等）
     - PEP 621 quoted: ``+ "httpx>=0.27"``（pyproject.toml 等の toml 変更時のみ）
-    - uv.lock: ``+ name = "library"`` および ``+ { name = "lib", specifier = "..." }``
-      （プロジェクトの source = { virtual|editable|path|url } ブロックは除外）
-    - requirements.txt: ``+ httpx>=0.27`` / バージョン無し ``+ httpx``
-    - import 文 ``+import xyz`` / ``+from xyz import``（依存関係由来が 0 件時のみ）
 
     重複を除去し、小文字化して最大 CONTEXT7_MAX_LIBRARIES 件を返す。
     """
@@ -923,119 +919,6 @@ def _extract_libraries_from_diff(diff: str, changed_paths: list[str]) -> list[st
             if len(raw) < 3:
                 continue
             if raw in _EXCLUDED_KEYS or raw in _COMMON_WORDS_EXCLUDE or raw in _STDLIB_EXCLUDE:
-                continue
-            seen.add(raw)
-            libs.append(raw)
-            if len(libs) >= CONTEXT7_MAX_LIBRARIES:
-                return libs[:CONTEXT7_MAX_LIBRARIES]
-
-        # uv.lock: `+ name = "library"` から値（=ライブラリ名）を抽出。
-        # ただしプロジェクト自身のブロックは除外する。プロジェクトの source は
-        # `source = { virtual|editable|path|url = "..." }` のいずれかで示される
-        # (registry は通常の依存)。
-        if any("uv.lock" in p.lower() for p in (changed_paths or [])):
-            pkg_starts = [
-                m.start()
-                for m in re.finditer(r"^\+\[\[package(?:\.[^\]]+)?\]\]", diff, re.MULTILINE)
-            ]
-            name_pat = re.compile(
-                r'^\+\s*name\s*=\s*["\']([a-zA-Z0-9_.\-]+)["\']', re.MULTILINE
-            )
-            project_block_idx: int | None = None
-            for blk_idx, ps in enumerate(pkg_starts, start=1):
-                next_ps = pkg_starts[blk_idx] if blk_idx < len(pkg_starts) else len(diff)
-                block_text = diff[ps:next_ps]
-                if re.search(
-                    r'^\+\s*(?:source\s*=\s*\{[^}]*(?:virtual|editable|path|url)\s*=\s*"|(?:virtual|editable|path|url)\s*=\s*")',
-                    block_text,
-                    re.MULTILINE,
-                ):
-                    project_block_idx = blk_idx
-                    break
-
-            def _block_idx_of(pos: int) -> int:
-                """`pos` が含まれる [[package]] ブロックの 1-based インデックス。
-                どの [[package]] よりも前なら 0。"""
-                idx = 0
-                for ps in pkg_starts:
-                    if pos >= ps:
-                        idx += 1
-                    else:
-                        break
-                return idx
-
-            for m in name_pat.finditer(diff):
-                bi = _block_idx_of(m.start())
-                # プロジェクト自身の name（先頭 or project ブロック内）は除外
-                if pkg_starts and m.start() < pkg_starts[0]:
-                    continue
-                if bi != 0 and bi == project_block_idx:
-                    continue
-                raw = m.group(1).strip().lower()
-                if not raw or raw in seen:
-                    continue
-                if raw in _STDLIB_EXCLUDE or raw in _EXCLUDED_KEYS or raw in _COMMON_WORDS_EXCLUDE:
-                    continue
-                seen.add(raw)
-                libs.append(raw)
-                if len(libs) >= CONTEXT7_MAX_LIBRARIES:
-                    return libs[:CONTEXT7_MAX_LIBRARIES]
-
-            # 依存リファレンス: ルートプロジェクトの [package.dependencies] に
-            # 現れる `{ name = "lib", specifier = "..." }` 形式。
-            # uv.lock の upgrade では package ブロックの name は不変なので、
-            # 上記 `+ name = "..."` では絶対にマッチしないため別途パターンを用意。
-            for m in re.finditer(
-                r'^\+\s*\{\s*name\s*=\s*"([a-zA-Z0-9_.\-]+)"',
-                diff,
-                re.MULTILINE,
-            ):
-                raw = m.group(1).strip().lower()
-                if not raw or raw in seen:
-                    continue
-                if raw in _STDLIB_EXCLUDE or raw in _EXCLUDED_KEYS or raw in _COMMON_WORDS_EXCLUDE:
-                    continue
-                seen.add(raw)
-                libs.append(raw)
-                if len(libs) >= CONTEXT7_MAX_LIBRARIES:
-                    return libs[:CONTEXT7_MAX_LIBRARIES]
-
-        # requirements.txt: `+ httpx>=0.27` のような行（バージョン無し + httpx も対象）
-        if any(
-            "requirements" in p.lower() and p.lower().endswith(".txt")
-            for p in (changed_paths or [])
-        ):
-            for m in re.finditer(
-                r"^\+\s*([a-zA-Z0-9][a-zA-Z0-9_.\-]*)(?:\s*[><=!~]=?\s*[\d.\*]+)?\s*$",
-                diff,
-                re.MULTILINE,
-            ):
-                raw = m.group(1).strip().lower()
-                if not raw or raw in seen:
-                    continue
-                if raw in _STDLIB_EXCLUDE or raw in _EXCLUDED_KEYS or raw in _COMMON_WORDS_EXCLUDE:
-                    continue
-                if len(raw) < 2:
-                    continue
-                # バージョン番号だけの行（`+ 1.2.3`）は除外
-                if re.fullmatch(r"[\d.\-]+", raw):
-                    continue
-                seen.add(raw)
-                libs.append(raw)
-                if len(libs) >= CONTEXT7_MAX_LIBRARIES:
-                    return libs[:CONTEXT7_MAX_LIBRARIES]
-
-    # 3. import 文: +import xyz / +from xyz import
-    #    依存関係由来が 1 件以上ある場合は import 由来をスキップ（context bloat 防止）
-    has_dep_libs = len(libs) > 0
-    if not has_dep_libs:
-        for m in re.finditer(r"^\+\s*(?:import|from)\s+([a-zA-Z0-9_]+)", diff, re.MULTILINE):
-            raw = m.group(1).strip().lower()
-            if not raw or raw in seen:
-                continue
-            if len(raw) < 2:
-                continue
-            if raw in _STDLIB_EXCLUDE:
                 continue
             seen.add(raw)
             libs.append(raw)
@@ -1844,20 +1727,10 @@ def main():
         print("No diff found.")
         sys.exit(0)
 
-    # lock/マニフェスト系（uv.lock, requirements.txt 等）は diff 本体が巨大なので
-    # LLM プロンプトからは除外するが、ライブラリ抽出のため dep_extraction_paths /
-    # extraction_diff に別途保持して _extract_libraries_from_diff に渡す。
-    is_lock_or_manifest_re = re.compile(
-        r"(\.lock$|requirements.*\.txt$|pyproject\.toml$|package\.json$|Cargo\.toml$|go\.mod$|Pipfile$|poetry\.lock$)",
-        re.IGNORECASE,
-    )
-
     try:
         patch = PatchSet(io.StringIO(raw_diff))
         filtered_diff = ""
-        extraction_diff = ""
         changed_paths = []
-        dep_extraction_paths = []
         files_modified_count = 0
         lines_added = 0
         lines_deleted = 0
@@ -1869,32 +1742,19 @@ def main():
                 path,
                 re.IGNORECASE,
             )
-            is_dep_manifest = bool(is_lock_or_manifest_re.search(path))
             if is_ignored:
-                # lock/バイナリは差分本文が巨大なため LLM コンテキスト節約のため省略するが、
-                # 削除等の重要な変更が AI に伝わるよう統計はカウントしプレースホルダを残す
                 files_modified_count += 1
                 lines_added += getattr(file, "added", 0) or 0
                 lines_deleted += getattr(file, "removed", 0) or 0
-                # 削除ファイル以外は file_contents 取得対象外のまま（巨大な lock 全文は不要）
                 status = "削除" if is_removed else "変更"
                 filtered_diff += (
                     f"[注: `{path}` は {status} されましたが、lock/バイナリ等のため diff 本体は省略されています "
                     f"(+{getattr(file, 'added', 0) or 0} / -{getattr(file, 'removed', 0) or 0})]\n"
                 )
-                # 抽出用: 削除ファイルは対象外だが、dep-manifest の本文は保持
-                if is_dep_manifest and not is_removed:
-                    dep_extraction_paths.append(path)
-                    extraction_diff += str(file) + "\n"
                 continue
             filtered_diff += str(file) + "\n"
-            extraction_diff += str(file) + "\n"
-            # 削除ファイルはヘッド時点に存在せず 404 になるため全文取得対象から除外
             if not is_removed:
                 changed_paths.append(path)
-                if is_dep_manifest:
-                    # 通常パスで拾われる dep-manifest（pyproject.toml 等）も抽出対象に追加
-                    dep_extraction_paths.append(path)
             files_modified_count += 1
             lines_added += getattr(file, "added", 0) or 0
             lines_deleted += getattr(file, "removed", 0) or 0
@@ -1902,12 +1762,10 @@ def main():
     except Exception as e:
         print(f"Failed to parse diff with unidiff: {e}")
         diff = raw_diff
-        extraction_diff = raw_diff
         files_modified_count = "N/A"
         lines_added = None
         lines_deleted = None
         changed_paths = []
-        dep_extraction_paths = []
 
     if not diff.strip():
         print("Diff contains only ignored files.")
@@ -1943,8 +1801,7 @@ def main():
     context7_docs = ""
     if os.environ.get("CONTEXT7_ENABLED", "true").strip().lower() not in ("false", "0", "off", "disabled"):
         try:
-            extraction_paths = list(dict.fromkeys(changed_paths + dep_extraction_paths))
-            libs = _extract_libraries_from_diff(extraction_diff, extraction_paths)
+            libs = _extract_libraries_from_diff(diff, changed_paths)
             if libs:
                 print(f"Fetching Context7 docs for: {libs}")
                 _timeout_raw = os.environ.get("CONTEXT7_TIMEOUT", "10") or "10"
