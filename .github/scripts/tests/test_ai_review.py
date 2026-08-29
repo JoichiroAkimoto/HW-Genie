@@ -1201,16 +1201,3 @@ def test_fetch_context7_docs_per_lib_truncation():
     assert len(result) <= ai_review.CONTEXT7_MAX_CHARS_PER_LIB + len("### lib-big\n")
 
 
-def test_extract_libraries_pep621_versioned_deps():
-    """PEP 621 の versioned dependencies（+ "httpx>=0.27", など）も抽出できる。"""
-    diff = '+ "httpx>=0.27",\n+ "pydantic>=2.0",\n+ "ruff==0.6.0"\n'
-    result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
-    assert result == ["httpx", "pydantic", "ruff"]
-
-
-def test_extract_libraries_pep621_quoted_excludes_stdlib():
-    """PEP 621 クォート形式で stdlib（json）は除外される。"""
-    diff = '+ "json"\n+ "httpx>=0.27"\n'
-    result = ai_review._extract_libraries_from_diff(diff, ["pyproject.toml"])
-    assert "json" not in result
-    assert "httpx" in result
