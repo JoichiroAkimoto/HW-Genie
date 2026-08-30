@@ -426,9 +426,7 @@ class HWClient:
         args: dict[str, Any] = {"chatType": chat_type, "count": count_int}
         if last_id is not None:
             args["lastId"] = str(last_id)
-        payload = {
-            "calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]
-        }
+        payload = {"calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]}
         return self.call(payload)
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:

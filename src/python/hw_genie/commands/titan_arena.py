@@ -37,11 +37,20 @@ Titan Arena 自動バトルコマンド
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Optional, Protocol
 
 from hw_genie.core.client import Emojis, ErrorName
 from hw_genie.core.utils import print_player_status
+
+logger = logging.getLogger(__name__)
+
+
+class BattleSim(Protocol):
+    """battle_sim の型プロトコル。将来のカスタムシミュレーターでも同じシグネチャで差し替え可能。"""
+
+    def __call__(self, rival_id: str, seed: str | int, battle: dict[str, Any]) -> Optional[dict[str, Any]]: ...
 
 
 # ----------------------------------------------------------------------------
@@ -258,7 +267,7 @@ def run_titan_arena(
     team_rotation: Optional[list[list[int]]] = None,
     max_attempts_per_team: int = DEFAULT_MAX_ATTEMPTS,
     account: Optional[str] = None,
-    battle_sim: Optional[Callable[[str, str, dict[str, Any]], Optional[dict[str, Any]]]] = None,
+    battle_sim: Optional[BattleSim] = None,
 ):
     """Titan Arena 自動バトル実行（1 ステージ分）。
 
@@ -330,7 +339,7 @@ def run_titan_arena(
                 try:
                     sim = battle_sim(rival_id, seed, battle)
                 except Exception as ex:
-                    print(f"    {Emojis.ERROR}battle_sim failed: {ex}", flush=True)
+                    logger.warning("battle_sim failed for rival %s seed %s: %s", rival_id, seed, ex)
                     sim = None
             end_payload = _build_end_payload(
                 rival_id=rival_id,
@@ -502,7 +511,7 @@ def run_titan_arena_auto(
     max_attempts_per_team: int = DEFAULT_MAX_ATTEMPTS,
     max_stages: int = DEFAULT_MAX_STAGES,
     account: Optional[str] = None,
-    battle_sim: Optional[Callable[[str, str, dict[str, Any]], Optional[dict[str, Any]]]] = None,
+    battle_sim: Optional[BattleSim] = None,
 ) -> int:
     """
     Titan Arena 自動進行（複数ステージ・複数敵対応）。

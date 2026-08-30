@@ -35,7 +35,9 @@ FILE_CONTENTS_BUDGET = 200000
 # OpenRouter フォールバック用（環境変数で上書き可能）
 # 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
 # `openrouter/free` のみを使用。環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
-OPENROUTER_API_URL = os.environ.get("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+OPENROUTER_API_URL = os.environ.get(
+    "OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions"
+)
 OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60") or 60)
 OPENROUTER_FALLBACK_MODELS = [
     "openrouter/free",
@@ -249,7 +251,9 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
         if model_key == key or model_key == info.get("name") or model_key in aliases:
             # キーまたは正式名で一致: 正式名を返す
             # エイリアスで一致: 表示用にエイリアス自身を返す（API で正規名解決のため）
-            display_name = info["name"] if model_key in (key, info.get("name")) else model_key
+            display_name = (
+                info["name"] if model_key in (key, info.get("name")) else model_key
+            )
             return info, display_name
 
     # 2. 部分一致（一意に決まる場合のみ）。曖昧なら未知として扱う。
@@ -355,7 +359,9 @@ def _build_thinking_config(model_info: dict) -> types.ThinkingConfig | None:
     return types.ThinkingConfig(thinking_level="HIGH")
 
 
-def _get_thinking_level_display(thinking_config: types.ThinkingConfig | None) -> str | None:
+def _get_thinking_level_display(
+    thinking_config: types.ThinkingConfig | None,
+) -> str | None:
     """ThinkingConfig から表示用の思考レベル名（HIGH / MEDIUM 等）を抽出する。"""
     if not thinking_config or not getattr(thinking_config, "thinking_level", None):
         return None
@@ -390,7 +396,9 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
             if not retryable or attempt >= MAX_ATTEMPTS - 1:
                 raise
             if code == 429:
-                delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                delay = min(
+                    RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429
+                ) + random.uniform(0, 5)
                 print(
                     f"Gemini API 429 (Rate limited). Retrying in {delay:.1f}s... "
                     f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
@@ -562,7 +570,8 @@ def _generate_with_openrouter(
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": os.environ.get(
-                        "OPENROUTER_REFERER", "https://github.com/JoichiroAkimoto/HW-Genie"
+                        "OPENROUTER_REFERER",
+                        "https://github.com/JoichiroAkimoto/HW-Genie",
                     ),
                     "X-Title": os.environ.get("OPENROUTER_TITLE", "HW-Genie AI Review"),
                 }
@@ -578,14 +587,18 @@ def _generate_with_openrouter(
                     status = resp.status_code
                     body_text = resp.text
                     if status == 429 or 500 <= status < 600:
-                        err = Exception(f"OpenRouter API Error {status}: {body_text[:500]}")
+                        err = Exception(
+                            f"OpenRouter API Error {status}: {body_text[:500]}"
+                        )
                         err.code = status  # type: ignore[attr-defined]
                         raise err
                     resp.raise_for_status()
                     try:
                         data = resp.json()
                     except Exception as je:
-                        raise Exception(f"OpenRouter invalid JSON: {je}: {body_text[:500]}") from je
+                        raise Exception(
+                            f"OpenRouter invalid JSON: {je}: {body_text[:500]}"
+                        ) from je
                 else:
                     import urllib.error
                     import urllib.request
@@ -598,11 +611,15 @@ def _generate_with_openrouter(
                         method="POST",
                     )
                     try:
-                        with urllib.request.urlopen(req, timeout=OPENROUTER_TIMEOUT) as uresp:
+                        with urllib.request.urlopen(
+                            req, timeout=OPENROUTER_TIMEOUT
+                        ) as uresp:
                             status = uresp.status
                             body_text = uresp.read().decode("utf-8", errors="replace")
                             if status == 429 or 500 <= status < 600:
-                                err = Exception(f"OpenRouter API Error {status}: {body_text[:500]}")
+                                err = Exception(
+                                    f"OpenRouter API Error {status}: {body_text[:500]}"
+                                )
                                 err.code = status  # type: ignore[attr-defined]
                                 raise err
                             data = json.loads(body_text)
@@ -646,7 +663,9 @@ def _generate_with_openrouter(
                         # フォールバック: 全体を文字列化
                         text = json.dumps(data, ensure_ascii=False)[:8000]
                 except Exception as pe:
-                    raise Exception(f"OpenRouter response parse error: {pe}: {data}") from pe
+                    raise Exception(
+                        f"OpenRouter response parse error: {pe}: {data}"
+                    ) from pe
 
                 usage_raw = data.get("usage") or {}
                 prompt_tokens = usage_raw.get("prompt_tokens")
@@ -678,7 +697,9 @@ def _generate_with_openrouter(
                     retry_count=attempt,
                 )
                 # 成功ログ
-                print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})")
+                print(
+                    f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})"
+                )
                 return resp_obj
 
             except Exception as e:
@@ -697,7 +718,9 @@ def _generate_with_openrouter(
                     if is_last_attempt:
                         raise
                     # 非リトライエラーでも次の試行へ（再試行しても同じだが、他キーで既に全滅なので）
-                    print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed non-retryable: {e}")
+                    print(
+                        f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed non-retryable: {e}"
+                    )
                     break
                 # retryable
                 if not is_last_key:
@@ -714,7 +737,9 @@ def _generate_with_openrouter(
             retryable, code = _is_retryable_api_error(last_exc)
             if retryable:
                 if code == 429:
-                    delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                    delay = min(
+                        RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429
+                    ) + random.uniform(0, 5)
                     print(
                         f"OpenRouter API 429 (Rate limited). Retrying in {delay:.1f}s... "
                         f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
@@ -765,7 +790,9 @@ def build_execution_metadata(
 
     # 前回の実行情報がある場合、折りたたんだ状態で表示
     if previous_exec_info:
-        prev_section = re.sub(r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info)
+        prev_section = re.sub(
+            r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info
+        )
         prev_section = re.sub(r"<details\s+open\s*>", "<details>", prev_section)
         metadata += f"\n{prev_section}\n\n"
 
@@ -774,7 +801,10 @@ def build_execution_metadata(
     # 1. モデル表示（指定名、実バージョン、正規名、思考レベル）
     actual_version = getattr(response, "model_version", None) if response else None
     if actual_version and actual_version != model_name:
-        if resolved_model_name and resolved_model_name not in (model_name, actual_version):
+        if resolved_model_name and resolved_model_name not in (
+            model_name,
+            actual_version,
+        ):
             model_str = f"`{model_name}` (`{actual_version}` / `{resolved_model_name}`)"
         else:
             model_str = f"`{model_name}` (`{actual_version}`)"
@@ -793,11 +823,15 @@ def build_execution_metadata(
     clean_server_url = (server_url or "https://github.com").rstrip("/")
     if commit_sha:
         if repo:
-            trace_parts.append(f"対象コミット: [`{commit_sha}`]({clean_server_url}/{repo}/commit/{commit_sha})")
+            trace_parts.append(
+                f"対象コミット: [`{commit_sha}`]({clean_server_url}/{repo}/commit/{commit_sha})"
+            )
         else:
             trace_parts.append(f"対象コミット: `{commit_sha}`")
     if run_id and repo:
-        trace_parts.append(f"[Actions 実行ログ]({clean_server_url}/{repo}/actions/runs/{run_id})")
+        trace_parts.append(
+            f"[Actions 実行ログ]({clean_server_url}/{repo}/actions/runs/{run_id})"
+        )
     if trace_parts:
         metadata += f"- **実行情報**: {' / '.join(trace_parts)}\n"
 
@@ -805,7 +839,11 @@ def build_execution_metadata(
     metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}` (所要時間: `{duration:.2f} 秒`)\n"
 
     # 4. 変更規模
-    if isinstance(files_modified_count, int) and lines_added is not None and lines_deleted is not None:
+    if (
+        isinstance(files_modified_count, int)
+        and lines_added is not None
+        and lines_deleted is not None
+    ):
         metadata += f"- **変更規模**: `{files_modified_count} ファイル (+{lines_added:,} / -{lines_deleted:,} 行)`\n"
     elif files_modified_count != "N/A":
         metadata += f"- **変更ファイル数**: `{files_modified_count}`\n"
@@ -821,7 +859,9 @@ def build_execution_metadata(
             if thoughts_tokens:
                 metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}` (うち思考=`{thoughts_tokens:,}`)\n"
             else:
-                metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}`\n"
+                metadata += (
+                    f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}`\n"
+                )
 
             in_rate = model_info.get("input_cost_per_1m")
             out_rate = model_info.get("output_cost_per_1m")
@@ -1101,10 +1141,14 @@ def main():
     gemini_keys = _collect_gemini_keys()
     openrouter_keys = _collect_openrouter_keys()
     if not gemini_keys and not openrouter_keys:
-        print("No Gemini/OpenRouter API keys configured — skipping (fork PR or missing secrets).")
+        print(
+            "No Gemini/OpenRouter API keys configured — skipping (fork PR or missing secrets)."
+        )
         sys.exit(0)
     if not gemini_keys:
-        print("No Gemini API keys configured — skipping (fork PR or missing secrets), will try OpenRouter fallback if available.")
+        print(
+            "No Gemini API keys configured — skipping (fork PR or missing secrets), will try OpenRouter fallback if available."
+        )
     if openrouter_keys:
         print(f"OpenRouter fallback enabled ({len(openrouter_keys)} key(s))")
 
@@ -1212,7 +1256,9 @@ def main():
     # 「前回の bot レビュー（更新対象）」をまとめて返す
     pr_metadata = _fetch_pr_metadata(repo, pr_number)
     user_comments, existing_comment = _fetch_pr_comments(repo, pr_number)
-    file_contents = _fetch_file_contents(pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET)
+    file_contents = _fetch_file_contents(
+        pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET
+    )
 
     previous_review = ""
     previous_exec_info = ""
@@ -1272,7 +1318,9 @@ def main():
                 sys.exit(1)
             if model_info.get("name") == "openrouter/free":
                 fallback_models = _get_openrouter_fallback_models()
-                print(f"Trying OpenRouter free router ({len(fallback_models)} models)...")
+                print(
+                    f"Trying OpenRouter free router ({len(fallback_models)} models)..."
+                )
             else:
                 fallback_models = [model_name]
                 print(f"Trying OpenRouter model {model_name}...")
@@ -1312,7 +1360,9 @@ def main():
                         fetched_name = api_model_info.name
                         fetched_name = fetched_name.removeprefix("models/")
                         resolved_model_name = fetched_name
-                        print(f"Resolved canonical model name from API: {resolved_model_name}")
+                        print(
+                            f"Resolved canonical model name from API: {resolved_model_name}"
+                        )
                 except Exception as ce:
                     print(
                         f"Note: Could not resolve canonical model name via API ({ce}). "
@@ -1334,7 +1384,9 @@ def main():
                         except Exception:
                             pass
                         response = resp
-                        print(f"Gemini key {idx + 1}/{len(gemini_keys)} succeeded (attempt {attempt + 1})")
+                        print(
+                            f"Gemini key {idx + 1}/{len(gemini_keys)} succeeded (attempt {attempt + 1})"
+                        )
                         break
                     except Exception as e:  # noqa: BLE001
                         retryable, code = _is_retryable_api_error(e)
@@ -1346,11 +1398,15 @@ def main():
                                     f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable ({e}), trying next key..."
                                 )
                                 continue
-                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable: {e}")
+                            print(
+                                f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable: {e}"
+                            )
                             break
                         # retryable
                         if not is_last_key:
-                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e}), trying next key...")
+                            print(
+                                f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e}), trying next key..."
+                            )
                             continue
                         print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e})")
                         break
@@ -1365,7 +1421,9 @@ def main():
                 if attempt >= MAX_ATTEMPTS - 1:
                     break
                 if code == 429:
-                    delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                    delay = min(
+                        RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429
+                    ) + random.uniform(0, 5)
                     print(
                         f"Gemini API 429 (Rate limited). Retrying in {delay:.1f}s... "
                         f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
@@ -1381,7 +1439,9 @@ def main():
         # 2) Gemini 全滅時は OpenRouter フォールバック（無料モデル）
         if not is_openrouter_primary and response is None and openrouter_keys:
             fallback_models = _get_openrouter_fallback_models()
-            print(f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
+            print(
+                f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)..."
+            )
             for fb_model in fallback_models:
                 try:
                     fb_resp = _generate_with_openrouter(
@@ -1409,7 +1469,9 @@ def main():
         if response is None:
             if last_exc is not None:
                 raise last_exc
-            raise Exception("All Gemini keys and OpenRouter fallbacks exhausted without response")
+            raise Exception(
+                "All Gemini keys and OpenRouter fallbacks exhausted without response"
+            )
 
         end_time = datetime.datetime.now(JST)
         duration = (end_time - start_time).total_seconds()
@@ -1425,17 +1487,23 @@ def main():
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
         # トレーサビリティ情報（対象コミット & GitHub Actions Run ログ）
-        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip(
+            "/"
+        )
         run_id = os.environ.get("GITHUB_RUN_ID")
         head_sha = os.environ.get("GITHUB_SHA", "")
         commit_sha = ""
         pr_ref = f"refs/remotes/pull/{pr_number}/head"
         for ref_candidate in [pr_ref, "HEAD"]:
             try:
-                commit_sha = subprocess.check_output(
-                    ["git", "rev-parse", "--short=7", ref_candidate],
-                    stderr=subprocess.DEVNULL,
-                ).decode("utf-8").strip()
+                commit_sha = (
+                    subprocess.check_output(
+                        ["git", "rev-parse", "--short=7", ref_candidate],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    .decode("utf-8")
+                    .strip()
+                )
                 if commit_sha:
                     break
             except Exception:

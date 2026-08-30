@@ -1093,9 +1093,7 @@ def main():
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
-    p_chat = subparsers.add_parser(
-        "chat", parents=[parent_parser], help="Show guild chat (chatGetAll)"
-    )
+    p_chat = subparsers.add_parser("chat", parents=[parent_parser], help="Show guild chat (chatGetAll)")
     p_chat.add_argument(
         "--type",
         choices=_CHAT_TYPES,

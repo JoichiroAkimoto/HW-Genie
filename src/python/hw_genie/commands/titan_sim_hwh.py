@@ -84,7 +84,9 @@ class TitanSimulatorHWH:
             progress = self._simulate_via_cdp(rival_id, seed, battle)
             return progress
         except Exception as e:  # pragma: no cover - 環境依存
-            print(f"[titan_sim_hwh] simulation failed: {e}")
+            import logging
+
+            logging.getLogger(__name__).warning("simulation failed for rival %s: %s", rival_id, e)
             return None
 
     # ----- CDP 経由のシミュレーション -----
