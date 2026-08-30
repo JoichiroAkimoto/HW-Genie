@@ -972,12 +972,20 @@ def cmd_titan_arena(args):
         rival_id = DEFAULT_RIVAL_ID
 
     # 戦闘シミュレーター（正しい progress 生成のため）
+    # デフォルトはアプリ内完結のローカルシミュレーター。HWH は --battle-sim hwh で明示的に選択。
     battle_sim = None
-    if getattr(args, "battle_sim", None) == "hwh":
+    sim_choice = getattr(args, "battle_sim", None)
+    if sim_choice == "hwh":
         # HWH 拡張の BattleCalc を CDP 経由で呼ぶ戦闘シミュレーター
         from hw_genie.commands.titan_sim_hwh import TitanSimulatorHWH
 
         battle_sim = TitanSimulatorHWH(headers=headers)
+    elif sim_choice == "local" or sim_choice is None:
+        # アプリ内完結のローカルシミュレーター（Chrome/HWH 非依存）
+        # 明示的に --battle-sim local でも、未指定（None）でもこちらが使われる
+        from hw_genie.commands.titan_sim_local import LocalBattleSimulator
+
+        battle_sim = LocalBattleSimulator()
 
     if getattr(args, "auto", False):
         from hw_genie.commands.titan_arena import run_titan_arena_auto
@@ -1150,12 +1158,11 @@ def main():
     )
     p_titan.add_argument(
         "--battle-sim",
-        choices=["hwh"],
-        default=None,
-        help="Battle simulator: 'hwh' uses the Hero Wars Helper extension "
-        "(Chrome remote-debugging) to compute the real battle progress. "
-        "Required for the server to accept wins (the server recomputes the "
-        "battle from seed+placement and verifies the submitted HP).",
+        choices=["hwh", "local"],
+        default="local",
+        help="Battle simulator: 'local' (default, app-standalone) uses the built-in "
+        "LocalBattleSimulator (no Chrome/HWH needed); 'hwh' uses the Hero Wars Helper "
+        "extension via Chrome remote-debugging (more accurate).",
     )
     p_titan.set_defaults(func=cmd_titan_arena)
 
