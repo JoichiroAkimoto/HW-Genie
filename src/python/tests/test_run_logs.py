@@ -189,9 +189,7 @@ def test_build_run_log_summary_quests_failure():
         {"account": "Ace", "ok": True, "error": None},
         {"account": "Bug", "ok": False, "error": "auth failed"},
     ]
-    assert error_summary == (
-        "2 account(s) failed: Joe (1 quest(s) failed), Bug (auth failed)"
-    )
+    assert error_summary == ("2 account(s) failed: Joe (1 quest(s) failed), Bug (auth failed)")
 
 
 def test_build_run_log_summary_consumable_failure():
@@ -216,10 +214,7 @@ def test_build_run_log_summary_consumable_failure():
         "ok": False,
         "error": "1 consumable use(s) failed",
     }
-    assert error_summary == (
-        "2 account(s) failed: Ace (1 consumable use(s) failed), "
-        "Bug (1 consumable use(s) failed)"
-    )
+    assert error_summary == ("2 account(s) failed: Ace (1 consumable use(s) failed), Bug (1 consumable use(s) failed)")
 
 
 def test_build_run_log_summary_asgard_failure():
@@ -227,15 +222,22 @@ def test_build_run_log_summary_asgard_failure():
     from hw_genie.core.client import ResponseStatus
     from hw_genie.main import _build_run_log_summary
 
-    ok = AsgardRunResult(
-        coins=1, spent=0, remaining=1, bought=0, skipped=False, items=[]
-    )
+    ok = AsgardRunResult(coins=1, spent=0, remaining=1, bought=0, skipped=False, items=[])
     fetch_err = AsgardRunResult(
-        coins=1, spent=0, remaining=1, bought=0, skipped=False, items=[],
+        coins=1,
+        spent=0,
+        remaining=1,
+        bought=0,
+        skipped=False,
+        items=[],
         error="fetch boom",
     )
     purchase_err = AsgardRunResult(
-        coins=1, spent=0, remaining=1, bought=0, skipped=False,
+        coins=1,
+        spent=0,
+        remaining=1,
+        bought=0,
+        skipped=False,
         items=[AsgardResult(action="x", status=ResponseStatus.ERROR)],
     )
     results = {"Joe": (ok, None), "Ace": (fetch_err, None), "Bug": (purchase_err, None)}
@@ -243,10 +245,7 @@ def test_build_run_log_summary_asgard_failure():
     assert entries[0]["ok"] is True
     assert entries[1] == {"account": "Ace", "ok": False, "error": "shop fetch failed: fetch boom"}
     assert entries[2] == {"account": "Bug", "ok": False, "error": "1 purchase error(s)"}
-    assert error_summary == (
-        "2 account(s) failed: Ace (shop fetch failed: fetch boom), "
-        "Bug (1 purchase error(s))"
-    )
+    assert error_summary == ("2 account(s) failed: Ace (shop fetch failed: fetch boom), Bug (1 purchase error(s))")
 
 
 def test_build_run_log_summary_daily_status_unavailable():
@@ -262,9 +261,7 @@ def test_build_run_log_summary_daily_status_unavailable():
     assert entries[0]["ok"] is True
     assert entries[1] == {"account": "Ace", "ok": False, "error": "status unavailable"}
     assert entries[2] == {"account": "Bug", "ok": False, "error": "status unavailable"}
-    assert error_summary == (
-        "2 account(s) failed: Ace (status unavailable), Bug (status unavailable)"
-    )
+    assert error_summary == ("2 account(s) failed: Ace (status unavailable), Bug (status unavailable)")
 
 
 def test_light_migration_adds_missing_column():
@@ -282,12 +279,7 @@ def test_light_migration_adds_missing_column():
     # 旧スキーマを再現する。
     Base.metadata.drop_all(eng)
     with eng.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE TABLE run_logs ("
-                "id INTEGER PRIMARY KEY, mode VARCHAR NOT NULL, status VARCHAR NOT NULL)"
-            )
-        )
+        conn.execute(text("CREATE TABLE run_logs (id INTEGER PRIMARY KEY, mode VARCHAR NOT NULL, status VARCHAR NOT NULL)"))
     _apply_light_migrations(eng)
     with eng.connect() as conn:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(run_logs)"))}
@@ -366,9 +358,7 @@ def test_run_host_identifier_fallback():
     from hw_genie.main import _run_host_identifier
 
     with patch.dict("os.environ", {}, clear=True):
-        assert _run_host_identifier() == (
-            f"{getpass.getuser()}@{socket.gethostname()}"
-        )
+        assert _run_host_identifier() == (f"{getpass.getuser()}@{socket.gethostname()}")
 
 
 def test_run_host_identifier_getpass_failure():
@@ -398,9 +388,7 @@ def test_output_capture_inherits_existing_filters():
         install_token_masking_filter()
         capture = OutputCapture()
         with capture:
-            logging.getLogger("hw_genie.tests").info(
-                "connecting to sqlite:///x?auth_token=SECRET123"
-            )
+            logging.getLogger("hw_genie.tests").info("connecting to sqlite:///x?auth_token=SECRET123")
         assert "SECRET123" not in capture.getvalue()
     finally:
         root.setLevel(previous_level)

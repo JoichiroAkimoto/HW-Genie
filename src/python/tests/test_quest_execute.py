@@ -540,12 +540,14 @@ def test_guild_recipe_claims_reached_partial(capsys):
 
     res_initial = _ok_response({"response": [_active_guild(20000111), _active_guild(20000112)]})
     # 実行後: 20000111 は claimable、20000112 は進捗ありで still active
-    res_run1 = _ok_response({
-        "response": [
-            _claimable_guild(20000111),
-            dict(_active_guild(20000112), progress=300),
-        ]
-    })
+    res_run1 = _ok_response(
+        {
+            "response": [
+                _claimable_guild(20000111),
+                dict(_active_guild(20000112), progress=300),
+            ]
+        }
+    )
     client.quest_get_all = MagicMock(side_effect=[res_initial, res_run1])
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
@@ -699,9 +701,7 @@ def test_daily_10023_claim_failure_still_runs_recipe_and_records(capsys):
     _enable("Alex", 10023)
     set_quest_guild_defaults("Alex", "enabled", True)
 
-    client.quest_operation = MagicMock(
-        side_effect=lambda action, args: _ok_response({"quests": [{"id": 10023, "state": 2}]})
-    )
+    client.quest_operation = MagicMock(side_effect=lambda action, args: _ok_response({"quests": [{"id": 10023, "state": 2}]}))
     client.quest_farm = MagicMock(return_value=_error_response("ClaimError"))
 
     with patch("hw_genie.commands.quests.time.time", return_value=FIXED_CLOCK):
@@ -953,9 +953,7 @@ def test_execute_claim_failure_captured(capsys):
     """操作成功でも questFarm 失敗は失敗リストに入る。"""
     client = _make_client([_active(10024)])
     _enable("Alex", 10024)
-    client.quest_operation = MagicMock(
-        return_value=_ok_response({"quests": [{"id": 10024, "state": 2}]})
-    )
+    client.quest_operation = MagicMock(return_value=_ok_response({"quests": [{"id": 10024, "state": 2}]}))
     client.quest_farm = MagicMock(return_value=_error_response("AlreadyFarmed"))
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
@@ -974,9 +972,7 @@ def test_dry_run_does_not_invoke_operations(capsys):
     _enable("Alex", 10028)
     _enable("Alex", 10030)
     # 10028 の shopBuy 解決用の実在庫
-    client.call.return_value = _shop_inventory(
-        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
-    )
+    client.call.return_value = _shop_inventory({"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}})
     client.quest_operation = MagicMock()
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
@@ -1101,9 +1097,7 @@ def test_multistep_claim_after_second_step(capsys):
     """10028 の2ステップで、2番目のステップ応答後に claim 判定される。"""
     client = _make_client([_active(10028)])
     _enable("Alex", 10028)
-    client.call.return_value = _shop_inventory(
-        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
-    )
+    client.call.return_value = _shop_inventory({"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}})
     calls = []
 
     def _op(action, args):
@@ -1175,9 +1169,7 @@ def test_shop_buy_slot_not_in_inventory_fails(capsys):
     """
     client = _make_client([_active(10028)])
     _enable("Alex", 10028)
-    client.call.return_value = _shop_inventory(
-        {"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {"coin": {"18": 12}}}}
-    )
+    client.call.return_value = _shop_inventory({"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {"coin": {"18": 12}}}})
     set_quest_defaults("Alex", 10028, "slot", 99)  # 在庫に存在しない slot
 
     client.quest_operation = MagicMock()
@@ -1250,9 +1242,7 @@ def test_shop_buy_shop_not_found_fails(capsys):
     client = _make_client([_active(10028)])
     _enable("Alex", 10028)
     # shop 13 は在庫に無い（shop 10 のみ）
-    client.call.return_value = _ok_response(
-        {"response": {"10": {"slots": {"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {}}}}}}
-    )
+    client.call.return_value = _ok_response({"response": {"10": {"slots": {"10": {"reward": {"fragmentTitanArtifact": {"1017": 1}}, "cost": {}}}}}})
 
     client.quest_operation = MagicMock()
 
@@ -1319,9 +1309,7 @@ def test_shop_inventory_cached_across_quests(monkeypatch, capsys):
     client = _make_client([_active(10028), _active(99999)])
     _enable("Alex", 10028)
     _enable("Alex", 99999)
-    client.call.return_value = _shop_inventory(
-        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
-    )
+    client.call.return_value = _shop_inventory({"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}})
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
@@ -1338,9 +1326,7 @@ def test_shop_buy_inventory_cached_per_shop(capsys):
     """同一 shop の shopBuy が複数ステップあっても shopGetAll は1回だけ発行される。"""
     client = _make_client([_active(10028)])
     _enable("Alex", 10028)
-    client.call.return_value = _shop_inventory(
-        {"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}}
-    )
+    client.call.return_value = _shop_inventory({"18": {"reward": {"fragmentTitanArtifact": {"2001": 1}}, "cost": {"coin": {"18": 12}}}})
 
     sent_args = []
 
@@ -1528,7 +1514,7 @@ def test_ensure_quest_defaults_backfills_missing_args():
     defaults = ensure_quest_defaults("Alex")
     assert defaults[10024]["enabled"] is True
     assert defaults[10024]["heroId"] == 777  # 既存値は上書きしない
-    assert defaults[10024]["slotId"] == 1    # 不足キーは補完
+    assert defaults[10024]["slotId"] == 1  # 不足キーは補完
     assert defaults[10028]["enabled"] is False
 
 

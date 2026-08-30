@@ -77,10 +77,7 @@ def test_get_data_warns_on_broken_row(caplog):
     with caplog.at_level("WARNING", logger="hw_genie.core.repository"):
         SessionManager.load("Carol")
 
-    assert any(
-        "quest_defaults" in r.message and "broken JSON" in r.message
-        for r in caplog.records
-    )
+    assert any("quest_defaults" in r.message and "broken JSON" in r.message for r in caplog.records)
 
 
 def test_get_data_none_value_skipped_without_error():

@@ -104,7 +104,7 @@ def test_hero_shopping_empty_slots(mock_client, mock_sleep):
     res_all = MagicMock()
     res_all.is_success = True
     res_all.detail = {"response": {}}
-    
+
     mock_responses = [res_all]
     mock_call.side_effect = mock_responses
 
@@ -123,7 +123,7 @@ def test_hero_shopping_auth_error_abort(mock_client, mock_sleep):
     res_all = MagicMock()
     res_all.status = ResponseStatus.AUTH_ERROR
     res_all.is_success = False
-    
+
     mock_call.side_effect = [res_all]
 
     results, _ = run_hero_shopping(client, hero_shop_ids=TARGET_SHOP_IDS)
@@ -172,17 +172,7 @@ def test_buy_pet_potion(mock_client, mock_sleep):
     res_all = MagicMock()
     res_all.is_success = True
     res_all.detail = {
-        "response": {
-            "17": {
-                "slots": {
-                    PET_POTION_SLOT_ID: {
-                        "bought": False,
-                        "reward": {"consumable": {"85": 3000}},
-                        "cost": {"coin": {"25": 600}}
-                    }
-                }
-            }
-        }
+        "response": {"17": {"slots": {PET_POTION_SLOT_ID: {"bought": False, "reward": {"consumable": {"85": 3000}}, "cost": {"coin": {"25": 600}}}}}}
     }
     mock_responses.append(res_all)
 

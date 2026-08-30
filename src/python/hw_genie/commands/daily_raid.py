@@ -45,11 +45,11 @@ def run_daily_raid(
                 if call.get("name") == "missionRaid":
                     mission_id = call["args"].get("id")
                     break
-        
+
         # DBから補完
         if not mission_id:
             mission_id = SessionManager.get_last_mission_id(account=account)
-        
+
         if not mission_id:
             print(f"\n{Emojis.INFO}No item raid mission ID configured. Skipping Item Raid.", flush=True)
         else:
@@ -57,9 +57,7 @@ def run_daily_raid(
             item_payload["mission_id"] = mission_id
             print(f"\n{Emojis.STEP}Executing Item Raids (Stamina Limit)...", flush=True)
             client.sleep()
-            run_item_raid(
-                client, item_payload, account=account, max_iterations=item_max_iterations
-            )
+            run_item_raid(client, item_payload, account=account, max_iterations=item_max_iterations)
 
     # 3. Soul Shop Items (Non-Hero)
     client.sleep()

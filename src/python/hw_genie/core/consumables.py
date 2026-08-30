@@ -89,58 +89,30 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     ),
     # --- Crystals（1000 分割対象）---
     169: ConsumableInfo(name="Random Crystal", method="consumableUseLootBox", max_amount=1000),
-    170: ConsumableInfo(
-        name="Random Vibrant Crystal", method="consumableUseLootBox", max_amount=1000
-    ),
-    171: ConsumableInfo(
-        name="Random Radiant Crystal", method="consumableUseLootBox", max_amount=1000
-    ),
+    170: ConsumableInfo(name="Random Vibrant Crystal", method="consumableUseLootBox", max_amount=1000),
+    171: ConsumableInfo(name="Random Radiant Crystal", method="consumableUseLootBox", max_amount=1000),
     172: ConsumableInfo(name="Random Insignia", method="consumableUseLootBox", max_amount=1000),
-    173: ConsumableInfo(
-        name="Random Greater Insignia", method="consumableUseLootBox", max_amount=1000
-    ),
-    271: ConsumableInfo(
-        name="Chest of Random Crystals", method="consumableUseLootBox", max_amount=1000
-    ),
-    272: ConsumableInfo(
-        name="Chest of Random Insignia", method="consumableUseLootBox", max_amount=1000
-    ),
+    173: ConsumableInfo(name="Random Greater Insignia", method="consumableUseLootBox", max_amount=1000),
+    271: ConsumableInfo(name="Chest of Random Crystals", method="consumableUseLootBox", max_amount=1000),
+    272: ConsumableInfo(name="Chest of Random Insignia", method="consumableUseLootBox", max_amount=1000),
     # --- Equipment Fragment Boxes ---
     369: ConsumableInfo(name="Violet Equipment Fragment Box - Mage", method="consumableUseLootBox"),
     370: ConsumableInfo(name="Violet Equipment Fragment Box - Tank", method="consumableUseLootBox"),
-    371: ConsumableInfo(
-        name="Violet Equipment Fragment Box - Marksman", method="consumableUseLootBox"
-    ),
+    371: ConsumableInfo(name="Violet Equipment Fragment Box - Marksman", method="consumableUseLootBox"),
     372: ConsumableInfo(name="Violet Equipment Fragment Box - Healer", method="consumableUseLootBox"),
-    373: ConsumableInfo(
-        name="Violet Equipment Fragment Box - Support", method="consumableUseLootBox"
-    ),
-    374: ConsumableInfo(
-        name="Violet Equipment Fragment Box - Warrior", method="consumableUseLootBox"
-    ),
-    375: ConsumableInfo(
-        name="Violet Equipment Fragment Box - Control", method="consumableUseLootBox"
-    ),
+    373: ConsumableInfo(name="Violet Equipment Fragment Box - Support", method="consumableUseLootBox"),
+    374: ConsumableInfo(name="Violet Equipment Fragment Box - Warrior", method="consumableUseLootBox"),
+    375: ConsumableInfo(name="Violet Equipment Fragment Box - Control", method="consumableUseLootBox"),
     376: ConsumableInfo(name="Orange Equipment Fragment Box - Mage", method="consumableUseLootBox"),
     377: ConsumableInfo(name="Orange Equipment Fragment Box - Tank", method="consumableUseLootBox"),
-    378: ConsumableInfo(
-        name="Orange Equipment Fragment Box - Marksman", method="consumableUseLootBox"
-    ),
+    378: ConsumableInfo(name="Orange Equipment Fragment Box - Marksman", method="consumableUseLootBox"),
     379: ConsumableInfo(name="Orange Equipment Fragment Box - Healer", method="consumableUseLootBox"),
-    380: ConsumableInfo(
-        name="Orange Equipment Fragment Box - Support", method="consumableUseLootBox"
-    ),
-    381: ConsumableInfo(
-        name="Orange Equipment Fragment Box - Warrior", method="consumableUseLootBox"
-    ),
-    382: ConsumableInfo(
-        name="Orange Equipment Fragment Box - Control", method="consumableUseLootBox"
-    ),
+    380: ConsumableInfo(name="Orange Equipment Fragment Box - Support", method="consumableUseLootBox"),
+    381: ConsumableInfo(name="Orange Equipment Fragment Box - Warrior", method="consumableUseLootBox"),
+    382: ConsumableInfo(name="Orange Equipment Fragment Box - Control", method="consumableUseLootBox"),
     383: ConsumableInfo(name="Red Equipment Fragment Box - Mage", method="consumableUseLootBox"),
     384: ConsumableInfo(name="Red Equipment Fragment Box - Tank", method="consumableUseLootBox"),
-    385: ConsumableInfo(
-        name="Red Equipment Fragment Box - Marksman", method="consumableUseLootBox"
-    ),
+    385: ConsumableInfo(name="Red Equipment Fragment Box - Marksman", method="consumableUseLootBox"),
     386: ConsumableInfo(name="Red Equipment Fragment Box - Healer", method="consumableUseLootBox"),
     387: ConsumableInfo(name="Red Equipment Fragment Box - Support", method="consumableUseLootBox"),
     388: ConsumableInfo(name="Red Equipment Fragment Box - Warrior", method="consumableUseLootBox"),

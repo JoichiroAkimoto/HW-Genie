@@ -59,9 +59,7 @@ def fetch_inventory(client: HWClient) -> InventorySnapshot:
         InventoryReadError: 通信・API エラー、または予期しないレスポンス形式
     """
     try:
-        res = client.call(
-            {"calls": [{"name": ApiAction.INVENTORY_GET, "args": {}, "ident": "inventory"}]}
-        )
+        res = client.call({"calls": [{"name": ApiAction.INVENTORY_GET, "args": {}, "ident": "inventory"}]})
     except HWAuthError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -179,13 +177,9 @@ def use_consumable(
     except HWAuthError:
         raise
     except Exception as exc:  # noqa: BLE001
-        return ConsumableUseResult(
-            lib_id=lib_id, stock=amount, status=ResponseStatus.UNEXPECTED, error_name=str(exc)
-        )
+        return ConsumableUseResult(lib_id=lib_id, stock=amount, status=ResponseStatus.UNEXPECTED, error_name=str(exc))
     if not res.is_success:
-        return ConsumableUseResult(
-            lib_id=lib_id, stock=amount, status=ResponseStatus.ERROR, error_name=res.error_name
-        )
+        return ConsumableUseResult(lib_id=lib_id, stock=amount, status=ResponseStatus.ERROR, error_name=res.error_name)
     rewards = parse_use_rewards(res.detail, amount)
     return ConsumableUseResult(
         lib_id=lib_id,

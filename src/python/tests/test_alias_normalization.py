@@ -77,9 +77,7 @@ def test_update_config_merged_with_padded_alias():
     """末尾空白付きエイリアスでも正規行に書けること。"""
     _register("The Best", "b1")
 
-    stored = SessionManager.repo.update_config_merged(
-        "The Best ", "quest_guild_defaults", lambda existing: {"enabled": False}
-    )
+    stored = SessionManager.repo.update_config_merged("The Best ", "quest_guild_defaults", lambda existing: {"enabled": False})
     assert stored == {"enabled": False}
     data = SessionManager.repo.get_data("The Best")
     assert data["quest_guild_defaults"] == {"enabled": False}
@@ -95,9 +93,7 @@ def test_get_data_with_casing_variant():
 def test_update_config_merged_unknown_alias_raises():
     """未登録エイリアスは従来どおり ValueError。"""
     with pytest.raises(ValueError):
-        SessionManager.repo.update_config_merged(
-            "Ghost", "quest_defaults", lambda existing: {}
-        )
+        SessionManager.repo.update_config_merged("Ghost", "quest_defaults", lambda existing: {})
 
 
 # --- session_manager ---

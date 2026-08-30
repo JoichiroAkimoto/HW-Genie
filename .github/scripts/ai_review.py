@@ -238,7 +238,9 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
         if model_key == key or model_key == info.get("name") or model_key in aliases:
             # キーまたは正式名で一致: 正式名を返す
             # エイリアスで一致: 表示用にエイリアス自身を返す（API で正規名解決のため）
-            display_name = info["name"] if model_key in (key, info.get("name")) else model_key
+            display_name = (
+                info["name"] if model_key in (key, info.get("name")) else model_key
+            )
             return info, display_name
 
     # 2. 部分一致（一意に決まる場合のみ）。曖昧なら未知として扱う。
@@ -338,7 +340,9 @@ def _build_thinking_config(model_info: dict) -> types.ThinkingConfig | None:
     return types.ThinkingConfig(thinking_level="HIGH")
 
 
-def _get_thinking_level_display(thinking_config: types.ThinkingConfig | None) -> str | None:
+def _get_thinking_level_display(
+    thinking_config: types.ThinkingConfig | None,
+) -> str | None:
     """ThinkingConfig から表示用の思考レベル名（HIGH / MEDIUM 等）を抽出する。"""
     if not thinking_config or not getattr(thinking_config, "thinking_level", None):
         return None
@@ -373,7 +377,9 @@ def _generate_with_retry(client, model_name: str, prompt: str, config):
             if not retryable or attempt >= MAX_ATTEMPTS - 1:
                 raise
             if code == 429:
-                delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
+                delay = min(
+                    RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429
+                ) + random.uniform(0, 5)
                 print(
                     f"Gemini API 429 (Rate limited). Retrying in {delay:.1f}s... "
                     f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
@@ -415,7 +421,9 @@ def build_execution_metadata(
 
     # 前回の実行情報がある場合、折りたたんだ状態で表示
     if previous_exec_info:
-        prev_section = re.sub(r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info)
+        prev_section = re.sub(
+            r"⚡\s*(?:今回の)?\s*実行情報", "📝 前回の実行情報", previous_exec_info
+        )
         prev_section = re.sub(r"<details\s+open\s*>", "<details>", prev_section)
         metadata += f"\n{prev_section}\n\n"
 
@@ -424,7 +432,10 @@ def build_execution_metadata(
     # 1. モデル表示（指定名、実バージョン、正規名、思考レベル）
     actual_version = getattr(response, "model_version", None) if response else None
     if actual_version and actual_version != model_name:
-        if resolved_model_name and resolved_model_name not in (model_name, actual_version):
+        if resolved_model_name and resolved_model_name not in (
+            model_name,
+            actual_version,
+        ):
             model_str = f"`{model_name}` (`{actual_version}` / `{resolved_model_name}`)"
         else:
             model_str = f"`{model_name}` (`{actual_version}`)"
@@ -443,11 +454,15 @@ def build_execution_metadata(
     clean_server_url = (server_url or "https://github.com").rstrip("/")
     if commit_sha:
         if repo:
-            trace_parts.append(f"対象コミット: [`{commit_sha}`]({clean_server_url}/{repo}/commit/{commit_sha})")
+            trace_parts.append(
+                f"対象コミット: [`{commit_sha}`]({clean_server_url}/{repo}/commit/{commit_sha})"
+            )
         else:
             trace_parts.append(f"対象コミット: `{commit_sha}`")
     if run_id and repo:
-        trace_parts.append(f"[Actions 実行ログ]({clean_server_url}/{repo}/actions/runs/{run_id})")
+        trace_parts.append(
+            f"[Actions 実行ログ]({clean_server_url}/{repo}/actions/runs/{run_id})"
+        )
     if trace_parts:
         metadata += f"- **実行情報**: {' / '.join(trace_parts)}\n"
 
@@ -455,7 +470,11 @@ def build_execution_metadata(
     metadata += f"- **完了日時**: `{end_time.strftime('%Y-%m-%d %H:%M:%S JST')}` (所要時間: `{duration:.2f} 秒`)\n"
 
     # 4. 変更規模
-    if isinstance(files_modified_count, int) and lines_added is not None and lines_deleted is not None:
+    if (
+        isinstance(files_modified_count, int)
+        and lines_added is not None
+        and lines_deleted is not None
+    ):
         metadata += f"- **変更規模**: `{files_modified_count} ファイル (+{lines_added:,} / -{lines_deleted:,} 行)`\n"
     elif files_modified_count != "N/A":
         metadata += f"- **変更ファイル数**: `{files_modified_count}`\n"
@@ -471,7 +490,9 @@ def build_execution_metadata(
             if thoughts_tokens:
                 metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}` (うち思考=`{thoughts_tokens:,}`)\n"
             else:
-                metadata += f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}`\n"
+                metadata += (
+                    f"- **トークン**: 入力=`{in_tokens:,}`, 出力=`{out_tokens:,}`\n"
+                )
 
             in_rate = model_info.get("input_cost_per_1m")
             out_rate = model_info.get("output_cost_per_1m")
@@ -788,7 +809,7 @@ def main():
             ):
                 fetched_name = api_model_info.name
                 if fetched_name.startswith("models/"):
-                    fetched_name = fetched_name[len("models/"):]
+                    fetched_name = fetched_name[len("models/") :]
                 resolved_model_name = fetched_name
                 print(f"Resolved canonical model name from API: {resolved_model_name}")
         except Exception as e:
@@ -855,7 +876,9 @@ def main():
     # 「前回の bot レビュー（更新対象）」をまとめて返す
     pr_metadata = _fetch_pr_metadata(repo, pr_number)
     user_comments, existing_comment = _fetch_pr_comments(repo, pr_number)
-    file_contents = _fetch_file_contents(pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET)
+    file_contents = _fetch_file_contents(
+        pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET
+    )
 
     previous_review = ""
     previous_exec_info = ""
@@ -921,17 +944,23 @@ def main():
             body = f"> [!CAUTION]\n> AIによるレビュー生成が中断されました（理由: {reason}）。\n"
 
         # トレーサビリティ情報（対象コミット & GitHub Actions Run ログ）
-        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip(
+            "/"
+        )
         run_id = os.environ.get("GITHUB_RUN_ID")
         head_sha = os.environ.get("GITHUB_SHA", "")
         commit_sha = ""
         pr_ref = f"refs/remotes/pull/{pr_number}/head"
         for ref_candidate in [pr_ref, "HEAD"]:
             try:
-                commit_sha = subprocess.check_output(
-                    ["git", "rev-parse", "--short=7", ref_candidate],
-                    stderr=subprocess.DEVNULL,
-                ).decode("utf-8").strip()
+                commit_sha = (
+                    subprocess.check_output(
+                        ["git", "rev-parse", "--short=7", ref_candidate],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    .decode("utf-8")
+                    .strip()
+                )
                 if commit_sha:
                     break
             except Exception:

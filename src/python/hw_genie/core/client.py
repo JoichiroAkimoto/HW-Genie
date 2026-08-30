@@ -49,10 +49,7 @@ def resolve_account(account_alias: str | None = None) -> str:
         # ``Account not found`` / 空文字エイリアスの新規行作成につながる。
         if not stripped:
             # None 指定時と同じ ``AccountNotFoundError``
-            raise AccountNotFoundError(
-                f"Account alias is blank after trimming ({account_alias!r}). "
-                "Pass an explicit --account."
-            )
+            raise AccountNotFoundError(f"Account alias is blank after trimming ({account_alias!r}). Pass an explicit --account.")
         accounts = SessionManager.list_accounts()
         if stripped in accounts:
             return stripped
@@ -66,9 +63,7 @@ def resolve_account(account_alias: str | None = None) -> str:
         return accounts[0]
     if len(accounts) > 1:
         raise AccountAmbiguityError(accounts)
-    raise AccountNotFoundError(
-        "No accounts found in database. Register one with `auth --curl` first."
-    )
+    raise AccountNotFoundError("No accounts found in database. Register one with `auth --curl` first.")
 
 
 class AccountResolutionError(Exception):
@@ -84,10 +79,7 @@ class AccountAmbiguityError(AccountResolutionError):
 
     def __init__(self, accounts: list[str]):
         self.accounts = accounts
-        super().__init__(
-            f"Multiple accounts registered ({', '.join(accounts)}). "
-            "Specify one with --account <name>."
-        )
+        super().__init__(f"Multiple accounts registered ({', '.join(accounts)}). Specify one with --account <name>.")
 
 
 def load_session_headers(account_alias: str | None = None) -> dict[str, str] | None:
@@ -287,6 +279,7 @@ class HWClient:
 
                 import logging
                 import json
+
                 logging.debug(f"Payload: {json.dumps(payload)}")
                 response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
 
@@ -363,7 +356,7 @@ class HWClient:
                     response_text = ""
                     if isinstance(e, HTTPError) and e.response is not None:
                         response_text = f" | Response: {e.response.text[:500]}"
-                    
+
                     detail = f"{str(e)}{response_text}"
                     return HWResponse(
                         status=ResponseStatus.UNEXPECTED, error_name="network_or_parse_error", detail=detail, request_id=current_request_id

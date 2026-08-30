@@ -10,9 +10,7 @@ def test_db_connection_error_handling():
     """DB接続エラーが発生した場合の挙動を確認する"""
     with patch("hw_genie.core.repository.get_session_local") as mock_get_session_local:
         # SessionLocal() が呼ばれたときに例外を投げるように設定
-        mock_get_session_local.return_value.return_value.__enter__.side_effect = SQLAlchemyError(
-            "DB connection failed"
-        )
+        mock_get_session_local.return_value.return_value.__enter__.side_effect = SQLAlchemyError("DB connection failed")
 
         # SessionManager.load が例外を適切に伝播するか、あるいはハンドリングするかを確認
         # 現在の実装ではハンドリングしていないため、SQLAlchemyError が発生することを期待

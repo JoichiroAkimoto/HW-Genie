@@ -78,9 +78,17 @@ MAESTRO_BUFF_IDS: frozenset[int] = frozenset(range(112, 134))
 #   C: 6 (150, 112) / 13 (100, 120) / 18 (50, 121) / 21 (100, 132)（バフ名不明）
 #   ゴールドバフ（slot 1〜5）: 100 万ゴールド、buffId 113 / 123 / 126 / 129 / 130
 MAESTRO_PRIORITY: dict[int, int] = {
-    11: 1, 15: 2, 9: 3, 7: 4, 17: 5, 16: 6,  # S
-    14: 7, 12: 8, 10: 9,  # A
-    19: 10, 8: 11,  # B
+    11: 1,
+    15: 2,
+    9: 3,
+    7: 4,
+    17: 5,
+    16: 6,  # S
+    14: 7,
+    12: 8,
+    10: 9,  # A
+    19: 10,
+    8: 11,  # B
 }
 
 # ゴールドバフ（slot 1〜5）の価格は API レスポンスの cost.gold からパースする
@@ -147,17 +155,13 @@ def fetch_clan_raid_shop(client: HWClient) -> tuple[dict[str, Any], int]:
         AsgardShopReadError: 通信・API エラー、または予期しないレスポンス形式
     """
     try:
-        res = client.call(
-            {"calls": [{"name": ApiAction.CLAN_RAID_GET_INFO, "args": {}, "ident": "body"}]}
-        )
+        res = client.call({"calls": [{"name": ApiAction.CLAN_RAID_GET_INFO, "args": {}, "ident": "body"}]})
     except HWAuthError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise AsgardShopReadError(f"clanRaid_getInfo failed: {exc}") from exc
     if not res.is_success:
-        raise AsgardShopReadError(
-            f"clanRaid_getInfo failed ({res.error_name or res.status.value})"
-        )
+        raise AsgardShopReadError(f"clanRaid_getInfo failed ({res.error_name or res.status.value})")
     detail = res.detail if isinstance(res.detail, dict) else {}
     response = detail.get("response")
     if not isinstance(response, dict):
@@ -287,11 +291,7 @@ def build_buy_queue(shop: dict[str, Any]) -> list[AsgardItem]:
     ものを先に買う価格昇順で揃えている。）
     購入済み・ゴールドバフ・構造不正の slot は除外される。
     """
-    shop_items = {
-        _safe_int(slot_id): parse_slot(slot_id, item)
-        for slot_id, item in shop.items()
-        if not is_bought(item)
-    }
+    shop_items = {_safe_int(slot_id): parse_slot(slot_id, item) for slot_id, item in shop.items() if not is_bought(item)}
     candidates = {k: v for k, v in shop_items.items() if v is not None}
 
     queue: list[AsgardItem] = []
@@ -449,9 +449,7 @@ def _purchase_gold_buffs(
                     f"{Emojis.WARNING}{prefix}Skipping {_gold_label(parsed)} (Insufficient gold).",
                     flush=True,
                 )
-                results.append(
-                    AsgardResult(action=_gold_label(parsed), status=ResponseStatus.SKIPPED, error="Insufficient gold")
-                )
+                results.append(AsgardResult(action=_gold_label(parsed), status=ResponseStatus.SKIPPED, error="Insufficient gold"))
                 continue
             print(f"{prefix}Purchasing {_gold_label(parsed)}...", flush=True)
             buy_call = {
@@ -504,9 +502,7 @@ def _plan_gold_buffs(
                 spent += parsed.price
                 results.append(AsgardResult(action=_gold_label(parsed), status=ResponseStatus.SUCCESS))
             else:
-                results.append(
-                    AsgardResult(action=_gold_label(parsed), status=ResponseStatus.SKIPPED, error="Insufficient gold")
-                )
+                results.append(AsgardResult(action=_gold_label(parsed), status=ResponseStatus.SKIPPED, error="Insufficient gold"))
             mark = "✅" if affordable else "⏭ "
             print(f"  {mark} {_gold_label(parsed)}", flush=True)
     return results, bought, spent
@@ -545,9 +541,7 @@ def run_asgard_shop(
         shop, coins = fetch_clan_raid_shop(client)
     except AsgardShopReadError as exc:
         print(f"{Emojis.ERROR}{prefix}Error: Failed to fetch Asgard shop data. {exc}", flush=True)
-        return AsgardRunResult(
-            coins=0, spent=0, remaining=0, bought=0, skipped=False, items=[], error=str(exc)
-        )
+        return AsgardRunResult(coins=0, spent=0, remaining=0, bought=0, skipped=False, items=[], error=str(exc))
 
     if is_osh_shop(shop):
         lineup = "Osh"
@@ -560,8 +554,7 @@ def run_asgard_shop(
         # なしとしてスキップする（buy は一切発生しない）。
         if shop:
             print(
-                f"{Emojis.INFO}{prefix}Current Guild Raid shop is not a supported lineup "
-                "(Osh or Maestro) - skipping.",
+                f"{Emojis.INFO}{prefix}Current Guild Raid shop is not a supported lineup (Osh or Maestro) - skipping.",
                 flush=True,
             )
         else:
@@ -572,8 +565,10 @@ def run_asgard_shop(
         return AsgardRunResult(coins=coins, spent=0, remaining=coins, bought=0, skipped=True, items=[])
 
     total_cost = sum(item.price for item in plan)
-    print(f"{Emojis.INFO}{prefix}{lineup} week detected: {len(plan)} item(s) available, budget: {coins} Valor Emblems "
-          f"(total cost: {total_cost}).", flush=True)
+    print(
+        f"{Emojis.INFO}{prefix}{lineup} week detected: {len(plan)} item(s) available, budget: {coins} Valor Emblems (total cost: {total_cost}).",
+        flush=True,
+    )
 
     # ゴールドバフ（Valor 商品より先に購入。通貨が独立しているため順序は任意）。
     # gold_buffs=None は週依存: Osh 週は購入しない、Maestro 週は購入する（デフォルト）。
@@ -582,8 +577,7 @@ def run_asgard_shop(
         gold_enabled = lineup == "Maestro"
         if not gold_enabled:
             print(
-                f"{Emojis.INFO}{prefix}Gold buffs: skipped (default off for {lineup} week; "
-                "use --gold to enable).",
+                f"{Emojis.INFO}{prefix}Gold buffs: skipped (default off for {lineup} week; use --gold to enable).",
                 flush=True,
             )
     gold_results: list[AsgardResult] = []
@@ -619,9 +613,7 @@ def run_asgard_shop(
                 planned_spent += item.price
                 results.append(AsgardResult(action=item.label, status=ResponseStatus.SUCCESS))
             else:
-                results.append(
-                    AsgardResult(action=item.label, status=ResponseStatus.SKIPPED, error="Insufficient budget")
-                )
+                results.append(AsgardResult(action=item.label, status=ResponseStatus.SKIPPED, error="Insufficient budget"))
             mark = "✅" if affordable else "⏭ "
             print(f"  [{i + 1}/{len(plan)}] {mark} {item.label}", flush=True)
         print(

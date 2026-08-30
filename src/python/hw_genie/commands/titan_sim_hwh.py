@@ -33,15 +33,16 @@ from typing import Any, Optional
 
 try:
     import websocket  # noqa: F401  (websocket-client)
+
     _HAVE_WS = True
 except Exception:  # pragma: no cover
     _HAVE_WS = False
 
 
-
 # ---------------------------------------------------------------------------
 # CDP ヘルパ (軽量実装: websocket-client がなければ urllib で http のみ)
 # ---------------------------------------------------------------------------
+
 
 def _list_cdp_targets(port: int = 9222, timeout: float = 5.0) -> list[dict]:
     import urllib.request
@@ -90,9 +91,7 @@ class TitanSimulatorHWH:
 
     def _simulate_via_cdp(self, rival_id: str, seed: str, battle: dict) -> Optional[dict]:
         if not _HAVE_WS:
-            raise RuntimeError(
-                "websocket-client が必要です: pip install websocket-client"
-            )
+            raise RuntimeError("websocket-client が必要です: pip install websocket-client")
         import websocket
 
         targets = _list_cdp_targets(self.port)

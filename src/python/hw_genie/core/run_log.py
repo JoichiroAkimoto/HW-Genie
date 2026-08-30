@@ -161,9 +161,7 @@ def _prune_old_rows() -> None:
     def _attempt() -> None:
         with _wal_io_lock:
             with get_write_session_local()() as db:
-                db.query(RunLog).filter(
-                    RunLog.started_at < cutoff
-                ).delete(synchronize_session=False)
+                db.query(RunLog).filter(RunLog.started_at < cutoff).delete(synchronize_session=False)
                 db.commit()
 
     try:
@@ -236,16 +234,13 @@ def _read_with_retry(fn: Callable[[], T]) -> T:
         except Exception as exc:
             if is_hrana_stream_error(exc):
                 logger.warning(
-                    "Transient Hrana stream error on run_logs read; disposing "
-                    "read pool before retry: %s",
+                    "Transient Hrana stream error on run_logs read; disposing read pool before retry: %s",
                     exc,
                 )
                 try:
                     get_engine().pool.dispose()
                 except Exception:
-                    logger.warning(
-                        "Failed to dispose read pool", exc_info=True
-                    )
+                    logger.warning("Failed to dispose read pool", exc_info=True)
             raise
 
     return retry_on_transient_db_error(_attempt, logger=logger)
@@ -256,12 +251,7 @@ def list_run_logs(limit: int = 10) -> list[RunLog]:
 
     def _read() -> list[RunLog]:
         with get_session_local()() as db:
-            return (
-                db.query(RunLog)
-                .order_by(RunLog.id.desc())
-                .limit(limit)
-                .all()
-            )
+            return db.query(RunLog).order_by(RunLog.id.desc()).limit(limit).all()
 
     return _read_with_retry(_read)
 

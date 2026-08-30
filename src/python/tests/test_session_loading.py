@@ -2,6 +2,7 @@ import pytest
 from hw_genie.core.client import load_session_headers
 from hw_genie.core.session_manager import SessionManager
 
+
 def test_load_session_headers_no_arg_single_account():
     """アカウント指定なしで、DBに単一アカウントのみの場合は自動選択されること"""
     data = {"headers": {"x-auth-token": "your-db-token"}, "player": {"id": "default_id", "name": "Default"}}
@@ -9,6 +10,7 @@ def test_load_session_headers_no_arg_single_account():
 
     headers = load_session_headers()
     assert headers["x-auth-token"] == "your-db-token"
+
 
 def test_load_session_headers_no_arg_multiple_accounts_raises():
     """アカウント指定なしで複数アカウントが登録されている場合はエラーになること"""
@@ -20,10 +22,12 @@ def test_load_session_headers_no_arg_multiple_accounts_raises():
     with pytest.raises(AccountAmbiguityError):
         load_session_headers()
 
+
 def test_load_session_headers_unknown_account_returns_none():
     """指定したアカウントが DB にない場合は None を返すこと"""
     headers = load_session_headers("Unknown")
     assert headers is None
+
 
 def test_load_session_headers_from_db():
     """DBにデータがある場合、読み込めること"""
@@ -32,6 +36,7 @@ def test_load_session_headers_from_db():
 
     headers = load_session_headers("dbuser")
     assert headers["x-auth-token"] == "your-db-token"
+
 
 def test_list_accounts_registration_order():
     """list_accounts は登録順（id 順）を返し、アルファベット順にソートしない。"""

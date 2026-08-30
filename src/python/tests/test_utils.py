@@ -16,20 +16,25 @@ from hw_genie.core.utils import (
 )
 from hw_genie.core.client import PlayerStatus
 
-@pytest.mark.parametrize("num, expected", [
-    (0, "0"),
-    (999, "999"),
-    (1000, "1.0K"),
-    (1500, "1.5K"),
-    (10000, "10.0K"),
-    (999900, "999.9K"),
-    (1000000, "1.0M"),
-    (2500000, "2.5M"),
-    (1234567890, "1.2B"),
-    (5000000000000, "5.0T"),
-])
+
+@pytest.mark.parametrize(
+    "num, expected",
+    [
+        (0, "0"),
+        (999, "999"),
+        (1000, "1.0K"),
+        (1500, "1.5K"),
+        (10000, "10.0K"),
+        (999900, "999.9K"),
+        (1000000, "1.0M"),
+        (2500000, "2.5M"),
+        (1234567890, "1.2B"),
+        (5000000000000, "5.0T"),
+    ],
+)
 def test_format_number_with_suffix(num, expected):
     assert format_number_with_suffix(num) == expected
+
 
 def test_print_player_status(capsys):
     status = PlayerStatus(
@@ -42,30 +47,33 @@ def test_print_player_status(capsys):
         gems=0,  # gems と starMoney のマッピングを確認
     )
     status.gems = 9876
-    
+
     print_player_status(status)
     captured = capsys.readouterr()
-    
+
     assert "👤 Name: TestPlayer (Lv.120)" in captured.out
     assert "💰 Gold: 1.2M" in captured.out
     assert "💎 Emeralds: 9.9K" in captured.out
 
 
-@pytest.mark.parametrize("text, expected", [
-    ("abc", 3),
-    ("山田", 4),           # 全角は2幅
-    ("⚡", 2),             # 絵文字も2幅
-    ("⚡\ufe0f", 2),       # VS16 (幅0) を含む絵文字シーケンス
-    ("10のAdam", 8),       # 数字/ASCII=1、全角=2
-])
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("abc", 3),
+        ("山田", 4),  # 全角は2幅
+        ("⚡", 2),  # 絵文字も2幅
+        ("⚡\ufe0f", 2),  # VS16 (幅0) を含む絵文字シーケンス
+        ("10のAdam", 8),  # 数字/ASCII=1、全角=2
+    ],
+)
 def test_display_width(text, expected):
     assert display_width(text) == expected
 
 
 def test_pad_is_display_width_aware():
     assert pad("ab", 4) == "ab  "
-    assert pad("山", 4) == "山  "   # 全角1文字 = 表示幅2
-    assert pad("abc", 2) == "abc"   # 幅超過時は詰めない
+    assert pad("山", 4) == "山  "  # 全角1文字 = 表示幅2
+    assert pad("abc", 2) == "abc"  # 幅超過時は詰めない
 
 
 def test_wrap_display_keeps_short_lines():
@@ -227,27 +235,33 @@ def test_style_composes_codes(monkeypatch):
     assert style("abc") == "abc"
 
 
-@pytest.mark.parametrize("rank, expected", [
-    (1, "yellow"),
-    (2, "green"),
-    (14, "green"),
-    (15, None),
-    (0, None),
-    (None, None),
-])
+@pytest.mark.parametrize(
+    "rank, expected",
+    [
+        (1, "yellow"),
+        (2, "green"),
+        (14, "green"),
+        (15, None),
+        (0, None),
+        (None, None),
+    ],
+)
 def test_rank_color(rank, expected):
     assert rank_color(rank) == expected
 
 
-@pytest.mark.parametrize("level, energy, expected", [
-    (130, 190, False),   # 上限ちょうどは赤ではない
-    (130, 191, True),    # 上限超過（自動回復停止）で赤
-    (130, 39, False),    # 低スタミナは色付けなし
-    (None, 500, False),  # レベル不明は判定不能
-    (130, None, False),
-    ("130", "191", True),  # 数値文字列も正規化して判定
-    ("abc", 191, False),   # 非数値は False
-])
+@pytest.mark.parametrize(
+    "level, energy, expected",
+    [
+        (130, 190, False),  # 上限ちょうどは赤ではない
+        (130, 191, True),  # 上限超過（自動回復停止）で赤
+        (130, 39, False),  # 低スタミナは色付けなし
+        (None, 500, False),  # レベル不明は判定不能
+        (130, None, False),
+        ("130", "191", True),  # 数値文字列も正規化して判定
+        ("abc", 191, False),  # 非数値は False
+    ],
+)
 def test_energy_over_cap(level, energy, expected):
     assert energy_over_cap(level, energy) == expected
 

@@ -20,19 +20,17 @@ def _success_info(name: str, player_id: str = "p1") -> dict:
     return {
         "headers": {"x-auth-token": "your-token"},
         "status": "success",
-        "player": auth_module.PlayerStatus(
-            id=player_id, name=name, level=130, gold=100, gems=10, energy=5, arena_rank=1, grand_rank=2
-        ),
+        "player": auth_module.PlayerStatus(id=player_id, name=name, level=130, gold=100, gems=10, energy=5, arena_rank=1, grand_rank=2),
     }
 
 
 def test_refresh_all_accounts_success():
     """全アカウントが成功した場合は error が None になる。"""
-    with patch.object(
-        auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}
-    ), patch.object(
-        auth_module, "get_user_info", side_effect=lambda headers: _success_info("Alice")
-    ) as mock_fetch, patch.object(auth_module, "save_session") as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}),
+        patch.object(auth_module, "get_user_info", side_effect=lambda headers: _success_info("Alice")) as mock_fetch,
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["Alice"])
 
     assert results == [("Alice", None)]
@@ -49,11 +47,11 @@ def test_refresh_all_accounts_default_alias_renames_to_player_name():
     実名に更新され "default" が消滅する。
     """
     info = _success_info("Alice")
-    with patch.object(
-        auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}
-    ), patch.object(auth_module, "get_user_info", return_value=info) as mock_fetch, patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}),
+        patch.object(auth_module, "get_user_info", return_value=info) as mock_fetch,
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["default"])
 
     assert results == [("default", None)]
@@ -71,9 +69,10 @@ def test_refresh_one_default_renames_alias_to_player_name():
     SessionManager.save("default", {"player": {"id": "d1", "name": "Old", "level": 100}})
     assert "default" in SessionManager.list_accounts()
 
-    with patch.object(
-        auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}
-    ), patch.object(auth_module, "get_user_info", return_value=_success_info("Alice", "d1")):
+    with (
+        patch.object(auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}),
+        patch.object(auth_module, "get_user_info", return_value=_success_info("Alice", "d1")),
+    ):
         err = auth_module._refresh_one("default")
 
     assert err is None
@@ -85,11 +84,11 @@ def test_refresh_one_default_renames_alias_to_player_name():
 
 def test_refresh_all_accounts_missing_session():
     """セッション未登録のアカウントはエラーメッセージになる。"""
-    with patch.object(
-        auth_module, "load_session_headers", return_value=None
-    ), patch.object(auth_module, "get_user_info") as mock_fetch, patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", return_value=None),
+        patch.object(auth_module, "get_user_info") as mock_fetch,
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["Ghost"])
 
     assert results == [("Ghost", "Session not found for account 'Ghost'.")]
@@ -99,12 +98,15 @@ def test_refresh_all_accounts_missing_session():
 
 def test_refresh_all_accounts_api_error():
     """API エラー（セッション失効等）はメッセージとして捕捉され、保存しない。"""
-    with patch.object(
-        auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}
-    ), patch.object(
-        auth_module, "get_user_info",
-        return_value={"status": "error", "message": "Auth failed"},
-    ), patch.object(auth_module, "save_session") as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}),
+        patch.object(
+            auth_module,
+            "get_user_info",
+            return_value={"status": "error", "message": "Auth failed"},
+        ),
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["Alice"])
 
     assert results == [("Alice", "Alice: Auth failed")]
@@ -119,11 +121,11 @@ def test_refresh_all_accounts_exception_is_isolated():
             raise RuntimeError("boom")
         return _success_info("OK")
 
-    with patch.object(
-        auth_module, "load_session_headers", side_effect=lambda acc: {"x-auth-token": acc}
-    ), patch.object(auth_module, "get_user_info", side_effect=fake_fetch), patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", side_effect=lambda acc: {"x-auth-token": acc}),
+        patch.object(auth_module, "get_user_info", side_effect=fake_fetch),
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["OK", "Bad"])
 
     by_account = dict(results)
@@ -136,11 +138,11 @@ def test_refresh_all_accounts_exception_is_isolated():
 
 def test_refresh_all_accounts_empty_message_exception_reports_type():
     """空メッセージの例外は例外型名で失敗として報告される。"""
-    with patch.object(
-        auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}
-    ), patch.object(auth_module, "get_user_info", side_effect=lambda h: (_ for _ in ()).throw(RuntimeError())), patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with (
+        patch.object(auth_module, "load_session_headers", return_value={"x-auth-token": "your-token"}),
+        patch.object(auth_module, "get_user_info", side_effect=lambda h: (_ for _ in ()).throw(RuntimeError())),
+        patch.object(auth_module, "save_session") as mock_save,
+    ):
         results = auth_module.refresh_all_accounts(["Alice"])
 
     assert results == [("Alice", "RuntimeError")]
@@ -173,9 +175,7 @@ def test_wal_writes_share_single_process_lock():
 def test_update_session_with_headers_none_alias_uses_real_name():
     """account_alias=None（-a なし / auth server 経由）でもクラッシュせず実名で保存される。"""
     info = _success_info("Alice", "a1")
-    with patch.object(auth_module, "get_user_info", return_value=info) as mock_fetch, patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with patch.object(auth_module, "get_user_info", return_value=info) as mock_fetch, patch.object(auth_module, "save_session") as mock_save:
         result = auth_module.update_session_with_headers({"x-auth-token": "t"}, None)
 
     assert result["status"] == "success"
@@ -188,9 +188,7 @@ def test_update_session_with_headers_none_alias_uses_real_name():
 def test_update_session_with_headers_explicit_alias_saves_both_or_alias():
     """-a で別名を指定すると実名と別名の両方を保存する。"""
     info = _success_info("Alice", "a1")
-    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(auth_module, "save_session") as mock_save:
         auth_module.update_session_with_headers({"x-auth-token": "t"}, "sub1")
 
     saved_accounts = [call.args[1] for call in mock_save.call_args_list]
@@ -200,9 +198,7 @@ def test_update_session_with_headers_explicit_alias_saves_both_or_alias():
 def test_update_session_with_headers_default_alias_does_not_save_default():
     """account_alias="default"（旧エイリアス）は実名のみ保存され、default 行は作られない。"""
     info = _success_info("Alice", "a1")
-    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(
-        auth_module, "save_session"
-    ) as mock_save:
+    with patch.object(auth_module, "get_user_info", return_value=info), patch.object(auth_module, "save_session") as mock_save:
         auth_module.update_session_with_headers({"x-auth-token": "t"}, "default")
 
     saved_accounts = [call.args[1] for call in mock_save.call_args_list]
@@ -215,8 +211,14 @@ def test_cmd_auth_multi_account_no_arg_raises_ambiguity(capsys):
 
     _save_accounts()
     args = SimpleNamespace(
-        account=None, curl=None, update=None, memo=None, info=True,
-        list=False, list_names=False, fresh=False,
+        account=None,
+        curl=None,
+        update=None,
+        memo=None,
+        info=True,
+        list=False,
+        list_names=False,
+        fresh=False,
     )
     with pytest.raises(AccountAmbiguityError):
         cmd_auth(args)
@@ -225,11 +227,18 @@ def test_cmd_auth_multi_account_no_arg_raises_ambiguity(capsys):
 def test_cmd_auth_curl_first_registration_no_account_arg(capsys):
     """DB 空の状態で --curl（-a なし）を実行すると、実名で登録できる（初回登録がブロックされない）。"""
     args = SimpleNamespace(
-        account=None, curl='curl -H "x-auth-token: t" https://example.com',
-        update=None, memo=None, info=False, list=False, list_names=False, fresh=False,
+        account=None,
+        curl='curl -H "x-auth-token: t" https://example.com',
+        update=None,
+        memo=None,
+        info=False,
+        list=False,
+        list_names=False,
+        fresh=False,
     )
-    with patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}), patch(
-        "hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")
+    with (
+        patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}),
+        patch("hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")),
     ):
         cmd_auth(args)
 
@@ -244,11 +253,18 @@ def test_cmd_auth_curl_first_registration_no_account_arg(capsys):
 def test_cmd_auth_curl_with_explicit_alias(capsys):
     """--curl に -a を付けると、実名と別名の両方ではなく別名で保存される。"""
     args = SimpleNamespace(
-        account="sub1", curl='curl -H "x-auth-token: t" https://example.com',
-        update=None, memo=None, info=False, list=False, list_names=False, fresh=False,
+        account="sub1",
+        curl='curl -H "x-auth-token: t" https://example.com',
+        update=None,
+        memo=None,
+        info=False,
+        list=False,
+        list_names=False,
+        fresh=False,
     )
-    with patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}), patch(
-        "hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")
+    with (
+        patch("hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}),
+        patch("hw_genie.core.auth.get_user_info", return_value=_success_info("NewPlayer", "np1")),
     ):
         cmd_auth(args)
 
@@ -342,8 +358,7 @@ def test_cmd_auth_fresh_reflects_new_values_in_table(capsys):
         for acc in accounts:
             SessionManager.save(
                 acc,
-                {"player": {"id": "a1" if acc == "Alice" else "b1",
-                            "name": acc, "gold": 31415926}},
+                {"player": {"id": "a1" if acc == "Alice" else "b1", "name": acc, "gold": 31415926}},
             )
         return [(acc, None) for acc in accounts]
 

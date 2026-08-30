@@ -22,7 +22,11 @@ from ai_review import (  # noqa: E402
 MODEL_CONFIG = {
     "flash-lite": {
         "name": "gemini-3.1-flash-lite",
-        "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite", "gemini-3-flash-lite"],
+        "aliases": [
+            "gemini-flash-lite-latest",
+            "gemini-flash-lite",
+            "gemini-3-flash-lite",
+        ],
         "input_cost_per_1m": 0.25,
         "output_cost_per_1m": 1.50,
         "max_diff_chars": 2000000,
@@ -265,8 +269,9 @@ def test_generate_with_retry_succeeds_first_try():
 
 def test_generate_with_retry_retries_429():
     client = _fake_client(Exception("429 Too Many Requests"))
-    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
-        "ai_review.random.uniform", return_value=0.5
+    with (
+        mock.patch("ai_review.time.sleep") as mock_sleep,
+        mock.patch("ai_review.random.uniform", return_value=0.5),
     ):
         resp = ai_review._generate_with_retry(client, "model", "prompt", None)
     assert resp.text == "ok"
@@ -281,8 +286,9 @@ def test_generate_with_retry_429_exponential_backoff_and_jitter():
         Exception("429 Too Many Requests"),
         Exception("429 Too Many Requests"),
     )
-    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
-        "ai_review.random.uniform", return_value=1.0
+    with (
+        mock.patch("ai_review.time.sleep") as mock_sleep,
+        mock.patch("ai_review.random.uniform", return_value=1.0),
     ):
         resp = ai_review._generate_with_retry(client, "model", "prompt", None)
     assert resp.text == "ok"
@@ -329,9 +335,7 @@ def test_generate_with_retry_raises_on_non_retryable():
 def test_generate_with_retry_raises_after_max_retries():
     client = mock.Mock(
         models=mock.Mock(
-            generate_content=mock.Mock(
-                side_effect=Exception("503 Service Unavailable")
-            )
+            generate_content=mock.Mock(side_effect=Exception("503 Service Unavailable"))
         )
     )
     with mock.patch("ai_review.time.sleep"):
@@ -357,8 +361,9 @@ def test_generate_with_retry_429_backoff_capped():
         Exception("429 Too Many Requests"),
         Exception("429 Too Many Requests"),
     )
-    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
-        "ai_review.random.uniform", return_value=0.0
+    with (
+        mock.patch("ai_review.time.sleep") as mock_sleep,
+        mock.patch("ai_review.random.uniform", return_value=0.0),
     ):
         resp = ai_review._generate_with_retry(client, "model", "prompt", None)
     assert resp.text == "ok"
@@ -374,8 +379,9 @@ def test_generate_with_retry_429_backoff_capped():
 def test_generate_with_retry_uses_error_code():
     """e.code 属性を持つ例外はコードで判定してリトライする。"""
     client = _fake_client(_CodeError(429))
-    with mock.patch("ai_review.time.sleep") as mock_sleep, mock.patch(
-        "ai_review.random.uniform", return_value=0.0
+    with (
+        mock.patch("ai_review.time.sleep") as mock_sleep,
+        mock.patch("ai_review.random.uniform", return_value=0.0),
     ):
         resp = ai_review._generate_with_retry(client, "model", "prompt", None)
     assert resp.text == "ok"
@@ -394,9 +400,10 @@ def test_is_retryable_api_error_message_fallback():
         503,
     )
     # 本文に "500" を含む非リトライエラーはフォールバックでも誤判定しない
-    assert ai_review._is_retryable_api_error(
-        Exception("quota 5000 exceeded")
-    ) == (False, None)
+    assert ai_review._is_retryable_api_error(Exception("quota 5000 exceeded")) == (
+        False,
+        None,
+    )
 
 
 def test_is_retryable_api_error_non_retryable():
@@ -462,15 +469,17 @@ def _comment_api_responses(issue_comments, inline_comments=None, reviews=None):
 def test_fetch_pr_comments_skips_bot_marker():
     payload = json.dumps(
         [
-            {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+            {
+                "user": {"login": "bot"},
+                "body": "<!-- ai-pr-reviewer-comment -->既存レビュー",
+            },
             {"user": {"login": "alice"}, "body": "修正しました"},
             {"user": {"login": "bob"}, "body": "   "},
         ]
     )
     with mock.patch(
-        "ai_review.subprocess.check_output", side_effect=_comment_api_responses(
-            issue_comments=json.loads(payload)
-        )
+        "ai_review.subprocess.check_output",
+        side_effect=_comment_api_responses(issue_comments=json.loads(payload)),
     ) as mock_run:
         result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "bot" not in result
@@ -488,7 +497,11 @@ def test_fetch_pr_comments_returns_existing_comment():
     """bot のマーカーコメントを existing_comment として返す。"""
     issue_comments = [
         {"id": 1, "user": {"login": "alice"}, "body": "確認します"},
-        {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"},
+        {
+            "id": 2,
+            "user": {"login": "bot"},
+            "body": "<!-- ai-pr-reviewer-comment -->前回レビュー",
+        },
     ]
     with mock.patch(
         "ai_review.subprocess.check_output",
@@ -497,22 +510,38 @@ def test_fetch_pr_comments_returns_existing_comment():
         result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "確認します" in result
     assert "前回レビュー" not in result
-    assert existing == {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"}
+    assert existing == {
+        "id": 2,
+        "user": {"login": "bot"},
+        "body": "<!-- ai-pr-reviewer-comment -->前回レビュー",
+    }
 
 
 def test_fetch_pr_comments_includes_inline_and_reviews():
     """インラインコードレビューコメントとレビュー本体も取得する。"""
     issue_comments = [
         {"id": 1, "user": {"login": "alice"}, "body": "トップレベルコメント"},
-        {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+        {
+            "id": 2,
+            "user": {"login": "bot"},
+            "body": "<!-- ai-pr-reviewer-comment -->既存レビュー",
+        },
     ]
     inline_comments = [
-        {"user": {"login": "bob"}, "body": "ここが問題", "path": "src/app.py", "line": 42},
+        {
+            "user": {"login": "bob"},
+            "body": "ここが問題",
+            "path": "src/app.py",
+            "line": 42,
+        },
         {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存"},
     ]
     reviews = [
         {"user": {"login": "carol"}, "body": "レビューサマリ", "state": "APPROVED"},
-        {"user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->既存レビュー"},
+        {
+            "user": {"login": "bot"},
+            "body": "<!-- ai-pr-reviewer-comment -->既存レビュー",
+        },
     ]
     with mock.patch(
         "ai_review.subprocess.check_output",
@@ -541,8 +570,19 @@ def test_fetch_pr_comments_inline_line_fallback():
     """インラインコメントの line が None の場合、original_line にフォールバックする。"""
     issue_comments = []
     inline_comments = [
-        {"user": {"login": "bob"}, "body": "コメント", "path": "src/app.py", "line": None, "original_line": 10},
-        {"user": {"login": "carol"}, "body": "パスなしコメント", "path": "", "line": None},
+        {
+            "user": {"login": "bob"},
+            "body": "コメント",
+            "path": "src/app.py",
+            "line": None,
+            "original_line": 10,
+        },
+        {
+            "user": {"login": "carol"},
+            "body": "パスなしコメント",
+            "path": "",
+            "line": None,
+        },
     ]
     reviews = []
     with mock.patch(
@@ -783,7 +823,9 @@ def test_fetch_file_contents_fetch_failure_falls_back():
                 return data.encode()
         raise Exception(f"not found: {spec}")
 
-    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run) as mock_run:
+    with mock.patch(
+        "ai_review.subprocess.check_output", side_effect=fake_run
+    ) as mock_run:
         result = ai_review._fetch_file_contents("42", paths, limit=1000)
     assert "### a.py" in result
     assert "content a" in result
@@ -965,4 +1007,3 @@ def test_build_execution_metadata_unknown_cost_and_no_thinking():
     assert "`custom-model`" in metadata
     assert "思考" not in metadata
     assert "(取得できませんでした)" in metadata
-

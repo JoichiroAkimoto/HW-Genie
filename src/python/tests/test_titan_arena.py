@@ -28,6 +28,7 @@ from hw_genie.core.client import PlayerStatus, HWResponse, ResponseStatus, Error
 # Fake client: simulates the real server's battle-result verification
 # ---------------------------------------------------------------------------
 
+
 class FakeClient:
     """Mimics HWClient.call / fetch_player_status / sleep.
 
@@ -81,7 +82,11 @@ class FakeClient:
                 )
             return HWResponse(status=ResponseStatus.SUCCESS, detail={"response": {"error": "Invalid battle"}})
         if name == "titanArenaCompleteTier":
-            info = self.tier_sequence[self._complete_idx % len(self.tier_sequence)] if self.tier_sequence else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+            info = (
+                self.tier_sequence[self._complete_idx % len(self.tier_sequence)]
+                if self.tier_sequence
+                else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+            )
             self._complete_idx += 1
             return HWResponse(status=ResponseStatus.SUCCESS, detail={"response": info})
         if name == "titanArenaGetStatus":
@@ -91,12 +96,20 @@ class FakeClient:
             # 状態をエミュレートして rivals を空で返す。
             if self._win_count > self._complete_idx:
                 # 現在 tier の全敵を倒した直後（CompleteTier 前）
-                base = self.tier_sequence[self._complete_idx % len(self.tier_sequence)] if self.tier_sequence else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+                base = (
+                    self.tier_sequence[self._complete_idx % len(self.tier_sequence)]
+                    if self.tier_sequence
+                    else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+                )
                 empty = dict(base)
                 empty["rivals"] = {}
                 return HWResponse(status=ResponseStatus.SUCCESS, detail={"response": empty})
             # 通常: 現在 tier の情報
-            info = self.tier_sequence[self._complete_idx % len(self.tier_sequence)] if self.tier_sequence else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+            info = (
+                self.tier_sequence[self._complete_idx % len(self.tier_sequence)]
+                if self.tier_sequence
+                else {"tier": 1, "maxTier": 8, "canRaid": True, "status": "battle", "rivals": {"-480906": {"isBot": True}}}
+            )
             return HWResponse(status=ResponseStatus.SUCCESS, detail={"response": info})
         return HWResponse(status=ResponseStatus.ERROR, error_name="unknown", detail={})
 
@@ -110,6 +123,7 @@ class FakeClient:
 # ---------------------------------------------------------------------------
 # Unit tests: pure helpers
 # ---------------------------------------------------------------------------
+
 
 def test_to_signed32_unsigned():
     assert ta._to_signed32("3443036521") == -851930775
@@ -226,6 +240,7 @@ def test_pick_next_rival_prefers_human_over_bot():
 # Flow tests: run_titan_arena (single stage)
 # ---------------------------------------------------------------------------
 
+
 def test_run_titan_arena_wins_on_first_seed():
     fc = FakeClient(seed_sequence=["3443036521"], winnable_seeds={3443036521})
     res = ta.run_titan_arena(fc, rival_id="-470706", team_rotation=[[4003]], max_attempts_per_team=10)
@@ -292,9 +307,7 @@ def test_run_titan_arena_with_battle_sim_passes_sim_to_payload():
             return super().call(payload)
 
     fc = CaptureClient(seed_sequence=["3443036521"], winnable_seeds={3443036521})
-    res = ta.run_titan_arena(
-        fc, rival_id="-470706", team_rotation=[[4003, 4023]], max_attempts_per_team=10, battle_sim=sim
-    )
+    res = ta.run_titan_arena(fc, rival_id="-470706", team_rotation=[[4003, 4023]], max_attempts_per_team=10, battle_sim=sim)
     assert res.win is True
     prog = captured["payload"]["calls"][0]["args"]["progress"][0]
     assert prog["attackers"]["heroes"]["4003"]["hp"] == 4254430
@@ -304,6 +317,7 @@ def test_run_titan_arena_with_battle_sim_passes_sim_to_payload():
 # ---------------------------------------------------------------------------
 # Flow tests: run_titan_arena_auto (multi-stage)
 # ---------------------------------------------------------------------------
+
 
 def _tier(tier, max_tier, rival):
     return {"tier": tier, "maxTier": max_tier, "canRaid": True, "status": "battle", "rivals": {rival: {"isBot": True}}}

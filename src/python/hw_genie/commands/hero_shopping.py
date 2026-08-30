@@ -9,6 +9,7 @@ from hw_genie.core.client import (
 )
 from hw_genie.core.shop import ShopReadError, fetch_shops, get_shop_slots, is_bought
 
+
 class ShopId(Enum):
     ARENA = "4"
     GRAND_ARENA = "5"
@@ -17,11 +18,13 @@ class ShopId(Enum):
     FRIEND = "9"
     PET_SOUL = "17"
 
+
 @dataclass
 class ShopResult:
     action: str
     status: ResponseStatus
     error: str | None = None
+
 
 @dataclass
 class BuyItem:
@@ -31,6 +34,7 @@ class BuyItem:
     reward: dict[str, Any]
     cost: dict[str, Any]
     label: str
+
 
 # 購入対象とするショップ設定
 TARGET_SHOP_IDS = [ShopId.ARENA, ShopId.GRAND_ARENA, ShopId.TOWER, ShopId.SOUL, ShopId.FRIEND]
@@ -46,6 +50,7 @@ SHOP_NAMES = {
 # ショップ固有の特定スロットID
 PET_POTION_SLOT_ID = "3"
 
+
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
     if not reward_dict:
         return "Unknown Item"
@@ -57,6 +62,7 @@ def format_reward_desc(reward_dict: dict[str, Any]) -> str:
         else:
             descriptions.append(f"{item_type}:{item_data}")
     return ", ".join(descriptions)
+
 
 def run_hero_shopping(
     client_or_headers,
@@ -125,15 +131,15 @@ def run_hero_shopping(
 
             # 購入判定
             should_buy = False
-            
+
             # 1. ヒーロー購入判定
             if is_hero and hero_shop_ids and shop_id_enum in hero_shop_ids:
                 should_buy = True
-            
+
             # 2. ソウルショップ非ヒーローアイテム判定
             if not is_hero and shop_id_enum == ShopId.SOUL and buy_soul_shop_items:
                 should_buy = True
-            
+
             # 3. ペットポーション購入判定 (PET_SOUL ショップのスロット 3 はペットポーション固定)
             if shop_id_enum == ShopId.PET_SOUL and slot_id == PET_POTION_SLOT_ID and buy_pet_potions:
                 should_buy = True
@@ -190,7 +196,7 @@ def run_hero_shopping(
                     skipped_shops_due_to_funds.add(item.shopId)
 
             client.sleep()
-        
+
         print(f"\n{Emojis.FINISH}--- Shopping Results Summary ---", flush=True)
         print(f"  {Emojis.SUCCESS}Total Hero Souls Purchased: {total_souls_bought}", flush=True)
 

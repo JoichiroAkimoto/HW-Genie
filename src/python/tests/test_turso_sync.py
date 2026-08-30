@@ -272,12 +272,7 @@ def test_replica_dialect_forwards_sync_params():
     assert TursoReplicaDialect.supports_statement_cache is True
 
     dialect = TursoReplicaDialect()
-    url = make_url(
-        "sqlite+libsql:////tmp/replica.db"
-        "?sync_url=libsql://db.turso.io"
-        "&auth_token=secret"
-        "&sync_interval=30"
-    )
+    url = make_url("sqlite+libsql:////tmp/replica.db?sync_url=libsql://db.turso.io&auth_token=secret&sync_interval=30")
     cargs, cparams = dialect.create_connect_args(url)
 
     assert cargs[0] == os.path.abspath("/tmp/replica.db")
@@ -293,10 +288,7 @@ def test_replica_dialect_remote_mode_passthrough():
     from hw_genie.core.database import TursoReplicaDialect
 
     dialect = TursoReplicaDialect()
-    url = make_url(
-        "sqlite+libsql://user:pass@db.turso.io/my-db"
-        "?auth_token=secret&sync_interval=30"
-    )
+    url = make_url("sqlite+libsql://user:pass@db.turso.io/my-db?auth_token=secret&sync_interval=30")
     cargs, cparams = dialect.create_connect_args(url)
     # remote mode uses http(s) URL scheme, not a local file path
     assert cargs[0].startswith("http")
@@ -372,8 +364,13 @@ def test_token_masking_filter_redacts_log_records():
     from hw_genie.core.database import TokenMaskingFilter
 
     record = logging.LogRecord(
-        "hw_genie", logging.INFO, __file__, 1,
-        "connecting to sqlite+libsql:////x.db?auth_token=TOPSECRET", None, None,
+        "hw_genie",
+        logging.INFO,
+        __file__,
+        1,
+        "connecting to sqlite+libsql:////x.db?auth_token=TOPSECRET",
+        None,
+        None,
     )
     assert TokenMaskingFilter().filter(record) is True
     assert "TOPSECRET" not in record.getMessage()
@@ -400,9 +397,7 @@ def test_install_token_masking_filter_masks_child_logger():
         install_token_masking_filter()
 
         # 子ロガー経由でトークンを含むメッセージを出力
-        _logging.getLogger("hw_genie.core.database").info(
-            "connect url sqlite+libsql:///x?auth_token=CHILDSECRET&sync_interval=5"
-        )
+        _logging.getLogger("hw_genie.core.database").info("connect url sqlite+libsql:///x?auth_token=CHILDSECRET&sync_interval=5")
         output = stream.getvalue()
     finally:
         root.removeHandler(handler)
@@ -432,10 +427,7 @@ def test_create_connect_args_sets_replica_mode_flag():
     from hw_genie.core.database import TursoReplicaDialect
 
     dialect = TursoReplicaDialect()
-    url = make_url(
-        "sqlite+libsql:////tmp/replica.db"
-        "?sync_url=libsql://db.turso.io&auth_token=secret"
-    )
+    url = make_url("sqlite+libsql:////tmp/replica.db?sync_url=libsql://db.turso.io&auth_token=secret")
     dialect.create_connect_args(url)
     assert dialect._replica_mode is True
 
@@ -464,7 +456,8 @@ def test_on_connect_syncs_replica_when_enabled(monkeypatch):
 
     # import_dbapi 経由で Connection 型を差し替え
     monkeypatch.setattr(
-        TursoReplicaDialect, "import_dbapi",
+        TursoReplicaDialect,
+        "import_dbapi",
         lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
     )
     # super().on_connect() は None を返す想定
@@ -492,7 +485,8 @@ def test_on_connect_skips_sync_when_disabled(monkeypatch):
             calls.append("sync")
 
     monkeypatch.setattr(
-        TursoReplicaDialect, "import_dbapi",
+        TursoReplicaDialect,
+        "import_dbapi",
         lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
     )
     monkeypatch.setattr(
@@ -518,7 +512,8 @@ def test_on_connect_skips_sync_for_non_replica(monkeypatch):
             calls.append("sync")
 
     monkeypatch.setattr(
-        TursoReplicaDialect, "import_dbapi",
+        TursoReplicaDialect,
+        "import_dbapi",
         lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
     )
     monkeypatch.setattr(
@@ -557,9 +552,7 @@ def test_connect_serialises_replica_open(monkeypatch):
 
     monkeypatch.setattr(db_module, "_wal_io_lock", LockSpy())
     dialect = TursoReplicaDialect()
-    monkeypatch.setattr(
-        dialect, "dbapi", type("dbapi", (), {"connect": lambda *a, **k: "conn"})()
-    )
+    monkeypatch.setattr(dialect, "dbapi", type("dbapi", (), {"connect": lambda *a, **k: "conn"})())
 
     dialect._replica_mode = True
     assert dialect.connect() == "conn"
@@ -721,9 +714,7 @@ def test_get_write_session_local_remote_uses_separate_engine(monkeypatch):
     monkeypatch.setenv("TURSO_AUTH_TOKEN", "my-mock-auth-token")
 
     # read エンジンは in-memory に差し替え、write は別 in-memory プールで構築されること
-    db._engine = sa_create(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+    db._engine = sa_create("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     write_session = get_write_session_local()
     assert write_session is not get_session_local()
     # 別エンジンでもセッションは生成できる
@@ -976,9 +967,7 @@ def test_retry_on_wal_contention_sleeps_with_jitter(mock_sleep, monkeypatch):
     from hw_genie.core.database import retry_on_wal_contention
 
     # ジッター係数を 1.5 に固定し、待機時間を決定的に検証する
-    monkeypatch.setattr(
-        "hw_genie.core.database.random.uniform", lambda a, b: b
-    )
+    monkeypatch.setattr("hw_genie.core.database.random.uniform", lambda a, b: b)
 
     calls = {"n": 0}
 
@@ -1008,7 +997,8 @@ def test_on_connect_sync_retries_on_wal_contention(monkeypatch, mock_sleep):
                 raise ValueError("wal_insert_begin failed")
 
     monkeypatch.setattr(
-        TursoReplicaDialect, "import_dbapi",
+        TursoReplicaDialect,
+        "import_dbapi",
         lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
     )
     monkeypatch.setattr(
@@ -1034,7 +1024,8 @@ def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock
             raise ValueError("wal_insert_begin failed")
 
     monkeypatch.setattr(
-        TursoReplicaDialect, "import_dbapi",
+        TursoReplicaDialect,
+        "import_dbapi",
         lambda cls: type("m", (), {"Connection": FakeLibsqlConn})(),
     )
     monkeypatch.setattr(
@@ -1049,4 +1040,3 @@ def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock
         hook(FakeLibsqlConn())
 
     assert "sync() failed on connect" in caplog.text
-

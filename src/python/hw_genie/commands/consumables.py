@@ -111,27 +111,20 @@ def _plan_consumable_use(
                 "Specify --method to override (or register in core/consumables.py).",
                 flush=True,
             )
-            results.append(
-                ConsumableUseResult(
-                    lib_id=lib_id, name=name, status=ResponseStatus.ERROR, error_name="unknownMethod"
-                )
-            )
+            results.append(ConsumableUseResult(lib_id=lib_id, name=name, status=ResponseStatus.ERROR, error_name="unknownMethod"))
             continue
 
         stock = _safe_int(consumables.get(lib_id, 0))
         if stock <= 0:
             print(f"  [{index}/{len(targets)}] {Emojis.INFO}{label}: no stock, skipped.", flush=True)
-            results.append(
-                ConsumableUseResult(lib_id=lib_id, name=name, stock=0, status=ResponseStatus.SKIPPED)
-            )
+            results.append(ConsumableUseResult(lib_id=lib_id, name=name, stock=0, status=ResponseStatus.SKIPPED))
             continue
 
         chunk_size = max_amount(lib_id)
         chunks = _chunk_sizes(stock, chunk_size)
         if len(chunks) > 1:
             print(
-                f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method} "
-                f"({len(chunks)} requests of up to {chunk_size}).",
+                f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method} ({len(chunks)} requests of up to {chunk_size}).",
                 flush=True,
             )
         else:
@@ -139,9 +132,7 @@ def _plan_consumable_use(
                 f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method}.",
                 flush=True,
             )
-        results.append(
-            ConsumableUseResult(lib_id=lib_id, name=name, stock=stock, status=ResponseStatus.SUCCESS)
-        )
+        results.append(ConsumableUseResult(lib_id=lib_id, name=name, stock=stock, status=ResponseStatus.SUCCESS))
     return results
 
 
@@ -210,8 +201,7 @@ def run_consumable_use(
         if not pending:
             if failed:
                 print(
-                    f"  {Emojis.INFO}{prefix}Round {round_no}: no target stock remaining "
-                    "(failed items skipped).",
+                    f"  {Emojis.INFO}{prefix}Round {round_no}: no target stock remaining (failed items skipped).",
                     flush=True,
                 )
             else:
@@ -223,8 +213,7 @@ def run_consumable_use(
         if round_no > max_rounds:
             leftovers = ", ".join(f"{_item_label(lib_id)} x{stock}" for lib_id, stock in pending)
             print(
-                f"  {Emojis.WARNING}{prefix}Stopped after {max_rounds} rounds (safety cap); "
-                f"still remaining: {leftovers}",
+                f"  {Emojis.WARNING}{prefix}Stopped after {max_rounds} rounds (safety cap); still remaining: {leftovers}",
                 flush=True,
             )
             for lib_id, stock in pending:
@@ -241,8 +230,7 @@ def run_consumable_use(
             break
         if round_no > 1:
             print(
-                f"  {Emojis.STEP}{prefix}Round {round_no}: leftover target stock found, "
-                "continuing...",
+                f"  {Emojis.STEP}{prefix}Round {round_no}: leftover target stock found, continuing...",
                 flush=True,
             )
 
@@ -272,13 +260,10 @@ def run_consumable_use(
 
             chunks = _chunk_sizes(stock, max_amount(lib_id))
             print(
-                f"  [{index}/{len(pending)}] {label}: consuming {stock} via {method} "
-                f"({len(chunks)} request(s))...",
+                f"  [{index}/{len(pending)}] {label}: consuming {stock} via {method} ({len(chunks)} request(s))...",
                 flush=True,
             )
-            item = ConsumableUseResult(
-                lib_id=lib_id, name=name, stock=stock, status=ResponseStatus.SUCCESS
-            )
+            item = ConsumableUseResult(lib_id=lib_id, name=name, stock=stock, status=ResponseStatus.SUCCESS)
             for amount in chunks:
                 result = use_consumable(
                     client,
@@ -292,8 +277,7 @@ def run_consumable_use(
                     item.status = result.status
                     item.error_name = result.error_name
                     print(
-                        f"    {Emojis.ERROR}Failed ({result.error_name or result.status.value}) "
-                        f"after consuming {item.consumed}/{stock}.",
+                        f"    {Emojis.ERROR}Failed ({result.error_name or result.status.value}) after consuming {item.consumed}/{stock}.",
                         flush=True,
                     )
                     logger.warning(
@@ -311,8 +295,7 @@ def run_consumable_use(
                     item.rewards[category] = item.rewards.get(category, 0) + qty
             if item.status == ResponseStatus.SUCCESS:
                 print(
-                    f"    {Emojis.SUCCESS}Consumed {item.consumed}. "
-                    f"Rewards: {_reward_text(item.rewards)}",
+                    f"    {Emojis.SUCCESS}Consumed {item.consumed}. Rewards: {_reward_text(item.rewards)}",
                     flush=True,
                 )
             _record_result(results, item)
@@ -320,9 +303,7 @@ def run_consumable_use(
     return [
         results[lib_id]
         if lib_id in results
-        else ConsumableUseResult(
-            lib_id=lib_id, name=display_name(lib_id), stock=0, status=ResponseStatus.SKIPPED
-        )
+        else ConsumableUseResult(lib_id=lib_id, name=display_name(lib_id), stock=0, status=ResponseStatus.SKIPPED)
         for lib_id in targets
     ]
 

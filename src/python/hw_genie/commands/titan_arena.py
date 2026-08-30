@@ -79,6 +79,7 @@ class TitanArenaResult:
 # ペイロード生成
 # ----------------------------------------------------------------------------
 
+
 def _build_start_payload(rival_id: str, titans: list[int], action_ts: int = 0) -> dict[str, Any]:
     """titanArenaStartBattle 用ペイロード生成"""
     return {
@@ -250,6 +251,7 @@ def _build_end_payload(
 # メイン処理
 # ----------------------------------------------------------------------------
 
+
 def run_titan_arena(
     client_or_headers,
     rival_id: str = DEFAULT_RIVAL_ID,
@@ -331,7 +333,11 @@ def run_titan_arena(
                     print(f"    {Emojis.ERROR}battle_sim failed: {ex}", flush=True)
                     sim = None
             end_payload = _build_end_payload(
-                rival_id=rival_id, seed=seed, win=True, battle=battle, battle_sim=sim,
+                rival_id=rival_id,
+                seed=seed,
+                win=True,
+                battle=battle,
+                battle_sim=sim,
             )
             end_res = client.call(end_payload)
 
@@ -617,8 +623,7 @@ def run_titan_arena_auto(
             # 最終 tier の全敵を倒したので完了
             final_cleared = stages_cleared + 1
             print(
-                f"{Emojis.FINISH}Reached final tier {tier} == maxTier {max_tier} and all rivals cleared. "
-                f"Stopping (no further CompleteTier).",
+                f"{Emojis.FINISH}Reached final tier {tier} == maxTier {max_tier} and all rivals cleared. Stopping (no further CompleteTier).",
                 flush=True,
             )
             print(f"\n{Emojis.FINISH}Auto complete: {final_cleared} tier(s) cleared.", flush=True)
@@ -640,8 +645,7 @@ def run_titan_arena_auto(
         new_tier = info.get("tier")
         new_max = info.get("max_tier")
         print(
-            f"  {Emojis.INFO}Stage advanced -> tier={new_tier}/{new_max}, "
-            f"canRaid={info.get('can_raid')}, status={info.get('status')}",
+            f"  {Emojis.INFO}Stage advanced -> tier={new_tier}/{new_max}, canRaid={info.get('can_raid')}, status={info.get('status')}",
             flush=True,
         )
         stages_cleared += 1
@@ -680,6 +684,7 @@ def run_titan_arena_auto(
 # ----------------------------------------------------------------------------
 # レスポンス解析ヘルパ
 # ----------------------------------------------------------------------------
+
 
 def _extract_battle(detail: Any) -> dict[str, Any]:
     """StartBattle / EndBattle レスポンスから battle ブロックを抽出。

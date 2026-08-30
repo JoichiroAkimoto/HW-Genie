@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from hw_genie.core.client import HWClient
 
+
 @pytest.fixture
 def client_with_mock_session():
     """requests.Sessionをモック化したHWClientを作成"""
@@ -9,6 +10,7 @@ def client_with_mock_session():
     headers = {"x-auth-token": "test-token", "x-auth-player-id": "123", "x-request-id": "100"}
     client = HWClient(headers, session=mock_session)
     return client, mock_session
+
 
 def test_build_mission_payload_boundary_values(client_with_mock_session):
     """ミッションレイド用ペイロードの引数（回数）の境界値を検証"""

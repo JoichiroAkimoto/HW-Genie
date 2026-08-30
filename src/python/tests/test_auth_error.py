@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from hw_genie.core.client import HWClient, HWAuthError
 
+
 @pytest.fixture
 def client_with_mock_session():
     """requests.Sessionをモック化したHWClientを作成"""
@@ -9,6 +10,7 @@ def client_with_mock_session():
     headers = {"x-auth-token": "test-token", "x-auth-player-id": "123", "x-request-id": "100"}
     client = HWClient(headers, session=mock_session)
     return client, mock_session
+
 
 def test_call_auth_error_http_401(client_with_mock_session):
     """HTTP 401 認証エラー時の挙動を検証"""
@@ -22,6 +24,7 @@ def test_call_auth_error_http_401(client_with_mock_session):
     # 実行
     with pytest.raises(HWAuthError):
         client.call({"calls": [{"name": "test"}]})
+
 
 def test_call_auth_error_json_body(client_with_mock_session):
     """レスポンスボディ内の認証エラーを検証"""

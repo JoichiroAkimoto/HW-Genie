@@ -32,9 +32,7 @@ def test_update_config_retries_wal_contention(monkeypatch, mock_sleep):
         lambda: type("E", (), {"pool": type("P", (), {"dispose": lambda self: None})()})(),
     )
 
-    repo_module.SessionRepository().update_config(
-        "wal_retry_alias", {"player": {"id": "player-1", "name": "RetryTest"}}
-    )
+    repo_module.SessionRepository().update_config("wal_retry_alias", {"player": {"id": "player-1", "name": "RetryTest"}})
 
     assert attempts["n"] == 1
     with get_session_local()() as db:
@@ -65,9 +63,7 @@ def test_update_config_raises_when_wal_contention_persists(monkeypatch, mock_sle
     )
 
     with pytest.raises(ValueError, match="wal_insert_begin failed"):
-        repo_module.SessionRepository().update_config(
-            "wal_retry_alias", {"player": {"id": "player-2", "name": "Fail"}}
-        )
+        repo_module.SessionRepository().update_config("wal_retry_alias", {"player": {"id": "player-2", "name": "Fail"}})
     # attempts=5 のうち 4 回バックオフ待ちする
     assert mock_sleep.call_count == 4
 
@@ -100,13 +96,9 @@ def test_update_config_retries_hrana_stream_and_disposes_pool(monkeypatch, mock_
         pool = FakePool()
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
-    monkeypatch.setattr(
-        repo_module, "get_write_engine", lambda: FakeEngine()
-    )
+    monkeypatch.setattr(repo_module, "get_write_engine", lambda: FakeEngine())
 
-    repo_module.SessionRepository().update_config(
-        "hrana_retry_alias", {"player": {"id": "player-3", "name": "HranaRetry"}}
-    )
+    repo_module.SessionRepository().update_config("hrana_retry_alias", {"player": {"id": "player-3", "name": "HranaRetry"}})
 
     assert attempts["n"] == 1
     assert disposed["count"] == 1
@@ -138,17 +130,11 @@ def test_update_config_does_not_dispose_on_validation_error(monkeypatch, mock_sl
     class FakeEngine:
         pool = FakePool()
 
-    monkeypatch.setattr(
-        repo_module, "get_write_session_local", lambda: ValidationErrorFactory()
-    )
-    monkeypatch.setattr(
-        repo_module, "get_write_engine", lambda: FakeEngine()
-    )
+    monkeypatch.setattr(repo_module, "get_write_session_local", lambda: ValidationErrorFactory())
+    monkeypatch.setattr(repo_module, "get_write_engine", lambda: FakeEngine())
 
     with pytest.raises(ValueError, match="player_id is required"):
-        repo_module.SessionRepository().update_config(
-            "no_dispose_alias", {"player": {"name": "NoId"}}
-        )
+        repo_module.SessionRepository().update_config("no_dispose_alias", {"player": {"name": "NoId"}})
     assert disposed["count"] == 0
 
 
@@ -178,9 +164,7 @@ def test_update_config_does_not_dispose_on_wal_contention(monkeypatch, mock_slee
     monkeypatch.setattr(repo_module, "get_write_engine", lambda: FakeEngine())
 
     with pytest.raises(ValueError, match="wal_insert_begin failed"):
-        repo_module.SessionRepository().update_config(
-            "wal_no_dispose_alias", {"player": {"id": "p", "name": "N"}}
-        )
+        repo_module.SessionRepository().update_config("wal_no_dispose_alias", {"player": {"id": "p", "name": "N"}})
     assert disposed["count"] == 0
 
 
@@ -203,14 +187,10 @@ def test_update_config_dispose_failure_does_not_mask_original(monkeypatch, mock_
             raise RuntimeError("boom")
 
     monkeypatch.setattr(repo_module, "get_write_session_local", lambda: FlakyFactory())
-    monkeypatch.setattr(
-        repo_module, "get_write_engine", lambda: type("E", (), {"pool": ExplodingPool()})()
-    )
+    monkeypatch.setattr(repo_module, "get_write_engine", lambda: type("E", (), {"pool": ExplodingPool()})())
 
     with pytest.raises(ValueError, match="stream not found"):
-        repo_module.SessionRepository().update_config(
-            "mask_alias", {"player": {"id": "p", "name": "M"}}
-        )
+        repo_module.SessionRepository().update_config("mask_alias", {"player": {"id": "p", "name": "M"}})
 
 
 def test_list_accounts_retries_hrana_stream_and_disposes_read_pool(monkeypatch, mock_sleep):

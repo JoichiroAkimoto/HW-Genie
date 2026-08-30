@@ -29,13 +29,18 @@ def compute_image_tag(ref_type: str, ref: str, ref_name: str) -> str:
         return f"{IMAGE}:{ref_name}"
     if ref == "refs/heads/main":
         return f"{IMAGE}:latest"
-    raise ValueError(f"Image push is only allowed from main or version tags (ref: {ref})")
+    raise ValueError(
+        f"Image push is only allowed from main or version tags (ref: {ref})"
+    )
 
 
 def main() -> int:
     args = sys.argv[1:]
     if len(args) < 3:
-        print(f"Usage: {sys.argv[0]} <ref_type> <ref> <ref_name> [arch ...]", file=sys.stderr)
+        print(
+            f"Usage: {sys.argv[0]} <ref_type> <ref> <ref_name> [arch ...]",
+            file=sys.stderr,
+        )
         return 2
     try:
         merge_tag = compute_image_tag(args[0], args[1], args[2])
