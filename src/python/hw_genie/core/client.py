@@ -178,6 +178,9 @@ class ApiAction(str, Enum):
     USER_GET_INFO = "userGetInfo"
     CLAN_RAID_GET_INFO = "clanRaid_getInfo"
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
+    CHAT_GET_ALL = "chatGetAll"
+    # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
+    CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
 
 
 class ErrorName(str, Enum):
@@ -399,6 +402,33 @@ class HWClient:
     def quest_operation(self, action: ApiAction, args: dict[str, Any]) -> HWResponse:
         """デイリークエストを進めるゲーム操作（強化/召喚/購入等）を実行"""
         payload = {"calls": [{"name": action, "args": args, "ident": "body"}]}
+        return self.call(payload)
+
+    def chat_get_all(
+        self,
+        chat_type: str = "clan",
+        count: int = 50,
+        last_id: str | None = None,
+    ) -> HWResponse:
+        """チャット履歴を取得する（chatGetAll）。
+
+        Args:
+            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``）。
+            count: 取得件数（1-200 にクランプ、既定 50）。
+            last_id: ページネーション用（指定 ID 以前のメッセージを取得。CLI では ``--last-id`` で指定）。
+        """
+        # count は 1-200 にクランプ（API 負荷とレスポンスサイズを制限）。ValueError 等はデフォルトにフォールバック。
+        try:
+            count_int = int(count) if count is not None else 50
+        except (TypeError, ValueError):
+            count_int = 50
+        count_int = max(1, min(200, count_int))
+        args: dict[str, Any] = {"chatType": chat_type, "count": count_int}
+        if last_id is not None:
+            args["lastId"] = str(last_id)
+        payload = {
+            "calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]
+        }
         return self.call(payload)
 
     def build_mission_payload(self, mission_id: int, times: int = 3) -> dict[str, Any]:
