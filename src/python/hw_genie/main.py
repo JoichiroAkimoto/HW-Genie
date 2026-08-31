@@ -965,7 +965,7 @@ def cmd_titan_arena(args):
         # HWH 拡張の BattleCalc を CDP 経由で呼ぶ戦闘シミュレーター
         from hw_genie.commands.titan_sim_hwh import TitanSimulatorHWH
 
-        battle_sim = TitanSimulatorHWH(headers=headers)
+        battle_sim = TitanSimulatorHWH()
     elif sim_choice == "local" or sim_choice is None:
         # アプリ内完結のローカルシミュレーター（Chrome/HWH 非依存、擬似シミュレーション）
         # 明示的に --battle-sim local でも、未指定（None）でもこちらが使われる
@@ -1134,7 +1134,7 @@ def main():
     p_titan.add_argument(
         "--max-attempts",
         "-m",
-        type=int,
+        type=_positive_int,
         default=10,
         help="Max attempts per team before switching to next team (default: 10)",
     )
@@ -1147,7 +1147,7 @@ def main():
     p_titan.add_argument(
         "--max-stages",
         "-S",
-        type=int,
+        type=_positive_int,
         default=20,
         help="Auto mode: maximum number of stages to attempt (safety cap, default: 20)",
     )

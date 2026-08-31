@@ -88,8 +88,6 @@ class LocalBattleSimulator:
 
         if not isinstance(attackers, dict) or not attackers:
             return None
-        if not isinstance(defenders, dict):
-            defenders = {}
 
         att_power = _total_power(attackers)
         def_power = _total_power(defenders)

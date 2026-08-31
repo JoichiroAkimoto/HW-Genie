@@ -16,7 +16,7 @@ HWH を使う場合:
   2. リモートデバッグ有効で起動していること
      (例: /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \
            --remote-debugging-port=9222)
-  3. TitanSimulatorHWH(headers=...) を battle_sim として run_titan_arena に渡す。
+  3. TitanSimulatorHWH(port=9222) を battle_sim として run_titan_arena に渡す。
      Chrome が無い/不要な環境では `battle_sim=None` で `Invalid battle` を
      検出してリトライするフォールバックが働き、将来のローカルシミュレーター
      （`LocalBattleSimulator`）に差し替え可能。
@@ -29,7 +29,10 @@ HWH を使う場合:
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     import websocket  # noqa: F401  (websocket-client)
@@ -73,25 +76,22 @@ class TitanSimulatorHWH:
                （なければ None）
     """
 
-    def __init__(self, headers: dict[str, str] | None = None, port: int = 9222):
+    def __init__(self, port: int = 9222):
         self.port = port
-        self.headers = headers or {}
 
-    def __call__(self, rival_id: str, seed: str, battle: dict[str, Any]) -> Optional[dict[str, Any]]:
+    def __call__(self, rival_id: str, seed: str | int, battle: dict[str, Any]) -> Optional[dict[str, Any]]:
         # CDP でゲームページの window.Game から戦闘シミュレーションを実行し、
         # progress を取得する。実装はゲームページ側で BattleCalc 相当を再現。
         try:
             progress = self._simulate_via_cdp(rival_id, seed, battle)
             return progress
         except Exception as e:  # pragma: no cover - 環境依存
-            import logging
-
-            logging.getLogger(__name__).warning("simulation failed for rival %s: %s", rival_id, e)
+            logger.warning("simulation failed for rival %s: %s", rival_id, e, exc_info=True)
             return None
 
     # ----- CDP 経由のシミュレーション -----
 
-    def _simulate_via_cdp(self, rival_id: str, seed: str, battle: dict) -> Optional[dict]:
+    def _simulate_via_cdp(self, rival_id: str, seed: str | int, battle: dict) -> Optional[dict]:
         if not _HAVE_WS:
             raise RuntimeError("websocket-client が必要です: pip install websocket-client")
         import websocket
@@ -160,7 +160,13 @@ class TitanSimulatorHWH:
         finally:
             ws.close()
 
-    def _cdp_evaluate(self, ws, expr: str, await_promise: bool = False, timeout: float = 10.0):
+    def _cdp_evaluate(
+        self,
+        ws: Any,
+        expr: str,
+        await_promise: bool = False,
+        timeout: float = 10.0,
+    ) -> Any:
         import random
         import time
 
@@ -182,6 +188,8 @@ class TitanSimulatorHWH:
                 raw = ws.recv()
             except Exception as e:
                 raise TimeoutError(f"CDP recv timed out: {e}") from e
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
             data = json.loads(raw)
             if data.get("id") == msg_id:
                 # エラーハンドリング

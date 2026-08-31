@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from hw_genie.core.client import Emojis, ErrorName
 from hw_genie.core.utils import print_player_status
@@ -47,6 +47,7 @@ from hw_genie.core.utils import print_player_status
 logger = logging.getLogger(__name__)
 
 
+@runtime_checkable
 class BattleSim(Protocol):
     """battle_sim の型プロトコル。将来のカスタムシミュレーターでも同じシグネチャで差し替え可能。"""
 
@@ -158,7 +159,8 @@ def _build_end_payload(
     stars: int = 1,
     action_ts: int = 0,
     server_version: int = 287,
-    battle_sim: Optional[dict[str, Any]] = None,
+    battle_sim_result: Optional[dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """titanArenaEndBattle 用ペイロード生成。
 
@@ -176,19 +178,22 @@ def _build_end_payload(
       「実際の戦闘シミュレーション結果（残HP・isDead）」を詰めなければならない。
       適当なHP（全生存フルHPなど）を送ると必ず Invalid battle になる。
 
-    battle_sim: 外部の戦闘シミュレーター（HWH.BattleCalc 等）が生成した
+    battle_sim_result: 外部の戦闘シミュレーター（HWH.BattleCalc 等）が生成した
       {"attackers": {id: {hp,isDead,...}}, "defenders": {id: {hp,isDead,...}}}
       を渡すと、それをそのまま heroes に反映する。
       None の場合は StartBattle の初期HPで全生存扱いとする（= Invalid battle になるので
-      実運用では battle_sim を渡すこと）。
+      実運用では battle_sim_result を渡すこと）。
     """
+    # 後方互換: 旧引数名 battle_sim でも受け付ける
+    if battle_sim_result is None and "battle_sim" in kwargs:
+        battle_sim_result = kwargs["battle_sim"]
     battle = battle or {}
 
-    # battle_sim 優先。なければ StartBattle の初期HPで全生存扱い。
-    if battle_sim:
-        # battle_sim 構造: {"attackers": {"heroes": {id: {hp,isDead,energy}}},
+    # battle_sim_result 優先。なければ StartBattle の初期HPで全生存扱い。
+    if battle_sim_result:
+        # battle_sim_result 構造: {"attackers": {"heroes": {id: {hp,isDead,energy}}},
         #                   "defenders": {"heroes": {id: {hp,isDead,energy}}}}
-        att_src = (battle_sim.get("attackers") or {}).get("heroes") or {}
+        att_src = (battle_sim_result.get("attackers") or {}).get("heroes") or {}
         att_heroes = {}
         for tid, h in att_src.items():
             if isinstance(h, dict):
@@ -197,7 +202,7 @@ def _build_end_payload(
                     "energy": h.get("energy", 1000),
                     "isDead": bool(h.get("isDead", False)),
                 }
-        def_src = (battle_sim.get("defenders") or {}).get("heroes") or {}
+        def_src = (battle_sim_result.get("defenders") or {}).get("heroes") or {}
         def_heroes = {}
         for tid, h in def_src.items():
             if isinstance(h, dict):
@@ -222,7 +227,7 @@ def _build_end_payload(
                         "energy": 1000,
                         "isDead": False,
                     }
-        # battle_sim なし時は defenders を空 heroes とする（テスト互換）
+        # battle_sim_result なし時は defenders を空 heroes とする（テスト互換）
         def_heroes = {}
 
     progress = [
@@ -303,6 +308,7 @@ def run_titan_arena(
         print(f"\n{Emojis.STEP}Team {team_idx + 1}/{len(team_rotation)}: titans={titans}", flush=True)
 
         for attempt in range(1, max_attempts_per_team + 1):
+            win = False
             print(f"  {Emojis.STEP}Attempt {attempt}/{max_attempts_per_team}: starting battle...", flush=True)
             # 1. 戦闘開始
             start_payload = _build_start_payload(rival_id, titans)
@@ -339,14 +345,14 @@ def run_titan_arena(
                 try:
                     sim = battle_sim(rival_id, seed, battle)
                 except Exception as ex:
-                    logger.warning("battle_sim failed for rival %s seed %s: %s", rival_id, seed, ex)
+                    logger.warning("battle_sim failed for rival %s seed %s: %s", rival_id, seed, ex, exc_info=True)
                     sim = None
             end_payload = _build_end_payload(
                 rival_id=rival_id,
                 seed=seed,
                 win=True,
                 battle=battle,
-                battle_sim=sim,
+                battle_sim_result=sim,
             )
             end_res = client.call(end_payload)
 
