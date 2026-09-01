@@ -489,6 +489,64 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def cmd_toe_attack(args):
+    """Titan Arena attack with arbitrary titans (app-native, no browser)."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.commands.titan_arena import run_titan_arena
+    from hw_genie.battle.engine import get_default_engine
+
+    engine = get_default_engine(
+        mode=getattr(args, "engine", "estimate"),
+        auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+        user_id=resolve_account(args.account) if getattr(args, "engine", "estimate") != "estimate" else "",
+    )
+    rival = getattr(args, "rival", None)
+    titans = list(args.titans) if args.titans else None
+    run_titan_arena(
+        client,
+        rival_id=rival,
+        titans=titans,
+        engine=engine,
+        dry_run=bool(args.dry_run),
+        estimate_only=bool(args.estimate_only),
+    )
+
+
+def cmd_toe_run(args):
+    """Drive a full ToE tier end-to-end (raid + rivals + CompleteTier)."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.battle.engine import get_default_engine
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    mode = getattr(args, "engine", "estimate")
+    user_id = resolve_account(args.account) if mode != "estimate" else ""
+    engine = get_default_engine(
+        mode=mode,
+        auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+        user_id=user_id,
+    )
+    titans = list(args.titans) if getattr(args, "titans", None) else None
+    run_titan_arena_tier(
+        client,
+        titans=titans,
+        engine=engine,
+        attack_score_threshold=args.threshold,
+        stop_on_first_loss=bool(args.stop_on_loss),
+    )
+
+
+def cmd_toe_status(args):
+    """Show Titan Arena status."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.commands.titan_arena import fetch_titan_arena_status
+    status = fetch_titan_arena_status(client)
+    import json
+    print(json.dumps(status, indent=2, ensure_ascii=False))
+
+
 def cmd_chat(args):
     """ギルドチャット（chatGetAll）の取得・表示"""
     from hw_genie.commands.chat import run_chat
@@ -1069,6 +1127,75 @@ def main():
     raw_json_group.add_argument("--raw", action="store_true", help="Print raw chatGetAll response as JSON")
     raw_json_group.add_argument("--json", action="store_true", help="Print parsed messages as JSON")
     p_chat.set_defaults(func=cmd_chat)
+
+    # Titan Arena (ToE)
+    p_toe = subparsers.add_parser("toe", parents=[parent_parser], help="Titan Arena (ToE) operations")
+    toe_sub = p_toe.add_subparsers(dest="toe_type", help="ToE operation")
+    p_toe_attack = toe_sub.add_parser("attack", parents=[parent_parser], help="Start a Titan Arena battle with arbitrary titans")
+    p_toe_attack.add_argument(
+        "--rival",
+        required=False,
+        default=None,
+        help="Rival ID (omitted → auto-select lowest score wall/player via titanArenaGetStatus, threshold=250)",
+    )
+    p_toe_attack.add_argument(
+        "--titans",
+        nargs=5,
+        type=int,
+        required=False,
+        default=None,
+        metavar="TITAN_ID",
+        help="5 titan IDs (omitted → auto-resolve via teamGetAll.titan_arena)",
+    )
+    p_toe_attack.add_argument("--dry-run", action="store_true", help="Verify startBattle only (no endBattle)")
+    p_toe_attack.add_argument("--estimate-only", action="store_true", help="Estimate win/lose without calling endBattle")
+    p_toe_attack.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid"],
+        default="estimate",
+        help="Battle engine: 'estimate' (power-based, server rejects EndBattle) or 'hybrid' (delegate to userscript via auth server)",
+    )
+    p_toe_attack.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the JS bridge (used with --engine hybrid)",
+    )
+    p_toe_attack.set_defaults(func=cmd_toe_attack)
+    p_toe_run = toe_sub.add_parser("run", parents=[parent_parser], help="Drive a full ToE tier end-to-end (raid + rivals + CompleteTier)")
+    p_toe_run.add_argument(
+        "--titans",
+        nargs=5,
+        type=int,
+        required=False,
+        default=None,
+        metavar="TITAN_ID",
+        help="5 titan IDs (omitted → auto-resolve via teamGetAll.titan_arena)",
+    )
+    p_toe_run.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid"],
+        default="estimate",
+        help="Battle engine: 'estimate' (tier planning only) or 'hybrid' (full automation via userscript)",
+    )
+    p_toe_run.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the JS bridge (used with --engine hybrid)",
+    )
+    p_toe_run.add_argument(
+        "--threshold",
+        type=int,
+        default=250,
+        help="attackScore threshold that defines 'rivals worth finishing' (default: 250 = cleared)",
+    )
+    p_toe_run.add_argument(
+        "--stop-on-loss",
+        action="store_true",
+        help="Abort the tier on the first rival loss (per-rival mode only)",
+    )
+    p_toe_run.set_defaults(func=cmd_toe_run)
+    p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")
+    p_toe_status.set_defaults(func=cmd_toe_status)
 
     # Daily
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")

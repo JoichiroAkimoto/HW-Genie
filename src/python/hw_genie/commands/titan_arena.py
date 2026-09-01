@@ -141,8 +141,10 @@ def run_titan_arena(
         client = client_or_headers
 
     engine = engine or PythonBattleEngine()
-    auto_status: dict[str, Any] | None = None
-    pending_auto: tuple[dict[str, Any], str] | None = None
+    # Validate titans first so invalid titans raise ValueError before any fetch
+    # (spec Error Handling: fetchは行わない). For titans=None this calls
+    # teamGetAll, which per spec Data Flow 1 is before fetch for toe attack.
+    titans = _resolve_titans(client, titans)
     if rival_id is None:
         auto_status = fetch_titan_arena_status(client)
         auto = _select_auto_rivals(auto_status)
@@ -150,25 +152,21 @@ def run_titan_arena(
             print(f"{Emojis.INFO}No rivals to attack (threshold={AUTO_RIVAL_SCORE_THRESHOLD})", flush=True)
             return {"status": ResponseStatus.SKIPPED, "reason": "no_rivals"}
         rival_id_str = auto[0]
-        pending_auto = (auto_status, rival_id_str)
-    else:
-        rival_id_str = str(rival_id)
-    titans = _resolve_titans(client, titans)
-    if pending_auto is not None:
-        status_for_log, rid = pending_auto
-        rivals = status_for_log.get("rivals") or {}
-        info = {}
+        rivals = auto_status.get("rivals") or {}
+        info: dict[str, Any] = {}
         if isinstance(rivals, dict):
-            cand = rivals.get(rid)
+            cand = rivals.get(rival_id_str)
             if isinstance(cand, dict):
                 info = cand
         score = info.get("attackScore", "?")
         power = info.get("power", "?")
-        is_wall = str(rid).startswith("-")
+        is_wall = str(rival_id_str).startswith("-")
         print(
-            f"{Emojis.INFO}Auto-selected rival {rid} (score={score} wall={is_wall} power={power})  titans={titans}",
+            f"{Emojis.INFO}Auto-selected rival {rival_id_str} (score={score} wall={is_wall} power={power})  titans={titans}",
             flush=True,
         )
+    else:
+        rival_id_str = str(rival_id)
 
     print(f"\n{Emojis.STEP}Titan Arena: rivalId={rival_id_str} titans={titans}", flush=True)
     if dry_run:
@@ -284,7 +282,7 @@ def run_titan_arena_tier(
     titans: list[int] | None = None,
     *,
     engine: BattleEngine | None = None,
-    attack_score_threshold: int = 250,
+    attack_score_threshold: int = AUTO_RIVAL_SCORE_THRESHOLD,
     stop_on_first_loss: bool = False,
 ) -> dict[str, Any]:
     """Run a ToE tier end-to-end.
@@ -447,14 +445,11 @@ def _run_rivals(
     threshold: int,
     stop_on_first_loss: bool,
 ) -> list[dict[str, Any]]:
-    rivals = status.get("rivals") or {}
-    if not isinstance(rivals, dict):
+    finish_targets = _select_auto_rivals(status, threshold)
+    if not finish_targets:
         return []
-    finish_targets = [rid for rid, info in rivals.items() if isinstance(info, dict) and (info.get("attackScore") or 0) < threshold]
     results: list[dict[str, Any]] = []
     for rival_id in finish_targets:
-        if not isinstance(rivals.get(rival_id), dict):
-            continue
         try:
             res = run_titan_arena(client, rival_id=rival_id, titans=titans, engine=engine)
         except Exception as exc:  # pragma: no cover - defensive
