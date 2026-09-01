@@ -189,6 +189,13 @@ class ApiAction(str, Enum):
     CHAT_GET_ALL = "chatGetAll"
     # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
     CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
+    TITAN_ARENA_GET_STATUS = "titanArenaGetStatus"
+    TITAN_ARENA_START_BATTLE = "titanArenaStartBattle"
+    TITAN_ARENA_END_BATTLE = "titanArenaEndBattle"
+    TITAN_ARENA_START_RAID = "titanArenaStartRaid"
+    TITAN_ARENA_END_RAID = "titanArenaEndRaid"
+    TITAN_ARENA_COMPLETE_TIER = "titanArenaCompleteTier"
+    TITAN_ARENA_FARM_DAILY_REWARD = "titanArenaFarmDailyReward"
 
 
 class ErrorName(str, Enum):

@@ -45,6 +45,9 @@ import {
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
+// ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
+// ポーラー。auth server の /toe/* キューを介して Python CLI から依頼される。
+import { installToeBridge } from "./toe-bridge";
 
 (() => {
   "use strict";
@@ -207,9 +210,14 @@ import type { SessionState } from "./session";
     document.addEventListener("DOMContentLoaded", () => {
       installInterceptor();
       startPolling();
+      // ToE ブリッジも同じ auth server に対して常駐させる。Titan Arena
+      // 画面が無くてもキューを poll するだけで副作用なし（pickGame フォール
+      // バックで即座に loss 結果を返し head-of-line blocking を回避）。
+      installToeBridge({ authServerUrl: AUTH_SERVER_URL });
     });
   } else {
     installInterceptor();
     startPolling();
+    installToeBridge({ authServerUrl: AUTH_SERVER_URL });
   }
 })();
