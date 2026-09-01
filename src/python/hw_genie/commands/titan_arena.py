@@ -189,7 +189,7 @@ def run_titan_arena(
                 status = fetch_titan_arena_status(client)
                 rivals = status.get("rivals") or {}
                 if isinstance(rivals, dict) and rivals:
-                    print(f"{Emojis.INFO}Valid rivals: {_format_valid_rivals(rivals)}", flush=True)
+                    print(f"{Emojis.INFO}Valid rivals (threshold={AUTO_RIVAL_SCORE_THRESHOLD} count={len(rivals)}): {_format_valid_rivals(rivals)}", flush=True)
                     suggestion = _suggest_rival_fix(rival_id_str, rivals)
                     if suggestion:
                         print(f"{Emojis.INFO}{suggestion}", flush=True)
@@ -199,7 +199,7 @@ def run_titan_arena(
                             flush=True,
                         )
                 else:
-                    print(f"{Emojis.INFO}No rivals available (status={status.get('status')}). Try `hw-genie toe status`.", flush=True)
+                    print(f"{Emojis.INFO}No rivals available (status={status.get('status')} threshold={AUTO_RIVAL_SCORE_THRESHOLD}). Try `hw-genie toe status`.", flush=True)
             except Exception as exc:  # pragma: no cover - best-effort
                 print(f"{Emojis.WARNING}Could not fetch valid rivals: {exc}", flush=True)
         return {"status": start_res.status, "error": start_res.error_name, "detail": start_res.detail}
@@ -214,7 +214,9 @@ def run_titan_arena(
 
     try:
         est = engine.calc(battle)
-    except BridgeError as exc:
+    except (BridgeError, Exception) as exc:
+        if isinstance(engine, PythonBattleEngine):
+            raise
         print(f"{Emojis.WARNING}Engine {type(engine).__name__} failed: {exc}", flush=True)
         print(
             f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser is on the Titan Arena screen with the userscript active. Falling back to estimate-only.",
@@ -344,6 +346,10 @@ def run_titan_arena_tier(
 
         rival_results = _run_rivals(client, status, titans, engine, attack_score_threshold, stop_on_first_loss)
         summary["rival_results"].extend(rival_results)
+        if not rival_results:
+            print(f"{Emojis.INFO}No rivals to attack (threshold={attack_score_threshold})", flush=True)
+            _farm_daily_reward(client, summary)
+            return summary
         if not any(r.get("win") for r in rival_results) and not status.get("canRaid"):
             print(f"{Emojis.WARNING}No rival cleared; stopping tier loop.", flush=True)
             return summary
@@ -401,7 +407,9 @@ def _run_raid(
             results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
             raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
             print(f"  - raid rival {rival_id}: win={est.win}", flush=True)
-        except BridgeError as exc:
+        except (BridgeError, Exception) as exc:
+            if isinstance(engine, PythonBattleEngine):
+                raise
             raid_summary["battles"].append({"rivalId": str(rival_id), "error": str(exc)})
             results[str(rival_id)] = {
                 "progress": _fallback_progress(battle, win=False),

@@ -114,36 +114,41 @@ class JsBridgeBattleEngine:
         import urllib.error
         import urllib.request
 
-        job_body = json.dumps({"account": self.user_id, "battle": battle}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.auth_server_url}/toe/job",
-            data=job_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            job = json.loads(resp.read().decode("utf-8"))
-        job_id = job.get("id")
-        if not job_id:
-            raise BridgeError("auth server did not return a job id")
-
-        deadline = time.time() + self.timeout
-        while time.time() < deadline:
-            time.sleep(self.poll_interval)
-            poll_req = urllib.request.Request(
-                f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",
-                method="GET",
+        try:
+            job_body = json.dumps({"account": self.user_id, "battle": battle}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.auth_server_url}/toe/job",
+                data=job_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            with urllib.request.urlopen(poll_req, timeout=5) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            if payload.get("status") == "done":
-                result = payload.get("result") or {}
-                return BattleEstimate(
-                    win=bool(result.get("win")),
-                    stars=int(result.get("stars", 0)),
-                    progress=result.get("progress") or [],
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                job = json.loads(resp.read().decode("utf-8"))
+            job_id = job.get("id")
+            if not job_id:
+                raise BridgeError("auth server did not return a job id")
+
+            deadline = time.time() + self.timeout
+            while time.time() < deadline:
+                time.sleep(self.poll_interval)
+                poll_req = urllib.request.Request(
+                    f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",
+                    method="GET",
                 )
-        raise BridgeTimeoutError(f"userscript did not finish battle within {self.timeout}s")
+                with urllib.request.urlopen(poll_req, timeout=5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                if payload.get("status") == "done":
+                    result = payload.get("result") or {}
+                    return BattleEstimate(
+                        win=bool(result.get("win")),
+                        stars=int(result.get("stars", 0)),
+                        progress=result.get("progress") or [],
+                    )
+            raise BridgeTimeoutError(f"userscript did not finish battle within {self.timeout}s")
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
 
 
 class BridgeError(RuntimeError):

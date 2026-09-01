@@ -18,6 +18,7 @@ from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
+from hw_genie.commands.titan_arena import AUTO_RIVAL_SCORE_THRESHOLD
 from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
@@ -1185,8 +1186,8 @@ def main():
     p_toe_run.add_argument(
         "--threshold",
         type=int,
-        default=250,
-        help="attackScore threshold that defines 'rivals worth finishing' (default: 250 = cleared)",
+        default=AUTO_RIVAL_SCORE_THRESHOLD,
+        help=f"attackScore threshold that defines 'rivals worth finishing' (default: {AUTO_RIVAL_SCORE_THRESHOLD} = cleared)",
     )
     p_toe_run.add_argument(
         "--stop-on-loss",
