@@ -237,6 +237,99 @@ POST https://heroes-wb.nextersglobal.com/api/
 
 ---
 
+## Titan Arena (ToE)
+
+`titanArena*` 系の RPC はギルドレイド API とは別系統だが、プレイヤー個人の
+PvP コンテンツとして同じく Hero Wars 対戦機能を共有する。本リポジトリの
+HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 自動
+進行を行う。
+
+### titanArenaGetStatus - 現在の Tier / 壁 / rival 一覧を取得
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `status` | string | `disabled` / `peace_time` / `battle` のいずれか |
+| `tier` | int | 現在のティア（1〜maxTier） |
+| `maxTier` | int | 到達可能な最大ティア |
+| `canRaid` | bool | `true` の場合 `titanArenaStartRaid` でまとめてライバルを一掃できる |
+| `defenders` | object | 自分の防衛タイタン（HP / artifact 等） |
+| `rivals` | object | ライバル一覧（`rivalId → {attackScore, titans, ...}`）。負の ID（例: `-470711`）は壁 / 練習用ライバル |
+
+### titanArenaStartBattle - 個別ライバル戦を開始
+
+`rivalId` と `titans`（5 体のタイタンID）を指定してバトルを開始する。`titans`
+は `teamGetAll.titan_arena` の保存チームに依存せず、任意の 5 体を渡せる
+（VitaminD アカウントで `-470711` / `[4003, 4023, 4004, 4001, 4000]`
+の組み合わせが受理されることを実機検証済み）。
+
+```json
+{
+  "calls": [{
+    "name": "titanArenaStartBattle",
+    "args": {"rivalId": "-470711", "titans": [4003, 4023, 4004, 4001, 4000]},
+    "ident": "body"
+  }]
+}
+```
+
+レスポンスの `response.battle` を `titanArenaEndBattle` まで保持する
+必要がある（`seed` 等を含めてサーバーが同一バトルとして検証する）。
+
+### titanArenaEndBattle - 結果送信
+
+`progress` と `result`（win / stars）が必要。**これらはクライアント側で
+バトルをシミュレーションした正確な値**でないとサーバーが `Invalid battle`
+（`serverVersion: 292`）で弾く。HW-Genie 単体では簡易な power ベース見積
+のみ可能なため、**完全勝利には userscript 側の `Game.BattlePresets` /
+`BattleInstantPlay`（`get_titanPvpManual`）を使うハイブリッドフローが必要**。
+
+`hw-genie toe attack --engine estimate` は power ベースの `progress` を
+送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定
+すると、auth server の `/toe/job` キュー経由で userscript が本物の
+`BattleCalc` を呼び出し、その結果を `EndBattle` に利用する。
+
+### titanArenaStartRaid / titanArenaEndRaid - 一括レイド（canRaid=true）
+
+`canRaid` が `true` のとき、ライバルを 1 リクエストで全滅させるレイドが
+可能。`titanArenaStartRaid` に `titans` だけを渡すとレスポンスの
+`attackers` / `rivals` を受け取る。`rivals` の各 `rivalId` ごとに
+`progress` / `result` を組み立て、`titanArenaEndRaid(results={rivalId: {progress, result}})`
+でまとめて送信する。
+
+### titanArenaCompleteTier - ティアクリア宣言
+
+tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか、`titanArenaEndRaid`
+のレスポンスから自動で発火できる。
+
+### titanArenaFarmDailyReward - 日次報酬受け取り
+
+ティア完了後に 1 日 1 回だけ呼んで `titan_arena_points_reward` を獲得
+する。
+
+### HW-Genie での ToE 自動攻略
+
+* `hw-genie toe status -a VitaminD` で現在の Tier / rivals / defenders を
+  表示
+* `hw-genie toe attack -a VitaminD` で未クリア 1 体を自動攻撃（`--rival`
+  省略時は `titanArenaGetStatus` から `attackScore < 250` の rival を
+  `(attackScore asc, wall優先, power asc)` で選択、`--titans` 省略時は
+  `teamGetAll.titan_arena` から自動解決。`--dry-run` / `--estimate-only`
+  で EndBattle を抑止）。明示指定も可能:
+  `hw-genie toe attack -a VitaminD --rival -470711 --titans 4003 4023 4004 4001 4000 --dry-run`
+* `hw-genie toe run -a VitaminD` で Tier 全体を自動攻略（`--titans`
+  省略時は `teamGetAll.titan_arena` を自動解決。`canRaid=true` なら一括
+  レイド、なければ `attackScore < threshold`（既定 250）の rivals を
+  自動選択して個別バトル → `CompleteTier` → 日次報酬受け取り）。
+  明示編成: `hw-genie toe run -a VitaminD --titans 4003 4023 4004 4001 4000`
+  - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
+  - `--engine estimate`（既定）: アプリ単体。勝敗は power ベースで
+    簡易判定。完全勝利には `--engine hybrid` を指定
+  - `--engine hybrid`: auth server 経由で userscript のバトルエンジン
+    に依頼。ブラウザで `auth-server` が稼働 + `hw-genie-auth-capture.user.js`
+    が Titan Arena 画面に入った状態で動作
+
+---
+
 ### clanRaid_shopBuy - クランレイドショップ購入
 Osh の Realm Traveler 等、クランレイドのショップでアイテム（バフ）を購入します。
 

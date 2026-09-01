@@ -325,7 +325,7 @@ def run_titan_arena_tier(
             summary["errors"].append({"stage": "status", "message": f"status={state!r}"})
             return summary
         if state == "peace_time":
-            print(f"{Emojis.INFO}ToE is in peace_time; nothing to do.", flush=True)
+            print(f"{Emojis.INFO}ToE is in peace_time (threshold={attack_score_threshold}); nothing to do.", flush=True)
             return summary
 
         tier = status.get("tier")
