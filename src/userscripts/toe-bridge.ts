@@ -64,13 +64,17 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
     }
   } catch {}
   for (const c of candidates) {
-    const g = (c as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } })?.Game;
-    if (g?.BattlePresets && g?.BattleInstantPlay) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
+    try {
+      const g = (c as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } })?.Game;
+      if (g?.BattlePresets && g?.BattleInstantPlay) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
+    } catch {}
   }
   // Fallback: any candidate with Game even if presets not yet loaded (for account reading)
   for (const c of candidates) {
-    const g = (c as { Game?: unknown })?.Game;
-    if (g) return g as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
+    try {
+      const g = (c as { Game?: unknown })?.Game;
+      if (g) return g as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
+    } catch {}
   }
   return null;
 }
@@ -89,7 +93,9 @@ function getGameWindow(): unknown {
     }
   } catch {}
   for (const c of candidates) {
-    if ((c as { Game?: unknown })?.Game) return c;
+    try {
+      if ((c as { Game?: unknown })?.Game) return c;
+    } catch {}
   }
   return window;
 }
