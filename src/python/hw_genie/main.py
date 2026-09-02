@@ -497,10 +497,23 @@ def cmd_toe_attack(args):
     from hw_genie.commands.titan_arena import run_titan_arena
     from hw_genie.battle.engine import get_default_engine
 
+    # ToE bridge は userscript の Game.ModelManager.player.userInfo.id (x-auth-user-id)
+    # と同じ文字列で job を紐付ける。alias ("Joe") ではなく数値 userId を使う。
+    user_id = headers.get("x-auth-user-id", "") if getattr(args, "engine", "estimate") != "estimate" else ""
+    if not user_id:
+        # fallback: SessionManager の player.id (数値) を試す
+        try:
+            from hw_genie.core.session_manager import SessionManager
+
+            resolved = resolve_account(args.account)
+            data = SessionManager.load(resolved)
+            user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
+        except Exception:
+            user_id = ""
     engine = get_default_engine(
         mode=getattr(args, "engine", "estimate"),
         auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
-        user_id=resolve_account(args.account) if getattr(args, "engine", "estimate") != "estimate" else "",
+        user_id=user_id,
     )
     rival = getattr(args, "rival", None)
     titans = list(args.titans) if args.titans else None
@@ -522,7 +535,19 @@ def cmd_toe_run(args):
     from hw_genie.commands.titan_arena import run_titan_arena_tier
 
     mode = getattr(args, "engine", "estimate")
-    user_id = resolve_account(args.account) if mode != "estimate" else ""
+    if mode != "estimate":
+        user_id = headers.get("x-auth-user-id", "")
+        if not user_id:
+            try:
+                from hw_genie.core.session_manager import SessionManager
+
+                resolved = resolve_account(args.account)
+                data = SessionManager.load(resolved)
+                user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
+            except Exception:
+                user_id = ""
+    else:
+        user_id = ""
     engine = get_default_engine(
         mode=mode,
         auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),

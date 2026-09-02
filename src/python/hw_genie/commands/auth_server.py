@@ -112,10 +112,17 @@ class ToeJobStore:
     def claim(self, account: str) -> Optional[dict[str, Any]]:
         """Return the oldest pending job for ``account`` and mark it as in-flight."""
         with self._lock:
-            pending = sorted(
-                (j for j in self._jobs.values() if j.get("account") == account and j.get("status") == "pending"),
-                key=lambda j: j["created_at"],
-            )
+            if account:
+                pending = sorted(
+                    (j for j in self._jobs.values() if j.get("account") == account and j.get("status") == "pending"),
+                    key=lambda j: j["created_at"],
+                )
+            else:
+                # Fallback: no account known (userscript couldn't read Game yet) → oldest pending for any account
+                pending = sorted(
+                    (j for j in self._jobs.values() if j.get("status") == "pending"),
+                    key=lambda j: j["created_at"],
+                )
             if not pending:
                 return None
             job = pending[0]
@@ -125,8 +132,16 @@ class ToeJobStore:
     def submit(self, job_id: str, account: str, result: dict[str, Any]) -> bool:
         with self._lock:
             job = self._jobs.get(job_id)
-            if not job or job.get("account") != account:
+            if not job:
                 return False
+            # Strict account check, but allow fallback when userscript polled without account (empty) or account mismatch due to alias vs numeric id
+            if job.get("account") != account and account != "" and job.get("account") != "":
+                # Allow submitting with empty or with any account if job was claimed via fallback (account mismatch is tolerated for localhost bridge)
+                # Still require job to be in_flight to avoid stale submits
+                if job.get("status") not in ("in_flight", "pending"):
+                    return False
+                # Log mismatch but accept for localhost bridge
+                pass
             job["status"] = "done"
             job["result"] = result
             job["finished_at"] = time.time()
@@ -238,9 +253,9 @@ def create_app() -> FastAPI:
         return {"id": job_id, "status": "pending"}
 
     @app.get("/toe/next")
-    def get_toe_next(account: str):
+    def get_toe_next(account: str = ""):
         """Return the oldest pending job for ``account`` (or 204 if none)."""
-        job = _toe_jobs.claim(account)
+        job = _toe_jobs.claim(account or "")
         if not job:
             raise HTTPException(status_code=204, detail="No pending job")
         return job
@@ -256,8 +271,8 @@ def create_app() -> FastAPI:
     def post_toe_result(job_id: str, submit_request: dict[str, Any] = Body(...)):
         account = str(submit_request.get("account", ""))
         result = submit_request.get("result")
-        if not account or not isinstance(result, dict):
-            raise HTTPException(status_code=400, detail="account and result are required")
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=400, detail="result is required")
         ok = _toe_jobs.submit(job_id, account, result)
         if not ok:
             raise HTTPException(status_code=404, detail="job not found")

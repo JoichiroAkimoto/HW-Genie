@@ -50,8 +50,48 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
   // the player enters a titan battle screen. We only call into it from a
   // polling tick so the first few polls just no-op until the player is in
   // the Titan Arena screen.
-  const w = window as unknown as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } };
-  return w.Game ?? null;
+  // Try multiple window contexts: the game may be in an iframe or wrappedJSObject.
+  const candidates: unknown[] = [];
+  try { candidates.push(window); } catch {}
+  try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push(uw); } catch {}
+  try { const wj = (window as unknown as { wrappedJSObject?: unknown }).wrappedJSObject; if (wj) candidates.push(wj); } catch {}
+  try { if (window.top && window.top !== window) candidates.push(window.top); } catch {}
+  try {
+    const ifr = document.querySelector("iframe") as HTMLIFrameElement | null;
+    if (ifr?.contentWindow) candidates.push(ifr.contentWindow);
+    for (let i = 0; i < window.frames.length; i++) {
+      try { const f = window.frames[i]; if (f) candidates.push(f); } catch {}
+    }
+  } catch {}
+  for (const c of candidates) {
+    const g = (c as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } })?.Game;
+    if (g?.BattlePresets && g?.BattleInstantPlay) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
+  }
+  // Fallback: any candidate with Game even if presets not yet loaded (for account reading)
+  for (const c of candidates) {
+    const g = (c as { Game?: unknown })?.Game;
+    if (g) return g as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
+  }
+  return null;
+}
+
+function getGameWindow(): unknown {
+  const candidates: unknown[] = [];
+  try { candidates.push(window); } catch {}
+  try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push(uw); } catch {}
+  try { const wj = (window as unknown as { wrappedJSObject?: unknown }).wrappedJSObject; if (wj) candidates.push(wj); } catch {}
+  try { if (window.top && window.top !== window) candidates.push(window.top); } catch {}
+  try {
+    const ifr = document.querySelector("iframe") as HTMLIFrameElement | null;
+    if (ifr?.contentWindow) candidates.push(ifr.contentWindow);
+    for (let i = 0; i < window.frames.length; i++) {
+      try { const f = window.frames[i]; if (f) candidates.push(f); } catch {}
+    }
+  } catch {}
+  for (const c of candidates) {
+    if ((c as { Game?: unknown })?.Game) return c;
+  }
+  return window;
 }
 
 async function fetchWithTimeout(
@@ -71,10 +111,17 @@ async function fetchWithTimeout(
 }
 
 async function pollNextJob(account: string, baseUrl: string): Promise<ToeJob | null> {
-  const res = await fetchWithTimeout(
-    `${baseUrl}/toe/next?account=${encodeURIComponent(account)}`,
-  );
+  const url = account
+    ? `${baseUrl}/toe/next?account=${encodeURIComponent(account)}`
+    : `${baseUrl}/toe/next`;
+  const res = await fetchWithTimeout(url);
   if (!res || res.status === 204 || !res.ok) {
+    // If account-specific poll returned 204, try without account as fallback (for multi-account)
+    if (account && res?.status === 204) {
+      const res2 = await fetchWithTimeout(`${baseUrl}/toe/next`);
+      if (!res2 || res2.status === 204 || !res2.ok) return null;
+      try { return (await res2.json()) as ToeJob; } catch { return null; }
+    }
     return null;
   }
   try {
@@ -122,10 +169,12 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     // so we rely on the battle.type field (always 'titan_arena' here) and
     // the global DataStorage. If the page is not on the titan screen, the
     // engine may throw — we treat that as 'unavailable' and let Python retry.
-    const dataStorage = (window as unknown as { Game?: { DataStorage?: unknown } }).Game
-      ?.DataStorage;
+    const gw = getGameWindow() as { Game?: { DataStorage?: unknown } };
+    const dataStorage = gw?.Game?.DataStorage;
     if (!dataStorage) {
-      return null;
+      // Fallback: try pickGame's Game
+      const pg = pickGame() as unknown as { DataStorage?: unknown };
+      if (!pg?.DataStorage) return null;
     }
     // Best-effort: the data-storage key for titan arena matches the
     // 'titan_arena' / 'titan_pvp_manual' type seen in HerowarsHelper's
@@ -211,17 +260,54 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   // The script needs to know which account to claim jobs for. We pull it
   // from the game's user object so the user doesn't have to configure it.
   function readAccount(): string {
-    const w = window as Window & { Game?: { ModelManager?: { getInstance?: () => unknown } } };
-    try {
-      const mm = w.Game?.ModelManager?.getInstance?.();
-      if (!mm) {
-        return "";
-      }
-      const player = (mm as { player?: { userInfo?: { id?: string } } }).player;
-      return String(player?.userInfo?.id ?? "");
-    } catch {
+    // Try multiple Game locations and multiple player paths. The web version
+    // may have moved from window.Game to iframe or wrappedJSObject.
+    const tryGame = (g: unknown): string => {
+      try {
+        const game = g as {
+          ModelManager?: { getInstance?: () => unknown };
+          DataStorage?: unknown;
+        };
+        const mm = game?.ModelManager?.getInstance?.() as
+          | { player?: { userInfo?: { id?: string | number }; id?: string | number } }
+          | undefined;
+        if (mm?.player?.userInfo?.id) return String(mm.player.userInfo.id);
+        if (mm?.player?.id) return String(mm.player.id);
+        // Fallback: DataStorage
+        const ds = (game as { DataStorage?: { player?: { id?: string } } })?.DataStorage;
+        if (ds?.player?.id) return String(ds.player.id);
+      } catch {}
       return "";
+    };
+    const candidates: unknown[] = [];
+    try { candidates.push(window); } catch {}
+    try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push((uw as { Game?: unknown })?.Game ?? uw); } catch {}
+    try { const wj = (window as unknown as { wrappedJSObject?: unknown }).wrappedJSObject; if (wj) candidates.push((wj as { Game?: unknown })?.Game ?? wj); } catch {}
+    try { if (window.top && window.top !== window) candidates.push((window.top as { Game?: unknown })?.Game ?? window.top); } catch {}
+    try {
+      const ifr = document.querySelector("iframe") as HTMLIFrameElement | null;
+      if (ifr?.contentWindow) candidates.push((ifr.contentWindow as { Game?: unknown })?.Game ?? ifr.contentWindow);
+      for (let i = 0; i < window.frames.length; i++) {
+        try { const f = window.frames[i] as unknown as { Game?: unknown }; if (f?.Game) candidates.push(f.Game); else if (f) candidates.push(f); } catch {}
+      }
+    } catch {}
+    // Also try pickGame() result
+    const pg = pickGame();
+    if (pg) {
+      const r = tryGame({ ModelManager: (pg as unknown as { ModelManager?: unknown })?.ModelManager } as unknown);
+      if (r) return r;
     }
+    for (const c of candidates) {
+      const g = (c as { Game?: unknown })?.Game ?? c;
+      const r = tryGame(g);
+      if (r) return r;
+    }
+    // Last fallback: try to read x-auth-user-id from any captured headers in localStorage / cookie
+    try {
+      const ls = localStorage.getItem("x-auth-user-id") || localStorage.getItem("auth_user_id");
+      if (ls) return String(ls);
+    } catch {}
+    return "";
   }
 
   let account = readAccount();
@@ -235,8 +321,10 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     }
     if (!account) {
       account = readAccount();
+      // Even if still empty, try polling without account (server will return any pending job)
+      // This handles cases where Game is in an iframe or wrappedJSObject and readAccount temporarily fails.
       if (!account) {
-        return;
+        log("loop: no account yet, polling without account as fallback");
       }
     }
     await tick(account, baseUrl);
