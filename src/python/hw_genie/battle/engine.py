@@ -159,16 +159,113 @@ class BridgeTimeoutError(BridgeError):
     """Raised when the userscript does not answer the job in time."""
 
 
-def get_default_engine(mode: str = "estimate", *, auth_server_url: str = "http://127.0.0.1:8765", user_id: str = "") -> BattleEngine:
+class PlaywrightBattleEngine:
+    """Headless browser battle engine via Playwright.
+
+    Launches a headless Chromium, injects the stored ``x-auth-*`` headers,
+    navigates to the game, and runs ``Game.BattlePresets/BattleInstantPlay``
+    directly in the page context. No manual Titan Arena navigation is required
+    – the engine waits for ``window.Game`` to appear and then executes the
+    battle. Falls back to :class:`BridgeError` if Playwright is not installed
+    or the game does not load within ``timeout``.
+    """
+
+    def __init__(
+        self,
+        headers: dict[str, str] | None = None,
+        *,
+        headless: bool = True,
+        timeout: float = 30.0,
+        game_url: str = "https://www.hero-wars.com/",
+    ) -> None:
+        self.headers = dict(headers or {})
+        self.headless = headless
+        self.timeout = timeout
+        self.game_url = game_url
+
+    def calc(self, battle: dict[str, Any]) -> BattleEstimate:  # pragma: no cover - browser
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+        except ImportError as exc:
+            raise BridgeError(
+                "playwright not installed; run `pip install playwright && playwright install chromium`"
+            ) from exc
+
+        import json
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=self.headless)
+                # Isolated context per battle (equiv. to Firefox container)
+                context = browser.new_context(extra_http_headers=self.headers or None)
+                page = context.new_page()
+                page.goto(self.game_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
+                # Wait for Haxe Game to appear (poll, cross-origin safe via evaluate)
+                try:
+                    page.wait_for_function("() => window.Game && window.Game.BattlePresets", timeout=int(self.timeout * 1000))
+                except Exception as exc:
+                    browser.close()
+                    raise BridgeError(f"Game not loaded within {self.timeout}s: {exc}") from exc
+
+                # Run the battle in the page context. The JS mirrors toe-bridge.ts computeBattle.
+                js_battle = json.dumps(battle)
+                result_json = page.evaluate(
+                    """(battleJson) => {
+                        const battle = JSON.parse(battleJson);
+                        const game = window.Game;
+                        if (!game || !game.BattlePresets || !game.BattleInstantPlay) return null;
+                        const dataStorage = game.DataStorage;
+                        if (!dataStorage) return null;
+                        const presets = new game.BattlePresets([], false, true, undefined, false);
+                        const instant = new game.BattleInstantPlay(battle, presets);
+                        return new Promise((resolve) => {
+                            let done = null;
+                            instant.addEventListener("complete", (raw) => {
+                                done = { progress: raw.progress || [], result: raw.result || {win:false, stars:0} };
+                                resolve(JSON.stringify(done));
+                            });
+                            const start = instant.start;
+                            if (typeof start === "function") start.call(instant);
+                            setTimeout(() => { if (!done) resolve(null); }, 10000);
+                        });
+                    }""",
+                    js_battle,
+                )
+                browser.close()
+                if not result_json:
+                    raise BridgeError("playwright battle engine returned null (not on Titan Arena or timeout)")
+                result = json.loads(result_json) if isinstance(result_json, str) else result_json
+                return BattleEstimate(
+                    win=bool(result.get("result", {}).get("win", False)),
+                    stars=int(result.get("result", {}).get("stars", 0)),
+                    progress=result.get("progress") or [],
+                )
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+
+
+def get_default_engine(
+    mode: str = "estimate",
+    *,
+    auth_server_url: str = "http://127.0.0.1:8765",
+    user_id: str = "",
+    headers: dict[str, str] | None = None,
+) -> BattleEngine:
     """Return a battle engine for the given mode.
 
     * ``estimate``: power-based estimator (no real progress; server will
       reject ``EndBattle`` with ``Invalid battle``).
     * ``hybrid``/``js``/``bridge``: defer to the userscript via the auth
       server job queue. Falls back to the estimator if the bridge fails.
+    * ``playwright``: headless Chromium via Playwright, auto-navigates to
+      the game and runs the battle. No manual screen operation required.
     """
     if mode in ("estimate", "offline", "python"):
         return PythonBattleEngine()
+    if mode in ("playwright", "pw"):
+        return PlaywrightBattleEngine(headers=headers)
     return JsBridgeBattleEngine(auth_server_url=auth_server_url, user_id=user_id)
 
 

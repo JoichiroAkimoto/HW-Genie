@@ -218,10 +218,16 @@ def run_titan_arena(
         if isinstance(engine, PythonBattleEngine):
             raise
         print(f"{Emojis.WARNING}Engine {type(engine).__name__} failed: {exc}", flush=True)
-        print(
-            f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser is on the Titan Arena screen with the userscript active. Falling back to estimate-only.",
-            flush=True,
-        )
+        if type(engine).__name__ == "PlaywrightBattleEngine":
+            print(
+                f"{Emojis.INFO}Hint: install Playwright (`pip install playwright && playwright install chromium`) and ensure headers are valid. Falling back to estimate-only.",
+                flush=True,
+            )
+        else:
+            print(
+                f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser is on the Titan Arena screen with the userscript active. Falling back to estimate-only.",
+                flush=True,
+            )
         # Return estimate-only style so the caller can decide; do not call EndBattle with invalid progress
         fallback = PythonBattleEngine().calc(battle)
         return {

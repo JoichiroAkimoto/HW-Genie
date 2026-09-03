@@ -499,22 +499,25 @@ def cmd_toe_attack(args):
 
     # ToE bridge は userscript の Game.ModelManager.player.userInfo.id (x-auth-user-id)
     # と同じ文字列で job を紐付ける。alias ("Joe") ではなく数値 userId を使う。
-    user_id = headers.get("x-auth-user-id", "") if getattr(args, "engine", "estimate") != "estimate" else ""
-    if not user_id:
-        # fallback: SessionManager の player.id (数値) を試す
-        try:
-            from hw_genie.core.session_manager import SessionManager
+    engine_mode = getattr(args, "engine", "estimate")
+    if engine_mode == "playwright":
+        engine = get_default_engine(mode=engine_mode, headers=headers)
+    else:
+        user_id = headers.get("x-auth-user-id", "") if engine_mode != "estimate" else ""
+        if not user_id and engine_mode != "estimate":
+            try:
+                from hw_genie.core.session_manager import SessionManager
 
-            resolved = resolve_account(args.account)
-            data = SessionManager.load(resolved)
-            user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
-        except Exception:
-            user_id = ""
-    engine = get_default_engine(
-        mode=getattr(args, "engine", "estimate"),
-        auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
-        user_id=user_id,
-    )
+                resolved = resolve_account(args.account)
+                data = SessionManager.load(resolved)
+                user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
+            except Exception:
+                user_id = ""
+        engine = get_default_engine(
+            mode=engine_mode,
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+            user_id=user_id,
+        )
     rival = getattr(args, "rival", None)
     titans = list(args.titans) if args.titans else None
     run_titan_arena(
@@ -535,7 +538,9 @@ def cmd_toe_run(args):
     from hw_genie.commands.titan_arena import run_titan_arena_tier
 
     mode = getattr(args, "engine", "estimate")
-    if mode != "estimate":
+    if mode == "playwright":
+        engine = get_default_engine(mode=mode, headers=headers)
+    elif mode != "estimate":
         user_id = headers.get("x-auth-user-id", "")
         if not user_id:
             try:
@@ -546,13 +551,13 @@ def cmd_toe_run(args):
                 user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
             except Exception:
                 user_id = ""
+        engine = get_default_engine(
+            mode=mode,
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+            user_id=user_id,
+        )
     else:
-        user_id = ""
-    engine = get_default_engine(
-        mode=mode,
-        auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
-        user_id=user_id,
-    )
+        engine = get_default_engine(mode=mode)
     titans = list(args.titans) if getattr(args, "titans", None) else None
     run_titan_arena_tier(
         client,
@@ -1177,9 +1182,9 @@ def main():
     p_toe_attack.add_argument("--estimate-only", action="store_true", help="Estimate win/lose without calling endBattle")
     p_toe_attack.add_argument(
         "--engine",
-        choices=["estimate", "hybrid"],
+        choices=["estimate", "hybrid", "playwright"],
         default="estimate",
-        help="Battle engine: 'estimate' (power-based, server rejects EndBattle) or 'hybrid' (delegate to userscript via auth server)",
+        help="Battle engine: 'estimate' (power-based, server rejects EndBattle), 'hybrid' (delegate to userscript via auth server), or 'playwright' (headless Chromium, no manual screen required)",
     )
     p_toe_attack.add_argument(
         "--auth-server-url",
@@ -1199,9 +1204,9 @@ def main():
     )
     p_toe_run.add_argument(
         "--engine",
-        choices=["estimate", "hybrid"],
+        choices=["estimate", "hybrid", "playwright"],
         default="estimate",
-        help="Battle engine: 'estimate' (tier planning only) or 'hybrid' (full automation via userscript)",
+        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (full automation via userscript), or 'playwright' (headless Chromium, no manual screen required)",
     )
     p_toe_run.add_argument(
         "--auth-server-url",

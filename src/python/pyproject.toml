@@ -14,6 +14,9 @@ dependencies = [
     "rich~=15.0",
 ]
 
+[project.optional-dependencies]
+playwright = ["playwright>=1.40"]
+
 
 
 [project.scripts]
