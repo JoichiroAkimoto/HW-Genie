@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 OUTPUT="$DIST_DIR/hw-genie-auth-capture.user.js"
+VARIANT=""
 
 # 失敗時（tsc エラー等）に一時ファイルを残さない
 trap 'rm -f "$DIST_DIR/bundle.tmp.js"' EXIT
@@ -14,6 +15,11 @@ BUN_MINIFY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --dev)
+      VARIANT="dev"
+      OUTPUT="$DIST_DIR/hw-genie-auth-capture-dev.user.js"
+      shift
+      ;;
     --minify)
       BUN_MINIFY="--minify"
       shift
@@ -59,6 +65,12 @@ METADATA=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' "$SCRIPT_
 if [[ "$METADATA" != *"==UserScript=="* ]]; then
   echo "ERROR: metadata block not found in index.ts" >&2
   exit 1
+fi
+
+# --dev: 並行インストール用に @name / @namespace を Dev 版に置換
+if [[ "$VARIANT" == "dev" ]]; then
+  METADATA=$(printf '%s\n' "$METADATA" | sed 's|^// @name[[:space:]]\+.*|// @name         HW-Genie Auth Capture (Dev)|' | sed 's|^// @namespace[[:space:]]\+.*|// @namespace    https://github.com/JoichiroAkimoto/HW-Genie-dev|')
+  echo "Variant: dev → @name/@namespace rewritten for parallel install" >&2
 fi
 
 # 型チェックを先に実行（bun は型を無視してビルドするため、型エラーを最速で

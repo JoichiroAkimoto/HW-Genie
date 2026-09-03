@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "bash build.sh",
+    "build:dev": "bash build.sh --dev",
     "test": "bun test tests/"
   },
   "devDependencies": {
