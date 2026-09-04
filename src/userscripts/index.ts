@@ -210,9 +210,9 @@ import { installToeBridge } from "./toe-bridge";
     document.addEventListener("DOMContentLoaded", () => {
       installInterceptor();
       startPolling();
-      // ToE ブリッジも同じ auth server に対して常駐させる。Titan Arena
-      // 画面が無くてもキューを poll するだけで副作用なし（pickGame フォール
-      // バックで即座に loss 結果を返し head-of-line blocking を回避）。
+      // ToE ブリッジも同じ auth server に対して常駐させる。ゲームエンジン
+      // を持たないフレームは poll 自体を skip するため副作用なし。エンジン
+      // 保持フレーム（任意のゲームページ）のみが job を claim して計算する。
       installToeBridge({ authServerUrl: AUTH_SERVER_URL });
     });
   } else {

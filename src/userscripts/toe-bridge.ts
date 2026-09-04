@@ -46,10 +46,10 @@ function log(msg: string, ...args: unknown[]): void {
 }
 
 function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | null {
-  // The game exposes the bridge classes through the global ``Game`` object once
-  // the player enters a titan battle screen. We only call into it from a
-  // polling tick so the first few polls just no-op until the player is in
-  // the Titan Arena screen.
+  // The game exposes the bridge classes through the global ``Game`` object
+  // once its JS bundle has loaded (any game page, not just the Titan Arena
+  // screen). Only frames whose local ``Game`` carries the battle classes
+  // may poll — see ``hasLocalEngine``.
   // Try multiple window contexts: the game may be in an iframe or wrappedJSObject.
   const candidates: unknown[] = [];
   try { candidates.push(window); } catch {}
@@ -77,6 +77,34 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
     } catch {}
   }
   return null;
+}
+
+/**
+ * Pure predicate: does this game object carry everything ``computeBattle``
+ * needs (battle classes + data storage)?
+ *
+ * Exported for unit tests (see ``tests/toe-bridge.test.js``). Frames whose
+ * local game fails this check must never claim jobs — otherwise an
+ * engine-less frame (e.g. the top window while the game lives in a
+ * cross-origin iframe) claims first and its dummy loss consumes the job
+ * before the engine frame can compute the real result.
+ */
+export function hasBattleEngine(game: unknown): boolean {
+  try {
+    const g = game as {
+      BattlePresets?: unknown;
+      BattleInstantPlay?: unknown;
+      DataStorage?: unknown;
+    } | null | undefined;
+    return Boolean(g && g.BattlePresets && g.BattleInstantPlay && g.DataStorage);
+  } catch {
+    return false;
+  }
+}
+
+/** Local frame check: only engine frames may poll the job queue. */
+function hasLocalEngine(): boolean {
+  return hasBattleEngine(pickGame());
 }
 
 function getGameWindow(): unknown {
@@ -239,15 +267,21 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 }
 
 async function tick(account: string, baseUrl: string): Promise<void> {
+  // Engine-less frames must never claim: claiming without the ability to
+  // compute would consume the job with a dummy loss before the engine frame
+  // sees it. The auth-server reclaim timeout is only a safety net.
+  if (!hasLocalEngine()) {
+    return;
+  }
   const job = await pollNextJob(account, baseUrl);
   if (!job) {
     return;
   }
   const computed = await computeBattle(job.battle);
   if (!computed) {
-    // Drop the job by submitting a loss. Python can still decide what to do
-    // based on the estimator. This avoids head-of-line blocking when the
-    // page is not on the titan screen.
+    // The engine exists but this battle failed to compute (calc error or
+    // timeout). Submit a fast loss so Python proceeds instead of waiting
+    // out its full bridge timeout.
     await submitResult(job.id, account, {
       progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
       result: { win: false, stars: 0 },
@@ -325,13 +359,16 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     if (stopped) {
       return;
     }
+    // Only engine frames poll. Non-engine frames stay silent so the server
+    // log shows polling if and only if a frame can actually compute.
+    if (!hasLocalEngine()) {
+      return;
+    }
     if (!account) {
       account = readAccount();
-      // Even if still empty, try polling without account (server will return any pending job)
-      // This handles cases where Game is in an iframe or wrappedJSObject and readAccount temporarily fails.
-      if (!account) {
-        log("loop: no account yet, polling without account as fallback");
-      }
+      // Even if still empty, try polling without account (server will return any pending job).
+      // The tick gate above already guarantees this frame has an engine, so
+      // a claimed job can actually be computed.
     }
     await tick(account, baseUrl);
   }

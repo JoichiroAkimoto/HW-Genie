@@ -69,6 +69,26 @@ def test_toe_job_unknown_id_returns_404(client):
     assert miss.status_code == 404
 
 
+def test_toe_job_in_flight_reclaim_after_timeout():
+    """A job claimed but never finished becomes reclaimable after the timeout.
+
+    Prevents head-of-line blocking when a non-engine frame (or a crashed tab)
+    claims a job without submitting a result: the next poll recovers it.
+    """
+    import time
+
+    store = ToeJobStore(ttl_seconds=300, in_flight_timeout_seconds=100)
+    job_id = store.add("A", {"x": 1})
+    first = store.claim("A")
+    assert first is not None and first["id"] == job_id
+    # Still in-flight: immediate reclaim must not return it.
+    assert store.claim("A") is None
+    # Simulate a stale claim (tab closed mid-calc).
+    store._jobs[job_id]["claimed_at"] = time.time() - 200
+    second = store.claim("A")
+    assert second is not None and second["id"] == job_id
+
+
 def test_toe_job_store_cleanup():
     """Cleanup removes jobs older than the TTL."""
     import time

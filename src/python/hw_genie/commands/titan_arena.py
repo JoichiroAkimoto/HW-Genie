@@ -225,7 +225,7 @@ def run_titan_arena(
             )
         else:
             print(
-                f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser is on the Titan Arena screen with the userscript active. Falling back to estimate-only.",
+                f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser has the game open with the userscript active (any game page works; the Titan Arena screen is not required). Falling back to estimate-only.",
                 flush=True,
             )
         # Return estimate-only style so the caller can decide; do not call EndBattle with invalid progress

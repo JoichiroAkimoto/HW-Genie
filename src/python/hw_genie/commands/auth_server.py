@@ -84,10 +84,11 @@ class ToeJobStore:
     is running in the same host.
     """
 
-    def __init__(self, ttl_seconds: int = 300) -> None:
+    def __init__(self, ttl_seconds: int = 300, in_flight_timeout_seconds: int = 60) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._ttl = ttl_seconds
+        self._in_flight_timeout = in_flight_timeout_seconds
 
     def add(self, account: str, battle: dict[str, Any]) -> str:
         job_id = uuid.uuid4().hex
@@ -99,6 +100,7 @@ class ToeJobStore:
                 "status": "pending",
                 "result": None,
                 "created_at": time.time(),
+                "claimed_at": None,
             }
         return job_id
 
@@ -109,24 +111,44 @@ class ToeJobStore:
             return None
         return job
 
+    def _is_reclaimable(self, job: dict[str, Any], now: float) -> bool:
+        """An in-flight job is reclaimable once its claim is older than the timeout."""
+        claimed_at = job.get("claimed_at")
+        if claimed_at is None:
+            return True
+        try:
+            return (now - float(claimed_at)) >= self._in_flight_timeout
+        except (TypeError, ValueError):
+            return True
+
     def claim(self, account: str) -> Optional[dict[str, Any]]:
-        """Return the oldest pending job for ``account`` and mark it as in-flight."""
+        """Return the oldest pending job for ``account`` and mark it as in-flight.
+
+        Jobs stuck in ``in-flight`` past ``in_flight_timeout_seconds`` (e.g. a
+        tab closed mid-calc) are treated as pending again so the queue cannot
+        wedge head-of-line.
+        """
+        now = time.time()
         with self._lock:
             if account:
-                pending = sorted(
-                    (j for j in self._jobs.values() if j.get("account") == account and j.get("status") == "pending"),
-                    key=lambda j: j["created_at"],
-                )
+                candidates = [j for j in self._jobs.values() if j.get("account") == account]
             else:
                 # Fallback: no account known (userscript couldn't read Game yet) → oldest pending for any account
-                pending = sorted(
-                    (j for j in self._jobs.values() if j.get("status") == "pending"),
-                    key=lambda j: j["created_at"],
-                )
+                candidates = list(self._jobs.values())
+            pending = sorted(
+                (
+                    j
+                    for j in candidates
+                    if j.get("status") == "pending"
+                    or (j.get("status") == "in_flight" and self._is_reclaimable(j, now))
+                ),
+                key=lambda j: j["created_at"],
+            )
             if not pending:
                 return None
             job = pending[0]
             job["status"] = "in_flight"
+            job["claimed_at"] = now
         return job
 
     def submit(self, job_id: str, account: str, result: dict[str, Any]) -> bool:
