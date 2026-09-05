@@ -7,10 +7,17 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     # Enable grouped updates to avoid notification clutter
+    # ruff は linter で壊れ方が特殊 (CI の lint のみ赤) のため別グループ化して
+    # ランタイム更新と原因切り分けできるようにする
     groups:
       python-dependencies:
         patterns:
           - "*"
+        exclude-patterns:
+          - "ruff"
+      ruff:
+        patterns:
+          - "ruff"
 
   # 2. GitHub Actions dependency check
   - package-ecosystem: "github-actions"
