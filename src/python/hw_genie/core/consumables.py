@@ -157,7 +157,12 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     492: ConsumableInfo(name="Cosmic Titans Battle Chest", method="consumableUseLootBox"),
     497: ConsumableInfo(name="Cosmic Battle Chest", method="consumableUseLootBox"),
     493: ConsumableInfo(name="Titan Upgrade Chest", method="consumableUseLootBox"),
-    422: ConsumableInfo(name="Buccaneer Stash", method="consumableUseLootBox"),
+422: ConsumableInfo(name="Buccaneer Stash", method="consumableUseLootBox"),
+    176: ConsumableInfo(name="Otherworldly Doll", method="consumableUseLootBox"),
+    185: ConsumableInfo(name="Charged Doll", method="consumableUseLootBox"),
+    187: ConsumableInfo(name="Fair Wind Doll", method="consumableUseLootBox"),
+    190: ConsumableInfo(name="Imprisoned Doll", method="consumableUseLootBox"),
+    317: ConsumableInfo(name="Cosmic Box", method="consumableUseLootBox"),
 }
 
 #: 一括消費（``consumable run``・``multi consumable``）の対象 libId。
@@ -215,6 +220,11 @@ CONSUMABLE_USE_TARGETS: list[int] = [
     497,
     493,
     422,
+    176,
+    185,
+    187,
+    190,
+    317,
 ]
 
 

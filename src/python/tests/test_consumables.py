@@ -204,7 +204,7 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 def test_registry_covers_all_use_targets():
     """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 48  # 215 + Add-Consumables.md 記載の 47 種
+    assert len(CONSUMABLE_USE_TARGETS) == 53  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
@@ -231,7 +231,7 @@ def test_registry_covers_all_use_targets():
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
     # マトリョーシカ（再帰開封）対象
-    for lib_id in (149, 469, 492, 497):
+    for lib_id in (149, 469, 492, 497, 176, 185, 187, 190):
         assert lib_id in CONSUMABLE_USE_TARGETS
 
 
