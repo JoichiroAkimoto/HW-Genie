@@ -156,6 +156,10 @@ class ToeJobStore:
             job = self._jobs.get(job_id)
             if not job:
                 return False
+            # Done is terminal: reject late submits so a slow first claimant
+            # can never clobber the reclaimer's result (no last-writer-wins).
+            if job.get("status") == "done":
+                return False
             # Strict account check, but allow fallback when userscript polled without account (empty) or account mismatch due to alias vs numeric id
             if job.get("account") != account and account != "" and job.get("account") != "":
                 # Allow submitting with empty or with any account if job was claimed via fallback (account mismatch is tolerated for localhost bridge)

@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { hasBattleEngine } from "../toe-bridge.ts";
+import { hasBattleEngine, hasLocalEngine, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -38,4 +38,25 @@ test("missing DataStorage means no engine", () => {
 
 test("full engine object is detected", () => {
   assert.strictEqual(hasBattleEngine(FULL_ENGINE), true);
+});
+
+test("hasLocalEngine is false with no game window (bare node env)", () => {
+  // No window/document globals here, so no candidate can carry an engine.
+  assert.strictEqual(hasLocalEngine(), false);
+});
+
+test("tick performs zero fetch when no local engine", async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => {
+    calls.push(args);
+    throw new Error("tick must not fetch without an engine");
+  };
+  try {
+    await tick("", "http://127.0.0.1:1");
+  } finally {
+    if (origFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = origFetch;
+  }
+  assert.strictEqual(calls.length, 0);
 });

@@ -89,6 +89,43 @@ def test_toe_job_in_flight_reclaim_after_timeout():
     assert second is not None and second["id"] == job_id
 
 
+def test_toe_submit_after_done_rejected():
+    """A submit on a done job is rejected so the first result is preserved."""
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    assert store.claim("A") is not None
+    assert store.submit(job_id, "A", {"win": True}) is True
+    assert store.submit(job_id, "A", {"win": False}) is False
+    assert store.get(job_id, "A")["result"] == {"win": True}
+
+
+def test_toe_reclaim_submit_second_submit_rejected():
+    """Reclaim -> submit -> a slow first claimant's late submit is rejected."""
+    import time
+
+    store = ToeJobStore(ttl_seconds=300, in_flight_timeout_seconds=60)
+    job_id = store.add("A", {"x": 1})
+    assert store.claim("A") is not None
+    # Simulate a stale claim (first tab died mid-calc); second tab reclaims.
+    store._jobs[job_id]["claimed_at"] = time.time() - 61
+    assert store.claim("A") is not None
+    assert store.submit(job_id, "A", {"r": 1}) is True
+    # Slow first claimant finally answers: must not clobber.
+    assert store.submit(job_id, "A", {"r": 2}) is False
+    assert store.get(job_id, "A")["result"] == {"r": 1}
+
+
+def test_toe_fallback_claim_reclaim_isolation():
+    """An in-flight job stays isolated even via the account-less fallback."""
+    store = ToeJobStore(ttl_seconds=300, in_flight_timeout_seconds=60)
+    job_id = store.add("A", {"x": 1})
+    first = store.claim("")
+    assert first is not None and first["id"] == job_id
+    # Still in-flight: immediate second claim via fallback or account → None.
+    assert store.claim("") is None
+    assert store.claim("A") is None
+
+
 def test_toe_job_store_cleanup():
     """Cleanup removes jobs older than the TTL."""
     import time

@@ -45,12 +45,9 @@ function log(msg: string, ...args: unknown[]): void {
   console.log(`[HW-Genie/ToE] ${msg}`, ...args);
 }
 
-function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | null {
-  // The game exposes the bridge classes through the global ``Game`` object
-  // once its JS bundle has loaded (any game page, not just the Titan Arena
-  // screen). Only frames whose local ``Game`` carries the battle classes
-  // may poll — see ``hasLocalEngine``.
-  // Try multiple window contexts: the game may be in an iframe or wrappedJSObject.
+function getCandidateWindows(): unknown[] {
+  // Single enumeration of every window context the game may live in: the
+  // local frame, userscript sandboxes, the top frame, and child frames.
   const candidates: unknown[] = [];
   try { candidates.push(window); } catch {}
   try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push(uw); } catch {}
@@ -63,20 +60,7 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
       try { const f = window.frames[i]; if (f) candidates.push(f); } catch {}
     }
   } catch {}
-  for (const c of candidates) {
-    try {
-      const g = (c as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } })?.Game;
-      if (g?.BattlePresets && g?.BattleInstantPlay) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
-    } catch {}
-  }
-  // Fallback: any candidate with Game even if presets not yet loaded (for account reading)
-  for (const c of candidates) {
-    try {
-      const g = (c as { Game?: unknown })?.Game;
-      if (g) return g as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
-    } catch {}
-  }
-  return null;
+  return candidates;
 }
 
 /**
@@ -102,30 +86,73 @@ export function hasBattleEngine(game: unknown): boolean {
   }
 }
 
-/** Local frame check: only engine frames may poll the job queue. */
-function hasLocalEngine(): boolean {
-  return hasBattleEngine(pickGame());
+/**
+ * Engine-frame gate: scan every candidate window for a full battle engine.
+ *
+ * This must NOT derive from a single ``pickGame()`` result: ``pickGame``
+ * also returns partial matches (presets loaded but ``DataStorage`` missing)
+ * as a fallback for account reading, so ``hasBattleEngine(pickGame())``
+ * could false-negative and silence a frame that actually carries an engine
+ * in a later candidate window. Only frames passing this gate may poll —
+ * otherwise an engine-less frame (e.g. the top window while the game lives
+ * in a cross-origin iframe) claims first and its dummy loss consumes the
+ * job before the engine frame can compute the real result.
+ *
+ * Exported for unit tests (see ``tests/toe-bridge.test.js``).
+ */
+export function hasLocalEngine(): boolean {
+  for (const c of getCandidateWindows()) {
+    try {
+      const g = (c as { Game?: unknown })?.Game;
+      if (g && hasBattleEngine(g)) return true;
+    } catch {}
+  }
+  return false;
 }
 
+/** Return the first window context carrying a ``Game`` object (any shape). */
 function getGameWindow(): unknown {
-  const candidates: unknown[] = [];
-  try { candidates.push(window); } catch {}
-  try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push(uw); } catch {}
-  try { const wj = (window as unknown as { wrappedJSObject?: unknown }).wrappedJSObject; if (wj) candidates.push(wj); } catch {}
-  try { if (window.top && window.top !== window) candidates.push(window.top); } catch {}
-  try {
-    const ifr = document.querySelector("iframe") as HTMLIFrameElement | null;
-    if (ifr?.contentWindow) candidates.push(ifr.contentWindow);
-    for (let i = 0; i < window.frames.length; i++) {
-      try { const f = window.frames[i]; if (f) candidates.push(f); } catch {}
-    }
-  } catch {}
-  for (const c of candidates) {
+  for (const c of getCandidateWindows()) {
     try {
       if ((c as { Game?: unknown })?.Game) return c;
     } catch {}
   }
-  return window;
+  try {
+    return window;
+  } catch {
+    return null;
+  }
+}
+
+function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | null {
+  // The game exposes the bridge classes through the global ``Game`` object
+  // once its JS bundle has loaded (any game page; no Titan Arena navigation
+  // is required). Only frames whose local ``Game`` carries the battle classes
+  // may poll — see ``hasLocalEngine``.
+  // Try multiple window contexts: the game may be in an iframe or wrappedJSObject.
+  const candidates = getCandidateWindows();
+  // Prefer a full-engine match first so a partial Game (presets loaded but
+  // DataStorage missing) earlier in the list never shadows a complete one.
+  for (const c of candidates) {
+    try {
+      const g = (c as { Game?: unknown })?.Game;
+      if (g && hasBattleEngine(g)) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
+    } catch {}
+  }
+  for (const c of candidates) {
+    try {
+      const g = (c as { Game?: { BattlePresets?: unknown; BattleInstantPlay?: unknown } })?.Game;
+      if (g?.BattlePresets && g?.BattleInstantPlay) return g as { BattlePresets: unknown; BattleInstantPlay: unknown };
+    } catch {}
+  }
+  // Fallback: any candidate with Game even if presets not yet loaded (for account reading)
+  for (const c of candidates) {
+    try {
+      const g = (c as { Game?: unknown })?.Game;
+      if (g) return g as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
+    } catch {}
+  }
+  return null;
 }
 
 async function fetchWithTimeout(
@@ -185,9 +212,9 @@ async function submitResult(
 /**
  * Compute a titan battle using the in-page game engine.
  *
- * Returns ``null`` if the engine is not available (e.g. user is not in the
- * titan screen), letting the caller skip the job and let Python fall back
- * to its estimator.
+ * Returns ``null`` when the game bundle is not loaded, ``DataStorage`` is
+ * unavailable, or the calc fails / times out. ``tick`` submits a fast loss
+ * only after such a genuine calc failure on an engine frame.
  */
 async function computeBattle(battle: unknown): Promise<BattleResultPayload | null> {
   const game = pickGame();
@@ -201,8 +228,9 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     // followed by a single calc() promise we await via the wrapped engine.
     // We don't have direct access to BattleConfigStorage from this script,
     // so we rely on the battle.type field (always 'titan_arena' here) and
-    // the global DataStorage. If the page is not on the titan screen, the
-    // engine may throw — we treat that as 'unavailable' and let Python retry.
+    // the global DataStorage. If the bundle is only partially loaded the
+    // engine may throw — we treat that as a calc failure (null) so tick
+    // submits the fast loss instead of hanging.
     const gw = getGameWindow() as { Game?: { DataStorage?: unknown } };
     const dataStorage = gw?.Game?.DataStorage;
     if (!dataStorage) {
@@ -266,7 +294,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
 }
 
-async function tick(account: string, baseUrl: string): Promise<void> {
+export async function tick(account: string, baseUrl: string): Promise<void> {
   // Engine-less frames must never claim: claiming without the ability to
   // compute would consume the job with a dummy loss before the engine frame
   // sees it. The auth-server reclaim timeout is only a safety net.
@@ -319,18 +347,9 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
       } catch {}
       return "";
     };
-    const candidates: unknown[] = [];
-    try { candidates.push(window); } catch {}
-    try { const uw = (window as unknown as { unsafeWindow?: unknown }).unsafeWindow; if (uw) candidates.push((uw as { Game?: unknown })?.Game ?? uw); } catch {}
-    try { const wj = (window as unknown as { wrappedJSObject?: unknown }).wrappedJSObject; if (wj) candidates.push((wj as { Game?: unknown })?.Game ?? wj); } catch {}
-    try { if (window.top && window.top !== window) candidates.push((window.top as { Game?: unknown })?.Game ?? window.top); } catch {}
-    try {
-      const ifr = document.querySelector("iframe") as HTMLIFrameElement | null;
-      if (ifr?.contentWindow) candidates.push((ifr.contentWindow as { Game?: unknown })?.Game ?? ifr.contentWindow);
-      for (let i = 0; i < window.frames.length; i++) {
-        try { const f = window.frames[i] as unknown as { Game?: unknown }; if (f?.Game) candidates.push(f.Game); else if (f) candidates.push(f); } catch {}
-      }
-    } catch {}
+    const candidates: unknown[] = getCandidateWindows().map(
+      (c) => (c as { Game?: unknown })?.Game ?? c,
+    );
     // Also try pickGame() result
     const pg = pickGame();
     if (pg) {

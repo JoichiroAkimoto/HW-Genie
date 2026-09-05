@@ -96,7 +96,7 @@ def _build_progress(battle: dict[str, Any], win: bool) -> list[dict[str, Any]]:
 class JsBridgeBattleEngine:
     """Delegate the simulation to the userscript via the auth server job queue.
 
-    The userscript runs ``Game.BattleCalc(battle, get_titanPvpManual)`` in the
+    The userscript runs ``Game.BattlePresets/BattleInstantPlay`` in the
     browser and posts the exact ``progress/result`` back. Until that job
     comes back we raise :class:`BridgeTimeoutError` so the caller can fall
     back to the Python estimator or abort the tier.
@@ -233,7 +233,7 @@ class PlaywrightBattleEngine:
                 )
                 browser.close()
                 if not result_json:
-                    raise BridgeError("playwright battle engine returned null (not on Titan Arena or timeout)")
+                    raise BridgeError("playwright battle engine returned null (engine unavailable or timeout)")
                 result = json.loads(result_json) if isinstance(result_json, str) else result_json
                 return BattleEstimate(
                     win=bool(result.get("result", {}).get("win", False)),
