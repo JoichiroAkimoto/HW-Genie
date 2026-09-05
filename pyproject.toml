@@ -18,6 +18,15 @@ members = ["src/python"]
 [tool.uv.sources]
 hw-genie = { workspace = true }
 
+[tool.ruff]
+target-version = "py313"
+line-length = 150
+
+[tool.ruff.lint]
+# Ruff 0.16 でデフォルトルールが拡張されたため、0.15 までの既定 (E4,E7,E9,F) を明示して維持する
+# .github/scripts 配下はルート pyproject.toml が適用されるため、src と同じ設定を置く
+select = ["E4", "E7", "E9", "F"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2,<9.2.0",

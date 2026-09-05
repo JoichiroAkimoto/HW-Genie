@@ -26,6 +26,10 @@ package = true
 target-version = "py313"
 line-length = 150
 
+[tool.ruff.lint]
+# Ruff 0.16 でデフォルトルールが拡張されたため、0.15 までの既定 (E4,E7,E9,F) を明示して維持する
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore::DeprecationWarning",
