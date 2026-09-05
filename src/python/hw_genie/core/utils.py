@@ -97,15 +97,15 @@ def format_number_with_suffix(num: int) -> str:
     """数値を K, M, B, T などの接尾辞付きでフォーマットする"""
     if num < 1000:
         return str(num)
-    
+
     suffixes = ["", "K", "M", "B", "T"]
     magnitude = 0
     num_float = float(num)
-    
+
     while abs(num_float) >= 1000 and magnitude < len(suffixes) - 1:
         magnitude += 1
         num_float /= 1000.0
-        
+
     return f"{num_float:.1f}{suffixes[magnitude]}"
 
 
@@ -253,6 +253,7 @@ def terminal_columns(fallback: int = 100) -> int:
     except Exception:
         return fallback
     return cols if cols > 0 else fallback
+
 
 def print_player_status(status):
     """

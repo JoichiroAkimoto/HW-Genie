@@ -152,9 +152,7 @@ def test_use_consumable_includes_reward_choice_index(mock_client):
 def test_use_consumable_api_error(mock_client):
     """API エラー（limitReached 等）は status=ERROR で返す。"""
     client, mock_call = mock_client
-    mock_call.return_value = _res_from(
-        dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"
-    )
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached")
 
     result = use_consumable(client, lib_id=215, amount=48, method="consumableUseLootBox")
 
@@ -212,20 +210,13 @@ def test_registry_covers_all_use_targets():
     assert 17 not in CONSUMABLE_USE_TARGETS
     assert CONSUMABLE_REGISTRY[17].method == "consumableUseStamina"
     # 1000 分割対象（ドキュメント記載の 7 種と完全一致）
-    chunked = {
-        lib_id
-        for lib_id in CONSUMABLE_USE_TARGETS
-        if CONSUMABLE_REGISTRY[lib_id].max_amount > 0
-    }
+    chunked = {lib_id for lib_id in CONSUMABLE_USE_TARGETS if CONSUMABLE_REGISTRY[lib_id].max_amount > 0}
     assert chunked == {169, 170, 171, 172, 173, 271, 272}
     # 分割対象以外は上限なし（在庫全量を 1 リクエストで消費）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - chunked:
         assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
     # 選択式報酬ボックス（playerRewardChoiceIndex 指定、Add-Consumables.md 記載）
-    choices = {
-        lib_id: CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index
-        for lib_id in (47, 48, 49, 50, 328, 62, 63, 64)
-    }
+    choices = {lib_id: CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index for lib_id in (47, 48, 49, 50, 328, 62, 63, 64)}
     assert choices == {47: 2, 48: 2, 49: 2, 50: 2, 328: 0, 62: 4, 63: 4, 64: 4}
     # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
@@ -282,11 +273,7 @@ def test_run_consumable_use_passes_reward_choice_index(mock_client, mock_sleep):
 
     assert results[0].status == ResponseStatus.SUCCESS
     assert results[0].consumed == 3
-    use_calls = [
-        c
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    use_calls = [c for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     assert len(use_calls) == 1
     assert use_calls[0].args[0]["calls"][0]["args"] == {
         "libId": 47,
@@ -330,11 +317,7 @@ def test_run_consumable_use_chunks_at_max_amount(mock_client, mock_sleep):
 
     assert results[0].status == ResponseStatus.SUCCESS
     assert results[0].consumed == 2500
-    use_calls = [
-        c.args[0]
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    use_calls = [c.args[0] for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     assert [c["calls"][0]["args"]["amount"] for c in use_calls] == [1000, 1000, 500]
     assert mock_call.call_count == 5
 
@@ -345,9 +328,7 @@ def test_run_consumable_use_chunk_partial_failure(mock_client, mock_sleep):
     mock_call.side_effect = [
         _res_from(dummy.INVENTORY_GET_CHUNKED),  # 169: 2500
         _lootbox_success(1000),  # 1000 成功
-        _res_from(
-            dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"
-        ),  # 2 個目失敗
+        _res_from(dummy.CONSUMABLE_USE_LIMIT_REACHED, is_success=False, error_name="limitReached"),  # 2 個目失敗
         _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 失敗済みのため再試行なし
     ]
 
@@ -357,11 +338,7 @@ def test_run_consumable_use_chunk_partial_failure(mock_client, mock_sleep):
     assert results[0].error_name == "limitReached"
     assert results[0].consumed == 1000  # 成功したチャンクのみ集計
     assert results[0].stock == 2500
-    use_calls = [
-        c
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    use_calls = [c for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     assert len(use_calls) == 2  # 3 個目のチャンクは試行しない
     assert mock_call.call_count == 4
 
@@ -387,11 +364,7 @@ def test_run_consumable_use_matryoshka_and_chunking(mock_client, mock_sleep):
     assert by_id[271].consumed == 1200
     assert by_id[169].status == ResponseStatus.SUCCESS
     assert by_id[169].consumed == 2500
-    amounts = [
-        c.args[0]["calls"][0]["args"]["amount"]
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    amounts = [c.args[0]["calls"][0]["args"]["amount"] for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     assert amounts == [1000, 200, 1000, 1000, 500]
     assert mock_call.call_count == 8
 
@@ -457,11 +430,7 @@ def test_run_consumable_use_retries_unexpected(mock_client, mock_sleep):
 
     assert results[0].status == ResponseStatus.SUCCESS  # 再試行成功で最終 SUCCESS
     assert results[0].consumed == 2500
-    amounts = [
-        c.args[0]["calls"][0]["args"]["amount"]
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    amounts = [c.args[0]["calls"][0]["args"]["amount"] for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     # ラウンド1: 1000 成功 + 1000 失敗 → ラウンド2: 残り 1500 を [1000, 500] で再試行
     assert amounts == [1000, 1000, 1000, 500]
     assert mock_call.call_count == 7
@@ -480,11 +449,7 @@ def test_run_consumable_use_does_not_retry_hard_failures(mock_client, mock_sleep
 
     assert results[0].status == ResponseStatus.ERROR
     assert results[0].error_name == "limitReached"
-    use_calls = [
-        c
-        for c in mock_call.call_args_list
-        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
-    ]
+    use_calls = [c for c in mock_call.call_args_list if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"]
     assert len(use_calls) == 1
     assert mock_call.call_count == 3
 

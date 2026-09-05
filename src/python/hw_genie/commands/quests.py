@@ -153,7 +153,10 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
             # される。フラグメント ID は「タイタンアーティファクトの強化素材」として
             # 共通であり、購入後は quest_defaults で指定した titanId/slotId の
             # 対象に使う（docs/superpowers/titan-quests-ops.md 参照）。
-            {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "amount": 200}},
+            {
+                "rpc": ApiAction.SHOP_BUY,
+                "args": {"shopId": 13, "slot": 18, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "amount": 200},
+            },
             {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4012, "slotId": 1}},
         ],
     },
@@ -390,11 +393,9 @@ def run_quest_status(
         done = sum(1 for q in quests if q.is_done)
         claimable = sum(1 for q in quests if q.is_claimable)
         active = len(quests) - done - claimable
-        print(f"\n📋 Quest status for {account} "
-              f"(total {len(quests)}, {claimable} claimable, {active} active, {done} done):")
+        print(f"\n📋 Quest status for {account} (total {len(quests)}, {claimable} claimable, {active} active, {done} done):")
     else:
-        print(f"\n📋 Quest status for {account} "
-              f"(total {len(quests)}, uncompleted {len(visible)}):")
+        print(f"\n📋 Quest status for {account} (total {len(quests)}, uncompleted {len(visible)}):")
 
     shown_any = False
     for cat in CATEGORIES:
@@ -409,10 +410,7 @@ def run_quest_status(
         for q in items:
             target = q.target if q.target is not None else "?"
             mark = "🎁" if q.is_claimable else ("⏳" if q.progress > 0 else "⬜")
-            print(
-                f"  {mark} {q.id!s:>8}  {q.name:<55} "
-                f"{q.progress}/{target}  [{format_reward(q.reward)}]  ({format_create_time(q.create_time)})"
-            )
+            print(f"  {mark} {q.id!s:>8}  {q.name:<55} {q.progress}/{target}  [{format_reward(q.reward)}]  ({format_create_time(q.create_time)})")
 
     if not shown_any:
         print("ℹ️  No quests to show.")
@@ -520,9 +518,7 @@ def _store_guild_recipe_run_today(account: str, last_ts: int) -> None:
 FALLBACK_ERROR_NAMES = {ErrorName.NOT_ENOUGH.value}
 
 
-def _guild_recipe_overrides(
-    account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]
-) -> dict[str, Any]:
+def _guild_recipe_overrides(account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]) -> dict[str, Any]:
     """ギルドレシピ実行用の引数オーバーライドを組み立てる。
 
     - heroId は ``quest_defaults[10023].heroId`` が設定済みならそれを優先し、
@@ -557,9 +553,7 @@ def _filter_candidates(candidates: list[dict[str, Any]], known_keys: set[str]) -
     return [cand for cand in filtered if cand]
 
 
-def _guild_recipe_steps(
-    account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _guild_recipe_steps(account_defaults: dict[int, dict[str, Any]], guild_defaults: dict[str, Any]) -> list[dict[str, Any]]:
     """ギルドレシピ（QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]）のステップ列を解決する。
 
     dry-run の計画表示と実実行で同じ解決ロジックを使い回すための共通化。
@@ -568,9 +562,7 @@ def _guild_recipe_steps(
     """
     recipe = QUEST_OPERATIONS[GUILD_QUEST_RECIPE_ID]
     overrides = _guild_recipe_overrides(account_defaults, guild_defaults)
-    return _resolve_operation_args(
-        GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: overrides}
-    )
+    return _resolve_operation_args(GUILD_QUEST_RECIPE_ID, recipe, {GUILD_QUEST_RECIPE_ID: overrides})
 
 
 def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
@@ -695,9 +687,7 @@ def _rpc_display(rpc: Any) -> str:
     return str(rpc)
 
 
-def _resolve_operation_args(
-    quest_id: int, op: dict[str, Any], account_defaults: dict[int, dict[str, Any]]
-) -> list[dict[str, Any]]:
+def _resolve_operation_args(quest_id: int, op: dict[str, Any], account_defaults: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     """アカウント固有設定を適用した steps（rpc+args）を返す。
 
     ``quest_defaults`` の上書きキーは、ステップの ``args`` に**既に存在する**
@@ -793,16 +783,12 @@ def _resolve_shop_buy_reward(
             slot_key = str(slot)
             if slot_key not in inventory:
                 # 在庫は取得できたが指定 slot が存在しない → 実行しても失敗。
-                problems.append(
-                    (step_name, f"slot {slot} not in shop {shop_id} inventory (available: {sorted(inventory.keys())})")
-                )
+                problems.append((step_name, f"slot {slot} not in shop {shop_id} inventory (available: {sorted(inventory.keys())})"))
                 continue
             item = inventory[slot_key]
             if is_bought(item):
                 # 購入済み slot は再購入できない → 実行しても失敗。
-                problems.append(
-                    (step_name, f"slot {slot} in shop {shop_id} is already bought; choose another slot in quest_defaults")
-                )
+                problems.append((step_name, f"slot {slot} in shop {shop_id} is already bought; choose another slot in quest_defaults"))
                 continue
             if isinstance(item, dict):
                 if "reward" in item:
@@ -969,7 +955,9 @@ def run_quest_execute(
             if not guild_enabled:
                 print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
             elif daily_covers_recipe:
-                print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
+                print(
+                    "ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run)."
+                )
             elif guild_recipe_done_today:
                 last_ts = guild_defaults.get("last_recipe_at")
                 at_label = format_create_time(int(last_ts)) if last_ts is not None else "today"
@@ -982,7 +970,7 @@ def run_quest_execute(
         print_skipped_quests(account, skipped)
         return [], failures, skipped
 
-# 受領フェーズ（操作不要）
+    # 受領フェーズ（操作不要）
     _claim_quests(client, claimable + guild_claimable, account, succeeded, failures)
 
     # 実行フェーズ
@@ -1005,7 +993,9 @@ def run_quest_execute(
                     succeeded.append({"account": account, "quest_id": q.id, "quest_name": q.name})
                     print(f"   🎁 Reward claimed for {q.id} {q.name}")
                 else:
-                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"})
+                    failures.append(
+                        {"account": account, "quest_id": q.id, "quest_name": q.name, "step": "questFarm", "error": claim_res.error_name or "-"}
+                    )
                     print(f"❌ [{account}] {q.id} {q.name} reward claim failed: {claim_res.error_name}")
                 # claim の成否に関わらず「達成は検知済み」として以降の claim を
                 # 抑止する（失敗分は failures に記録され、次回実行時に claimable
@@ -1132,19 +1122,31 @@ def _run_guild_quest_phase(
                 answer = input(f"   ⚠️  Run {_rpc_display(st['rpc'])} {st['args']}? [y/N] ")
             except EOFError:
                 print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
-                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"})
+                failures.append(
+                    {
+                        "account": account,
+                        "quest_id": None,
+                        "quest_name": "Guild quests",
+                        "step": _rpc_display(st["rpc"]),
+                        "error": "no interactive input (use --yes)",
+                    }
+                )
                 recipe_ok = False
                 break
             if answer.strip().lower() not in ("y", "yes"):
                 print(f"   ⏭️  Skipped {_rpc_display(st['rpc'])} (user declined)")
-                failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"})
+                failures.append(
+                    {"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": "skipped by user"}
+                )
                 recipe_ok = False
                 break
 
         try:
             resp = client.quest_operation(st["rpc"], st["args"])
         except Exception as exc:  # noqa: BLE001
-            failures.append({"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"})
+            failures.append(
+                {"account": account, "quest_id": None, "quest_name": "Guild quests", "step": _rpc_display(st["rpc"]), "error": f"exception: {exc}"}
+            )
             print(f"❌ [{account}] Guild quests failed at {_rpc_display(st['rpc'])}: {exc}")
             recipe_ok = False
             break
@@ -1203,9 +1205,7 @@ def _run_quest_step(
         成功時の HWResponse（呼び出し側で claim 判定に使う）。中断・全失敗
         なら None（failures への追記済み）。
     """
-    candidates = _filter_candidates(
-        _quest_candidates(account_defaults, q.id), set(st["args"])
-    )
+    candidates = _filter_candidates(_quest_candidates(account_defaults, q.id), set(st["args"]))
     args_list = [st["args"]] + [{**st["args"], **cand} for cand in candidates]
     last_error: str | None = None
     for idx, args in enumerate(args_list):
@@ -1217,7 +1217,13 @@ def _run_quest_step(
             except EOFError:
                 print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
                 failures.append(
-                    {"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": "no interactive input (use --yes)"}
+                    {
+                        "account": account,
+                        "quest_id": q.id,
+                        "quest_name": q.name,
+                        "step": _rpc_display(st["rpc"]),
+                        "error": "no interactive input (use --yes)",
+                    }
                 )
                 return None
             if answer.strip().lower() not in ("y", "yes"):
@@ -1250,7 +1256,6 @@ def _run_quest_step(
     failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": _rpc_display(st["rpc"]), "error": last_error or "-"})
     print(f"❌ [{account}] {q.id} {q.name} failed at {_rpc_display(st['rpc'])}: {last_error}")
     return None
-
 
 
 def _quest_reached_claimable(resp: Any, quest_id: int) -> bool:
@@ -1411,9 +1416,7 @@ def _editable_keys(conf: dict[str, Any]) -> list[str]:
     dict/list 型の引数（10028 の cost/reward 等）は行編集すると型崩れするため、
     ウィザードの編集対象にしない（既存 DB に埋まっていた場合の保護も兼ねる）。
     """
-    return ["enabled"] + [
-        k for k in conf if k not in NON_ARG_KEYS and not isinstance(conf[k], (dict, list))
-    ]
+    return ["enabled"] + [k for k in conf if k not in NON_ARG_KEYS and not isinstance(conf[k], (dict, list))]
 
 
 def _parse_choice(choice: str, count: int) -> int | None:
@@ -1475,4 +1478,3 @@ def _value_input_table(key: str, current: Any) -> Table:
     table.add_row("Current", _fmt_value(current))
     table.add_row("Hint", "Empty = keep (dict/list は --set-default で指定)")
     return table
-

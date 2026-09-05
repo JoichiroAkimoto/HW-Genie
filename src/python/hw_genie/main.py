@@ -35,9 +35,7 @@ def _positive_int(value: str) -> int:
     try:
         n = int(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid positive int value: {value!r}"
-        ) from exc
+        raise argparse.ArgumentTypeError(f"invalid positive int value: {value!r}") from exc
     if n <= 0:
         raise argparse.ArgumentTypeError(f"must be positive: {value!r}")
     return n
@@ -64,17 +62,9 @@ def _run_host_identifier() -> str:
     explicit = os.environ.get("HWGENIE_HOST")
     if explicit:
         return explicit
-    user = (
-        os.environ.get("HWGENIE_USER")
-        or os.environ.get("HWGENIE_USER_UNIX")
-        or os.environ.get("USER")
-        or os.environ.get("USERNAME")
-    )
+    user = os.environ.get("HWGENIE_USER") or os.environ.get("HWGENIE_USER_UNIX") or os.environ.get("USER") or os.environ.get("USERNAME")
     machine = (
-        os.environ.get("HWGENIE_MACHINE")
-        or os.environ.get("HWGENIE_MACHINE_UNIX")
-        or os.environ.get("COMPUTERNAME")
-        or os.environ.get("HOSTNAME")
+        os.environ.get("HWGENIE_MACHINE") or os.environ.get("HWGENIE_MACHINE_UNIX") or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME")
     )
     if not user:
         try:
@@ -141,9 +131,7 @@ def cmd_auth(args):
             # -a 併用時はそのアカウントのみ最新化する
             targets = [args.account] if args.account else accounts
             # 並列数は multi と同様 HW_MAX_PARALLEL（上限）を尊重する
-            refreshed = refresh_all_accounts(
-                targets, max_parallel=resolve_max_parallel(None, len(targets))
-            )
+            refreshed = refresh_all_accounts(targets, max_parallel=resolve_max_parallel(None, len(targets)))
             failed = [err for _, err in refreshed if err]
             for account, err in refreshed:
                 if err:
@@ -151,8 +139,7 @@ def cmd_auth(args):
             if failed:
                 # 失敗したアカウントは DB の旧値のまま表示する
                 print(
-                    f"⚠️ Could not refresh {len(failed)} account(s); "
-                    "showing cached values.",
+                    f"⚠️ Could not refresh {len(failed)} account(s); showing cached values.",
                     file=sys.stderr,
                 )
             # refresh で alias が変わった場合に備え、表示用リストを再取得する
@@ -204,8 +191,7 @@ def cmd_auth(args):
 
             row_data.append(
                 (
-                    [str(p_name), str(p_arena), str(p_grand), str(p_gold),
-                     str(p_gems), str(p_last_id), str(p_energy), str(updated_short)],
+                    [str(p_name), str(p_arena), str(p_grand), str(p_gold), str(p_gems), str(p_last_id), str(p_energy), str(updated_short)],
                     data.get("memo", "-"),
                     player,
                 )
@@ -224,14 +210,9 @@ def cmd_auth(args):
         separators_width = len(fixed_headers) * len(" | ")
         # Fill the remaining terminal width with the Memo column, never
         # truncating: anything longer is wrapped onto continuation rows.
-        memo_width = max(
-            10, terminal_columns() - sum(fixed_widths) - separators_width
-        )
+        memo_width = max(10, terminal_columns() - sum(fixed_widths) - separators_width)
 
-        rows = [
-            (cells, wrap_display(memo, memo_width), player)
-            for cells, memo, player in row_data
-        ]
+        rows = [(cells, wrap_display(memo, memo_width), player) for cells, memo, player in row_data]
 
         rank_keys = {
             fixed_headers.index("Arena"): "arena_rank",
@@ -283,13 +264,14 @@ def cmd_auth(args):
     # curl等による更新前に、単体でmemoが指定された場合
     if args.memo is not None:
         from hw_genie.core.session_manager import SessionManager
+
         # memo 更新は既存アカウントが対象のため、未指定時は自動解決する
         resolved_account = resolve_account(account_alias)
         session_data = SessionManager.load(resolved_account)
         if not session_data:
             print(f"Error: Account '{resolved_account}' not found in database. Please register the account first using --curl.")
             sys.exit(1)
-        
+
         session_data["memo"] = args.memo
         SessionManager.save(resolved_account, session_data)
         print(f"Successfully updated memo for account '{resolved_account}' to: '{args.memo}'")
@@ -418,9 +400,7 @@ def cmd_raid_item(args):
         sys.exit(1)
 
     client = HWClient(headers)
-    max_iterations = (
-        args.iterations if args.iterations is not None else args.times
-    )
+    max_iterations = args.iterations if args.iterations is not None else args.times
     run_item_raid(
         client,
         payload,
@@ -658,9 +638,7 @@ def cmd_sync(args):
                     with _wal_io_lock:
                         raw.sync()
 
-                retry_on_wal_contention(
-                    _sync, logger=logging.getLogger(__name__)
-                )
+                retry_on_wal_contention(_sync, logger=logging.getLogger(__name__))
             else:
                 from sqlalchemy import text
 
@@ -689,10 +667,7 @@ def cmd_db_check(args):
 
     print(f"✗ {len(broken)} broken config JSON row(s) found:")
     for item in broken:
-        print(
-            f"  - account={item['account']} key={item['key']} "
-            f"error={item['error']}"
-        )
+        print(f"  - account={item['account']} key={item['key']} error={item['error']}")
     sys.exit(1)
 
 
@@ -738,9 +713,7 @@ def cmd_multi(args):
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
         max_parallel = args.parallel
     elif mode == "consumable":
-        routine = consumable_routine(
-            lib_ids=args.lib, method_override=args.method, dry_run=dry_run
-        )
+        routine = consumable_routine(lib_ids=args.lib, method_override=args.method, dry_run=dry_run)
         max_parallel = 1 if dry_run else args.parallel
     else:
         routine = partial(
@@ -756,9 +729,7 @@ def cmd_multi(args):
     results: dict = {}
     try:
         with capture:
-            results = run_all_accounts(
-                routine, accounts=accounts, max_parallel=max_parallel
-            )
+            results = run_all_accounts(routine, accounts=accounts, max_parallel=max_parallel)
             if mode == "quests":
                 failed = summarize_quests(results.items(), dry_run=dry_run)
             elif mode == "asgard-shop":
@@ -813,9 +784,7 @@ def cmd_multi(args):
         sys.exit(1)
 
 
-def _run_log_account_failure(
-    mode: str, result: object | None, err: BaseException | None
-) -> str | None:
+def _run_log_account_failure(mode: str, result: object | None, err: BaseException | None) -> str | None:
     """Return the failure reason for one account's run-log entry, or None when ok.
 
     Mirrors the per-account failure judgement of the runner's ``summarize_*``
@@ -836,11 +805,7 @@ def _run_log_account_failure(
         from hw_genie.core.client import ResponseStatus
 
         if isinstance(result, list):
-            errors = sum(
-                1
-                for r in result
-                if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED)
-            )
+            errors = sum(1 for r in result if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED))
             return f"{errors} consumable use(s) failed" if errors else None
         return "consumable result unavailable"
     if mode == "asgard-shop":
@@ -849,11 +814,7 @@ def _run_log_account_failure(
         if isinstance(result, AsgardRunResult):
             if result.error is not None:
                 return f"shop fetch failed: {result.error}"
-            return (
-                f"{result.failed_count} purchase error(s)"
-                if result.failed_count
-                else None
-            )
+            return f"{result.failed_count} purchase error(s)" if result.failed_count else None
         return "asgard-shop result unavailable"
     # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
     from hw_genie.core.client import PlayerStatus
@@ -885,10 +846,7 @@ def _build_run_log_summary(
         failed_accounts.append(f"{account} ({reason})")
     error_summary = None
     if failed_accounts:
-        error_summary = (
-            f"{len(failed_accounts)} account(s) failed: "
-            + ", ".join(failed_accounts)
-        )
+        error_summary = f"{len(failed_accounts)} account(s) failed: " + ", ".join(failed_accounts)
     return entries, error_summary
 
 
@@ -906,10 +864,7 @@ def cmd_log_ls(args):
         total = len(row.accounts)
         started = format_timestamp_for_display(row.started_at.isoformat())
         host = row.hostname or "-"
-        print(
-            f"{row.id:>4}  {started}  {row.mode:<11} "
-            f"{row.status:<6} {ok}/{total} ok  exit={row.exit_code}  {host}"
-        )
+        print(f"{row.id:>4}  {started}  {row.mode:<11} {row.status:<6} {ok}/{total} ok  exit={row.exit_code}  {host}")
 
 
 def cmd_log_show(args):
@@ -940,6 +895,107 @@ def cmd_log_show(args):
     if row.log_text:
         print("\n--- Output ---")
         print(row.log_text, end="" if row.log_text.endswith("\n") else "\n")
+
+
+def cmd_titan_arena(args):
+    """タイタンアリーナ自動バトル実行"""
+    headers = None
+    # "default" リテラルを作らず resolve_account 経由で解決する
+    try:
+        account_alias: str | None = resolve_account(args.account)
+    except AccountResolutionError:
+        account_alias = args.account
+
+    # curlコマンドから認証情報を抽出
+    if args.curl:
+        auth_headers = extract_headers_from_curl(args.curl)
+        if auth_headers:
+            info = update_session_with_headers(auth_headers, account_alias)
+            if info["status"] == "success":
+                headers = info["headers"]
+                print(f"Successfully updated session for {info['player'].name} from curl.")
+                # curl 登録で実名が確定したら account_alias を更新
+                try:
+                    account_alias = resolve_account(info["player"].name)
+                except AccountResolutionError:
+                    account_alias = info["player"].name
+            else:
+                print(f"Warning: Could not update session from curl: {info.get('message')}")
+
+    # セッション情報の読み込み（curlがない場合、または抽出に失敗した場合）
+    if not headers:
+        headers = _ensure_session(args)
+        # _ensure_session 後に canonical な account_alias を再解決
+        try:
+            account_alias = resolve_account(args.account)
+        except AccountResolutionError:
+            pass
+
+    client = HWClient(headers)
+
+    # 任意の編成リスト（--teams で "4023,4043,4024,4022,4040;..." のように指定）
+    team_rotation = None
+    if getattr(args, "teams", None):
+        try:
+            team_rotation = []
+            for group in args.teams.split(";"):
+                ids = [int(x.strip()) for x in group.split(",") if x.strip()]
+                if ids:
+                    team_rotation.append(ids)
+            if team_rotation is not None and len(team_rotation) == 0:
+                print("Error: Invalid --teams value: empty", file=sys.stderr)
+                sys.exit(1)
+        except ValueError as e:
+            print(f"Error: Invalid --teams value: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    rival_id = args.rival or "default"
+    if rival_id in (None, "default", ""):
+        from hw_genie.commands.titan_arena import DEFAULT_RIVAL_ID
+
+        rival_id = DEFAULT_RIVAL_ID
+
+    # 戦闘シミュレーター（正しい progress 生成のため）
+    # デフォルトはアプリ内完結のローカルシミュレーター（擬似シミュレーション）。
+    # HWH は --battle-sim hwh で明示的に選択。local は決定論的な近似であり、
+    # 真の検証通過保証はない点に注意（help 参照）。
+    battle_sim = None
+    sim_choice = getattr(args, "battle_sim", None)
+    if sim_choice == "hwh":
+        # HWH 拡張の BattleCalc を CDP 経由で呼ぶ戦闘シミュレーター
+        from hw_genie.commands.titan_sim_hwh import TitanSimulatorHWH
+
+        battle_sim = TitanSimulatorHWH()
+    elif sim_choice == "local" or sim_choice is None:
+        # アプリ内完結のローカルシミュレーター（Chrome/HWH 非依存、擬似シミュレーション）
+        # 明示的に --battle-sim local でも、未指定（None）でもこちらが使われる
+        from hw_genie.commands.titan_sim_local import LocalBattleSimulator
+
+        battle_sim = LocalBattleSimulator()
+
+    if getattr(args, "auto", False):
+        from hw_genie.commands.titan_arena import run_titan_arena_auto
+
+        run_titan_arena_auto(
+            client,
+            initial_rival_id=rival_id,
+            team_rotation=team_rotation,
+            max_attempts_per_team=args.max_attempts,
+            max_stages=getattr(args, "max_stages", 20),
+            account=account_alias,
+            battle_sim=battle_sim,
+        )
+    else:
+        from hw_genie.commands.titan_arena import run_titan_arena
+
+        run_titan_arena(
+            client,
+            rival_id=rival_id,
+            team_rotation=team_rotation,
+            max_attempts_per_team=args.max_attempts,
+            account=account_alias,
+            battle_sim=battle_sim,
+        )
 
 
 def main():
@@ -994,9 +1050,7 @@ def main():
     p_shop.set_defaults(func=cmd_shop)
 
     # Inventory (consumable 等の在庫表示)
-    p_inventory = subparsers.add_parser(
-        "inventory", parents=[parent_parser], help="Show inventory (consumable by default)"
-    )
+    p_inventory = subparsers.add_parser("inventory", parents=[parent_parser], help="Show inventory (consumable by default)")
     p_inventory.add_argument("--all", action="store_true", help="Show all inventory categories")
     p_inventory.add_argument("--min", type=int, default=0, help="Only show items with at least N in stock")
     p_inventory.add_argument("--raw", action="store_true", help="Print the raw inventoryGet response as JSON")
@@ -1007,18 +1061,10 @@ def main():
     consumable_sub = p_consumable.add_subparsers(dest="consumable_type", help="Consumable operation")
 
     # Consumable Run (登録済みアイテムの一括消費)
-    p_consumable_run = consumable_sub.add_parser(
-        "run", parents=[parent_parser], help="Consume all registered consumables"
-    )
-    p_consumable_run.add_argument(
-        "lib_ids", type=int, nargs="*", help="Target libIds (default: CONSUMABLE_USE_TARGETS)"
-    )
-    p_consumable_run.add_argument(
-        "--method", help="Override the RPC method (e.g. consumableUseLootBox)"
-    )
-    p_consumable_run.add_argument(
-        "--dry-run", action="store_true", help="Show the consumption plan without consuming anything"
-    )
+    p_consumable_run = consumable_sub.add_parser("run", parents=[parent_parser], help="Consume all registered consumables")
+    p_consumable_run.add_argument("lib_ids", type=int, nargs="*", help="Target libIds (default: CONSUMABLE_USE_TARGETS)")
+    p_consumable_run.add_argument("--method", help="Override the RPC method (e.g. consumableUseLootBox)")
+    p_consumable_run.add_argument("--dry-run", action="store_true", help="Show the consumption plan without consuming anything")
     p_consumable_run.set_defaults(func=cmd_consumable_run)
 
     # Asgard Shop (Guild Raid merchant; Osh / Maestro weeks)
@@ -1027,9 +1073,7 @@ def main():
         parents=[parent_parser],
         help="Asgard Guild Raid shop operations (Osh / Maestro weeks)",
     )
-    p_asgard_shop.add_argument(
-        "--dry-run", action="store_true", help="Show the purchase plan without buying anything"
-    )
+    p_asgard_shop.add_argument("--dry-run", action="store_true", help="Show the purchase plan without buying anything")
     gold_group = p_asgard_shop.add_mutually_exclusive_group()
     gold_group.add_argument(
         "--gold",
@@ -1049,9 +1093,7 @@ def main():
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
-    p_chat = subparsers.add_parser(
-        "chat", parents=[parent_parser], help="Show guild chat (chatGetAll)"
-    )
+    p_chat = subparsers.add_parser("chat", parents=[parent_parser], help="Show guild chat (chatGetAll)")
     p_chat.add_argument(
         "--type",
         choices=_CHAT_TYPES,
@@ -1081,16 +1123,68 @@ def main():
     )
     p_daily.set_defaults(func=cmd_daily)
 
+    # Titan Arena
+    p_titan = subparsers.add_parser("titan-arena", parents=[parent_parser], help="Titan Arena auto-battle")
+    p_titan.add_argument("--curl", "-c", help="Curl command to extract auth headers")
+    p_titan.add_argument("--rival", "-r", help="Rival ID (default: built-in constant)")
+    p_titan.add_argument(
+        "--teams",
+        help="Semicolon-separated titan team compositions, e.g. '4023,4043,4024,4022,4040;4023,4043,4024,4022,4044'",
+    )
+    p_titan.add_argument(
+        "--max-attempts",
+        "-m",
+        type=_positive_int,
+        default=10,
+        help="Max attempts per team before switching to next team (default: 10)",
+    )
+    p_titan.add_argument(
+        "--auto",
+        "-A",
+        action="store_true",
+        help="Auto-advance through stages: after each win, call titanArenaCompleteTier to progress; stops at the final stage (tier == maxTier).",
+    )
+    p_titan.add_argument(
+        "--max-stages",
+        "-S",
+        type=_positive_int,
+        default=20,
+        help="Auto mode: maximum number of stages to attempt (safety cap, default: 20)",
+    )
+    p_titan.add_argument(
+        "--battle-sim",
+        choices=["hwh", "local"],
+        default="local",
+        help="Battle simulator: 'local' (default, app-standalone, pseudo-simulation) uses the built-in "
+        "LocalBattleSimulator (no Chrome/HWH needed, deterministic power+seed based, "
+        "does NOT guarantee server-side battle verification will pass); "
+        "'hwh' uses the Hero Wars Helper extension via Chrome remote-debugging (real BattleCalc, more accurate).",
+    )
+    p_titan.set_defaults(func=cmd_titan_arena)
+
     # Quests
     p_quests = subparsers.add_parser("quests", parents=[parent_parser], help="Quest status (daily quests)")
     p_quests.add_argument("--show-all", action="store_true", help="Show completed quests too (default: uncompleted only)")
     p_quests.add_argument("--raw", action="store_true", help="Print the raw questGetAll response as JSON")
-    p_quests.add_argument("--category", choices=["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"], help="Filter by quest category")
-    p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
+    p_quests.add_argument(
+        "--category", choices=["daily", "weekly", "guild", "main", "event", "battlepass", "one_time", "unknown"], help="Filter by quest category"
+    )
+    p_quests.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)",
+    )
     p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
-    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999, or --set-default guild enabled true)")
-    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults and quest_guild_defaults for the account (seed as enabled=false)")
+    p_quests.add_argument(
+        "--set-default",
+        nargs=3,
+        metavar=("QUEST_ID", "KEY", "VALUE"),
+        help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999, or --set-default guild enabled true)",
+    )
+    p_quests.add_argument(
+        "--init-defaults", action="store_true", help="Initialize quest_defaults and quest_guild_defaults for the account (seed as enabled=false)"
+    )
     p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 
@@ -1171,9 +1265,7 @@ def main():
     )
     p_multi.set_defaults(func=cmd_multi)
 
-    p_log = subparsers.add_parser(
-        "log", help="Show execution run logs (stored in the database)"
-    )
+    p_log = subparsers.add_parser("log", help="Show execution run logs (stored in the database)")
     log_sub = p_log.add_subparsers(dest="log_command", required=True)
     p_log_ls = log_sub.add_parser("ls", help="List recent run logs (newest first)")
     p_log_ls.add_argument(

@@ -18,6 +18,7 @@ from .database import (
 
 class HeadersConfig(TypedDict, total=False):
     """``config_key = "headers"`` — authentication headers stored per account."""
+
     x_auth_session_id: str
     x_auth_token: str
     x_auth_user_id: str
@@ -26,6 +27,7 @@ class HeadersConfig(TypedDict, total=False):
 
 class PlayerInfo(TypedDict, total=False):
     """Player profile assembled from ``Account`` columns and ``player_*`` config keys."""
+
     id: str
     name: str
     level: int
@@ -38,12 +40,14 @@ class PlayerInfo(TypedDict, total=False):
 
 class AccountData(TypedDict, total=False):
     """Full account data dict returned by :meth:`get_data` and accepted by :meth:`update_config`."""
+
     headers: HeadersConfig
     player: PlayerInfo
     status: str
     last_updated: str
     last_item_raid_mission_id: int
     memo: str
+
 
 # Process-wide lock serialising every operation that writes into the shared
 # local libSQL Embedded Replica WAL. When running all accounts inside one
@@ -126,8 +130,7 @@ class SessionRepository:
             except Exception as exc:
                 if is_hrana_stream_error(exc):
                     logger.warning(
-                        "Transient Hrana stream error on read; disposing read "
-                        "pool before retry: %s",
+                        "Transient Hrana stream error on read; disposing read pool before retry: %s",
                         exc,
                     )
                     self._dispose_pool(get_engine, "read")
@@ -181,10 +184,7 @@ class SessionRepository:
                 player_info = {}
 
                 configs = db.execute(
-                    text(
-                        "SELECT config_key, config_value FROM account_configs "
-                        "WHERE account_id = :account_id"
-                    ),
+                    text("SELECT config_key, config_value FROM account_configs WHERE account_id = :account_id"),
                     {"account_id": account_rec.id},
                 ).all()
 
@@ -200,8 +200,7 @@ class SessionRepository:
                         val = _deserialize_config_value(raw_value)
                     except (TypeError, ValueError) as exc:
                         logger.warning(
-                            "config_key=%r for account %r has broken JSON; "
-                            "skipping: %s",
+                            "config_key=%r for account %r has broken JSON; skipping: %s",
                             key,
                             account,
                             exc,
@@ -264,10 +263,7 @@ class SessionRepository:
             broken = []
             with get_session_local()() as db:
                 rows = db.execute(
-                    text(
-                        "SELECT a.alias, c.config_key, c.config_value "
-                        "FROM account_configs c JOIN accounts a ON a.id = c.account_id"
-                    )
+                    text("SELECT a.alias, c.config_key, c.config_value FROM account_configs c JOIN accounts a ON a.id = c.account_id")
                 ).all()
                 for alias, key, raw_value in rows:
                     if raw_value is None:
@@ -308,11 +304,12 @@ class SessionRepository:
     def update_config(self, account: str, data: AccountData) -> None:
         """
         Updates account data in both Account and AccountConfig tables.
-        
+
         Args:
             account (str): The account alias.
             data (AccountData): The data to save.
         """
+
         # The local replica's SQLite WAL only allows a single writer, and OTHER
         # processes sharing the same replica file (auth-server, a concurrently
         # launched CLI, ...) can transiently hold it. A remote (Turso) write
@@ -333,8 +330,7 @@ class SessionRepository:
                 # are non-transient and need no dispose either.
                 if is_hrana_stream_error(exc):
                     logger.warning(
-                        "Transient Hrana stream error; disposing write pool "
-                        "before retry: %s",
+                        "Transient Hrana stream error; disposing write pool before retry: %s",
                         exc,
                     )
                     self._dispose_pool(get_write_engine, "write")
@@ -342,9 +338,7 @@ class SessionRepository:
 
         retry_on_wal_contention(_attempt, logger=logger)
 
-    def update_config_merged(
-        self, account: str, key: str, merge: Callable[[Any | None], Any]
-    ) -> Any:
+    def update_config_merged(self, account: str, key: str, merge: Callable[[Any | None], Any]) -> Any:
         """Atomically read-modify-write one config key inside the WAL lock.
 
         ``merge(existing)`` receives the current stored value for ``key``
@@ -357,6 +351,7 @@ class SessionRepository:
         The read uses the write session so it sees the same state the write
         will replace. WAL contention is retried like ``update_config``.
         """
+
         def _attempt() -> Any:
             try:
                 with _wal_io_lock:
@@ -365,10 +360,7 @@ class SessionRepository:
                         existing: Any = None
                         if account_rec is not None:
                             row = db.execute(
-                                text(
-                                    "SELECT config_value FROM account_configs "
-                                    "WHERE account_id = :account_id AND config_key = :config_key"
-                                ),
+                                text("SELECT config_value FROM account_configs WHERE account_id = :account_id AND config_key = :config_key"),
                                 {"account_id": account_rec.id, "config_key": key},
                             ).first()
                             if row is not None and row[0] is not None:
@@ -394,8 +386,7 @@ class SessionRepository:
             except Exception as exc:
                 if is_hrana_stream_error(exc):
                     logger.warning(
-                        "Transient Hrana stream error; disposing write pool "
-                        "before retry: %s",
+                        "Transient Hrana stream error; disposing write pool before retry: %s",
                         exc,
                     )
                     self._dispose_pool(get_write_engine, "write")
@@ -432,9 +423,7 @@ class SessionRepository:
 
                     # Update alias and basic info using model method
                     new_alias = account.strip()
-                    existing_alias = (
-                        account_rec.alias if isinstance(account_rec.alias, str) else None
-                    )
+                    existing_alias = account_rec.alias if isinstance(account_rec.alias, str) else None
                     # case/whitespace-insensitive に既存行へ一致した場合、大文字
                     # 小文字のみの差なら既存（正規）alias を保持する。入力値で
                     # 無条件に上書きすると ``save("champion")`` が正規行 ``Champion``
@@ -444,10 +433,7 @@ class SessionRepository:
                     #   （test_save_normalizes_trailing_space_existing_alias の回帰防止）
                     # - それ以外の不一致 -> 意図的なリネームとして入力を採用
                     #   （test_prevent_account_duplication のリネーム経路）
-                    if (
-                        not existing_alias
-                        or existing_alias.strip().lower() != new_alias.lower()
-                    ):
+                    if not existing_alias or existing_alias.strip().lower() != new_alias.lower():
                         account_rec.alias = new_alias
                     elif existing_alias != new_alias and existing_alias.strip() == new_alias:
                         account_rec.alias = new_alias

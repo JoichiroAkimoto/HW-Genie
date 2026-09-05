@@ -62,7 +62,9 @@ def test_run_asgard_shop_buys_until_budget(mock_client, mock_sleep):
     assert result.coins == 1000
     assert result.failed_count == 0
     skipped = [item for item in result.items if item.status == ResponseStatus.SKIPPED]
-    assert [item.action for item in skipped] == [f"[Realm Traveler] Slot:{s} -> buff {s + 60} (x{dummy._OSH_BUFF_VALUES[s]}, {150} Valor Emblems)" for s in (7, 9, 14)]
+    assert [item.action for item in skipped] == [
+        f"[Realm Traveler] Slot:{s} -> buff {s + 60} (x{dummy._OSH_BUFF_VALUES[s]}, {150} Valor Emblems)" for s in (7, 9, 14)
+    ]
     # getInfo(1) + 購入(13) = 14 回
     assert mock_call.call_count == 14
 
@@ -163,8 +165,16 @@ def test_run_asgard_shop_skips_unknown_week(mock_client, mock_sleep):
     res_unknown.detail = {
         "response": {
             "shop": {
-                "6": {"branch": "", "buffId": 500, "buffValue": 3, "buyLimit": 1,
-                      "cost": {"coin": {"30": 50}}, "rank": 3, "requirement": "", "boughtCount": 0},
+                "6": {
+                    "branch": "",
+                    "buffId": 500,
+                    "buffValue": 3,
+                    "buyLimit": 1,
+                    "cost": {"coin": {"30": 50}},
+                    "rank": 3,
+                    "requirement": "",
+                    "boughtCount": 0,
+                },
             },
             "coins": 1000,
         }
@@ -335,10 +345,7 @@ def test_run_asgard_shop_gold_buffs_purchased(mock_client, mock_sleep):
     assert result.spent == 1000
     # getInfo(1) + ゴールドバフ(15) + Valor(13) = 29 回
     assert mock_call.call_count == 29
-    gold_success = [
-        item for item in result.items
-        if item.status == ResponseStatus.SUCCESS and "Gold" in item.action
-    ]
+    gold_success = [item for item in result.items if item.status == ResponseStatus.SUCCESS and "Gold" in item.action]
     assert len(gold_success) == 15
 
 
@@ -422,10 +429,7 @@ def test_run_asgard_shop_gold_buffs_stops_on_not_enough(mock_client, mock_sleep)
     assert result.gold_bought == 1
     assert result.gold_spent == 1_000_000
     assert result.bought == 13
-    gold_failed = [
-        item for item in result.items
-        if item.status == ResponseStatus.ERROR and "Gold" in item.action
-    ]
+    gold_failed = [item for item in result.items if item.status == ResponseStatus.ERROR and "Gold" in item.action]
     assert len(gold_failed) == 1
     # getInfo(1) + gold成功(1) + gold失敗(1) + Valor(13) = 16 回
     assert mock_call.call_count == 16
@@ -591,8 +595,26 @@ def test_build_buy_queue_excludes_malformed_slots():
 def test_build_buy_queue_handles_string_counts_and_missing_coins():
     """boughtCount/buyLimit が str でも購入済み判定が機能する。"""
     shop = {
-        "6": {"branch": "", "buffId": 66, "buffValue": 3, "buyLimit": "1", "cost": {"coin": {"30": 50}}, "rank": 3, "requirement": "", "boughtCount": "1"},
-        "7": {"branch": "", "buffId": 67, "buffValue": 25, "buyLimit": 1, "cost": {"coin": {"30": 150}}, "rank": 1, "requirement": "", "boughtCount": 0},
+        "6": {
+            "branch": "",
+            "buffId": 66,
+            "buffValue": 3,
+            "buyLimit": "1",
+            "cost": {"coin": {"30": 50}},
+            "rank": 3,
+            "requirement": "",
+            "boughtCount": "1",
+        },
+        "7": {
+            "branch": "",
+            "buffId": 67,
+            "buffValue": 25,
+            "buyLimit": 1,
+            "cost": {"coin": {"30": 150}},
+            "rank": 1,
+            "requirement": "",
+            "boughtCount": 0,
+        },
     }
     queue = build_buy_queue(shop)
     # 文字列 "1" の boughtCount は購入済み扱い → slot 7 のみ残る
@@ -614,6 +636,7 @@ def test_fetch_missing_coins_defaults_to_zero():
     fetched_shop, coins = fetch_clan_raid_shop(client)
     assert fetched_shop == shop
     assert coins == 0
+
 
 # --- main.cmd_asgard_shop（exit code / エラー検知） ---
 

@@ -22,11 +22,7 @@ from hw_genie.core.client import PlayerStatus
 def test_extract_headers_from_curl():
     """curl コマンドから x-auth-* ヘッダーを正しく抽出できることを検証"""
     curl_cmd = (
-        "curl 'https://api.example.com/' "
-        "-H 'Accept: */*' "
-        "-H 'X-Auth-Token: ps-abc-123' "
-        "-H 'x-auth-player-id: 61405392' "
-        "-H 'X-Auth-Session-Key;'"
+        "curl 'https://api.example.com/' -H 'Accept: */*' -H 'X-Auth-Token: ps-abc-123' -H 'x-auth-player-id: 61405392' -H 'X-Auth-Session-Key;'"
     )
     headers = extract_headers_from_curl(curl_cmd)
 
@@ -40,9 +36,9 @@ def test_extract_payload_from_curl_multiple_valid():
     """ノイズ(stashClient)は除去し、複数の有効な命令は維持することを検証"""
     curl_cmd = (
         "curl '...' --data-raw '{\"calls\":["
-        "{\"name\":\"stashClient\",\"args\":{}},"
-        "{\"name\":\"missionRaid\",\"args\":{\"id\":123}},"
-        "{\"name\":\"userGetInfo\",\"args\":{}}"
+        '{"name":"stashClient","args":{}},'
+        '{"name":"missionRaid","args":{"id":123}},'
+        '{"name":"userGetInfo","args":{}}'
         "]}'"
     )
     payload = extract_payload_from_curl(curl_cmd)
@@ -177,21 +173,21 @@ def test_get_user_info_non_auth_error_shape_falls_through(mock_post):
 def test_session_save_load(mock_open, mock_exists):
     """セッションの保存と読み込みを検証"""
     SessionManager._cached_data = None
-    
+
     test_data = {"headers": {"token": "test"}, "player": {"id": "test_id", "name": "test"}}
 
     # セッションファイルの読み書きをモック
     mock_file = MagicMock()
-    mock_file.read.return_value = json.dumps({}) # 既存データなし
+    mock_file.read.return_value = json.dumps({})  # 既存データなし
     mock_open.return_value.__enter__.return_value = mock_file
     mock_exists.return_value = True
 
     # 1. 保存テスト
     save_session(test_data, account="test_acc")
-    
+
     # 2. 読み込みテスト
     mock_file.read.return_value = json.dumps({"headers": {"token": "test"}, "player": {"name": "test"}})
-    
+
     loaded = load_session(account="test_acc")
     expected_player = PlayerStatus(name="test")
     assert loaded["headers"] == {"token": "test"}

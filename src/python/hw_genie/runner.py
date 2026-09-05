@@ -34,9 +34,7 @@ def list_account_aliases() -> list[str]:
     return SessionManager.list_accounts()
 
 
-def resolve_max_parallel(
-    max_parallel: int | None, account_count: int
-) -> int:
+def resolve_max_parallel(max_parallel: int | None, account_count: int) -> int:
     """Compute the effective worker count.
 
     ``HW_MAX_PARALLEL`` (and callers passing ``max_parallel``) control the
@@ -123,9 +121,7 @@ def run_all_accounts(
 
     results: dict[str, tuple[object | None, BaseException | None]] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(run_for_account, acc, routine): acc for acc in accounts
-        }
+        futures = {pool.submit(run_for_account, acc, routine): acc for acc in accounts}
         for fut in as_completed(futures):
             acc, res, err = fut.result()
             results[acc] = (res, err)
@@ -138,9 +134,7 @@ def run_all_accounts(
 # --- Convenience routines usable with run_all_accounts / run_for_account ---
 
 
-def daily_routine(
-    client: HWClient, account: str, item_max_iterations: int = 9999
-) -> object:
+def daily_routine(client: HWClient, account: str, item_max_iterations: int = 9999) -> object:
     """Run the full daily routine for ``account``.
 
     Returns the final :class:`PlayerStatus` so the runner can render a
@@ -202,9 +196,7 @@ def quests_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
     from hw_genie.commands.quests import run_quest_execute
 
     def run(client: HWClient, account: str) -> object:
-        return run_quest_execute(
-            client, account_alias=account, dry_run=dry_run, confirm=True
-        )
+        return run_quest_execute(client, account_alias=account, dry_run=dry_run, confirm=True)
 
     return run
 
@@ -225,24 +217,18 @@ def asgard_shop_routine(gold_buffs: bool | None = None) -> Callable[[HWClient, s
     from hw_genie.commands.asgard_shop import run_asgard_shop
 
     def run(client: HWClient, account: str) -> object:
-        return run_asgard_shop(
-            client, dry_run=False, account_alias=account, gold_buffs=gold_buffs
-        )
+        return run_asgard_shop(client, dry_run=False, account_alias=account, gold_buffs=gold_buffs)
 
     return run
 
 
-def full_routine(
-    client: HWClient, account: str, item_max_iterations: int = 9999
-) -> object:
+def full_routine(client: HWClient, account: str, item_max_iterations: int = 9999) -> object:
     """Run raid-hero + shop + daily, the equivalent of ``bin/hwsa``."""
     from hw_genie.commands.hero_raid import run_hero_raid
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS, run_hero_shopping
 
     hero_res, _, _ = run_hero_raid(client, None, times=3, allow_recovery=True)
-    run_hero_shopping(
-        client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS
-    )
+    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
     client.exchange_stones()
     return daily_routine(client, account, item_max_iterations=item_max_iterations)
 
@@ -319,19 +305,14 @@ def _cell_int(cell: str) -> int | None:
         return None
 
 
-def _table_layout(
-    headers: Sequence[str], rows: list[list[str]]
-) -> tuple[list[int], int]:
+def _table_layout(headers: Sequence[str], rows: list[list[str]]) -> tuple[list[int], int]:
     """Shared column layout: ``(widths, rule_width)`` for a table.
 
     Widths are display-width based (emoji double-width, combining chars 0).
     ``rule_width`` is the plain-text width of the header row, used to align
     separator lines with the table borders.
     """
-    widths = [
-        max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
-        for i in range(len(headers))
-    ]
+    widths = [max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)]) for i in range(len(headers))]
     plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
     return widths, _display_width(plain_header)
 
@@ -380,11 +361,7 @@ def _player_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
     if i == 0:
         return style(padded, bold=True, dim=dim)
     if i == 1:
-        return (
-            style(padded, fg="red")
-            if _energy_over_max(cell)
-            else style(padded, dim=dim)
-        )
+        return style(padded, fg="red") if _energy_over_max(cell) else style(padded, dim=dim)
     if i in (2, 3):
         color = rank_color(_cell_int(cell))
         # 色付きセルはゼブラでも dim しない（色を保つ）
@@ -467,11 +444,7 @@ def summarize_consumable(
         if err is None and isinstance(res, list):
             succeeded = sum(1 for r in res if r.status == ResponseStatus.SUCCESS)
             skipped = sum(1 for r in res if r.status == ResponseStatus.SKIPPED)
-            errors = sum(
-                1
-                for r in res
-                if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED)
-            )
+            errors = sum(1 for r in res if r.status in (ResponseStatus.ERROR, ResponseStatus.UNEXPECTED))
             rows.append([account, str(succeeded), str(skipped), str(errors)])
             if errors:
                 failed.append(account)
@@ -495,6 +468,8 @@ def summarize_consumable(
     verb = "planned" if dry_run else "consumed"
     print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
+
+
 _QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "⏭️ Skipped", "❌ Failed"]
 
 
@@ -595,11 +570,7 @@ def summarize_asgard_shop(
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None and isinstance(res, AsgardRunResult) and res.error is None:
-            gold_cell = (
-                f"{res.gold_bought} / {format_number_with_suffix(res.gold_spent)}"
-                if res.gold_bought
-                else "-"
-            )
+            gold_cell = f"{res.gold_bought} / {format_number_with_suffix(res.gold_spent)}" if res.gold_bought else "-"
             rows.append(
                 [
                     account,

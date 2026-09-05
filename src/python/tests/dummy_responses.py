@@ -218,8 +218,10 @@ SHOP_GET_ALL_VARIED = {
                         }
                     },
                     "8": {  # Soul Shop
-                        "slots": {"1": {"reward": {"fragmentHero": {"31": 3}}, "cost": {"coin": {"5": 1500}}, "bought": 0},
-                                  "2": {"reward": {"item": {"101": 1}}, "cost": {"coin": {"5": 1500}}, "bought": 0}},  # ソウルショップなので購入対象
+                        "slots": {
+                            "1": {"reward": {"fragmentHero": {"31": 3}}, "cost": {"coin": {"5": 1500}}, "bought": 0},
+                            "2": {"reward": {"item": {"101": 1}}, "cost": {"coin": {"5": 1500}}, "bought": 0},
+                        },  # ソウルショップなので購入対象
                     },
                     "9": {  # Friend Shop
                         "slots": {"1": {"reward": {"fragmentHero": {"44": 5}}, "cost": {"coin": {"9": 500}}, "bought": 0}}
@@ -237,17 +239,47 @@ SHOP_BUY_NOT_ENOUGH = {"results": [{"ident": "shopBuy", "error": {"name": "NotEn
 # --- Asgard (Guild Raid) Shop ---
 # Osh 週の価格表（slot 6〜21 の Valor Emblem 価格。週替わりだがシグネチャは固定）
 _OSH_PRICES = {
-    6: 50, 7: 150, 8: 50, 9: 150, 10: 50,
-    11: 100, 12: 100, 13: 100, 14: 150,
-    15: 50, 16: 100, 17: 50, 18: 50, 19: 150, 20: 100, 21: 50,
+    6: 50,
+    7: 150,
+    8: 50,
+    9: 150,
+    10: 50,
+    11: 100,
+    12: 100,
+    13: 100,
+    14: 150,
+    15: 50,
+    16: 100,
+    17: 50,
+    18: 50,
+    19: 150,
+    20: 100,
+    21: 50,
 }
 
 # Osh 週の slot → buffValue（実測値ベース）
 _OSH_BUFF_VALUES = {
-    1: 3, 2: 3, 3: 20, 4: 5, 5: 3,
-    6: 3, 7: 25, 8: 15, 9: 4, 10: 25,
-    11: 10, 12: 7, 13: 10, 14: 25,
-    15: 50, 16: 20, 17: 10, 18: 10, 19: 5, 20: 7, 21: 4,
+    1: 3,
+    2: 3,
+    3: 20,
+    4: 5,
+    5: 3,
+    6: 3,
+    7: 25,
+    8: 15,
+    9: 4,
+    10: 25,
+    11: 10,
+    12: 7,
+    13: 10,
+    14: 25,
+    15: 50,
+    16: 20,
+    17: 10,
+    18: 10,
+    19: 5,
+    20: 7,
+    21: 4,
 }
 
 
@@ -257,48 +289,104 @@ def _osh_shop_slots(bought: set[int] | None = None) -> dict:
     slots = {}
     for slot in range(1, 6):
         slots[str(slot)] = {
-            "branch": "", "buffId": 60 + slot, "buffValue": _OSH_BUFF_VALUES[slot],
-            "buyLimit": 5, "cost": {"gold": 1000000}, "rank": 0, "requirement": "", "boughtCount": 0,
+            "branch": "",
+            "buffId": 60 + slot,
+            "buffValue": _OSH_BUFF_VALUES[slot],
+            "buyLimit": 5,
+            "cost": {"gold": 1000000},
+            "rank": 0,
+            "requirement": "",
+            "boughtCount": 0,
         }
     for slot in range(6, 22):
         price = _OSH_PRICES[slot]
         slots[str(slot)] = {
-            "branch": "", "buffId": 60 + slot, "buffValue": _OSH_BUFF_VALUES[slot],
-            "buyLimit": 1, "cost": {"coin": {"30": price}},
+            "branch": "",
+            "buffId": 60 + slot,
+            "buffValue": _OSH_BUFF_VALUES[slot],
+            "buyLimit": 1,
+            "cost": {"coin": {"30": price}},
             "rank": 3 if price == 50 else (2 if price == 100 else 1),
-            "requirement": "", "boughtCount": 1 if slot in bought else 0,
+            "requirement": "",
+            "boughtCount": 1 if slot in bought else 0,
         }
     return slots
 
 
 # 未購入・残高 1000 の Osh 週（全 16 商品が購入可能）
-CLAN_RAID_GET_INFO_OSH = {
-    "results": [{"ident": "body", "result": {"response": {"shop": _osh_shop_slots(), "coins": 1000}}}]
-}
+CLAN_RAID_GET_INFO_OSH = {"results": [{"ident": "body", "result": {"response": {"shop": _osh_shop_slots(), "coins": 1000}}}]}
 
 # slot 8, 17 は購入済み・残高 100 の Osh 週
-CLAN_RAID_GET_INFO_OSH_BOUGHT = {
-    "results": [{"ident": "body", "result": {"response": {"shop": _osh_shop_slots(bought={8, 17}), "coins": 100}}}]
-}
+CLAN_RAID_GET_INFO_OSH_BOUGHT = {"results": [{"ident": "body", "result": {"response": {"shop": _osh_shop_slots(bought={8, 17}), "coins": 100}}}]}
 
 # Maestro 週（Phantom Orchestra）の価格表（slot 6〜21。週替わりだがシグネチャは固定）
 _MAESTRO_PRICES = {
-    6: 150, 7: 150, 8: 50, 9: 50, 10: 100, 11: 100, 12: 100, 13: 100,
-    14: 50, 15: 50, 16: 150, 17: 150, 18: 50, 19: 50, 20: 50, 21: 100,
+    6: 150,
+    7: 150,
+    8: 50,
+    9: 50,
+    10: 100,
+    11: 100,
+    12: 100,
+    13: 100,
+    14: 50,
+    15: 50,
+    16: 150,
+    17: 150,
+    18: 50,
+    19: 50,
+    20: 50,
+    21: 100,
 }
 
 # Maestro 週の slot → buffId（実測値ベース。slot 1〜5 はゴールドバフ）
 _MAESTRO_BUFF_IDS = {
-    1: 113, 2: 123, 3: 126, 4: 129, 5: 130,
-    6: 112, 7: 114, 8: 115, 9: 116, 10: 117, 11: 118, 12: 119, 13: 120,
-    14: 122, 15: 125, 16: 127, 17: 128, 18: 121, 19: 133, 20: 131, 21: 132,
+    1: 113,
+    2: 123,
+    3: 126,
+    4: 129,
+    5: 130,
+    6: 112,
+    7: 114,
+    8: 115,
+    9: 116,
+    10: 117,
+    11: 118,
+    12: 119,
+    13: 120,
+    14: 122,
+    15: 125,
+    16: 127,
+    17: 128,
+    18: 121,
+    19: 133,
+    20: 131,
+    21: 132,
 }
 
 # Maestro 週の slot → buffValue（実測値ベース）
 _MAESTRO_BUFF_VALUES = {
-    1: 5, 2: 5, 3: 5, 4: 5, 5: 5,
-    6: 1, 7: 15, 8: 5, 9: 2, 10: 3, 11: 10, 12: 20, 13: 3,
-    14: 50, 15: 2, 16: 20, 17: 3, 18: 5, 19: 10, 20: 4, 21: 30,
+    1: 5,
+    2: 5,
+    3: 5,
+    4: 5,
+    5: 5,
+    6: 1,
+    7: 15,
+    8: 5,
+    9: 2,
+    10: 3,
+    11: 10,
+    12: 20,
+    13: 3,
+    14: 50,
+    15: 2,
+    16: 20,
+    17: 3,
+    18: 5,
+    19: 10,
+    20: 4,
+    21: 30,
 }
 
 
@@ -308,24 +396,32 @@ def _maestro_shop_slots(bought: set[int] | None = None) -> dict:
     slots = {}
     for slot in range(1, 6):
         slots[str(slot)] = {
-            "branch": "", "buffId": _MAESTRO_BUFF_IDS[slot], "buffValue": _MAESTRO_BUFF_VALUES[slot],
-            "buyLimit": 5, "cost": {"gold": 1000000}, "rank": 0, "requirement": "", "boughtCount": 0,
+            "branch": "",
+            "buffId": _MAESTRO_BUFF_IDS[slot],
+            "buffValue": _MAESTRO_BUFF_VALUES[slot],
+            "buyLimit": 5,
+            "cost": {"gold": 1000000},
+            "rank": 0,
+            "requirement": "",
+            "boughtCount": 0,
         }
     for slot in range(6, 22):
         price = _MAESTRO_PRICES[slot]
         slots[str(slot)] = {
-            "branch": "", "buffId": _MAESTRO_BUFF_IDS[slot], "buffValue": _MAESTRO_BUFF_VALUES[slot],
-            "buyLimit": 1, "cost": {"coin": {"30": price}},
+            "branch": "",
+            "buffId": _MAESTRO_BUFF_IDS[slot],
+            "buffValue": _MAESTRO_BUFF_VALUES[slot],
+            "buyLimit": 1,
+            "cost": {"coin": {"30": price}},
             "rank": 1 if price == 150 else (2 if price == 100 else 3),
-            "requirement": "", "boughtCount": 1 if slot in bought else 0,
+            "requirement": "",
+            "boughtCount": 1 if slot in bought else 0,
         }
     return slots
 
 
 # 未購入・残高 1000 の Maestro 週（S 6 + A 3 + B 2 = 11 商品、合計ちょうど 1000）
-CLAN_RAID_GET_INFO_MAESTRO = {
-    "results": [{"ident": "body", "result": {"response": {"shop": _maestro_shop_slots(), "coins": 1000}}}]
-}
+CLAN_RAID_GET_INFO_MAESTRO = {"results": [{"ident": "body", "result": {"response": {"shop": _maestro_shop_slots(), "coins": 1000}}}]}
 
 CLAN_RAID_SHOP_BUY_SUCCESS = {"results": [{"ident": "buy_6", "result": {"response": {}}}]}
 
@@ -351,14 +447,6 @@ USER_INFO_SUCCESS = {
                 }
             },
         },
-        {
-            "ident": "arena",
-            "result": {
-                "response": {
-                    "arenaPlace": "42",
-                    "grandPlace": "15"
-                }
-            }
-        }
+        {"ident": "arena", "result": {"response": {"arenaPlace": "42", "grandPlace": "15"}}},
     ]
 }

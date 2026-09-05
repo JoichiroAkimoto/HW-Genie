@@ -167,9 +167,7 @@ def _refresh_one(account: str) -> str | None:
     return None
 
 
-def refresh_all_accounts(
-    accounts: list[str], max_parallel: int = 4
-) -> list[tuple[str, str | None]]:
+def refresh_all_accounts(accounts: list[str], max_parallel: int = 4) -> list[tuple[str, str | None]]:
     """Fetch the latest player status for ``accounts`` from the game API (parallel).
 
     Each account is refreshed and persisted to the DB independently; a failure

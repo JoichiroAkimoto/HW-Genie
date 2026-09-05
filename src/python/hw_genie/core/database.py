@@ -202,13 +202,10 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
                             with _wal_io_lock:
                                 conn.sync()
 
-                        retry_on_wal_contention(
-                            _sync, attempts=3, base_delay=0.25, logger=logger
-                        )
+                        retry_on_wal_contention(_sync, attempts=3, base_delay=0.25, logger=logger)
                     except Exception:  # pragma: no cover - best-effort
                         logger.warning(
-                            "Turso replica sync() failed on connect; "
-                            "continuing with locally cached data.",
+                            "Turso replica sync() failed on connect; continuing with locally cached data.",
                             exc_info=True,
                         )
 
@@ -260,18 +257,14 @@ class TursoReplicaDialect(SQLiteDialect_libsql):
         if url.host:
             # Remote (ws/wss) mode: keep stock behaviour.
             connect_args["uri"] = True
-            filtered = {
-                k: v for k, v in opts.items() if k not in dict(pysqlite_args)
-            }
+            filtered = {k: v for k, v in opts.items() if k not in dict(pysqlite_args)}
             query_str = urllib.parse.urlencode(sorted(filtered.items()))
             secure = connect_args.pop("secure", False)
             scheme = "https" if secure else "http"
             netloc = url.host
             if url.port:
                 netloc += f":{url.port}"
-            connect_url = urllib.parse.urlunsplit(
-                (scheme, netloc, url.database or "", query_str, "")
-            )
+            connect_url = urllib.parse.urlunsplit((scheme, netloc, url.database or "", query_str, ""))
             return ([connect_url], connect_args)
 
         # Local file: open as an embedded replica and forward sync params.
@@ -373,7 +366,7 @@ class Account(Base):
     def update_from_dict(self, player_data: dict):
         """
         Updates account status fields from a dictionary, with type conversion.
-        
+
         Args:
             player_data (dict): Dictionary containing player info (name, level, gold, etc.)
         """
@@ -382,15 +375,8 @@ class Account(Base):
             self.player_name = name_val.strip() if isinstance(name_val, str) else name_val
         if "memo" in player_data:
             self.memo = player_data["memo"]
-        
-        fields = {
-            "level": "level",
-            "gold": "gold",
-            "gems": "gems",
-            "energy": "energy",
-            "arena_rank": "arena_rank",
-            "grand_rank": "grand_rank"
-        }
+
+        fields = {"level": "level", "gold": "gold", "gems": "gems", "energy": "energy", "arena_rank": "arena_rank", "grand_rank": "grand_rank"}
         for p_key, attr in fields.items():
             if p_key in player_data:
                 try:
@@ -456,9 +442,7 @@ def _find_pkg_root(start: str) -> str:
             # ルートまで到達しても .git が無い場合は、hw_genie パッケージの
             # 親ディレクトリ（/app など）を返す。
             # start = .../hw_genie/core/database.py -> 3階層上がパッケージの親。
-            pkg_parent = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(start)))
-            )
+            pkg_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(start))))
             return pkg_parent
         current = parent
 
@@ -530,22 +514,14 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     # but an empty path; a real remote libSQL URL always carries a non-empty db
     # path, so require both hostname AND path to avoid misclassifying relatives.
     _parsed = urllib.parse.urlparse(db_url)
-    is_remote_libsql = bool(
-        turso_sync_url
-        and ("libsql" in db_url)
-        and _parsed.hostname
-        and _parsed.path
-    )
+    is_remote_libsql = bool(turso_sync_url and ("libsql" in db_url) and _parsed.hostname and _parsed.path)
     del _parsed
 
     if env.get("TURSO_READ_REMOTE", "false").lower() == "true":
         if not turso_sync_url:
             # 設定漏れ: read remote を希望しているのに sync URL が無い。
             # サイレントにローカル replica へフォールバックせず警告する。
-            logger.warning(
-                "TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set; "
-                "falling back to local file mode."
-            )
+            logger.warning("TURSO_READ_REMOTE=true but TURSO_SYNC_URL is not set; falling back to local file mode.")
         else:
             # Read directly from the remote Turso primary instead of a local
             # embedded replica. This avoids wal_insert_begin failed contention
@@ -610,14 +586,10 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
                 query["sync_interval"] = str(float(turso_sync_interval))
             except (ValueError, TypeError):
                 logger.warning(
-                    "Invalid TURSO_SYNC_INTERVAL=%r ignored; falling back to the "
-                    "default sync interval.",
+                    "Invalid TURSO_SYNC_INTERVAL=%r ignored; falling back to the default sync interval.",
                     turso_sync_interval,
                 )
-        db_url = (
-            f"sqlite+libsql:///{local_uri}?"
-            f"{urllib.parse.urlencode(query)}"
-        )
+        db_url = f"sqlite+libsql:///{local_uri}?{urllib.parse.urlencode(query)}"
         connect_args["check_same_thread"] = False
 
     elif "libsql" in db_url:
@@ -655,7 +627,6 @@ def build_database_config(env: dict[str, str] | None = None) -> tuple[str, Datab
     # TypedDict の必須キー check_same_thread を常に満たすため。
     connect_args.setdefault("check_same_thread", False)
 
-
     return db_url, connect_args
 
 
@@ -681,7 +652,7 @@ def _build_remote_libsql_url(
     # netloc; strip a stray "libsql://" prefix so only host[:port] (and any
     # userinfo) remains. userinfo (token@host) is preserved as-is.
     if netloc.startswith("libsql://"):
-        netloc = netloc[len("libsql://"):]
+        netloc = netloc[len("libsql://") :]
     remote_url = f"sqlite+libsql://{netloc}/?secure=true"
     connect_args: DatabaseConfig = {"check_same_thread": False}
     if turso_auth_token:
@@ -704,10 +675,7 @@ def build_write_database_config(env: dict[str, str] | None = None) -> tuple[str,
     """
     env = os.environ if env is None else env
 
-    if (
-        env.get("TURSO_WRITE_REMOTE", "false").lower() == "true"
-        and env.get("TURSO_SYNC_URL")
-    ):
+    if env.get("TURSO_WRITE_REMOTE", "false").lower() == "true" and env.get("TURSO_SYNC_URL"):
         return _build_remote_libsql_url(env)
 
     # Fall back to the standard (replica) config for writes.
@@ -741,9 +709,7 @@ def get_engine():
                 # （例: Turso 側でアイドル切断された Hrana ストリーム）を自動破棄して
                 # 新規接続に切り替える。これがないと remote モードで
                 # "stream not found" (ValueError) が再発する。
-                _engine = create_engine(
-                    db_url, connect_args=connect_args, pool_pre_ping=True
-                )
+                _engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
                 engine = _engine
     return _engine
 
@@ -777,9 +743,7 @@ def get_write_engine():
                     db_url, connect_args = build_write_database_config()
                     # get_engine と同じ理由で pool_pre_ping=True（リモート Hrana
                     # ストリームのアイドル切断対策）
-                    _write_engine = create_engine(
-                        db_url, connect_args=connect_args, pool_pre_ping=True
-                    )
+                    _write_engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
     return _write_engine
 
 
@@ -799,9 +763,7 @@ def get_write_session_local():
             return get_session_local()
         with _init_lock:
             if _WriteSessionLocal is None:
-                _WriteSessionLocal = sessionmaker(
-                    bind=get_write_engine(), expire_on_commit=False
-                )
+                _WriteSessionLocal = sessionmaker(bind=get_write_engine(), expire_on_commit=False)
     return _WriteSessionLocal
 
 
@@ -839,16 +801,9 @@ def _apply_light_migrations(engine) -> None:
     for table_name, columns in _RUN_LOGS_ADDITIONAL_COLUMNS.items():
         try:
             with engine.connect() as conn:
-                existing = {
-                    row[1]
-                    for row in conn.exec_driver_sql(
-                        f"PRAGMA table_info({table_name})"
-                    )
-                }
+                existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table_name})")}
         except Exception as exc:  # pragma: no cover - best-effort
-            logger.warning(
-                "Failed to inspect table %s for migrations: %s", table_name, exc
-            )
+            logger.warning("Failed to inspect table %s for migrations: %s", table_name, exc)
             continue
         for column, col_type in columns.items():
             if column in existing:
@@ -857,14 +812,10 @@ def _apply_light_migrations(engine) -> None:
             # 可能性）が、失敗時は warning で握りつぶされるだけなので冪等性は保たれる。
             try:
                 with engine.begin() as conn:
-                    conn.exec_driver_sql(
-                        f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}"
-                    )
+                    conn.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column} {col_type}")
                 logger.info("Migrated %s: added column %s", table_name, column)
             except Exception as exc:  # pragma: no cover - best-effort
-                logger.warning(
-                    "Failed to add column %s to %s: %s", column, table_name, exc
-                )
+                logger.warning("Failed to add column %s to %s: %s", column, table_name, exc)
 
 
 def init_db():

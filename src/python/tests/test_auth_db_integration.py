@@ -88,10 +88,7 @@ def test_update_session_does_not_persist_player_meta_configs():
     try:
         acct = db.query(Account).filter(Account.player_id == mock_player.id).first()
         assert acct is not None
-        keys = [
-            c.config_key
-            for c in db.query(AccountConfig).filter(AccountConfig.account_id == acct.id).all()
-        ]
+        keys = [c.config_key for c in db.query(AccountConfig).filter(AccountConfig.account_id == acct.id).all()]
     finally:
         db.close()
     assert not any(k.startswith("player_") for k in keys)

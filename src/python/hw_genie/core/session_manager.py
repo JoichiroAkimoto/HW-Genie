@@ -69,7 +69,7 @@ class SessionManager:
         match = next((a for a in accounts if a.strip().lower() == account.lower()), None)
         if match:
             resolved_account = match
-        
+
         cls.repo.update_config(resolved_account, {"last_item_raid_mission_id": mission_id})
 
     @classmethod

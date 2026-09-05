@@ -66,6 +66,7 @@ def _make_client(response: dict | None = None, status: ResponseStatus = Response
 
 # --- _format_ctime ---
 
+
 def test_format_ctime_valid(monkeypatch):
     monkeypatch.setenv("HWGENIE_TZ", "UTC")
     # 1775667274 -> UTC: check starts with year
@@ -77,6 +78,7 @@ def test_format_ctime_valid(monkeypatch):
 
 
 # --- parse_chat_response ---
+
 
 def test_parse_chat_response_normalizes():
     messages = parse_chat_response(MOCK_CHAT_RESPONSE)
@@ -123,6 +125,7 @@ def test_parse_chat_response_sort_and_sticker_text():
 
 # --- summarize_chat ---
 
+
 def test_summarize_chat_basic():
     messages = parse_chat_response(MOCK_CHAT_RESPONSE)
     summary = summarize_chat(messages)
@@ -160,6 +163,7 @@ def test_summarize_chat_all_stickers():
 
 
 # --- run_chat ---
+
 
 def test_run_chat_success_table_and_summary(capsys, monkeypatch):
     from hw_genie.core.session_manager import SessionManager

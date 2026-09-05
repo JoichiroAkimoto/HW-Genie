@@ -170,20 +170,17 @@ def test_memo_persistence():
     player_with_id = {"id": "memo_id", "name": "Memo User"}
     memo_text = "This is a test memo"
 
-    data = {
-        "player": player_with_id,
-        "memo": memo_text,
-        "some_key": "some_value"
-    }
-    
+    data = {"player": player_with_id, "memo": memo_text, "some_key": "some_value"}
+
     SessionManager.save(account, data)
-    
+
     # ロードして確認
     loaded = SessionManager.load(account)
     assert loaded.get("memo") == memo_text
-    
+
     # データベースのモデルを直接確認
     from hw_genie.core.database import SessionLocal, Account
+
     with SessionLocal() as db:
         rec = db.query(Account).filter(Account.alias == account).first()
         assert rec is not None
@@ -220,4 +217,3 @@ def test_save_normalizes_trailing_space_existing_alias():
     assert SessionManager.load("Trailing")["player"]["name"] == "Trailing Fixed"
     # 大文字小文字・前後空白を無視した照合により、スペース付きでも正しくロードできる
     assert SessionManager.load("Trailing ")["player"]["name"] == "Trailing Fixed"
-

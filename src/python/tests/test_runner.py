@@ -18,9 +18,7 @@ from hw_genie.runner import (
 @pytest.fixture
 def fake_accounts(monkeypatch):
     accounts = ["alpha", "beta", "gamma"]
-    monkeypatch.setattr(
-        "hw_genie.runner.SessionManager.list_accounts", lambda: list(accounts)
-    )
+    monkeypatch.setattr("hw_genie.runner.SessionManager.list_accounts", lambda: list(accounts))
     return accounts
 
 
@@ -57,9 +55,7 @@ def test_list_account_aliases_not_alphabetically_sorted(monkeypatch):
 
 
 def test_run_for_account_missing_session(monkeypatch):
-    monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: None
-    )
+    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: None)
     acc, res, err = run_for_account("nobody", lambda c, a: "x")
     assert acc == "nobody"
     assert res is None
@@ -166,9 +162,7 @@ def test_run_all_accounts_orders_results_by_submission(monkeypatch):
         lambda acc, routine: (acc, f"{acc}-ok", None),
     )
     # 完了順が投入順の逆になるよう as_completed をモックする
-    monkeypatch.setattr(
-        "hw_genie.runner.as_completed", lambda futures: reversed(list(futures))
-    )
+    monkeypatch.setattr("hw_genie.runner.as_completed", lambda futures: reversed(list(futures)))
     results = run_all_accounts(lambda c, a: None, accounts=accounts)
     assert list(results) == ["zulu", "alpha", "mike"]
     assert results["zulu"] == ("zulu-ok", None)
@@ -230,9 +224,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
 def test_cmd_multi_default_all_accounts(monkeypatch):
     from hw_genie import main
 
-    monkeypatch.setattr(
-        "hw_genie.runner.list_account_aliases", lambda: ["x", "y"]
-    )
+    monkeypatch.setattr("hw_genie.runner.list_account_aliases", lambda: ["x", "y"])
     captured = {}
 
     def fake_run(routine, accounts=None, max_parallel=None):
@@ -468,9 +460,7 @@ def test_cmd_multi_records_run_log_business_failure(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {
-            "a": ((["q1"], ["q10024"], []), None)
-        },
+        lambda routine, accounts=None, max_parallel=None: {"a": ((["q1"], ["q10024"], []), None)},
     )
     monkeypatch.setattr("hw_genie.runner.summarize_quests", lambda items, dry_run=False: 1)
     monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
@@ -482,9 +472,7 @@ def test_cmd_multi_records_run_log_business_failure(monkeypatch):
 
     assert records["status"] == "failed"
     assert records["exit_code"] == 1
-    assert records["accounts"] == [
-        {"account": "a", "ok": False, "error": "1 quest(s) failed"}
-    ]
+    assert records["accounts"] == [{"account": "a", "ok": False, "error": "1 quest(s) failed"}]
     assert records["error_summary"] == "1 account(s) failed: a (1 quest(s) failed)"
 
 
@@ -633,9 +621,7 @@ def test_daily_routine_threads_item_max_iterations(monkeypatch):
         return "ok"
 
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
-    monkeypatch.setattr(
-        "hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], [])
-    )
+    monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], []))
     monkeypatch.setattr(
         "hw_genie.core.session_manager.SessionManager.build_item_raid_payload",
         lambda account="default": {"mission_id": 123, "calls": [{"args": {"id": 123}}]},
@@ -665,12 +651,8 @@ def test_full_routine_threads_item_max_iterations(monkeypatch):
     monkeypatch.setattr("hw_genie.commands.hero_raid.run_hero_raid", fake_hero_raid)
     monkeypatch.setattr("hw_genie.commands.hero_shopping.run_hero_shopping", fake_shop)
     monkeypatch.setattr("hw_genie.commands.daily_raid.run_daily_raid", fake_daily)
-    monkeypatch.setattr(
-        "hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], [])
-    )
-    monkeypatch.setattr(
-        "hw_genie.commands.hero_shopping.TARGET_SHOP_IDS", ["SHOP1"]
-    )
+    monkeypatch.setattr("hw_genie.commands.quests.run_quest_execute", lambda *a, **k: ([], []))
+    monkeypatch.setattr("hw_genie.commands.hero_shopping.TARGET_SHOP_IDS", ["SHOP1"])
 
     runner.full_routine(fake_client, "acc", item_max_iterations=3)
     assert captured["item_max_iterations"] == 3
@@ -704,9 +686,7 @@ def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
 def test_build_item_raid_payload_shape(monkeypatch):
     from hw_genie.core.session_manager import SessionManager
 
-    monkeypatch.setattr(
-        SessionManager, "get_last_mission_id", staticmethod(lambda account="default": 42)
-    )
+    monkeypatch.setattr(SessionManager, "get_last_mission_id", staticmethod(lambda account="default": 42))
     payload = SessionManager.build_item_raid_payload("acc")
     assert payload["mission_id"] == 42
     call = payload["calls"][0]
@@ -714,9 +694,7 @@ def test_build_item_raid_payload_shape(monkeypatch):
     assert call["args"]["id"] == 42
     assert call["ident"] == "body"
     # No mission id -> None (skip)
-    monkeypatch.setattr(
-        SessionManager, "get_last_mission_id", staticmethod(lambda account="default": None)
-    )
+    monkeypatch.setattr(SessionManager, "get_last_mission_id", staticmethod(lambda account="default": None))
     assert SessionManager.build_item_raid_payload("acc") is None
 
 
@@ -742,9 +720,7 @@ def test_full_routine_invokes_subroutines(monkeypatch):
     )
     # TARGET_SHOP_IDS is imported inside full_routine at call time from the
     # hero_shopping module, so patch the attribute there.
-    monkeypatch.setattr(
-        "hw_genie.commands.hero_shopping.TARGET_SHOP_IDS", ["SHOP1"]
-    )
+    monkeypatch.setattr("hw_genie.commands.hero_shopping.TARGET_SHOP_IDS", ["SHOP1"])
 
     runner.full_routine(fake_client, "acc")
 
@@ -823,12 +799,8 @@ def test_run_all_accounts_respects_max_parallel(monkeypatch):
 
     accounts = [f"a{i}" for i in range(10)]
 
-    monkeypatch.setattr(
-        "hw_genie.runner.SessionManager.list_accounts", lambda: accounts
-    )
-    monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": acc}
-    )
+    monkeypatch.setattr("hw_genie.runner.SessionManager.list_accounts", lambda: accounts)
+    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": acc})
     monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: object())
 
     seen_workers = {}
@@ -914,20 +886,21 @@ def test_write_lock_serializes_writes(monkeypatch):
     @contextlib.contextmanager
     def fake_session():
         dummy_q = type("Q", (), {"filter": lambda *a, **k: dummy_q, "first": lambda *a, **k: None})()
-        yield type("DB", (), {"query": lambda *a, **k: dummy_q, "add": lambda *a, **k: None,
-                              "flush": lambda *a, **k: None, "commit": fake_commit,
-                              "rollback": lambda *a, **k: None})()
+        yield type(
+            "DB",
+            (),
+            {
+                "query": lambda *a, **k: dummy_q,
+                "add": lambda *a, **k: None,
+                "flush": lambda *a, **k: None,
+                "commit": fake_commit,
+                "rollback": lambda *a, **k: None,
+            },
+        )()
 
     monkeypatch.setattr(repository, "get_write_session_local", lambda: lambda: fake_session())
 
-    threads = [
-        threading.Thread(
-            target=lambda i=i: repository.SessionRepository().update_config(
-                f"acc{i}", {"player": {"id": i}}
-            )
-        )
-        for i in range(8)
-    ]
+    threads = [threading.Thread(target=lambda i=i: repository.SessionRepository().update_config(f"acc{i}", {"player": {"id": i}})) for i in range(8)]
     for t in threads:
         t.start()
     for t in threads:
@@ -959,7 +932,6 @@ def test_main_sets_logging_level_info(monkeypatch):
 
     main.setup_logging(debug=True)
     assert logging.getLogger().level == logging.DEBUG
-
 
 
 def test_render_summary_table_widths_are_dynamic_and_have_no_lv():
@@ -1011,10 +983,12 @@ def test_render_summary_table_is_display_aligned_with_emoji(monkeypatch):
 def test_render_summary_table_colors_when_supported(monkeypatch):
     """TTY ではヘッダー・アカウント・順位・エネルギー超過が色付けされる。"""
     monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
-    table = _render_summary_table([
-        ["Alice", "76/190", "1", "8", "900.8M", "570.1K"],
-        ["Test Account", "200/190", "53", "3", "2.3B", "180.2K"],
-    ])
+    table = _render_summary_table(
+        [
+            ["Alice", "76/190", "1", "8", "900.8M", "570.1K"],
+            ["Test Account", "200/190", "53", "3", "2.3B", "180.2K"],
+        ]
+    )
     assert "\033[1;36m" in table  # ヘッダー
     assert "\033[1m" in table  # 1行目アカウント名太字
     assert "\033[33m" in table  # Arena 1位 = 金
@@ -1028,10 +1002,12 @@ def test_render_summary_table_colors_when_supported(monkeypatch):
 def test_render_summary_table_zebra_dims_even_rows(monkeypatch):
     """偶数番目の行は全体 dim され、行の区別がつく。"""
     monkeypatch.setattr("hw_genie.core.utils.supports_color", lambda stream=None: True)
-    table = _render_summary_table([
-        ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
-        ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],
-    ]).splitlines()
+    table = _render_summary_table(
+        [
+            ["Alice", "76/190", "11", "17", "900.8M", "570.1K"],
+            ["Test Account", "38/190", "53", "8", "2.3B", "180.2K"],
+        ]
+    ).splitlines()
     assert table[3].startswith("\033[1m") and not table[3].startswith("\033[1;2m")
     assert table[4].startswith("\033[1;2m")
 
@@ -1172,7 +1148,11 @@ def test_summarize_asgard_shop_counts_failures(capsys):
             "alpha",
             (
                 AsgardRunResult(
-                    coins=1000, spent=1000, remaining=0, bought=13, skipped=False,
+                    coins=1000,
+                    spent=1000,
+                    remaining=0,
+                    bought=13,
+                    skipped=False,
                     items=[AsgardResult(action="buy 8", status=ResponseStatus.SUCCESS)],
                 ),
                 None,
@@ -1182,7 +1162,11 @@ def test_summarize_asgard_shop_counts_failures(capsys):
             "beta",
             (
                 AsgardRunResult(
-                    coins=1000, spent=100, remaining=900, bought=1, skipped=False,
+                    coins=1000,
+                    spent=100,
+                    remaining=900,
+                    bought=1,
+                    skipped=False,
                     items=[AsgardResult(action="buy 8", status=ResponseStatus.ERROR, error="NotEnough")],
                 ),
                 None,
@@ -1233,7 +1217,10 @@ def test_summarize_asgard_shop_fetch_error_marks_failed(capsys):
     from hw_genie.runner import summarize_asgard_shop
 
     results = [
-        ("alpha", (AsgardRunResult(coins=0, spent=0, remaining=0, bought=0, skipped=False, items=[], error="clanRaid_getInfo failed (notFound)"), None)),
+        (
+            "alpha",
+            (AsgardRunResult(coins=0, spent=0, remaining=0, bought=0, skipped=False, items=[], error="clanRaid_getInfo failed (notFound)"), None),
+        ),
     ]
     failed = summarize_asgard_shop(results)
     out = capsys.readouterr().out
@@ -1248,7 +1235,10 @@ def test_summarize_asgard_shop_shows_gold_buffs(capsys):
     from hw_genie.runner import summarize_asgard_shop
 
     results = [
-        ("alpha", (AsgardRunResult(coins=1000, spent=1000, remaining=0, bought=13, skipped=False, items=[], gold_bought=15, gold_spent=15_000_000), None)),
+        (
+            "alpha",
+            (AsgardRunResult(coins=1000, spent=1000, remaining=0, bought=13, skipped=False, items=[], gold_bought=15, gold_spent=15_000_000), None),
+        ),
     ]
     failed = summarize_asgard_shop(results)
     out = capsys.readouterr().out

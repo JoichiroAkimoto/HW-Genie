@@ -206,9 +206,7 @@ def summarize_chat(messages: list[ChatMessage]) -> dict[str, Any]:
 
     tz_label = display_timezone_name()
     summary_lines: list[str] = []
-    summary_lines.append(
-        f"Latest {count} messages: {period} ({tz_label}, ~{duration_days} days, avg {per_day}/day)."
-    )
+    summary_lines.append(f"Latest {count} messages: {period} ({tz_label}, ~{duration_days} days, avg {per_day}/day).")
     if top_speakers:
         speakers_text = ", ".join(f"{name} ({cnt})" for name, cnt in top_speakers)
         summary_lines.append(f"Participants: {participants}, top speakers: {speakers_text}.")

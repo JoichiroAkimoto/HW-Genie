@@ -1,4 +1,5 @@
 """Tests for the auth server module."""
+
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -75,10 +76,7 @@ class TestAuthServerEndpoints:
         assert response.status_code == 422  # Validation error
 
     def test_post_auth_invalid_nonce(self, client):
-        response = client.post("/auth", json={
-            "nonce": "invalid",
-            "headers": VALID_HEADERS
-        })
+        response = client.post("/auth", json={"nonce": "invalid", "headers": VALID_HEADERS})
         assert response.status_code == 401
 
     @patch("hw_genie.commands.auth_server.update_session_with_headers")
@@ -93,16 +91,13 @@ class TestAuthServerEndpoints:
                 "energy": 120,
                 "arena_rank": 10,
                 "grand_rank": 5,
-            }
+            },
         }
 
         nonce_resp = client.get("/nonce")
         nonce = nonce_resp.json()["nonce"]
 
-        response = client.post("/auth", json={
-            "nonce": nonce,
-            "headers": VALID_HEADERS
-        })
+        response = client.post("/auth", json={"nonce": nonce, "headers": VALID_HEADERS})
 
         assert response.status_code == 200
         data = response.json()
@@ -113,18 +108,12 @@ class TestAuthServerEndpoints:
 
     @patch("hw_genie.commands.auth_server.update_session_with_headers")
     def test_post_auth_api_error(self, mock_update, client):
-        mock_update.return_value = {
-            "status": "error",
-            "message": "API connection failed"
-        }
+        mock_update.return_value = {"status": "error", "message": "API connection failed"}
 
         nonce_resp = client.get("/nonce")
         nonce = nonce_resp.json()["nonce"]
 
-        response = client.post("/auth", json={
-            "nonce": nonce,
-            "headers": VALID_HEADERS
-        })
+        response = client.post("/auth", json={"nonce": nonce, "headers": VALID_HEADERS})
 
         assert response.status_code == 500
         data = response.json()
