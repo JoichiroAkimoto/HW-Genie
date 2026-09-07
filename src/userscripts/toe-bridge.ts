@@ -270,6 +270,11 @@ async function submitResult(
 async function computeBattle(battle: unknown): Promise<BattleResultPayload | null> {
   const game = pickGame() as unknown as Record<string, unknown> | null;
   if (!game || !game["BattlePresets"] || !game["BattleInstantPlay"]) {
+    log("computeBattle: no engine in this frame (pickGame miss)");
+    return null;
+  }
+  if (!game["DataStorage"]) {
+    log("computeBattle: engine without DataStorage");
     return null;
   }
   try {
@@ -350,17 +355,20 @@ export async function tick(account: string, baseUrl: string): Promise<void> {
   if (!job) {
     return;
   }
+  log(`claimed job ${job.id} (type=${(job.battle as { type?: unknown })?.type ?? "?"})`);
   const computed = await computeBattle(job.battle);
   if (!computed) {
     // The engine exists but this battle failed to compute (calc error or
     // timeout). Submit a fast loss so Python proceeds instead of waiting
     // out its full bridge timeout.
+    log(`job ${job.id}: compute failed, submitting dummy loss`);
     await submitResult(job.id, account, {
       progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
       result: { win: false, stars: 0 },
     }, baseUrl);
     return;
   }
+  log(`job ${job.id}: complete win=${computed.result.win} stars=${computed.result.stars} rounds=${computed.progress.length}`);
   await submitResult(job.id, account, computed, baseUrl);
 }
 
