@@ -110,6 +110,24 @@ export function hasLocalEngine(): boolean {
   return false;
 }
 
+/**
+ * Read ``.Game`` off one candidate window without ever throwing.
+ *
+ * A cross-origin ``WindowProxy`` (game iframe vs top window) throws
+ * ``DOMException: Permission denied`` on ANY property read, including the
+ * ``?.Game`` access itself — so every such read needs its own guard.
+ * Returns ``undefined`` for unreadable candidates so callers can skip them.
+ *
+ * Exported for unit tests (see ``tests/toe-bridge.test.js``).
+ */
+export function safeGameOf(candidate: unknown): unknown {
+  try {
+    return (candidate as { Game?: unknown })?.Game ?? candidate;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Return the first window context carrying a ``Game`` object (any shape). */
 function getGameWindow(): unknown {
   for (const c of getCandidateWindows()) {
@@ -347,17 +365,18 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
       } catch {}
       return "";
     };
-    const candidates: unknown[] = getCandidateWindows().map(
-      (c) => (c as { Game?: unknown })?.Game ?? c,
-    );
+    const candidates: unknown[] = [];
+    for (const c of getCandidateWindows()) {
+      const g = safeGameOf(c);
+      if (g !== undefined) candidates.push(g);
+    }
     // Also try pickGame() result
     const pg = pickGame();
     if (pg) {
       const r = tryGame({ ModelManager: (pg as unknown as { ModelManager?: unknown })?.ModelManager } as unknown);
       if (r) return r;
     }
-    for (const c of candidates) {
-      const g = (c as { Game?: unknown })?.Game ?? c;
+    for (const g of candidates) {
       const r = tryGame(g);
       if (r) return r;
     }

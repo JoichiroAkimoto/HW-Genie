@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { hasBattleEngine, hasLocalEngine, tick } from "../toe-bridge.ts";
+import { hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -59,4 +59,28 @@ test("tick performs zero fetch when no local engine", async () => {
     else globalThis.fetch = origFetch;
   }
   assert.strictEqual(calls.length, 0);
+});
+
+test("safeGameOf returns Game or the object itself without throwing", () => {
+  const game = { id: 1 };
+  assert.strictEqual(safeGameOf({ Game: game }), game);
+  assert.deepStrictEqual(safeGameOf({}), {});
+  assert.strictEqual(safeGameOf(null), null);
+  assert.strictEqual(safeGameOf(undefined), undefined);
+});
+
+test("safeGameOf swallows cross-origin access throws", () => {
+  // A cross-origin WindowProxy throws DOMException on any property read.
+  // readAccount maps every candidate through safeGameOf, so this must never
+  // propagate (previously: `tick error: Permission denied...` every second
+  // once the game iframe loaded).
+  const evil = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("Permission denied to access property");
+      },
+    },
+  );
+  assert.strictEqual(safeGameOf(evil), undefined);
 });
