@@ -432,9 +432,13 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     // DOM addEventListener), and results come from MultiBattleResult getters.
     const b = battle as { progress?: unknown; type?: unknown };
     const dataStorage = game["DataStorage"] as Record<string, unknown>;
+    log("computeBattle: resolving config");
     const configStorageKey = getFn(dataStorage, 25);
     const dataStores = dataStorage as unknown as Record<string, Record<string, () => unknown>>;
-    const config = dataStores[configStorageKey][getF(game["BattleConfigStorage"], battleConfigFor(b.type))]();
+    const configGetter = getF(game["BattleConfigStorage"], battleConfigFor(b.type));
+    log(`computeBattle: config key=${String(configStorageKey)} getter=${configGetter}`);
+    const config = dataStores[configStorageKey][configGetter]();
+    log("computeBattle: presets next");
     const presets = new (
       game["BattlePresets"] as new (
         progress: unknown,
@@ -444,6 +448,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
         showBothTeams: boolean,
       ) => unknown
     )(b.progress ?? [], false, true, config, false);
+    log("computeBattle: presets ok, instant next");
     const BattleInstantPlay = game["BattleInstantPlay"] as new (
       data: unknown,
       presets: unknown,
@@ -455,6 +460,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
             presets,
           )
         : new BattleInstantPlay(battle, presets);
+    log("computeBattle: instant ok, subscribing");
     let result: BattleResultPayload | null = null;
     return new Promise<BattleResultPayload | null>((resolve) => {
       try {
