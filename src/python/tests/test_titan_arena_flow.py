@@ -437,7 +437,7 @@ def test_resolve_team_rotation_saved_first_and_deduped(mock_client, mock_sleep):
     assert rotation.index([4044, 4003, 4043, 4002, 4004]) > rotation.index([4012, 4042, 4013, 4043, 4010])
     # No duplicates anywhere (saved + static combined)
     assert len({tuple(t) for t in rotation}) == len(rotation)
-    assert len(rotation) == 24  # saved dupes static#1, so 1 + 24 - 1
+    assert len(rotation) == 25  # saved dupes static#1, so 1 + 25 - 1
 
 
 def test_resolve_team_rotation_explicit_is_single(mock_client, mock_sleep):
