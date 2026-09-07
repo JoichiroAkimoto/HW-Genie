@@ -451,6 +451,34 @@ def _run_raid(
     return raid_summary
 
 
+def _is_beaten_already(res: dict[str, Any]) -> bool:
+    """True when StartBattle says the rival is already beaten.
+
+    Happens with a stale status snapshot: an earlier attempt in the same run
+    (or another client) cleared the rival after we listed targets.
+    """
+    if res.get("error") not in ("NotAvailable", "NotFound"):
+        return False
+    import json as _json
+
+    try:
+        detail = _json.dumps(res.get("detail"), default=str).lower()
+    except Exception:
+        detail = str(res.get("detail")).lower()
+    return "beaten up already" in detail
+
+
+def _is_already_cleared(client: HWClient, rival_id: str, threshold: int) -> bool:
+    """Re-fetch status and check whether ``rival_id`` is now cleared."""
+    try:
+        fresh = fetch_titan_arena_status(client)
+    except Exception:
+        return False
+    rivals = fresh.get("rivals") or {}
+    info = rivals.get(str(rival_id)) if isinstance(rivals, dict) else None
+    return not isinstance(info, dict) or (info.get("attackScore") or 0) >= threshold
+
+
 def _run_rivals(
     client: HWClient,
     status: dict[str, Any],
@@ -458,22 +486,43 @@ def _run_rivals(
     engine: BattleEngine,
     threshold: int,
     stop_on_first_loss: bool,
+    max_attempts_per_rival: int = 3,
 ) -> list[dict[str, Any]]:
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
         return []
     results: list[dict[str, Any]] = []
     for rival_id in finish_targets:
-        try:
-            res = run_titan_arena(client, rival_id=rival_id, titans=titans, engine=engine)
-        except Exception as exc:  # pragma: no cover - defensive
-            results.append({"rivalId": str(rival_id), "error": str(exc)})
-            print(f"  - rival {rival_id}: exception {exc}", flush=True)
-            continue
-        est = res.get("estimate")
-        win = bool(est and getattr(est, "win", False))
-        results.append({"rivalId": str(rival_id), "win": win, "end_error": res.get("end_error")})
-        if not win and stop_on_first_loss:
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                res = run_titan_arena(client, rival_id=rival_id, titans=titans, engine=engine)
+            except Exception as exc:  # pragma: no cover - defensive
+                results.append({"rivalId": str(rival_id), "error": str(exc)})
+                print(f"  - rival {rival_id}: exception {exc}", flush=True)
+                break
+            if _is_beaten_already(res):
+                # Stale snapshot: the rival is actually cleared. Refresh to
+                # confirm and count it as cleared so the tier can complete.
+                if _is_already_cleared(client, str(rival_id), threshold):
+                    print(f"  - rival {rival_id}: already cleared (stale snapshot).", flush=True)
+                    results.append({"rivalId": str(rival_id), "win": True, "already_cleared": True})
+                else:
+                    results.append({"rivalId": str(rival_id), "win": False, "start_error": res.get("error")})
+                break
+            if res.get("end_error") == "Invalid battle" and attempts < max_attempts_per_rival:
+                print(
+                    f"  - rival {rival_id}: Invalid battle, retrying with a fresh seed "
+                    f"({attempts}/{max_attempts_per_rival})...",
+                    flush=True,
+                )
+                continue
+            est = res.get("estimate")
+            win = bool(est and getattr(est, "win", False))
+            results.append({"rivalId": str(rival_id), "win": win, "end_error": res.get("end_error")})
+            if not win and stop_on_first_loss:
+                return results
             break
     return results
 

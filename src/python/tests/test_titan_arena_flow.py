@@ -376,3 +376,43 @@ def test_cli_parser_toe_optional(mocker):
     mock_run.assert_called_once()
     args = mock_run.call_args.args[0]
     assert getattr(args, "titans", None) is None
+
+
+def test_run_rivals_retries_invalid_battle_with_fresh_seed(mock_client, mock_sleep, mocker):
+    """Invalid battle is retried with a new StartBattle instead of moving on."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        calls.append(str(rival_id))
+        if len(calls) == 1:
+            return {"estimate": MagicMock(win=True), "end_error": "Invalid battle"}
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), threshold=250, stop_on_first_loss=False)
+    assert calls == ["-1", "-1"]
+    assert results[0]["win"] is True
+    assert results[0].get("end_error") is None
+
+
+def test_run_rivals_treats_beaten_already_as_cleared(mock_client, mock_sleep, mocker):
+    """A stale snapshot's beaten-up rival counts as cleared after refresh."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        return {"error": "NotAvailable", "detail": {"description": "beaten up already"}}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        return_value={"status": "battle", "rivals": {"-1": {"attackScore": 250}}},
+    )
+    client, _ = mock_client
+    results = _run_rivals(client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), threshold=250, stop_on_first_loss=False)
+    assert results == [{"rivalId": "-1", "win": True, "already_cleared": True}]
