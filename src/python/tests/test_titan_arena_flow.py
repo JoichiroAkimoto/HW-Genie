@@ -121,32 +121,32 @@ def test_run_titan_arena_tier_runs_rivals_then_completes(mock_client, mock_sleep
         "100": {"userId": "100", "power": "100", "titans": {}, "attackScore": 0, "seed": "0", "defenceScore": "0"},
         "101": {"userId": "101", "power": "100", "titans": {}, "attackScore": 100, "seed": "0", "defenceScore": "0"},
     }
-    # Sequence: getStatus -> StartBattle -> EndBattle (per rival x2) -> getStatus
-    # -> (since complete_tier advances tier we re-call getStatus) -> FarmDailyReward
+    # Sequence: getStatus -> StartBattle -> EndBattle (per rival x2) ->
+    # CompleteTier -> FarmDailyReward -> getStatus (all cleared) -> Farm -> return.
+    # The loop keeps going across passes until no rival is left to attack.
+    cleared = {
+        "100": {"userId": "100", "power": "100", "titans": {}, "attackScore": 250, "seed": "0", "defenceScore": "0"},
+        "101": {"userId": "101", "power": "100", "titans": {}, "attackScore": 250, "seed": "0", "defenceScore": "0"},
+    }
     mock_call.side_effect = [
         _ok({"response": {"status": "battle", "tier": 7, "rivals": rivals, "canRaid": False}}),
         _ok({"response": {"battle": battle}}),  # StartBattle 100
         _ok({"response": {}}),  # EndBattle 100
         _ok({"response": {"battle": battle}}),  # StartBattle 101
         _ok({"response": {}}),  # EndBattle 101
-        _ok({"response": {"status": "battle", "tier": 7, "rivals": rivals, "canRaid": False}}),
         _ok({"response": {}}),  # CompleteTier
         _ok({"response": {}}),  # FarmDailyReward
-        _ok({"response": {"status": "peace_time", "tier": 7, "rivals": {}}}),
+        _ok({"response": {"status": "battle", "tier": 7, "rivals": cleared, "canRaid": False}}),
+        _ok({"response": {}}),  # FarmDailyReward (nothing left)
     ]
     summary = run_titan_arena_tier(
         client,
         titans=[4003, 4023, 4004, 4001, 4000],
         engine=PythonBattleEngine(),
     )
-    # The tier sees a rival that was attackScore>=0 so attempts both.
-    # The second getStatus is "battle" again (peace_time expected on the
-    # next iteration). We bail out because the script returns when no rival
-    # has attackScore<250 on the second getStatus pass; here rivals are
-    # still present, so it tries again — we expect at least one more pass
-    # but the test just checks the tier ran and at least one rival win
-    # happened.
-    assert any(r.get("win") for r in summary["rival_results"])
+    # Both rivals won in pass 1; pass 2 sees them cleared and exits.
+    assert sum(1 for r in summary["rival_results"] if r.get("win")) == 2
+    assert summary["completed_tier"] is True
 
 
 def test_run_titan_arena_tier_auto_titans(mock_client, mock_sleep):

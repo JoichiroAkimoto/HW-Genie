@@ -372,7 +372,17 @@ def run_titan_arena_tier(
         "daily_reward": None,
     }
 
+    # Safety cap: each winning pass strictly shrinks the remaining target
+    # set (cleared rivals hit 250), so the loop terminates naturally. The cap
+    # only guards against pathological server states.
+    max_passes = 30
+    passes = 0
     while True:
+        passes += 1
+        if passes > max_passes:
+            summary["errors"].append({"stage": "tier_loop", "message": "max passes reached"})
+            print(f"{Emojis.WARNING}Tier loop cap reached; stopping.", flush=True)
+            return summary
         status = fetch_titan_arena_status(client)
         state = status.get("status")
         if state in (None, "disabled"):
@@ -410,12 +420,11 @@ def run_titan_arena_tier(
             print(f"{Emojis.WARNING}No rival cleared; stopping tier loop.", flush=True)
             return summary
         _complete_tier(client, summary)
-        # Re-enter loop: getStatus may now report peace_time or completed_tier
-        if _farm_daily_reward(client, summary):
-            # The daily reward only fires once per day; subsequent iterations
-            # would be a no-op so we exit cleanly.
-            return summary
-        # Loop again to check the new tier / status
+        # Best-effort daily chest; the return value no longer ends the run so
+        # remaining rivals (or the next tier) are attacked in the next pass.
+        _farm_daily_reward(client, summary)
+        # Loop again with fresh status until nothing is left to attack or no
+        # progress is made.
         continue
 
 
