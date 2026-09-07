@@ -222,12 +222,23 @@ async function fetchWithTimeout(
   }
 }
 
+let lastFetchFailLog = 0;
 async function pollNextJob(account: string, baseUrl: string): Promise<ToeJob | null> {
   const url = account
     ? `${baseUrl}/toe/next?account=${encodeURIComponent(account)}`
     : `${baseUrl}/toe/next`;
   const res = await fetchWithTimeout(url);
-  if (!res || res.status === 204 || !res.ok) {
+  if (!res) {
+    // Network-level failure (server down, mixed-content block, firewall).
+    // Throttled: this would otherwise spam once per second.
+    const now = Date.now();
+    if (now - lastFetchFailLog > 60000) {
+      lastFetchFailLog = now;
+      log(`cannot reach auth server at ${baseUrl} (fetch failed)`);
+    }
+    return null;
+  }
+  if (res.status === 204 || !res.ok) {
     // If account-specific poll returned 204, try without account as fallback (for multi-account)
     if (account && res?.status === 204) {
       const res2 = await fetchWithTimeout(`${baseUrl}/toe/next`);
@@ -428,6 +439,7 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     log("installToeBridge: no player id on window.Game yet; will retry on first poll");
   }
 
+  let lastNoEngineLog = 0;
   async function loop(): Promise<void> {
     if (stopped) {
       return;
@@ -435,6 +447,12 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     // Only engine frames poll. Non-engine frames stay silent so the server
     // log shows polling if and only if a frame can actually compute.
     if (!hasLocalEngine()) {
+      // Throttled diagnostic: without this, a missing engine is invisible.
+      const now = Date.now();
+      if (now - lastNoEngineLog > 60000) {
+        lastNoEngineLog = now;
+        log("no battle engine in this frame (top/game url=" + location.href + ")");
+      }
       return;
     }
     if (!account) {
