@@ -207,25 +207,33 @@ class PlaywrightBattleEngine:
                     browser.close()
                     raise BridgeError(f"Game not loaded within {self.timeout}s: {exc}") from exc
 
-                # Run the battle in the page context. The JS mirrors toe-bridge.ts computeBattle.
+                # Run the battle in the page context. The JS mirrors toe-bridge.ts
+                # computeBattle (ported from HerowarsHelper's BattleCalc): Haxe
+                # signal subscription, NOT DOM addEventListener.
                 js_battle = json.dumps(battle)
                 result_json = page.evaluate(
                     """(battleJson) => {
+                        const getF = (cls, name) => Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop()[0];
+                        const getFn = (cls, n) => Object.keys(cls)[n];
+                        const getProtoFn = (cls, n) => Object.keys(cls.prototype)[n];
                         const battle = JSON.parse(battleJson);
                         const game = window.Game;
-                        if (!game || !game.BattlePresets || !game.BattleInstantPlay) return null;
-                        const dataStorage = game.DataStorage;
-                        if (!dataStorage) return null;
-                        const presets = new game.BattlePresets([], false, true, undefined, false);
+                        if (!game || !game.BattlePresets || !game.BattleInstantPlay || !game.DataStorage) return null;
+                        const ds = game.DataStorage;
+                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanPvpManual')]();
+                        const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
                         const instant = new game.BattleInstantPlay(battle, presets);
                         return new Promise((resolve) => {
                             let done = null;
-                            instant.addEventListener("complete", (raw) => {
-                                done = { progress: raw.progress || [], result: raw.result || {win:false, stars:0} };
+                            instant[getProtoFn(game.BattleInstantPlay, 9)].add((bi) => {
+                                const results = bi[getF(game.BattleInstantPlay, 'get_result')]();
+                                done = {
+                                    progress: results[getF(game.MultiBattleResult, 'get_progress')]() || [],
+                                    result: results[getF(game.MultiBattleResult, 'get_result')]() || {win:false, stars:0},
+                                };
                                 resolve(JSON.stringify(done));
                             });
-                            const start = instant.start;
-                            if (typeof start === "function") start.call(instant);
+                            instant.start();
                             setTimeout(() => { if (!done) resolve(null); }, 10000);
                         });
                     }""",

@@ -173,6 +173,39 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
   return null;
 }
 
+/**
+ * Minified-name resolvers for the Haxe-compiled game bundle.
+ *
+ * The game mangles method names per build, but keeps a
+ * ``__properties__`` map (minified -> original). These helpers resolve the
+ * current minified key, ported verbatim from HerowarsHelper's working
+ * ``BattleCalc``. Exported for unit tests.
+ */
+export function getF(classF: unknown, nameF: string): string {
+  const props = (classF as { prototype?: { __properties__?: Record<string, string> } })?.prototype?.__properties__ ?? {};
+  const found = Object.entries(props)
+    .filter((e) => e[1] === nameF)
+    .pop();
+  if (!found) throw new Error(`getF: ${nameF} not found`);
+  return found[0];
+}
+
+export function getFn(classF: unknown, nF: number): string {
+  return Object.keys(classF as object)[nF];
+}
+
+export function getProtoFn(classF: unknown, nF: number): string {
+  return Object.keys((classF as { prototype?: object })?.prototype ?? {})[nF];
+}
+
+/** Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE. */
+export function battleConfigFor(battleType: unknown): string {
+  if (typeof battleType === "string" && battleType.includes("titan_arena")) {
+    return "get_titanPvpManual";
+  }
+  return "get_titanPvpManual";
+}
+
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
@@ -235,66 +268,60 @@ async function submitResult(
  * only after such a genuine calc failure on an engine frame.
  */
 async function computeBattle(battle: unknown): Promise<BattleResultPayload | null> {
-  const game = pickGame();
-  if (!game || !game.BattlePresets || !game.BattleInstantPlay) {
+  const game = pickGame() as unknown as Record<string, unknown> | null;
+  if (!game || !game["BattlePresets"] || !game["BattleInstantPlay"]) {
     return null;
   }
   try {
-    // The game's BattleInstantPlay expects:
-    //   new BattlePresets(progress, isReplay, autoOnStart, config, showBothTeams)
-    //   new BattleInstantPlay(battleData, presets)
-    // followed by a single calc() promise we await via the wrapped engine.
-    // We don't have direct access to BattleConfigStorage from this script,
-    // so we rely on the battle.type field (always 'titan_arena' here) and
-    // the global DataStorage. If the bundle is only partially loaded the
-    // engine may throw — we treat that as a calc failure (null) so tick
-    // submits the fast loss instead of hanging.
-    const gw = getGameWindow() as { Game?: { DataStorage?: unknown } };
-    const dataStorage = gw?.Game?.DataStorage;
-    if (!dataStorage) {
-      // Fallback: try pickGame's Game
-      const pg = pickGame() as unknown as { DataStorage?: unknown };
-      if (!pg?.DataStorage) return null;
-    }
-    // Best-effort: the data-storage key for titan arena matches the
-    // 'titan_arena' / 'titan_pvp_manual' type seen in HerowarsHelper's
-    // getBattleType(). Without a guaranteed lookup, fall through to a
-    // generic 'get_titanPvpManual' config; the battle.typeId still drives
-    // the actual simulation inside the engine.
+    // Ported from HerowarsHelper's working BattleCalc:
+    // presets take the battle's own progress plus the titan PvP config from
+    // BattleConfigStorage, the instant play reports via a Haxe signal (NOT
+    // DOM addEventListener), and results come from MultiBattleResult getters.
+    const b = battle as { progress?: unknown; type?: unknown };
+    const dataStorage = game["DataStorage"] as Record<string, unknown>;
+    const configStorageKey = getFn(dataStorage, 25);
+    const dataStores = dataStorage as unknown as Record<string, Record<string, () => unknown>>;
+    const config = dataStores[configStorageKey][getF(game["BattleConfigStorage"], battleConfigFor(b.type))]();
     const presets = new (
-      game.BattlePresets as new (
+      game["BattlePresets"] as new (
         progress: unknown,
         isReplay: boolean,
         autoOnStart: boolean,
         config: unknown,
         showBothTeams: boolean,
       ) => unknown
-    )([], false, true, undefined, false);
-    const instant = new (game.BattleInstantPlay as new (data: unknown, presets: unknown) => {
-      addEventListener(type: string, listener: (event: unknown) => void): void;
-    })(battle, presets);
+    )(b.progress ?? [], false, true, config, false);
+    const BattleInstantPlay = game["BattleInstantPlay"] as new (
+      data: unknown,
+      presets: unknown,
+    ) => Record<string, unknown>;
+    const instant: Record<string, unknown> =
+      Array.isArray(b.progress) && (b.progress as unknown[]).length > 1 && game["MultiBattleInstantReplay"]
+        ? new (game["MultiBattleInstantReplay"] as new (data: unknown, presets: unknown) => Record<string, unknown>)(
+            battle,
+            presets,
+          )
+        : new BattleInstantPlay(battle, presets);
     let result: BattleResultPayload | null = null;
     return new Promise<BattleResultPayload | null>((resolve) => {
       try {
-        instant.addEventListener("complete", (raw: unknown) => {
-          // The game's on-complete delivers a single object; we only need
-          // the array of progress rounds and the result.
-          const r = raw as { progress?: BattleProgress[]; result?: { win: boolean; stars: number } };
-          result = {
-            progress: r.progress ?? [],
-            result: r.result ?? { win: false, stars: 0 },
+        const signal = instant[getProtoFn(game["BattleInstantPlay"], 9)] as {
+          add: (cb: (bi: unknown) => void) => void;
+        };
+        signal.add((battleInstant: unknown) => {
+          const bi = battleInstant as Record<string, () => unknown>;
+          const getters = bi[getF(game["BattleInstantPlay"], "get_result")]() as Record<string, () => unknown>;
+          const progress = getters[getF(game["MultiBattleResult"], "get_progress")]() as BattleProgress[];
+          const res = getters[getF(game["MultiBattleResult"], "get_result")]() as {
+            win: boolean;
+            stars: number;
           };
+          result = { progress: progress ?? [], result: res ?? { win: false, stars: 0 } };
           resolve(result);
         });
-        // Drive the simulation. The game engine kicks off as soon as the
-        // listener is registered. We don't have a single public 'start' on
-        // every Haxe build, so we fall back to invoking it if exposed.
-        const start = (instant as { start?: () => void }).start;
-        if (typeof start === "function") {
-          start.call(instant);
-        }
+        (instant["start"] as () => void).call(instant);
         // Safety timeout: if the engine never completes, resolve null so
-        // Python falls back to its estimator instead of hanging.
+        // tick submits the fast loss instead of hanging.
         setTimeout(() => {
           if (result === null) {
             log("computeBattle: engine timed out without completing");

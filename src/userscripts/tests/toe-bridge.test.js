@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
+import { battleConfigFor, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -67,6 +67,22 @@ test("safeGameOf returns Game or the object itself without throwing", () => {
   assert.deepStrictEqual(safeGameOf({}), {});
   assert.strictEqual(safeGameOf(null), null);
   assert.strictEqual(safeGameOf(undefined), undefined);
+});
+
+test("getF resolves minified key via __properties__", () => {
+  const cls = { prototype: { __properties__: { a1: "get_result", b2: "other" } } };
+  assert.strictEqual(getF(cls, "get_result"), "a1");
+  assert.throws(() => getF(cls, "missing"), /not found/);
+});
+
+test("getFn/getProtoFn resolve by ordinal", () => {
+  assert.strictEqual(getFn({ x: 1, y: 2 }, 1), "y");
+  assert.strictEqual(getProtoFn({ prototype: { p: 1, q: 2 } }, 0), "p");
+});
+
+test("battleConfigFor maps titan_arena to manual PvP", () => {
+  assert.strictEqual(battleConfigFor("titan_arena"), "get_titanPvpManual");
+  assert.strictEqual(battleConfigFor("titan_arena_wall"), "get_titanPvpManual");
 });
 
 test("safeGameOf swallows cross-origin access throws", () => {
