@@ -416,3 +416,50 @@ def test_run_rivals_treats_beaten_already_as_cleared(mock_client, mock_sleep, mo
     client, _ = mock_client
     results = _run_rivals(client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), threshold=250, stop_on_first_loss=False)
     assert results == [{"rivalId": "-1", "win": True, "already_cleared": True}]
+
+
+def test_resolve_team_rotation_saved_first_and_deduped(mock_client, mock_sleep):
+    from hw_genie.commands.titan_arena import _resolve_team_rotation
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [4044, 4012, 4013, 4043, 4010]}}),
+    ]
+    rotation = _resolve_team_rotation(client, None)
+    # Saved team first; identical static entry skipped, rest in order
+    assert rotation[0] == [4044, 4012, 4013, 4043, 4010]
+    assert [4044, 4013, 4043, 4014, 4010] in rotation
+    assert [4042, 4013, 4043, 4014, 4010] in rotation
+    assert [4012, 4042, 4013, 4043, 4010] in rotation
+    assert len(rotation) == 4  # saved + 3 non-duplicate static teams
+
+
+def test_resolve_team_rotation_explicit_is_single(mock_client, mock_sleep):
+    from hw_genie.commands.titan_arena import _resolve_team_rotation
+
+    client, _ = mock_client
+    assert _resolve_team_rotation(client, [1, 2, 3, 4, 5]) == [[1, 2, 3, 4, 5]]
+
+
+def test_run_rivals_tries_next_team_after_loss(mock_client, mock_sleep, mocker):
+    """A loss moves to the next rotation team; a win stops the rotation."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    seen = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        seen.append(list(titans))
+        win = titans[0] == 9
+        return {"estimate": MagicMock(win=win)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]],
+    )
+    assert seen == [[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]]
+    assert results[-1]["win"] is True
+    assert results[-1]["team"] == [9, 9, 9, 9, 9]

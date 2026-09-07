@@ -38,6 +38,34 @@ def fetch_titan_arena_status(client: HWClient) -> dict[str, Any]:
 
 AUTO_RIVAL_SCORE_THRESHOLD = 250
 
+# Static team rotation tried in order after the saved team when --titans is
+# omitted. Entries are 5 titan IDs; the saved team (teamGetAll.titan_arena)
+# always goes first and duplicates are skipped.
+STATIC_TEAM_ROTATION: list[list[int]] = [
+    [4044, 4012, 4013, 4043, 4010],
+    [4044, 4013, 4043, 4014, 4010],
+    [4042, 4013, 4043, 4014, 4010],
+    [4012, 4042, 4013, 4043, 4010],
+]
+
+
+def _resolve_team_rotation(client: HWClient, titans: list[int] | None) -> list[list[int]]:
+    """Build the per-rival team rotation.
+
+    Explicit ``--titans`` → that team only (legacy single-team behavior).
+    Omitted → saved team first, then :data:`STATIC_TEAM_ROTATION` in order,
+    skipping duplicates of the saved team.
+    """
+    if titans is not None:
+        validated = _resolve_titans(client, titans)
+        return [validated]
+    saved = _resolve_titans(client, None)
+    rotation = [saved]
+    for team in STATIC_TEAM_ROTATION:
+        if [int(t) for t in team] not in rotation:
+            rotation.append([int(t) for t in team])
+    return rotation
+
 
 def _select_auto_rivals(status: dict, threshold: int = AUTO_RIVAL_SCORE_THRESHOLD) -> list[str]:
     rivals = status.get("rivals") or {}
@@ -314,9 +342,11 @@ def run_titan_arena_tier(
         client = client_or_headers
 
     engine = engine or PythonBattleEngine()
-    titans = _resolve_titans(client, titans)
+    rotation = _resolve_team_rotation(client, titans)
+    titans = rotation[0]
     summary: dict[str, Any] = {
         "titans": titans,
+        "rotation": rotation,
         "engine": type(engine).__name__,
         "rival_results": [],
         "raid_results": [],
@@ -350,7 +380,10 @@ def run_titan_arena_tier(
                 _complete_tier(client, summary)
                 continue
 
-        rival_results = _run_rivals(client, status, titans, engine, attack_score_threshold, stop_on_first_loss)
+        rival_results = _run_rivals(
+            client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
+            team_rotation=rotation,
+        )
         summary["rival_results"].extend(rival_results)
         if not rival_results:
             print(f"{Emojis.INFO}No rivals to attack (threshold={attack_score_threshold})", flush=True)
@@ -487,17 +520,23 @@ def _run_rivals(
     threshold: int,
     stop_on_first_loss: bool,
     max_attempts_per_rival: int = 3,
+    team_rotation: list[list[int]] | None = None,
 ) -> list[dict[str, Any]]:
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
         return []
+    # Attempt plan per rival: explicit/single-team callers repeat the one team
+    # (legacy Invalid retry); a rotation tries each team once in order, so an
+    # Invalid battle retries with both a fresh seed AND a fresh team.
+    if team_rotation is None:
+        attempt_plan = [titans] * max(1, max_attempts_per_rival)
+    else:
+        attempt_plan = list(team_rotation) or [titans]
     results: list[dict[str, Any]] = []
     for rival_id in finish_targets:
-        attempts = 0
-        while True:
-            attempts += 1
+        for attempt_no, team in enumerate(attempt_plan, start=1):
             try:
-                res = run_titan_arena(client, rival_id=rival_id, titans=titans, engine=engine)
+                res = run_titan_arena(client, rival_id=rival_id, titans=team, engine=engine)
             except Exception as exc:  # pragma: no cover - defensive
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)
@@ -511,19 +550,25 @@ def _run_rivals(
                 else:
                     results.append({"rivalId": str(rival_id), "win": False, "start_error": res.get("error")})
                 break
-            if res.get("end_error") == "Invalid battle" and attempts < max_attempts_per_rival:
+            if res.get("end_error") == "Invalid battle" and attempt_no < len(attempt_plan):
                 print(
-                    f"  - rival {rival_id}: Invalid battle, retrying with a fresh seed "
-                    f"({attempts}/{max_attempts_per_rival})...",
+                    f"  - rival {rival_id}: Invalid battle, retrying with team {attempt_no + 1}/{len(attempt_plan)}...",
                     flush=True,
                 )
                 continue
             est = res.get("estimate")
             win = bool(est and getattr(est, "win", False))
-            results.append({"rivalId": str(rival_id), "win": win, "end_error": res.get("end_error")})
-            if not win and stop_on_first_loss:
+            entry: dict[str, Any] = {"rivalId": str(rival_id), "win": win, "team": team}
+            if res.get("end_error"):
+                entry["end_error"] = res.get("end_error")
+            results.append(entry)
+            if win:
+                break
+            if stop_on_first_loss:
                 return results
-            break
+            # Loss with more teams left: try the next team.
+            if attempt_no < len(attempt_plan):
+                print(f"  - rival {rival_id}: loss, trying next team ({attempt_no + 1}/{len(attempt_plan)})...", flush=True)
     return results
 
 
