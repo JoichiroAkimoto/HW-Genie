@@ -458,8 +458,76 @@ def test_run_rivals_tries_next_team_after_loss(mock_client, mock_sleep, mocker):
     results = _run_rivals(
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
-        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]],
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1,
     )
     assert seen == [[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]]
     assert results[-1]["win"] is True
     assert results[-1]["team"] == [9, 9, 9, 9, 9]
+
+
+def test_run_titan_arena_end_on_loss_false_abandons(mock_client, mock_sleep):
+    """With end_on_loss=False, a losing sim skips EndBattle entirely."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    losing_battle = {
+        "type": "titan_arena",
+        "seed": 1,
+        "attackers": {"1": {"power": 1, "hp": 10}},
+        "defenders": [{"2": {"power": 1000000, "hp": 1000000}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": losing_battle}}),
+    ]
+    res = run_titan_arena(
+        client, rival_id="-1", titans=[1, 2, 3, 4, 5],
+        engine=PythonBattleEngine(), end_on_loss=False,
+    )
+    assert res.get("abandoned") is True
+    assert res["estimate"].win is False
+    assert mock_call.call_count == 1  # StartBattle only, no EndBattle
+
+
+def test_run_titan_arena_end_on_loss_default_sends_endbattle(mock_client, mock_sleep):
+    """Default keeps legacy behavior: EndBattle is sent even on loss."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    losing_battle = {
+        "type": "titan_arena",
+        "seed": 1,
+        "attackers": {"1": {"power": 1, "hp": 10}},
+        "defenders": [{"2": {"power": 1000000, "hp": 1000000}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": losing_battle}}),
+        _ok({"response": {"attackScore": 10}}),
+    ]
+    res = run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert res.get("abandoned") is None
+    assert mock_call.call_count == 2
+
+
+def test_run_rivals_retries_next_seed_on_abandon(mock_client, mock_sleep, mocker):
+    """Abandoned seeds advance the plan; a later win stops the rival."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    seen = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        seen.append((list(titans), end_on_loss))
+        if len(seen) == 1:
+            return {"estimate": MagicMock(win=False), "abandoned": True}
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+    )
+    assert len(seen) == 2
+    assert all(e is False for _, e in seen)
+    assert results[-1]["win"] is True

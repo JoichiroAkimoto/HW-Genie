@@ -565,6 +565,7 @@ def cmd_toe_run(args):
         engine=engine,
         attack_score_threshold=args.threshold,
         stop_on_first_loss=bool(args.stop_on_loss),
+        seeds_per_team=int(getattr(args, "seeds", 2) or 2),
     )
 
 
@@ -1223,6 +1224,12 @@ def main():
         "--stop-on-loss",
         action="store_true",
         help="Abort the tier on the first rival loss (per-rival mode only)",
+    )
+    p_toe_run.add_argument(
+        "--seeds",
+        type=int,
+        default=2,
+        help="Seeds tried per team per rival (each seed = fresh StartBattle; losses are abandoned without EndBattle)",
     )
     p_toe_run.set_defaults(func=cmd_toe_run)
     p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")

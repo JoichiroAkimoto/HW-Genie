@@ -102,7 +102,7 @@ class JsBridgeBattleEngine:
     back to the Python estimator or abort the tier.
     """
 
-    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 1.0, timeout: float = 30.0):
+    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 0.25, timeout: float = 30.0):
         self.auth_server_url = auth_server_url.rstrip("/")
         self.user_id = user_id
         self.poll_interval = poll_interval
