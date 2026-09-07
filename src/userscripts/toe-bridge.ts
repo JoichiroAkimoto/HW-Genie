@@ -96,6 +96,7 @@ export function ensureEngineBridge(): void {
       try {
         const prev = Object.getOwnPropertyDescriptor(Object.prototype, prop);
         if (prev && (prev.set || prev.get)) {
+          log(`trap for ${name}: already owned, skipping`);
           continue; // Owned by HWH's traps — it populates shared window.Game.
         }
         Object.defineProperty(Object.prototype, prop, {
@@ -105,6 +106,7 @@ export function ensureEngineBridge(): void {
               const bridge = gameBridge();
               if (!bridge[name]) {
                 bridge[name] = value;
+                log(`captured ${name}`);
               }
             } catch {}
             this[prop + "_"] = value;
