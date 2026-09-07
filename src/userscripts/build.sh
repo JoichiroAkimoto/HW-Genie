@@ -13,12 +13,11 @@ INJECT_UPDATE_URL=""
 BUN_MINIFY=""
 
 # エントリ定義: "source:basename:expected-run-at"
-# - auth capture は HW Goodwin 共存のため document-idle を維持
-# - ToE ブリッジは document-start 必須（バンドル実行時のクラス登録を
-#   Object.prototype トラップで捕捉するため。idle では間に合わない）
+# 単一スクリプト構成。@run-at は document-start で ToE トラップを
+# バンドル実行前に仕掛け、XHR フック等は DOMContentLoaded まで遅延させて
+# HW Goodwin と共存する（詳細は index.ts）。
 ENTRIES=(
-  "index.ts:hw-genie-auth-capture.user.js:document-idle"
-  "toe-bridge.entry.ts:hw-genie-toe-bridge.user.js:document-start"
+  "index.ts:hw-genie-auth-capture.user.js:document-start"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -82,11 +81,7 @@ build_entry() {
 
   if [[ "$VARIANT" == "dev" ]]; then
     # 並行インストール用に @name / @namespace を Dev 版に置換
-    if [[ "$basename" == hw-genie-auth-capture.user.js ]]; then
-      dev_name="HW-Genie Auth Capture (Dev)"
-    else
-      dev_name="HW-Genie ToE Bridge (Dev)"
-    fi
+    dev_name="HW-Genie Auth Capture (Dev)"
     output="${output%.user.js}-dev.user.js"
   fi
 

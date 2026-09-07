@@ -516,6 +516,7 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   }
 
   let lastNoEngineLog = 0;
+  let engineLogged = false;
   async function loop(): Promise<void> {
     if (stopped) {
       return;
@@ -523,6 +524,7 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     // Only engine frames poll. Non-engine frames stay silent so the server
     // log shows polling if and only if a frame can actually compute.
     if (!hasLocalEngine()) {
+      engineLogged = false;
       // Throttled diagnostic: without this, a missing engine is invisible.
       const now = Date.now();
       if (now - lastNoEngineLog > 60000) {
@@ -530,6 +532,10 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
         log("no battle engine in this frame (top/game url=" + location.href + ")");
       }
       return;
+    }
+    if (!engineLogged) {
+      engineLogged = true;
+      log("battle engine detected, polling active");
     }
     if (!account) {
       account = readAccount();

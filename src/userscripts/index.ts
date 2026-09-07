@@ -9,7 +9,7 @@
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
-// @run-at       document-idle
+// @run-at       document-start
 // @downloadURL  __DOWNLOAD_URL__
 // @updateURL    __UPDATE_URL__
 // ==/UserScript==
@@ -45,9 +45,11 @@ import {
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
-// NOTE: ToE ブリッジは別エントリ（toe-bridge.entry.ts → dist/hw-genie-toe-bridge.user.js）
-// に分離済み。ブリッジは document-start での起動が必須だが、本スクリプトは
-// HW Goodwin 共存のため document-idle を維持する必要がある。両方をインストールする。
+// ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
+// ポーラー。auth server の /toe/* キューを介して Python CLI から依頼される。
+// document-start ですぐトラップだけ仕掛け、XHR フック等は従来通り idle 相当
+// まで遅延させる（HW Goodwin 共存のため）。
+import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
 
 (() => {
   "use strict";
@@ -186,16 +188,22 @@ import type { SessionState } from "./session";
     setInterval(trySend, POLL_INTERVAL_MS);
   }
 
-  // Install the XHR interceptor at document-idle (see @run-at). Running at
-  // document-start would replace XMLHttpRequest.prototype.open before other
-  // userscripts (e.g. HW Goodwin) install their own XHR wrappers, breaking
-  // their request/response hooks and hiding their UI. At document-idle the
-  // other scripts have already wrapped the prototypes, and resolving
-  // setRequestHeader per-call keeps their wrappers in the chain.
+  function startToeBridge() {
+    // ゲーム本編のタブでのみ engine 検出→poll 開始。landing 等では
+    // 1回/分の診断ログのみ出る。
+    installToeBridge({ authServerUrl: AUTH_SERVER_URL });
+  }
+
+  // Install the XHR interceptor on DOMContentLoaded (not at script
+  // evaluation). Installing at document-start would replace
+  // XMLHttpRequest.prototype.open before other userscripts (e.g. HW
+  // Goodwin) install their own XHR wrappers, breaking their
+  // request/response hooks and hiding their UI. Deferred install keeps
+  // their wrappers in the chain (setRequestHeader is resolved per-call).
   //
-  // 既知の制限: document-idle より前のゲーム初期 API 呼び出しは捕捉されない
-  // が、以降の API 呼び出しで同一の x-auth-* ヘッダーが再設定されるため、
-  // ポーリングが拾って実用上回復する。
+  // 既知の制限: DOMContentLoaded より前のゲーム初期 API 呼び出しは捕捉
+  // されないが、以降の API 呼び出しで同一の x-auth-* ヘッダーが再設定
+  // されるため、ポーリングが拾って実用上回復する。
   function installInterceptor() {
     installXhrInterceptor(
       (urlString: string) => isApiUrl(urlString, window.location.href),
@@ -203,16 +211,20 @@ import type { SessionState } from "./session";
     );
   }
 
-  // @run-at document-idle により、通常は readyState === "complete" で到達する。
-  // document-start 相当への変更があった場合に備えて readyState を確認し、
-  // まだ読み込み中なら DOMContentLoaded まで遅延する（安全側に倒す）。
+  // document-start で即時に ToE トラップだけ仕掛ける（バンドル実行前に
+  // 間に合わせるため）。XHR フック・送信ポーリング・ToE poll は従来通り
+  // DOMContentLoaded 以降に遅延させ、HW Goodwin 等のラッパーと共存する。
+  ensureEngineBridge();
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
       installInterceptor();
       startPolling();
+      startToeBridge();
     });
   } else {
     installInterceptor();
     startPolling();
+    startToeBridge();
   }
 })();
