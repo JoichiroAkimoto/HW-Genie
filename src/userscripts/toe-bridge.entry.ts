@@ -38,5 +38,6 @@ import { installToeBridge } from "./toe-bridge";
 
   const AUTH_SERVER_URL = "http://localhost:8765";
 
+  console.log("[HW-Genie/ToE] bridge script loaded (document-start)");
   installToeBridge({ authServerUrl: AUTH_SERVER_URL });
 })();
