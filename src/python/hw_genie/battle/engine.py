@@ -138,17 +138,34 @@ class JsBridgeBattleEngine:
                 with urllib.request.urlopen(poll_req, timeout=5) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
                 if payload.get("status") == "done":
-                    result = payload.get("result") or {}
-                    return BattleEstimate(
-                        win=bool(result.get("win")),
-                        stars=int(result.get("stars", 0)),
-                        progress=result.get("progress") or [],
-                    )
+                    return battle_estimate_from_bridge_result(payload.get("result") or {})
             raise BridgeTimeoutError(f"userscript did not finish battle within {self.timeout}s")
         except BridgeError:
             raise
         except Exception as exc:
             raise BridgeError(str(exc)) from exc
+
+
+def battle_estimate_from_bridge_result(envelope: dict[str, Any]) -> BattleEstimate:
+    """Unwrap a userscript-submitted bridge result into a :class:`BattleEstimate`.
+
+    The userscript posts ``{"progress": [...], "result": {"win": bool,
+    "stars": int}}`` and the auth server stores that object verbatim as the
+    job ``result``. Unwrap the inner ``result`` for win/stars and take
+    ``progress`` from the envelope top level. A flat ``{"win", "stars",
+    "progress"}`` dict is also accepted for backwards compatibility.
+    """
+    if isinstance(envelope.get("result"), dict):
+        inner = envelope["result"]
+        progress = envelope.get("progress")
+    else:
+        inner = envelope
+        progress = envelope.get("progress")
+    return BattleEstimate(
+        win=bool(inner.get("win")),
+        stars=int(inner.get("stars", 0)),
+        progress=progress or [],
+    )
 
 
 class BridgeError(RuntimeError):

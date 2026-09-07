@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from hw_genie.battle.engine import (
     BattleEstimate,
     PythonBattleEngine,
+    battle_estimate_from_bridge_result,
     estimate_battle,
     get_default_engine,
 )
@@ -111,3 +112,24 @@ def test_select_auto_rivals_threshold_boundary():
     }
     assert _select_auto_rivals(status) == ["a"]
     assert _select_auto_rivals(status, threshold=251) == ["a", "b"]
+
+
+def test_battle_estimate_from_bridge_result_unwraps_envelope():
+    """Regression: the userscript posts {progress, result:{win,stars}} and the
+    auth server stores it verbatim. The engine must unwrap one level —
+    previously it read win/stars off the envelope (always False/0) while
+    sending the real progress, which the server rejected as Invalid battle."""
+    progress = [{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}]
+    est = battle_estimate_from_bridge_result(
+        {"progress": progress, "result": {"win": True, "stars": 2}}
+    )
+    assert est.win is True
+    assert est.stars == 2
+    assert est.progress == progress
+
+
+def test_battle_estimate_from_bridge_result_accepts_flat_dict():
+    est = battle_estimate_from_bridge_result(
+        {"win": True, "stars": 3, "progress": [{"r": 1}]}
+    )
+    assert (est.win, est.stars, est.progress) == (True, 3, [{"r": 1}])
