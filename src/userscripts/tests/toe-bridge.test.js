@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { battleConfigFor, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
+import { battleConfigFor, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -99,4 +99,40 @@ test("safeGameOf swallows cross-origin access throws", () => {
     },
   );
   assert.strictEqual(safeGameOf(evil), undefined);
+});
+
+test("ensureEngineBridge is a safe no-op without a DOM", () => {
+  // bun/node env: no window global must not throw.
+  assert.strictEqual(ensureEngineBridge(), undefined);
+});
+
+test("ensureEngineBridge captures class registration via traps", () => {
+  const prevWindow = globalThis.window;
+  const props = [
+    "game.battle.controller.thread.BattlePresets",
+    "game.battle.controller.instant.BattleInstantPlay",
+    "game.battle.controller.instant.MultiBattleInstantReplay",
+    "game.battle.controller.MultiBattleResult",
+    "game.data.storage.DataStorage",
+    "game.data.storage.battle.BattleConfigStorage",
+  ];
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    function FakePresets() {}
+    const holder = {};
+    // Simulate the Haxe bundle registering the class on some object.
+    holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
+    assert.strictEqual(globalThis.window.Game["BattlePresets"], FakePresets);
+    // Game keeps working: the value is readable back through the trap.
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+  } finally {
+    for (const p of props) {
+      try {
+        delete Object.prototype[p];
+      } catch {}
+    }
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
 });

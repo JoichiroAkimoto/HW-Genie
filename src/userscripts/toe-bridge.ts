@@ -45,6 +45,79 @@ function log(msg: string, ...args: unknown[]): void {
   console.log(`[HW-Genie/ToE] ${msg}`, ...args);
 }
 
+/**
+ * Minimal port of HerowarsHelper's ``connectGame``: the Haxe game bundle
+ * does NOT publish ``window.Game`` by itself — HWH creates that global and
+ * captures classes by trapping assignments of well-known Haxe class paths
+ * (``game.battle.controller.thread.BattlePresets``, ...) via setters on
+ * ``Object.prototype``. Without HWH (e.g. HW Goodwin only), no frame ever
+ * sees an engine, so this bridge installs the same traps for the small set
+ * of classes battle calc needs.
+ *
+ * Coexistence rules (order-independent):
+ * - If a populated ``window.Game`` already exists (HWH active), do nothing.
+ * - If a target prop already has a setter on ``Object.prototype`` (HWH's
+ *   traps installed after us), skip that prop — HWH populates the shared
+ *   ``window.Game`` which ``pickGame`` also reads.
+ * - Captured values are stored back as ``prop + '_'`` (HWH-compatible) so
+ *   the game keeps working.
+ *
+ * Timing note: traps catch class registration while the bundle executes.
+ * On an already-booted tab (bundle long ran) they miss — reload the tab
+ * once with this script active (HWH off, Goodwin on is fine).
+ */
+const ENGINE_CLASS_PATHS: ReadonlyArray<{ name: string; prop: string }> = [
+  { name: "BattlePresets", prop: "game.battle.controller.thread.BattlePresets" },
+  { name: "BattleInstantPlay", prop: "game.battle.controller.instant.BattleInstantPlay" },
+  { name: "MultiBattleInstantReplay", prop: "game.battle.controller.instant.MultiBattleInstantReplay" },
+  { name: "MultiBattleResult", prop: "game.battle.controller.MultiBattleResult" },
+  { name: "DataStorage", prop: "game.data.storage.DataStorage" },
+  { name: "BattleConfigStorage", prop: "game.data.storage.battle.BattleConfigStorage" },
+];
+
+function gameBridge(): Record<string, unknown> {
+  const w = window as unknown as { Game?: unknown };
+  if (!w.Game || typeof w.Game !== "object") {
+    w.Game = {};
+  }
+  return w.Game as Record<string, unknown>;
+}
+
+export function ensureEngineBridge(): void {
+  if (typeof window === "undefined" || typeof Object.defineProperty !== "function") {
+    return;
+  }
+  try {
+    const existing = (window as unknown as { Game?: Record<string, unknown> }).Game;
+    if (existing && existing["BattlePresets"]) {
+      return; // HWH (or a previous install) already exposes the engine.
+    }
+    for (const { name, prop } of ENGINE_CLASS_PATHS) {
+      try {
+        const prev = Object.getOwnPropertyDescriptor(Object.prototype, prop);
+        if (prev && (prev.set || prev.get)) {
+          continue; // Owned by HWH's traps — it populates shared window.Game.
+        }
+        Object.defineProperty(Object.prototype, prop, {
+          configurable: true,
+          set(this: Record<string, unknown>, value: unknown) {
+            try {
+              const bridge = gameBridge();
+              if (!bridge[name]) {
+                bridge[name] = value;
+              }
+            } catch {}
+            this[prop + "_"] = value;
+          },
+          get(this: Record<string, unknown>) {
+            return this[prop + "_"];
+          },
+        });
+      } catch {}
+    }
+  } catch {}
+}
+
 function getCandidateWindows(): unknown[] {
   // Single enumeration of every window context the game may live in: the
   // local frame, userscript sandboxes, the top frame, and child frames.
@@ -388,6 +461,9 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   const interval = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
   let stopped = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+
+  // Capture game classes as the bundle registers them (HWH-independent).
+  ensureEngineBridge();
 
   // The script needs to know which account to claim jobs for. We pull it
   // from the game's user object so the user doesn't have to configure it.
