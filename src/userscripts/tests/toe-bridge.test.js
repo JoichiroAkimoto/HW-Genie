@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { battleConfigFor, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
+import { battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -140,4 +140,32 @@ test("ensureEngineBridge captures class registration via traps", () => {
 test("realmDiag reports without throwing in bare env", () => {
   const line = realmDiag();
   assert.match(line, /trapsOwned=\d+ captured=\d+ engine=false/);
+});
+
+test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
+  const prevWindow = globalThis.window;
+  // Frozen window: gameBridge() cannot attach Game, but the trap's own
+  // capturedClasses store must still receive the class.
+  globalThis.window = Object.freeze({});
+  const props = [
+    "game.battle.controller.thread.BattlePresets",
+    "game.battle.controller.instant.BattleInstantPlay",
+    "game.data.storage.DataStorage",
+  ];
+  try {
+    ensureEngineBridge();
+    function FakePresets() {}
+    const holder = {};
+    holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+  } finally {
+    for (const p of props) {
+      try {
+        delete Object.prototype[p];
+      } catch {}
+    }
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
 });

@@ -77,6 +77,30 @@ const ENGINE_CLASS_PATHS: ReadonlyArray<{ name: string; prop: string }> = [
 
 const bridgeDiag = { owned: 0, captured: 0 };
 
+/**
+ * Class references captured by our own traps, keyed by short name.
+ *
+ * This is the primary engine source — NOT ``window.Game``. Trap setters
+ * run in the same realm that later computes, so refs stored here are always
+ * readable, regardless of which object ``window.Game`` points at (or whether
+ * another script replaced it). ``window.Game`` is still updated
+ * best-effort for visibility/debugging.
+ */
+const capturedClasses: Record<string, unknown> = {};
+
+/** Names captured so far (for diagnostics/tests). */
+export function capturedClassNames(): string[] {
+  return Object.keys(capturedClasses);
+}
+
+function capturedEngine(): Record<string, unknown> | null {
+  const g = capturedClasses as Record<string, unknown>;
+  if (g["BattlePresets"] && g["BattleInstantPlay"] && g["DataStorage"]) {
+    return g;
+  }
+  return null;
+}
+
 function gameBridge(): Record<string, unknown> {
   const w = window as unknown as { Game?: unknown };
   if (!w.Game || typeof w.Game !== "object") {
@@ -102,7 +126,7 @@ export function realmDiag(): string {
   }
   return (
     `realm url=${href} trapsOwned=${bridgeDiag.owned} captured=${bridgeDiag.captured} ` +
-    `engine=${hasLocalEngine()} gameKeys=[${gameKeys}]`
+    `engine=${hasLocalEngine()} gameKeys=[${gameKeys}] capturedKeys=[${capturedClassNames().join(",")}]`
   );
 }
 
@@ -127,11 +151,16 @@ export function ensureEngineBridge(): void {
           configurable: true,
           set(this: Record<string, unknown>, value: unknown) {
             try {
+              if (!capturedClasses[name]) {
+                capturedClasses[name] = value;
+                bridgeDiag.captured += 1;
+                log(`captured ${name}`);
+              }
+            } catch {}
+            try {
               const bridge = gameBridge();
               if (!bridge[name]) {
                 bridge[name] = value;
-                bridgeDiag.captured += 1;
-                log(`captured ${name}`);
               }
             } catch {}
             this[prop + "_"] = value;
@@ -201,6 +230,7 @@ export function hasBattleEngine(game: unknown): boolean {
  * Exported for unit tests (see ``tests/toe-bridge.test.js``).
  */
 export function hasLocalEngine(): boolean {
+  if (capturedEngine()) return true;
   for (const c of getCandidateWindows()) {
     try {
       const g = (c as { Game?: unknown })?.Game;
@@ -243,6 +273,13 @@ function getGameWindow(): unknown {
 }
 
 function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | null {
+  // Primary source: classes captured by our own traps (same-realm refs —
+  // always readable). Falls back to scanning window contexts for a shared
+  // ``Game`` object (e.g. populated by HWH).
+  const direct = capturedEngine();
+  if (direct) {
+    return direct as { BattlePresets?: unknown; BattleInstantPlay?: unknown };
+  }
   // The game exposes the bridge classes through the global ``Game`` object
   // once its JS bundle has loaded (any game page; no Titan Arena navigation
   // is required). Only frames whose local ``Game`` carries the battle classes
