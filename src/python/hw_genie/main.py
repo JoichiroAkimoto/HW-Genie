@@ -802,6 +802,8 @@ def cmd_multi(args):
         summarize_asgard_shop,
         summarize_consumable,
         summarize_quests,
+        summarize_toe,
+        toe_routine,
     )
 
     mode = args.mode
@@ -815,7 +817,7 @@ def cmd_multi(args):
     if mode not in ("quests", "consumable") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests' and 'consumable' modes "
-            "(daily/full/asgard-shop routines always execute their operations).",
+            "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -832,6 +834,17 @@ def cmd_multi(args):
             lib_ids=args.lib, method_override=args.method, dry_run=dry_run
         )
         max_parallel = 1 if dry_run else args.parallel
+    elif mode == "toe":
+        routine = toe_routine(
+            engine=getattr(args, "engine", "hybrid") or "hybrid",
+            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            threshold=int(getattr(args, "threshold", 250) or 250),
+        )
+        # bridge の job キューは account 照合だがフォールバック claim が他アカの
+        # job を拾う恐れがあるため逐次実行に固定する。
+        if args.parallel not in (None, 1):
+            print("Note: multi toe always runs sequentially (max_parallel=1).", file=sys.stderr)
+        max_parallel = 1
     else:
         routine = partial(
             full_routine if mode == "full" else daily_routine,
@@ -855,6 +868,8 @@ def cmd_multi(args):
                 failed = summarize_asgard_shop(results.items())
             elif mode == "consumable":
                 failed = summarize_consumable(results.items(), dry_run=dry_run)
+            elif mode == "toe":
+                failed = summarize_toe(results.items())
             else:
                 failed = summarize(results.items())
     except BaseException as exc:
@@ -945,6 +960,15 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "toe":
+        if isinstance(result, dict):
+            if result.get("errors"):
+                return f"{len(result['errors'])} toe error(s)"
+            wins = sum(1 for r in result.get("rival_results", []) if r.get("win"))
+            if not wins and not result.get("completed_tier"):
+                return "no rival cleared"
+            return None
+        return "toe result unavailable"
     # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
     from hw_genie.core.client import PlayerStatus
 
@@ -1282,10 +1306,28 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear, sequential)",
+    )
+    p_multi.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid", "playwright"],
+        default="hybrid",
+        help="Battle engine for the 'toe' mode (default: hybrid)",
+    )
+    p_multi.add_argument(
+        "--seeds",
+        type=int,
+        default=2,
+        help="Seeds tried per team per rival for the 'toe' mode (default: 2)",
+    )
+    p_multi.add_argument(
+        "--threshold",
+        type=int,
+        default=250,
+        help="attackScore threshold for the 'toe' mode (default: 250 = cleared)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

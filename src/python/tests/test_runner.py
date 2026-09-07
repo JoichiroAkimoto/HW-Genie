@@ -1371,3 +1371,59 @@ def test_cmd_multi_daily_threads_iterations(monkeypatch):
     main.cmd_multi(args)
     assert captured["routine"].func is runner.daily_routine
     assert captured["routine"].keywords["item_max_iterations"] == 9
+
+
+def test_toe_routine_runs_tier_with_rotation(monkeypatch):
+    """toe_routine drives run_titan_arena_tier with saved-team rotation."""
+    from hw_genie import runner
+
+    calls = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, **kw):
+        calls["titans"] = titans
+        calls["engine"] = type(engine).__name__
+        calls["threshold"] = attack_score_threshold
+        calls["seeds"] = seeds_per_team
+        return {"rival_results": [{"win": True}], "errors": [], "completed_tier": True, "daily_reward": "claimed"}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    res = runner.toe_routine(engine="hybrid", seeds_per_team=3, threshold=200)(FakeClient(), "Joe")
+    assert calls == {"titans": None, "engine": "JsBridgeBattleEngine", "threshold": 200, "seeds": 3}
+    assert res["completed_tier"] is True
+
+
+def test_summarize_toe_counts():
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": True}], "errors": [], "completed_tier": True, "daily_reward": "claimed"}, None)),
+        ("b", ({"rival_results": [{"win": False}], "errors": [], "completed_tier": False, "daily_reward": None}, None)),
+        ("c", (None, RuntimeError("x"))),
+    ]
+    assert summarize_toe(results) == 2
+
+
+def test_cmd_multi_toe_forces_sequential(monkeypatch):
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallel"] = max_parallel
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250},
+    )()
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(args)
+    # no wins and no completion -> failed -> exit 1
+    assert exc.value.code == 1
+    assert captured["max_parallel"] == 1
