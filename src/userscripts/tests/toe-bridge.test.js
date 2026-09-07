@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { battleConfigFor, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, safeGameOf, tick } from "../toe-bridge.ts";
+import { battleConfigFor, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -135,4 +135,9 @@ test("ensureEngineBridge captures class registration via traps", () => {
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
   }
+});
+
+test("realmDiag reports without throwing in bare env", () => {
+  const line = realmDiag();
+  assert.match(line, /trapsOwned=\d+ captured=\d+ engine=false/);
 });

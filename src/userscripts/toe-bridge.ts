@@ -75,12 +75,35 @@ const ENGINE_CLASS_PATHS: ReadonlyArray<{ name: string; prop: string }> = [
   { name: "BattleConfigStorage", prop: "game.data.storage.battle.BattleConfigStorage" },
 ];
 
+const bridgeDiag = { owned: 0, captured: 0 };
+
 function gameBridge(): Record<string, unknown> {
   const w = window as unknown as { Game?: unknown };
   if (!w.Game || typeof w.Game !== "object") {
     w.Game = {};
   }
   return w.Game as Record<string, unknown>;
+}
+
+/** One-line per-realm diagnostic (run once after boot, see installToeBridge). */
+export function realmDiag(): string {
+  let gameKeys = "";
+  try {
+    const g = (window as unknown as { Game?: unknown }).Game as Record<string, unknown> | undefined;
+    gameKeys = g && typeof g === "object" ? Object.keys(g).join(",") : typeof g;
+  } catch {
+    gameKeys = "unreadable";
+  }
+  let href = "";
+  try {
+    href = location.href;
+  } catch {
+    href = "unreadable";
+  }
+  return (
+    `realm url=${href} trapsOwned=${bridgeDiag.owned} captured=${bridgeDiag.captured} ` +
+    `engine=${hasLocalEngine()} gameKeys=[${gameKeys}]`
+  );
 }
 
 export function ensureEngineBridge(): void {
@@ -96,6 +119,7 @@ export function ensureEngineBridge(): void {
       try {
         const prev = Object.getOwnPropertyDescriptor(Object.prototype, prop);
         if (prev && (prev.set || prev.get)) {
+          bridgeDiag.owned += 1;
           log(`trap for ${name}: already owned, skipping`);
           continue; // Owned by HWH's traps — it populates shared window.Game.
         }
@@ -106,6 +130,7 @@ export function ensureEngineBridge(): void {
               const bridge = gameBridge();
               if (!bridge[name]) {
                 bridge[name] = value;
+                bridgeDiag.captured += 1;
                 log(`captured ${name}`);
               }
             } catch {}
@@ -548,6 +573,13 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     await tick(account, baseUrl);
   }
 
+  try {
+    setTimeout(() => {
+      try {
+        log(realmDiag());
+      } catch {}
+    }, 15000);
+  } catch {}
   timer = setInterval(() => {
     loop().catch((e) => log("tick error:", e));
   }, interval);
