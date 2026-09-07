@@ -45,9 +45,9 @@ import {
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
-// ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
-// ポーラー。auth server の /toe/* キューを介して Python CLI から依頼される。
-import { installToeBridge } from "./toe-bridge";
+// NOTE: ToE ブリッジは別エントリ（toe-bridge.entry.ts → dist/hw-genie-toe-bridge.user.js）
+// に分離済み。ブリッジは document-start での起動が必須だが、本スクリプトは
+// HW Goodwin 共存のため document-idle を維持する必要がある。両方をインストールする。
 
 (() => {
   "use strict";
@@ -210,14 +210,9 @@ import { installToeBridge } from "./toe-bridge";
     document.addEventListener("DOMContentLoaded", () => {
       installInterceptor();
       startPolling();
-      // ToE ブリッジも同じ auth server に対して常駐させる。ゲームエンジン
-      // を持たないフレームは poll 自体を skip するため副作用なし。エンジン
-      // 保持フレーム（任意のゲームページ）のみが job を claim して計算する。
-      installToeBridge({ authServerUrl: AUTH_SERVER_URL });
     });
   } else {
     installInterceptor();
     startPolling();
-    installToeBridge({ authServerUrl: AUTH_SERVER_URL });
   }
 })();
