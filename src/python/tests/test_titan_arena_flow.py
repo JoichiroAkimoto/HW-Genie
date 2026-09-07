@@ -531,3 +531,24 @@ def test_run_rivals_retries_next_seed_on_abandon(mock_client, mock_sleep, mocker
     assert len(seen) == 2
     assert all(e is False for _, e in seen)
     assert results[-1]["win"] is True
+
+
+def test_run_rivals_stops_after_consecutive_bridge_timeouts(mock_client, mock_sleep, mocker):
+    """3 straight timeouts abort the tier with a hint instead of grinding."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "bridge_error": "userscript did not finish battle within 30.0s", "estimate_only": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False, team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=9,
+    )
+    assert len(calls) == 3
+    assert results == []

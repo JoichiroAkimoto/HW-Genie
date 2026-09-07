@@ -41,6 +41,14 @@ AUTO_RIVAL_SCORE_THRESHOLD = 250
 # Static team rotation tried in order after the saved team when --titans is
 # omitted. Entries are 5 titan IDs; the saved team (teamGetAll.titan_arena)
 # always goes first and duplicates are skipped.
+MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
+
+
+def _is_bridge_timeout(res: dict[str, Any]) -> bool:
+    """True when the attempt never reached the userscript (bridge timeout)."""
+    return "did not finish battle within" in str(res.get("bridge_error") or "")
+
+
 STATIC_TEAM_ROTATION: list[list[int]] = [
     [4044, 4012, 4013, 4043, 4010],
     [4044, 4013, 4043, 4014, 4010],
@@ -547,6 +555,7 @@ def _run_rivals(
         teams = list(team_rotation) or [titans]
         attempt_plan = [(team, s) for team in teams for s in range(max(1, seeds_per_team))]
     results: list[dict[str, Any]] = []
+    bridge_timeouts = 0
     for rival_id in finish_targets:
         for attempt_no, (team, _seed_no) in enumerate(attempt_plan, start=1):
             try:
@@ -555,6 +564,22 @@ def _run_rivals(
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)
                 break
+            if _is_bridge_timeout(res):
+                bridge_timeouts += 1
+                print(
+                    f"  - rival {rival_id}: userscript not responding "
+                    f"({bridge_timeouts}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
+                    flush=True,
+                )
+                if bridge_timeouts >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
+                    print(
+                        f"{Emojis.WARNING}Userscript is not answering. Open the game in the browser "
+                        "with the userscript active, then re-run. Stopping tier loop.",
+                        flush=True,
+                    )
+                    return results
+                continue
+            bridge_timeouts = 0
             if _is_beaten_already(res):
                 # Stale snapshot: the rival is actually cleared. Refresh to
                 # confirm and count it as cleared so the tier can complete.
