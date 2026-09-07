@@ -63,15 +63,35 @@ def is_hrana_stream_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _HRANA_STREAM_MARKERS)
 
 
+# Substrings that identify transient DNS resolution failures (e.g. Docker
+# bridge DNS on WSL right after container start: the first lookup can fail
+# while later ones succeed). Worth retrying like any transient network
+# error; persistent misconfiguration still surfaces after attempts are
+# exhausted. Keep markers lowercase; matches are case-insensitive.
+_DNS_FAILURE_MARKERS = (
+    "temporary failure in name resolution",
+    "failed to lookup address information",
+    "name or service not known",
+    "nodename nor servname provided",
+    "dns error",
+)
+
+
+def is_dns_error(exc: BaseException) -> bool:
+    """True when ``exc`` indicates a transient DNS resolution failure."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _DNS_FAILURE_MARKERS)
+
+
 def is_transient_db_error(exc: BaseException) -> bool:
     """True when ``exc`` is a transient DB error worth retrying.
 
     Covers SQLite WAL single-writer contention (``wal_insert_begin failed`` /
-    ``database is locked``) and Turso Hrana stream death (``stream not
-    found`` / server-initiated closes). Both are resolved by re-opening a
-    fresh connection.
+    ``database is locked``), Turso Hrana stream death (``stream not
+    found`` / server-initiated closes), and transient DNS resolution
+    failures. All are resolved by retrying with a fresh connection.
     """
-    return is_wal_contention(exc) or is_hrana_stream_error(exc)
+    return is_wal_contention(exc) or is_hrana_stream_error(exc) or is_dns_error(exc)
 
 
 def is_wal_contention(exc: BaseException) -> bool:

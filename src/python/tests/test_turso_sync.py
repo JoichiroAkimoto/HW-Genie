@@ -860,6 +860,40 @@ def test_is_transient_db_error_hrana_variants():
         assert is_transient_db_error(ValueError(v)), v
 
 
+def test_is_transient_db_error_includes_dns_failure():
+    """起動直後の一時的な DNS 解決失敗は再試行対象として判定される。"""
+    from hw_genie.core.database import is_dns_error, is_transient_db_error
+
+    assert is_transient_db_error(
+        ValueError(
+            "Hrana: `http error: `error trying to connect: dns error: "
+            "failed to lookup address information: Temporary failure in name resolution``"
+        )
+    )
+    assert is_dns_error(ValueError("Temporary failure in name resolution"))
+    assert is_dns_error(ValueError("failed to lookup address information"))
+    assert is_dns_error(ValueError("Name or service not known"))
+    # 設定ミス等の恒久エラーは対象外のまま
+    assert not is_transient_db_error(ValueError("no such table: accounts"))
+    assert not is_dns_error(ValueError("connection refused"))
+
+
+def test_retry_on_wal_contention_recovers_from_dns_error(mock_sleep):
+    """DNS 一時失敗が2回続いても3回目で回復する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ValueError("Temporary failure in name resolution")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert len(calls) == 3
+
+
 def test_is_hrana_stream_error_covers_real_client_strings():
     """libsql クライアントが送出しうる切断系メッセージを捕捉する。"""
     from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
