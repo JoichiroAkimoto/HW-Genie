@@ -93,6 +93,26 @@ export function capturedClassNames(): string[] {
   return Object.keys(capturedClasses);
 }
 
+/** Test-only: clear captured refs, traps and diag counters. */
+export function __resetBridgeForTests(): void {
+  for (const k of Object.keys(capturedClasses)) {
+    delete capturedClasses[k];
+  }
+  for (const { prop } of ENGINE_CLASS_PATHS) {
+    try {
+      const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
+      if (cur && (cur.set || cur.get)) {
+        delete (Object.prototype as Record<string, unknown>)[prop];
+      }
+    } catch {}
+  }
+  for (const k of Object.keys(installedTraps)) {
+    delete installedTraps[k];
+  }
+  bridgeDiag.owned = 0;
+  bridgeDiag.captured = 0;
+}
+
 function capturedEngine(): Record<string, unknown> | null {
   const g = capturedClasses as Record<string, unknown>;
   if (g["BattlePresets"] && g["BattleInstantPlay"] && g["DataStorage"]) {
@@ -130,6 +150,39 @@ export function realmDiag(): string {
   );
 }
 
+/**
+ * Our installed trap descriptors, for post-capture removal (see below).
+ *
+ * MUST be a null-prototype object: a plain ``{}`` inherits the very
+ * ``Object.prototype`` traps installed below, so ``installedTraps[prop] =
+ * trap`` would fire our own setter, capture our own trap functions as game
+ * classes, and delete the traps before the game bundle ever runs.
+ */
+const installedTraps: Record<string, { set: (this: unknown, v: unknown) => void; get: (this: unknown) => unknown }> =
+  Object.create(null);
+
+function maybeRemoveTraps(): void {
+  // Once every class is captured, our traps have done their job. Remove them
+  // to restore Object.prototype to pristine state so other scripts (e.g. HW
+  // Goodwin) and reflective game code never observe our accessors. Class
+  // registration is one-time, and live refs stay in capturedClasses.
+  if (Object.keys(capturedClasses).length < ENGINE_CLASS_PATHS.length) {
+    return;
+  }
+  for (const { prop } of ENGINE_CLASS_PATHS) {
+    try {
+      const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
+      if (cur && cur.set === installedTraps[prop]?.set) {
+        delete (Object.prototype as Record<string, unknown>)[prop];
+      }
+    } catch {}
+  }
+  for (const k of Object.keys(installedTraps)) {
+    delete installedTraps[k];
+  }
+  log("engine captured, traps removed");
+}
+
 export function ensureEngineBridge(): void {
   if (typeof window === "undefined" || typeof Object.defineProperty !== "function") {
     return;
@@ -147,8 +200,7 @@ export function ensureEngineBridge(): void {
           log(`trap for ${name}: already owned, skipping`);
           continue; // Owned by HWH's traps — it populates shared window.Game.
         }
-        Object.defineProperty(Object.prototype, prop, {
-          configurable: true,
+        const trap = {
           set(this: Record<string, unknown>, value: unknown) {
             try {
               if (!capturedClasses[name]) {
@@ -164,11 +216,14 @@ export function ensureEngineBridge(): void {
               }
             } catch {}
             this[prop + "_"] = value;
+            maybeRemoveTraps();
           },
           get(this: Record<string, unknown>) {
             return this[prop + "_"];
           },
-        });
+        };
+        Object.defineProperty(Object.prototype, prop, { configurable: true, ...trap });
+        installedTraps[prop] = trap;
       } catch {}
     }
   } catch {}
@@ -209,7 +264,14 @@ export function hasBattleEngine(game: unknown): boolean {
       BattleInstantPlay?: unknown;
       DataStorage?: unknown;
     } | null | undefined;
-    return Boolean(g && g.BattlePresets && g.BattleInstantPlay && g.DataStorage);
+    // Classes must be callable constructors — guards against captured
+    // non-class objects ever passing as an engine.
+    return Boolean(
+      g &&
+        typeof g.BattlePresets === "function" &&
+        typeof g.BattleInstantPlay === "function" &&
+        g.DataStorage,
+    );
   } catch {
     return false;
   }

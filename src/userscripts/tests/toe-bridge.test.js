@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
+import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -41,11 +41,13 @@ test("full engine object is detected", () => {
 });
 
 test("hasLocalEngine is false with no game window (bare node env)", () => {
+  __resetBridgeForTests();
   // No window/document globals here, so no candidate can carry an engine.
   assert.strictEqual(hasLocalEngine(), false);
 });
 
 test("tick performs zero fetch when no local engine", async () => {
+  __resetBridgeForTests();
   const calls = [];
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (...args) => {
@@ -102,11 +104,13 @@ test("safeGameOf swallows cross-origin access throws", () => {
 });
 
 test("ensureEngineBridge is a safe no-op without a DOM", () => {
+  __resetBridgeForTests();
   // bun/node env: no window global must not throw.
   assert.strictEqual(ensureEngineBridge(), undefined);
 });
 
 test("ensureEngineBridge captures class registration via traps", () => {
+  __resetBridgeForTests();
   const prevWindow = globalThis.window;
   const props = [
     "game.battle.controller.thread.BattlePresets",
@@ -138,11 +142,13 @@ test("ensureEngineBridge captures class registration via traps", () => {
 });
 
 test("realmDiag reports without throwing in bare env", () => {
+  __resetBridgeForTests();
   const line = realmDiag();
   assert.match(line, /trapsOwned=\d+ captured=\d+ engine=false/);
 });
 
 test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
+  __resetBridgeForTests();
   const prevWindow = globalThis.window;
   // Frozen window: gameBridge() cannot attach Game, but the trap's own
   // capturedClasses store must still receive the class.
@@ -159,6 +165,45 @@ test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
     assert.ok(capturedClassNames().includes("BattlePresets"));
     assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+  } finally {
+    for (const p of props) {
+      try {
+        delete Object.prototype[p];
+      } catch {}
+    }
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});
+
+test("traps are removed after full capture (Goodwin coexistence)", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const props = [
+    "game.battle.controller.thread.BattlePresets",
+    "game.battle.controller.instant.BattleInstantPlay",
+    "game.battle.controller.instant.MultiBattleInstantReplay",
+    "game.battle.controller.MultiBattleResult",
+    "game.data.storage.DataStorage",
+    "game.data.storage.battle.BattleConfigStorage",
+  ];
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    const holder = {};
+    for (const p of props) {
+      holder[p] = function () {};
+    }
+    for (const p of props) {
+      assert.strictEqual(
+        Object.getOwnPropertyDescriptor(Object.prototype, p),
+        undefined,
+        `${p} trap removed`,
+      );
+    }
+    // Values stay stored under the HWH-compatible ghost key; the game
+    // holds direct refs post-registration so prototype reads are unneeded.
+    assert.strictEqual(typeof holder[props[0] + "_"], "function");
   } finally {
     for (const p of props) {
       try {
