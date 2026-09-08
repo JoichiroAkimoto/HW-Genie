@@ -248,6 +248,12 @@ export function ensureEngineBridge(): void {
         }
         const trap = {
           set(this: Record<string, unknown>, value: unknown) {
+            // Observe-only: capture our ref, publish the shared Game entry,
+            // then materialize a plain own data property so the holder looks
+            // EXACTLY as if no trap ever existed (enumerable own key, no
+            // ghost keys). Later reads/wraps (e.g. Goodwin wrapping battle
+            // classes for pre-calc) hit the own property natively. Throws
+            // (frozen holder) fall back to the ghost key.
             try {
               if (!capturedClasses[name]) {
                 capturedClasses[name] = value;
@@ -267,7 +273,18 @@ export function ensureEngineBridge(): void {
                 bridge[name] = value;
               }
             } catch {}
-            this[prop + "_"] = value;
+            try {
+              Object.defineProperty(this, prop, {
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+              });
+            } catch {
+              try {
+                this[prop + "_"] = value;
+              } catch {}
+            }
             maybeRemoveTraps();
           },
           get(this: Record<string, unknown>) {

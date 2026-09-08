@@ -131,9 +131,12 @@ test("ensureEngineBridge captures class registration via traps", () => {
     // window.Game (HWH-compatible, for Goodwin-style dependents).
     assert.ok(capturedClassNames().includes("BattlePresets"));
     assert.strictEqual(globalThis.window.Game["BattlePresets"], FakePresets);
-    // Game keeps working: the value lives under the HWH-compatible ghost
-    // key (the trap removes itself right after capturing).
-    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets_"], FakePresets);
+    // Game keeps working: the holder carries a plain own data property,
+    // exactly as if no trap had ever existed (Goodwin-safe: enumeration,
+    // wrapping assignments and re-reads all behave natively).
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+    assert.ok(Object.keys(holder).includes("game.battle.controller.thread.BattlePresets"));
+    assert.ok(!Object.keys(holder).some((k) => k.endsWith("_")));
   } finally {
     for (const p of props) {
       try {
@@ -168,7 +171,7 @@ test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
     const holder = {};
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
     assert.ok(capturedClassNames().includes("BattlePresets"));
-    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets_"], FakePresets);
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
   } finally {
     for (const p of props) {
       try {
@@ -204,10 +207,9 @@ test("traps stay installed for the session (HWH parity)", () => {
       const d = Object.getOwnPropertyDescriptor(Object.prototype, p);
       assert.ok(d && typeof d.set === "function", `${p} trap persists`);
     }
-    // Values stay stored under the HWH-compatible ghost key and remain
-    // readable through the trap.
-    assert.strictEqual(typeof holder[props[0] + "_"], "function");
+    // Values are plain own data properties; no ghost keys leak anywhere.
     assert.strictEqual(typeof holder[props[0]], "function");
+    assert.ok(!Object.keys(holder).some((k) => k.endsWith("_")));
   } finally {
     for (const p of props) {
       try {
