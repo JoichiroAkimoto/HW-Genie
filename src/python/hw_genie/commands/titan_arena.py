@@ -656,22 +656,21 @@ def _run_rivals(
     if not finish_targets:
         return []
     # Attempt plan per rival: explicit/single-team callers repeat the one team
-    # (legacy Invalid retry); a rotation tries each team × seeds_per_team
-    # seeds in order, so a retry always uses a fresh seed (and usually a
-    # fresh team). With end_on_loss=False, losing sims abandon the battle
-    # without EndBattle (no score banking, faster sweeps).
-    # The plan is capped to max_attempts_per_rival total attempts per rival
-    # so a 25-team rotation × seeds=2 never explodes to ~50 StartBattles.
+    # up to max_attempts_per_rival (legacy Invalid retry); a rotation does
+    # exactly one full pass (each team × seeds_per_team) so proven winners
+    # hiding late in the list (e.g. a win on attempt 9) are still reached.
+    # The plan is finite and logged; runaway protection comes from the
+    # bridge-dead abort and the tier-level pass cap instead of truncation.
+    # With end_on_loss=False, losing sims abandon the battle without
+    # EndBattle (no score banking, faster sweeps).
     if team_rotation is None:
         attempt_plan = [(titans, s) for s in range(max(1, max_attempts_per_rival))]
     else:
         teams = list(team_rotation) or [titans]
         attempt_plan = [(team, s) for team in teams for s in range(max(1, seeds_per_team))]
-        if len(attempt_plan) > max(1, max_attempts_per_rival):
-            attempt_plan = attempt_plan[: max(1, max_attempts_per_rival)]
     print(
         f"{Emojis.INFO}Attempt plan per rival: {len(attempt_plan)} "
-        f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team} cap={max_attempts_per_rival})",
+        f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team})",
         flush=True,
     )
     results: list[dict[str, Any]] = []
@@ -742,6 +741,11 @@ def _complete_tier(client: HWClient, summary: dict[str, Any]) -> None:
     if res.is_success:
         summary["completed_tier"] = True
         print(f"{Emojis.SUCCESS}Tier completed.", flush=True)
+        return
+    if res.error_name == "NotAvailable":
+        # Normal mid-run state: rivals remain, so there is nothing to
+        # complete yet. Not an error — the loop continues with them.
+        print(f"{Emojis.INFO}Tier not yet completeable (rivals remain).", flush=True)
         return
     summary["errors"].append({"stage": "complete_tier", "error": res.error_name, "detail": res.detail})
     print(f"{Emojis.WARNING}titanArenaCompleteTier failed ({res.error_name}).", flush=True)

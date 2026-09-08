@@ -639,7 +639,7 @@ def test_tier_bridge_dead_canraid_true_stops_without_complete(mock_client, mock_
 
 
 def test_run_rivals_attempt_plan_bounded(mock_client, mock_sleep, mocker):
-    """25-team rotation × seeds=2 is capped to max_attempts_per_rival StartBattles."""
+    """Rotation does exactly one full pass (teams × seeds), no more."""
     from hw_genie.commands.titan_arena import _run_rivals
 
     status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
@@ -651,14 +651,14 @@ def test_run_rivals_attempt_plan_bounded(mock_client, mock_sleep, mocker):
 
     mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
     client, _ = mock_client
-    rotation = [[i, i + 1, i + 2, i + 3, i + 4] for i in range(25)]
+    rotation = [[i, i + 1, i + 2, i + 3, i + 4] for i in range(3)]
     results = _run_rivals(
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=rotation, seeds_per_team=2, max_attempts_per_rival=3,
     )
-    assert len(calls) == 3
-    assert len(results) == 3
+    assert len(calls) == 3 * 2
+    assert len(results) == 3 * 2
     assert all(r.get("abandoned") for r in results)
 
 
