@@ -127,7 +127,10 @@ test("ensureEngineBridge captures class registration via traps", () => {
     const holder = {};
     // Simulate the Haxe bundle registering the class on some object.
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
-    assert.strictEqual(globalThis.window.Game["BattlePresets"], FakePresets);
+    // The ref lands in our own store (window.Game is no longer created —
+    // other scripts' feature detection must not observe us).
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+    assert.strictEqual(globalThis.window.Game, undefined);
     // Game keeps working: the value is readable back through the trap.
     assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
   } finally {

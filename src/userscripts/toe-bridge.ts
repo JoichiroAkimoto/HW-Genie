@@ -93,8 +93,15 @@ export function capturedClassNames(): string[] {
   return Object.keys(capturedClasses);
 }
 
-/** Test-only: clear captured refs, traps and diag counters. */
+/** Test-only: clear captured refs, traps, timers and diag counters. */
 export function __resetBridgeForTests(): void {
+  if (trapTimeoutId !== null) {
+    try {
+      clearTimeout(trapTimeoutId);
+    } catch {}
+    trapTimeoutId = null;
+  }
+  trapTimeoutScheduled = false;
   for (const k of Object.keys(capturedClasses)) {
     delete capturedClasses[k];
   }
@@ -121,14 +128,6 @@ function capturedEngine(): Record<string, unknown> | null {
     return capturedClasses as Record<string, unknown>;
   }
   return null;
-}
-
-function gameBridge(): Record<string, unknown> {
-  const w = window as unknown as { Game?: unknown };
-  if (!w.Game || typeof w.Game !== "object") {
-    w.Game = {};
-  }
-  return w.Game as Record<string, unknown>;
 }
 
 /** One-line per-realm diagnostic (run once after boot, see installToeBridge). */
@@ -163,6 +162,24 @@ export function realmDiag(): string {
 const installedTraps: Record<string, { set: (this: any, v: unknown) => void; get: (this: any) => unknown }> =
   Object.create(null);
 
+/** Remove exactly the traps we installed, if still ours. Returns count removed. */
+function removeOwnTraps(): number {
+  let removed = 0;
+  for (const { prop } of ENGINE_CLASS_PATHS) {
+    try {
+      const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
+      if (cur && installedTraps[prop] && cur.set === installedTraps[prop].set) {
+        delete (Object.prototype as Record<string, unknown>)[prop];
+        removed += 1;
+      }
+    } catch {}
+  }
+  for (const k of Object.keys(installedTraps)) {
+    delete installedTraps[k];
+  }
+  return removed;
+}
+
 function maybeRemoveTraps(): void {
   // Once every class is captured, our traps have done their job. Remove them
   // to restore Object.prototype to pristine state so other scripts (e.g. HW
@@ -171,23 +188,33 @@ function maybeRemoveTraps(): void {
   if (Object.keys(capturedClasses).length < ENGINE_CLASS_PATHS.length) {
     return;
   }
-  for (const { prop } of ENGINE_CLASS_PATHS) {
-    try {
-      const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
-      if (cur && cur.set === installedTraps[prop]?.set) {
-        delete (Object.prototype as Record<string, unknown>)[prop];
-      }
-    } catch {}
-  }
-  for (const k of Object.keys(installedTraps)) {
-    delete installedTraps[k];
-  }
+  removeOwnTraps();
   log("engine captured, traps removed");
 }
+
+let trapTimeoutScheduled = false;
+let trapTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 export function ensureEngineBridge(): void {
   if (typeof window === "undefined" || typeof Object.defineProperty !== "function") {
     return;
+  }
+  // Time-box: if the bundle never registers (landing tab, slow load past
+  // this point is unlikely — registration happens at boot), remove our
+  // traps so the page is left exactly as found for other scripts.
+  if (!trapTimeoutScheduled) {
+    trapTimeoutScheduled = true;
+    try {
+      trapTimeoutId = setTimeout(() => {
+        trapTimeoutId = null;
+        try {
+          const removed = removeOwnTraps();
+          if (removed > 0) {
+            log(`traps expired after 60s without full capture (removed ${removed})`);
+          }
+        } catch {}
+      }, 60000);
+    } catch {}
   }
   try {
     const existing = (window as unknown as { Game?: Record<string, unknown> }).Game;
@@ -218,9 +245,15 @@ export function ensureEngineBridge(): void {
               }
             } catch {}
             try {
-              const bridge = gameBridge();
-              if (!bridge[name]) {
-                bridge[name] = value;
+              // Contribute to a pre-existing shared Game (e.g. HWH's), but
+              // never create window.Game ourselves — an unexpected global
+              // can change other scripts' feature detection.
+              const w = window as unknown as { Game?: unknown };
+              if (w.Game && typeof w.Game === "object") {
+                const bridge = w.Game as Record<string, unknown>;
+                if (!bridge[name]) {
+                  bridge[name] = value;
+                }
               }
             } catch {}
             this[prop + "_"] = value;
