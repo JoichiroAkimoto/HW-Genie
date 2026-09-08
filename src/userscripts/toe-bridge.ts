@@ -69,11 +69,11 @@ function log(msg: string, ...args: unknown[]): void {
 /**
  * Haxe class paths trapped for engine exposure.
  *
- * Ported from HerowarsHelper's ``ObjectsList`` (v2.458) so ``window.Game``
- * ends up populated exactly like with HWH active — other scripts (e.g. HW
- * Goodwin's pre-calc) that depend on the shared ``Game`` global keep
- * working. Only the ``CORE_ENGINE_NAMES`` subset is needed for battle calc;
- * the rest exists purely for compatibility.
+ * Ported from HerowarsHelper's ``ObjectsList`` (v2.458). Captured refs
+ * contribute to a pre-existing shared ``window.Game`` only — one is never
+ * created, so other scripts' feature detection is unaffected. Only the
+ * ``CORE_ENGINE_NAMES`` subset is needed for battle calc; the rest exists
+ * so cohabitants trapping the same paths keep working through chaining.
  */
 const ENGINE_CLASS_PATHS: ReadonlyArray<{ name: string; prop: string }> = [
   { name: "BattlePresets", prop: "game.battle.controller.thread.BattlePresets" },
@@ -188,15 +188,15 @@ export function observeRegistration(name: string, prop: string, value: unknown, 
     }
   } catch {}
   try {
-    // Publish into the shared window.Game (created if absent) so
-    // HWH-dependent scripts (e.g. Goodwin pre-calc) keep working.
+    // Contribute to a pre-existing shared window.Game only (e.g. created by
+    // HWH or Goodwin). Never create it: an unexpected global changes other
+    // scripts' feature detection ("HWH present?") and breaks coexistence.
     const w = window as unknown as { Game?: unknown };
-    if (!w.Game || typeof w.Game !== "object") {
-      w.Game = {};
-    }
-    const bridge = w.Game as Record<string, unknown>;
-    if (bridge[name] !== value) {
-      bridge[name] = value;
+    if (w.Game && typeof w.Game === "object") {
+      const bridge = w.Game as Record<string, unknown>;
+      if (bridge[name] !== value) {
+        bridge[name] = value;
+      }
     }
   } catch {}
   try {

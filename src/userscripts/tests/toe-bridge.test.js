@@ -127,10 +127,10 @@ test("ensureEngineBridge captures class registration via traps", () => {
     const holder = {};
     // Simulate the Haxe bundle registering the class on some object.
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
-    // The ref lands in our own store and is published into the shared
-    // window.Game (HWH-compatible, for Goodwin-style dependents).
+    // The ref lands in our own store. window.Game is left untouched
+    // (no global created — other scripts' feature detection unaffected).
     assert.ok(capturedClassNames().includes("BattlePresets"));
-    assert.strictEqual(globalThis.window.Game["BattlePresets"], FakePresets);
+    assert.strictEqual(globalThis.window.Game, undefined);
     // Game keeps working: the holder carries a plain own data property,
     // exactly as if no trap had ever existed (Goodwin-safe: enumeration,
     // wrapping assignments and re-reads all behave natively).
@@ -398,8 +398,83 @@ test("re-registration on a fresh holder upgrades the ref", () => {
     ({})[prop] = F1;
     assert.ok(capturedClassNames().includes("BattlePresets"));
     ({})[prop] = F2;
-    // pickGame-equivalent: captured store drives compute; window.Game too.
-    assert.strictEqual(globalThis.window.Game["BattlePresets"], F2);
+    // captured store drives compute; window.Game stays untouched.
+    assert.strictEqual(globalThis.window.Game, undefined);
+    // Value identity: F2 is stored (upgrade happened), re-storing is a no-op.
+    assert.strictEqual(storeCapturedClass("BattlePresets", F2), false);
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});
+
+test("Goodwin-first: chained foreign trap keeps both sides working", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  globalThis.window = {};
+  const foreignSeen = [];
+  try {
+    // Goodwin-style foreign trap installed before us.
+    Object.defineProperty(Object.prototype, prop, {
+      configurable: true,
+      set(v) {
+        foreignSeen.push(v);
+      },
+      get() {
+        return undefined;
+      },
+    });
+    ensureEngineBridge();
+    function F() {}
+    const holder = {};
+    holder[prop] = F;
+    // Foreign observer still fired (call-through first).
+    assert.deepStrictEqual(foreignSeen, [F]);
+    // We captured too, and the holder looks native.
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+    assert.strictEqual(holder[prop], F);
+    assert.ok(!("Game" in globalThis.window));
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});
+
+test("Goodwin-second overwrite keeps working after our capture", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    function F1() {}
+    const h1 = {};
+    h1[prop] = F1;
+    // Goodwin overwrites our trap with its own wrapper later.
+    function F2() {}
+    Object.defineProperty(Object.prototype, prop, {
+      configurable: true,
+      set(v) {
+        this[prop + "_gw"] = v;
+      },
+      get() {
+        return this[prop + "_gw"];
+      },
+    });
+    const h2 = {};
+    h2[prop] = F2;
+    // Goodwin's path works natively on the fresh holder.
+    assert.strictEqual(h2[prop], F2);
+    // Upgrade mechanics on the live store: F2 replaces F1, repeat is a no-op.
+    assert.strictEqual(storeCapturedClass("BattlePresets", F2), true);
+    assert.strictEqual(storeCapturedClass("BattlePresets", F2), false);
   } finally {
     try {
       delete Object.prototype[prop];
