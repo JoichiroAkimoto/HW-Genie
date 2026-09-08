@@ -66,13 +66,68 @@ function log(msg: string, ...args: unknown[]): void {
  * On an already-booted tab (bundle long ran) they miss — reload the tab
  * once with this script active (HWH off, Goodwin on is fine).
  */
+/**
+ * Haxe class paths trapped for engine exposure.
+ *
+ * Ported from HerowarsHelper's ``ObjectsList`` (v2.458) so ``window.Game``
+ * ends up populated exactly like with HWH active — other scripts (e.g. HW
+ * Goodwin's pre-calc) that depend on the shared ``Game`` global keep
+ * working. Only the ``CORE_ENGINE_NAMES`` subset is needed for battle calc;
+ * the rest exists purely for compatibility.
+ */
 const ENGINE_CLASS_PATHS: ReadonlyArray<{ name: string; prop: string }> = [
   { name: "BattlePresets", prop: "game.battle.controller.thread.BattlePresets" },
+  { name: "DataStorage", prop: "game.data.storage.DataStorage" },
+  { name: "BattleConfigStorage", prop: "game.data.storage.battle.BattleConfigStorage" },
   { name: "BattleInstantPlay", prop: "game.battle.controller.instant.BattleInstantPlay" },
   { name: "MultiBattleInstantReplay", prop: "game.battle.controller.instant.MultiBattleInstantReplay" },
   { name: "MultiBattleResult", prop: "game.battle.controller.MultiBattleResult" },
-  { name: "DataStorage", prop: "game.data.storage.DataStorage" },
-  { name: "BattleConfigStorage", prop: "game.data.storage.battle.BattleConfigStorage" },
+  { name: "PlayerMissionData", prop: "game.model.user.mission.PlayerMissionData" },
+  { name: "PlayerMissionBattle", prop: "game.model.user.mission.PlayerMissionBattle" },
+  { name: "GameModel", prop: "game.model.GameModel" },
+  { name: "CommandManager", prop: "game.command.CommandManager" },
+  { name: "MissionCommandList", prop: "game.command.rpc.mission.MissionCommandList" },
+  { name: "RPCCommandBase", prop: "game.command.rpc.RPCCommandBase" },
+  { name: "PlayerTowerData", prop: "game.model.user.tower.PlayerTowerData" },
+  { name: "TowerCommandList", prop: "game.command.tower.TowerCommandList" },
+  { name: "PlayerHeroTeamResolver", prop: "game.model.user.hero.PlayerHeroTeamResolver" },
+  { name: "BattlePausePopup", prop: "game.view.popup.battle.BattlePausePopup" },
+  { name: "BattlePopup", prop: "game.view.popup.battle.BattlePopup" },
+  { name: "DisplayObjectContainer", prop: "starling.display.DisplayObjectContainer" },
+  { name: "GuiClipContainer", prop: "engine.core.clipgui.GuiClipContainer" },
+  { name: "BattlePausePopupClip", prop: "game.view.popup.battle.BattlePausePopupClip" },
+  { name: "ClipLabel", prop: "game.view.gui.components.ClipLabel" },
+  { name: "ClipLabelBase", prop: "game.view.gui.components.ClipLabelBase" },
+  { name: "Translate", prop: "com.progrestar.common.lang.Translate" },
+  { name: "ClipButtonLabeledCentered", prop: "game.view.gui.components.ClipButtonLabeledCentered" },
+  { name: "BattlePausePopupMediator", prop: "game.mediator.gui.popup.battle.BattlePausePopupMediator" },
+  { name: "SettingToggleButton", prop: "game.mechanics.settings.popup.view.SettingToggleButton" },
+  { name: "PlayerDungeonData", prop: "game.mechanics.dungeon.model.PlayerDungeonData" },
+  { name: "NextDayUpdatedManager", prop: "game.model.user.NextDayUpdatedManager" },
+  { name: "BattleController", prop: "game.battle.controller.BattleController" },
+  { name: "BattleSettingsModel", prop: "game.battle.controller.BattleSettingsModel" },
+  { name: "BooleanProperty", prop: "engine.core.utils.property.BooleanProperty" },
+  { name: "RuleStorage", prop: "game.data.storage.rule.RuleStorage" },
+  { name: "BattleConfig", prop: "battle.BattleConfig" },
+  { name: "BattleGuiMediator", prop: "game.battle.gui.BattleGuiMediator" },
+  { name: "BooleanPropertyWriteable", prop: "engine.core.utils.property.BooleanPropertyWriteable" },
+  { name: "BattleLogEncoder", prop: "battle.log.BattleLogEncoder" },
+  { name: "BattleLogReader", prop: "battle.log.BattleLogReader" },
+  {
+    name: "PlayerSubscriptionInfoValueObject",
+    prop: "game.model.user.subscription.PlayerSubscriptionInfoValueObject",
+  },
+  { name: "AdventureMapCamera", prop: "game.mechanics.adventure.popup.map.AdventureMapCamera" },
+];
+
+/** Subset of ENGINE_CLASS_PATHS required to compute battles. */
+const CORE_ENGINE_NAMES: ReadonlyArray<string> = [
+  "BattlePresets",
+  "BattleInstantPlay",
+  "MultiBattleInstantReplay",
+  "MultiBattleResult",
+  "DataStorage",
+  "BattleConfigStorage",
 ];
 
 const bridgeDiag = { owned: 0, captured: 0 };
@@ -102,6 +157,7 @@ export function __resetBridgeForTests(): void {
     trapTimeoutId = null;
   }
   trapTimeoutScheduled = false;
+  engineReadyLogged = false;
   for (const k of Object.keys(capturedClasses)) {
     delete capturedClasses[k];
   }
@@ -180,16 +236,29 @@ function removeOwnTraps(): number {
   return removed;
 }
 
+/** Remove exactly one own trap (used right after its class is captured). */
+function removeOwnTrap(prop: string): void {
+  try {
+    const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
+    if (cur && installedTraps[prop] && cur.set === installedTraps[prop].set) {
+      delete (Object.prototype as Record<string, unknown>)[prop];
+    }
+  } catch {}
+  try {
+    delete installedTraps[prop];
+  } catch {}
+}
+
+let engineReadyLogged = false;
+
 function maybeRemoveTraps(): void {
-  // Once every class is captured, our traps have done their job. Remove them
-  // to restore Object.prototype to pristine state so other scripts (e.g. HW
-  // Goodwin) and reflective game code never observe our accessors. Class
-  // registration is one-time, and live refs stay in capturedClasses.
-  if (Object.keys(capturedClasses).length < ENGINE_CLASS_PATHS.length) {
-    return;
+  // Once the core engine classes are captured, log readiness. Individual
+  // traps are already removed one-by-one as their class registers (see the
+  // setter), so other scripts only ever observe us during boot.
+  if (!engineReadyLogged && CORE_ENGINE_NAMES.every((n) => capturedClasses[n])) {
+    engineReadyLogged = true;
+    log("engine captured");
   }
-  removeOwnTraps();
-  log("engine captured, traps removed");
 }
 
 let trapTimeoutScheduled = false;
@@ -245,18 +314,21 @@ export function ensureEngineBridge(): void {
               }
             } catch {}
             try {
-              // Contribute to a pre-existing shared Game (e.g. HWH's), but
-              // never create window.Game ourselves — an unexpected global
-              // can change other scripts' feature detection.
+              // Publish into the shared window.Game (created if absent) so
+              // HWH-dependent scripts (e.g. Goodwin pre-calc) keep working.
               const w = window as unknown as { Game?: unknown };
-              if (w.Game && typeof w.Game === "object") {
-                const bridge = w.Game as Record<string, unknown>;
-                if (!bridge[name]) {
-                  bridge[name] = value;
-                }
+              if (!w.Game || typeof w.Game !== "object") {
+                w.Game = {};
+              }
+              const bridge = w.Game as Record<string, unknown>;
+              if (!bridge[name]) {
+                bridge[name] = value;
               }
             } catch {}
             this[prop + "_"] = value;
+            // This class is now captured: remove its trap immediately so the
+            // prototype is pristine again for other scripts.
+            removeOwnTrap(prop);
             maybeRemoveTraps();
           },
           get(this: Record<string, unknown>) {

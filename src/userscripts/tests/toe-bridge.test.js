@@ -127,12 +127,13 @@ test("ensureEngineBridge captures class registration via traps", () => {
     const holder = {};
     // Simulate the Haxe bundle registering the class on some object.
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
-    // The ref lands in our own store (window.Game is no longer created —
-    // other scripts' feature detection must not observe us).
+    // The ref lands in our own store and is published into the shared
+    // window.Game (HWH-compatible, for Goodwin-style dependents).
     assert.ok(capturedClassNames().includes("BattlePresets"));
-    assert.strictEqual(globalThis.window.Game, undefined);
-    // Game keeps working: the value is readable back through the trap.
-    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+    assert.strictEqual(globalThis.window.Game["BattlePresets"], FakePresets);
+    // Game keeps working: the value lives under the HWH-compatible ghost
+    // key (the trap removes itself right after capturing).
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets_"], FakePresets);
   } finally {
     for (const p of props) {
       try {
@@ -167,7 +168,7 @@ test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
     const holder = {};
     holder["game.battle.controller.thread.BattlePresets"] = FakePresets;
     assert.ok(capturedClassNames().includes("BattlePresets"));
-    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets"], FakePresets);
+    assert.strictEqual(holder["game.battle.controller.thread.BattlePresets_"], FakePresets);
   } finally {
     for (const p of props) {
       try {
