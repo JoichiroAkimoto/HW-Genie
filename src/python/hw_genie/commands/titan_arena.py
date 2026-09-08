@@ -12,6 +12,8 @@ Exposes two entry points:
 """
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 from hw_genie.battle.engine import (
@@ -22,6 +24,31 @@ from hw_genie.battle.engine import (
     PythonBattleEngine,
 )
 from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
+
+logger = logging.getLogger(__name__)
+
+
+def _shorten_response(response: Any, limit: int = 300) -> str:
+    """One-line preview of an EndBattle response for error output."""
+    try:
+        text = json.dumps(response, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(response)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _summarize_end_battle(rival_id: str, est: BattleEstimate, response: Any) -> str:
+    """Concise one-line EndBattle summary (full payload goes to debug log)."""
+    score = earned = stars = "?"
+    if isinstance(response, dict):
+        score = response.get("attackScore", "?")
+        earned = response.get("attackScoreEarned", response.get("scoreEarned", "?"))
+        stars = response.get("result", {}).get("stars", est.stars) if isinstance(response.get("result"), dict) else est.stars
+    return (
+        f"rival {rival_id}: {'WIN' if est.win else 'LOSS'} stars={stars} "
+        f"attackScore={score} (+{earned})"
+    )
 
 
 def fetch_titan_arena_status(client: HWClient) -> dict[str, Any]:
@@ -344,9 +371,11 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate) -> dict[st
         )
         return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_error": "Invalid battle"}
     if not end_res.is_success:
-        print(f"{Emojis.ERROR}EndBattle failed ({end_res.error_name}): {response}", flush=True)
+        logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
+        print(f"{Emojis.ERROR}EndBattle failed ({end_res.error_name}): {_shorten_response(response)}", flush=True)
         return {"status": end_res.status, "estimate": est, "end_detail": response}
-    print(f"{Emojis.SUCCESS}EndBattle: {response}", flush=True)
+    logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
+    print(f"{Emojis.SUCCESS}EndBattle: {_summarize_end_battle(rival_id, est, response)}", flush=True)
     return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
 
 

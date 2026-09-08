@@ -755,3 +755,26 @@ def test_is_beaten_already_negative_and_log(mock_client, mock_sleep, capsys):
     assert _is_beaten_already({"error": "Other", "detail": "beaten up already"}) is False
     out = capsys.readouterr().out
     assert "unexpected detail" in out
+
+
+def test_end_battle_prints_concise_summary(capsys, mock_client, mock_sleep):
+    """EndBattle success prints one short line, not the full payload."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    big = {"attackScore": 250, "attackScoreEarned": 10, "result": {"stars": 3},
+           "rivalTeam": {"x": "y" * 5000}, "battle": {"z": [1, 2, 3]}}
+    mock_call.side_effect = [
+        _ok({"response": {"battle": battle}}),
+        _ok({"response": big}),
+    ]
+    run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    out = capsys.readouterr().out
+    assert "attackScore=250" in out
+    assert "rivalTeam" not in out
+    assert len([l for l in out.splitlines() if l.startswith("✅ EndBattle")]) == 1
