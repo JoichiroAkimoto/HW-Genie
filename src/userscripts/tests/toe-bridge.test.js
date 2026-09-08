@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
+import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, observeRegistration, realmDiag, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -338,5 +338,73 @@ test("tick retries submit once on 404 (injected failing fetch)", async () => {
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
     __resetBridgeForTests();
+  }
+});
+
+test("storeCapturedClass upgrades stale refs", () => {
+  __resetBridgeForTests();
+  function F1() {}
+  function F2() {}
+  assert.strictEqual(storeCapturedClass("BattlePresets", F1), true);
+  assert.strictEqual(storeCapturedClass("BattlePresets", F1), false);
+  assert.strictEqual(storeCapturedClass("BattlePresets", F2), true);
+  assert.ok(capturedClassNames().includes("BattlePresets"));
+});
+
+test("foreign traps are chained, not skipped", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  const foreignSeen = [];
+  globalThis.window = {};
+  try {
+    Object.defineProperty(Object.prototype, prop, {
+      configurable: true,
+      set(v) {
+        foreignSeen.push(v);
+      },
+      get() {
+        return undefined;
+      },
+    });
+    ensureEngineBridge();
+    function F() {}
+    const holder = {};
+    holder[prop] = F;
+    // Foreign trap still observed the registration (call-through first).
+    assert.deepStrictEqual(foreignSeen, [F]);
+    // And we captured it too.
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+    // Holder carries a plain own prop (transparent for later wrappers).
+    assert.strictEqual(holder[prop], F);
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});
+
+test("re-registration on a fresh holder upgrades the ref", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    function F1() {}
+    function F2() {}
+    ({})[prop] = F1;
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+    ({})[prop] = F2;
+    // pickGame-equivalent: captured store drives compute; window.Game too.
+    assert.strictEqual(globalThis.window.Game["BattlePresets"], F2);
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
   }
 });

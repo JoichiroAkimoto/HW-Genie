@@ -148,6 +148,72 @@ export function capturedClassNames(): string[] {
   return Object.keys(capturedClasses);
 }
 
+/**
+ * Upgrade-aware store: keep the best-known class ref. First registration
+ * wins by default, but a re-registration upgrades when the incoming value
+ * is usable and the stored one is not (or a different function, e.g. SPA
+ * re-boot). Returns true when the stored ref changed.
+ */
+export function storeCapturedClass(name: string, value: unknown): boolean {
+  try {
+    const cur = capturedClasses[name];
+    if (cur === value) {
+      return false;
+    }
+    const curFn = typeof cur === "function";
+    const nextFn = typeof value === "function";
+    if (cur === undefined || (!curFn && nextFn) || (curFn && nextFn)) {
+      capturedClasses[name] = value;
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Shared registration handler for our traps (own and chained-foreign).
+ *
+ * Observe-only: capture our ref (upgrade-aware), publish the shared Game
+ * entry, then materialize a plain own data property so the holder looks
+ * EXACTLY as if no trap ever existed (enumerable own key, no ghost keys).
+ * Later reads/wraps (e.g. Goodwin wrapping battle classes for pre-calc)
+ * hit the own property natively. Throws (frozen holder) fall back to the
+ * ghost key.
+ */
+export function observeRegistration(name: string, prop: string, value: unknown, holder: unknown): void {
+  try {
+    if (storeCapturedClass(name, value)) {
+      bridgeDiag.captured += 1;
+      log(`captured ${name}`);
+    }
+  } catch {}
+  try {
+    // Publish into the shared window.Game (created if absent) so
+    // HWH-dependent scripts (e.g. Goodwin pre-calc) keep working.
+    const w = window as unknown as { Game?: unknown };
+    if (!w.Game || typeof w.Game !== "object") {
+      w.Game = {};
+    }
+    const bridge = w.Game as Record<string, unknown>;
+    if (bridge[name] !== value) {
+      bridge[name] = value;
+    }
+  } catch {}
+  try {
+    Object.defineProperty(holder as object, prop, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  } catch {
+    try {
+      (holder as Record<string, unknown>)[prop + "_"] = value;
+    } catch {}
+  }
+  maybeRemoveTraps();
+}
+
 /** Test-only: clear captured refs, traps and diag counters. */
 export function __resetBridgeForTests(): void {
   engineReadyLogged = false;
@@ -229,8 +295,8 @@ export function ensureEngineBridge(): void {
   }
   try {
     const existing = (window as unknown as { Game?: Record<string, unknown> }).Game;
-    if (existing && existing["BattlePresets"]) {
-      return; // HWH (or a previous install) already exposes the engine.
+    if (existing && hasBattleEngine(existing)) {
+      return; // A complete engine is already exposed (e.g. HWH active).
     }
     for (const { name, prop } of ENGINE_CLASS_PATHS) {
       try {
@@ -242,50 +308,40 @@ export function ensureEngineBridge(): void {
           if (installedTraps[prop] && prev.set === installedTraps[prop].set) {
             continue;
           }
+          // Foreign trap (HWH/Goodwin): chain instead of skipping so we
+          // still capture. Call through FIRST to preserve their behavior
+          // exactly, then run our own logic. Non-configurable foreign
+          // traps cannot be chained — leave those alone.
+          if (!prev.configurable) {
+            bridgeDiag.owned += 1;
+            log(`trap for ${name}: foreign and locked, skipping`);
+            continue;
+          }
+          const foreign = prev;
+          const trap = {
+            set(this: Record<string, unknown>, value: unknown) {
+              try {
+                foreign.set?.call(this, value);
+              } catch {}
+              observeRegistration(name, prop, value, this);
+            },
+            get(this: Record<string, unknown>) {
+              try {
+                return foreign.get?.call(this);
+              } catch {
+                return undefined;
+              }
+            },
+          };
+          Object.defineProperty(Object.prototype, prop, { configurable: true, ...trap });
+          installedTraps[prop] = trap;
           bridgeDiag.owned += 1;
-          log(`trap for ${name}: already owned, skipping`);
-          continue; // Owned by HWH's traps — it populates shared window.Game.
+          log(`trap for ${name}: chained foreign trap`);
+          continue;
         }
         const trap = {
           set(this: Record<string, unknown>, value: unknown) {
-            // Observe-only: capture our ref, publish the shared Game entry,
-            // then materialize a plain own data property so the holder looks
-            // EXACTLY as if no trap ever existed (enumerable own key, no
-            // ghost keys). Later reads/wraps (e.g. Goodwin wrapping battle
-            // classes for pre-calc) hit the own property natively. Throws
-            // (frozen holder) fall back to the ghost key.
-            try {
-              if (!capturedClasses[name]) {
-                capturedClasses[name] = value;
-                bridgeDiag.captured += 1;
-                log(`captured ${name}`);
-              }
-            } catch {}
-            try {
-              // Publish into the shared window.Game (created if absent) so
-              // HWH-dependent scripts (e.g. Goodwin pre-calc) keep working.
-              const w = window as unknown as { Game?: unknown };
-              if (!w.Game || typeof w.Game !== "object") {
-                w.Game = {};
-              }
-              const bridge = w.Game as Record<string, unknown>;
-              if (!bridge[name]) {
-                bridge[name] = value;
-              }
-            } catch {}
-            try {
-              Object.defineProperty(this, prop, {
-                value,
-                writable: true,
-                enumerable: true,
-                configurable: true,
-              });
-            } catch {
-              try {
-                this[prop + "_"] = value;
-              } catch {}
-            }
-            maybeRemoveTraps();
+            observeRegistration(name, prop, value, this);
           },
           get(this: Record<string, unknown>) {
             return this[prop + "_"];
@@ -538,12 +594,10 @@ export async function submitResult(
  */
 async function computeBattle(battle: unknown): Promise<BattleResultPayload | null> {
   const game = pickGame() as unknown as Record<string, unknown> | null;
-  if (!game || !game["BattlePresets"] || !game["BattleInstantPlay"]) {
+  // Same callable gate as the frame gate: a cohabitant may have replaced
+  // window.Game between poll and compute.
+  if (!game || !hasBattleEngine(game)) {
     log("computeBattle: no engine in this frame (pickGame miss)");
-    return null;
-  }
-  if (!game["DataStorage"]) {
-    log("computeBattle: engine without DataStorage");
     return null;
   }
   try {
@@ -590,12 +644,12 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
       data: unknown,
       presets: unknown,
     ) => Record<string, unknown>;
+    const MultiReplay = game["MultiBattleInstantReplay"];
     const instant: Record<string, unknown> =
-      Array.isArray(b.progress) && (b.progress as unknown[]).length > 1 && game["MultiBattleInstantReplay"]
-        ? new (game["MultiBattleInstantReplay"] as new (data: unknown, presets: unknown) => Record<string, unknown>)(
-            battle,
-            presets,
-          )
+      Array.isArray(b.progress) &&
+      (b.progress as unknown[]).length > 1 &&
+      typeof MultiReplay === "function"
+        ? new (MultiReplay as new (data: unknown, presets: unknown) => Record<string, unknown>)(battle, presets)
         : new BattleInstantPlay(battle, presets);
     log("computeBattle: instant ok, subscribing");
     let result: BattleResultPayload | null = null;
