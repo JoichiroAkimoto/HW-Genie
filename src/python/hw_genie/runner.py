@@ -251,6 +251,7 @@ def toe_routine(
     engine: str = "hybrid",
     seeds_per_team: int = 2,
     threshold: int = 250,
+    auth_server_url: str = "http://127.0.0.1:8765",
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
 
@@ -277,7 +278,7 @@ def toe_routine(
             user_id = str(headers.get("x-auth-user-id", ""))
             eng = get_default_engine(
                 mode=engine,
-                auth_server_url="http://127.0.0.1:8765",
+                auth_server_url=auth_server_url,
                 user_id=user_id,
             )
         else:

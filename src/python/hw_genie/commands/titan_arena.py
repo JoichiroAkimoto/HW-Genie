@@ -18,6 +18,7 @@ from hw_genie.battle.engine import (
     BattleEngine,
     BattleEstimate,
     BridgeError,
+    BridgeDeadError,
     PythonBattleEngine,
 )
 from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
@@ -373,7 +374,17 @@ def run_titan_arena_tier(
     3. otherwise loop ``rivals`` whose ``attackScore < threshold`` and finish
        each via the engine. After every successful finish, recurse into
        ``titanArenaCompleteTier``.
-    4. Always end with ``titanArenaFarmDailyReward`` for the daily chest.
+    4. Best-effort ``titanArenaFarmDailyReward`` for the daily chest after
+       each pass; early returns (disabled/peace_time, no targets, no
+       progress, bridge dead) skip the remaining steps and report via
+       ``summary["errors"]``.
+
+    ``stop_on_first_loss`` aborts the per-rival loop after the first losing
+    (or abandoned) attempt — including rotation retries — so a weak rotation
+    stops fast. This is orthogonal to the per-battle abandon policy: the
+    tier loop always calls :func:`run_titan_arena` with
+    ``end_on_loss=False``, i.e. losing sims skip ``EndBattle`` (no score
+    banking) and advance to the next team/seed instead of banking a loss.
 
     The function returns a dict summarising the tier outcome (rival results,
     raid results, errors, completed_tier, daily_reward).
@@ -422,8 +433,19 @@ def run_titan_arena_tier(
         print(f"{Emojis.STEP}Tier: {tier} (canRaid={status.get('canRaid')})", flush=True)
 
         if status.get("canRaid"):
-            raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold)
+            try:
+                raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold)
+            except BridgeDeadError as exc:
+                summary["raid_results"].append({"stage": "raid", "battles": [], "completed": False, "bridge_dead": True})
+                summary["rival_results"].extend(exc.partial_results)
+                summary["errors"].append({"stage": "raid", "message": str(exc)})
+                print(f"{Emojis.WARNING}Bridge dead during raid ({exc}); stopping tier loop.", flush=True)
+                return summary
             summary["raid_results"].append(raid_summary)
+            if raid_summary.get("bridge_dead"):
+                summary["errors"].append({"stage": "raid", "message": raid_summary.get("error", "bridge dead")})
+                print(f"{Emojis.WARNING}Bridge dead during raid; stopping tier loop.", flush=True)
+                return summary
             if not raid_summary.get("completed", False):
                 # If raid didn't clear the threshold we still try the per-rival
                 # path in case the user reconnected mid-tier.
@@ -432,10 +454,18 @@ def run_titan_arena_tier(
                 _complete_tier(client, summary)
                 continue
 
-        rival_results = _run_rivals(
-            client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
-            team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
-        )
+        try:
+            rival_results = _run_rivals(
+                client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
+                team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
+            )
+        except BridgeDeadError as exc:
+            summary["rival_results"].extend(exc.partial_results)
+            summary["errors"].append({"stage": "rivals", "message": str(exc)})
+            print(f"{Emojis.WARNING}Bridge dead ({exc}); stopping tier loop.", flush=True)
+            return summary
+        # A bridge-dead sentinel is never mixed into rival_results anymore
+        # (it raises); an empty list here genuinely means "no targets".
         summary["rival_results"].extend(rival_results)
         if not rival_results:
             print(f"{Emojis.INFO}No rivals to attack (threshold={attack_score_threshold})", flush=True)
@@ -480,6 +510,7 @@ def _run_raid(
         return raid_summary
 
     results: dict[str, dict[str, Any]] = {}
+    bridge_errors = 0
     for rival_id, rival_defenders in raid_rivals.items():
         battle = {
             "userId": str(status.get("userId") or rival_id),
@@ -500,12 +531,23 @@ def _run_raid(
         except (BridgeError, Exception) as exc:
             if isinstance(engine, PythonBattleEngine):
                 raise
+            bridge_errors += 1
             raid_summary["battles"].append({"rivalId": str(rival_id), "error": str(exc)})
-            results[str(rival_id)] = {
-                "progress": _fallback_progress(battle, win=False),
-                "result": {"win": False, "stars": 0},
-            }
-            print(f"  - raid rival {rival_id}: bridge error {exc}", flush=True)
+            print(f"  - raid rival {rival_id}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})", flush=True)
+            if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
+                raise BridgeDeadError(
+                    f"userscript not answering during raid ({bridge_errors} consecutive bridge errors)",
+                    partial_results=[],
+                ) from exc
+            # Skip fake progress: without a verified engine result we must
+            # not fabricate progress for EndRaid. The rival is simply left
+            # out of the results so the server scores only verified battles.
+            continue
+
+    if not results:
+        raid_summary["error"] = "all raid battles failed (bridge errors); EndRaid skipped"
+        print(f"{Emojis.WARNING}{raid_summary['error']}", flush=True)
+        return raid_summary
 
     end = client.call(
         {
@@ -540,6 +582,9 @@ def _is_beaten_already(res: dict[str, Any]) -> bool:
 
     Happens with a stale status snapshot: an earlier attempt in the same run
     (or another client) cleared the rival after we listed targets.
+    The server message is matched literally (``beaten up already``); a
+    NotAvailable/NotFound error with different text is logged so a server
+    message change is visible instead of silently misclassified.
     """
     if res.get("error") not in ("NotAvailable", "NotFound"):
         return False
@@ -549,7 +594,10 @@ def _is_beaten_already(res: dict[str, Any]) -> bool:
         detail = _json.dumps(res.get("detail"), default=str).lower()
     except Exception:
         detail = str(res.get("detail")).lower()
-    return "beaten up already" in detail
+    matched = "beaten up already" in detail
+    if not matched:
+        print(f"{Emojis.WARNING}StartBattle {res.get('error')} with unexpected detail: {detail[:200]}", flush=True)
+    return matched
 
 
 def _is_already_cleared(client: HWClient, rival_id: str, threshold: int) -> bool:
@@ -583,11 +631,20 @@ def _run_rivals(
     # seeds in order, so a retry always uses a fresh seed (and usually a
     # fresh team). With end_on_loss=False, losing sims abandon the battle
     # without EndBattle (no score banking, faster sweeps).
+    # The plan is capped to max_attempts_per_rival total attempts per rival
+    # so a 25-team rotation × seeds=2 never explodes to ~50 StartBattles.
     if team_rotation is None:
         attempt_plan = [(titans, s) for s in range(max(1, max_attempts_per_rival))]
     else:
         teams = list(team_rotation) or [titans]
         attempt_plan = [(team, s) for team in teams for s in range(max(1, seeds_per_team))]
+        if len(attempt_plan) > max(1, max_attempts_per_rival):
+            attempt_plan = attempt_plan[: max(1, max_attempts_per_rival)]
+    print(
+        f"{Emojis.INFO}Attempt plan per rival: {len(attempt_plan)} "
+        f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team} cap={max_attempts_per_rival})",
+        flush=True,
+    )
     results: list[dict[str, Any]] = []
     bridge_timeouts = 0
     for rival_id in finish_targets:
@@ -606,12 +663,13 @@ def _run_rivals(
                     flush=True,
                 )
                 if bridge_timeouts >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
-                    print(
-                        f"{Emojis.WARNING}Userscript is not answering. Open the game in the browser "
-                        "with the userscript active, then re-run. Stopping tier loop.",
-                        flush=True,
+                    msg = (
+                        "userscript not answering "
+                        f"({bridge_timeouts} consecutive bridge timeouts). Open the game in the browser "
+                        "with the userscript active, then re-run. Stopping tier loop."
                     )
-                    return results
+                    print(f"{Emojis.WARNING}{msg}", flush=True)
+                    raise BridgeDeadError(msg, partial_results=results) from None
                 continue
             bridge_timeouts = 0
             if _is_beaten_already(res):
@@ -648,32 +706,6 @@ def _run_rivals(
     return results
 
 
-def _battle_from_rival(
-    status: dict[str, Any],
-    rival_id: str,
-    info: dict[str, Any],
-    titans: list[int],
-) -> dict[str, Any]:
-    """Reconstruct a battle payload for a rival after the fact.
-
-    The freshest payload is the one we just got from ``StartBattle``; but
-    since the script runs sequentially we already saved it via :func:`run_titan_arena`.
-    If we get here without that, build a minimal payload with the only field
-    the engine needs (attackers/defenders).
-    """
-    return {
-        "userId": str(info.get("userId") or rival_id),
-        "typeId": str(rival_id),
-        "attackers": {},  # populated by run_titan_arena from StartBattle
-        "defenders": [{"seed": int(rival_id)}],  # placeholder; engine ignores defenders
-        "effects": [],
-        "reward": [],
-        "startTime": 0,
-        "seed": int(rival_id),
-        "type": "titan_arena",
-    }
-
-
 def _complete_tier(client: HWClient, summary: dict[str, Any]) -> None:
     res = client.call(
         {"calls": [{"name": ApiAction.TITAN_ARENA_COMPLETE_TIER, "args": {}, "ident": "body"}]}
@@ -703,19 +735,19 @@ def _farm_daily_reward(client: HWClient, summary: dict[str, Any]) -> bool:
     return False
 
 
-def _fallback_progress(battle: dict[str, Any], win: bool) -> list[dict[str, Any]]:
-    """Use the Python estimator as a fallback when the bridge fails."""
-    est = PythonBattleEngine().calc(battle)
-    # Force the desired win flag so the EndRaid request still goes through
-    # with a "loss" outcome (server accepts losses even if progress is fake).
-    if not win:
-        return [
-            {
-                "attackers": {"heroes": {}},
-                "defenders": {"heroes": {}},
-            }
-        ]
-    return est.progress
+def _fallback_progress(battle: dict[str, Any], win: bool = False) -> list[dict[str, Any]]:
+    """Empty loss progress (no fabricated wins; engine results only).
+
+    Kept for backwards compatibility; the raid path no longer submits
+    fabricated progress — bridge failures skip EndRaid entries instead.
+    """
+    del battle, win
+    return [
+        {
+            "attackers": {"heroes": {}},
+            "defenders": {"heroes": {}},
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -137,3 +137,60 @@ def test_toe_job_store_cleanup():
     assert removed == 1
     # The fresh job is also gone because TTL=0 plus sleep > 0
     assert store.add("A", {"x": 2})  # post-cleanup insert
+
+
+def test_toe_submit_mismatch_rejected_without_fallback_claim():
+    """Cross-account submit without a fallback claim is rejected."""
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    assert store.claim("A") is not None
+    # Foreign account never claimed it → reject.
+    assert store.submit(job_id, "B", {"win": True}) is False
+    assert store.get(job_id, "A")["status"] == "in_flight"
+
+
+def test_toe_submit_mismatch_accepted_after_fallback_claim():
+    """Fallback-claimed (claimed_by == '') jobs accept any submit account."""
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    claimed = store.claim("")
+    assert claimed is not None and claimed["id"] == job_id
+    # Userscript couldn't read Game (empty) but submits with its account.
+    assert store.submit(job_id, "B", {"win": True}) is True
+    assert store.get(job_id, "A")["result"] == {"win": True}
+
+
+def test_toe_submit_exact_match_accepted():
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    assert store.claim("A") is not None
+    assert store.submit(job_id, "A", {"win": True}) is True
+
+
+def test_toe_submit_unclaimed_mismatch_rejected():
+    """Pending job submitted by a foreign account (never claimed) is rejected."""
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    assert store.submit(job_id, "B", {"win": True}) is False
+
+
+def test_toe_get_and_claim_return_copies():
+    """Mutating a returned dict must not tear the store's live job."""
+    store = ToeJobStore()
+    job_id = store.add("A", {"x": 1})
+    fetched = store.get(job_id, "A")
+    assert fetched is not None
+    fetched["status"] = "MUTATED"
+    assert store.get(job_id, "A")["status"] == "pending"
+    claimed = store.claim("A")
+    assert claimed is not None
+    claimed["status"] = "MUTATED"
+    assert store._jobs[job_id]["status"] == "in_flight"
+
+
+def test_toe_submit_mismatch_http_404(client):
+    """HTTP layer rejects a foreign submit (no fallback claim)."""
+    push = client.post("/toe/job", json={"account": "A", "battle": {"x": 1}})
+    job_id = push.json()["id"]
+    bad = client.post(f"/toe/job/{job_id}/result", json={"account": "B", "result": {"win": True}})
+    assert bad.status_code == 404

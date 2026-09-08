@@ -5,7 +5,6 @@ from hw_genie.battle.engine import (
     BattleEstimate,
     PythonBattleEngine,
     battle_estimate_from_bridge_result,
-    estimate_battle,
     get_default_engine,
 )
 
@@ -64,12 +63,6 @@ def test_python_engine_estimates_loss_for_weaker_attackers():
     assert est.win is False
     assert est.stars == 0
     assert est.progress[0]["defenders"]["heroes"]["4000"]["isDead"] is False
-
-
-def test_estimate_battle_backward_compat_dict_shape():
-    # Old callers used the dict shape; ensure it still works.
-    res = estimate_battle({"attackers": {}, "defenders": [{}]})
-    assert set(res) == {"win", "stars", "progress"}
 
 
 def test_get_default_engine_returns_python_for_estimate():
@@ -133,3 +126,30 @@ def test_battle_estimate_from_bridge_result_accepts_flat_dict():
         {"win": True, "stars": 3, "progress": [{"r": 1}]}
     )
     assert (est.win, est.stars, est.progress) == (True, 3, [{"r": 1}])
+
+
+def test_battle_estimate_from_bridge_result_safe_int():
+    """stars=None/str never raises; non-list progress coerces to []."""
+    est = battle_estimate_from_bridge_result({"win": True, "stars": None, "progress": [{"r": 1}]})
+    assert est.stars == 0
+    est2 = battle_estimate_from_bridge_result({"win": False, "stars": "3", "progress": "nope"})
+    assert est2.stars == 3
+    assert est2.progress == []
+    est3 = battle_estimate_from_bridge_result({"progress": [], "result": {"win": True, "stars": None}})
+    assert est3.stars == 0
+
+
+def test_bridge_dead_error_carries_partial_results():
+    from hw_genie.battle.engine import BridgeDeadError
+
+    err = BridgeDeadError("dead", partial_results=[{"rivalId": "1"}])
+    assert err.partial_results == [{"rivalId": "1"}]
+    assert isinstance(err, Exception)
+
+
+def test_fallback_progress_is_empty_loss():
+    from hw_genie.commands.titan_arena import _fallback_progress
+
+    assert _fallback_progress({}, win=False) == [
+        {"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}
+    ]

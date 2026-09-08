@@ -68,12 +68,14 @@ def is_hrana_stream_error(exc: BaseException) -> bool:
 # while later ones succeed). Worth retrying like any transient network
 # error; persistent misconfiguration still surfaces after attempts are
 # exhausted. Keep markers lowercase; matches are case-insensitive.
+# NOTE: no generic "dns error" marker — it over-matches unrelated messages
+# (e.g. Hrana "dns error" wrappers are already covered by the specific
+# lookup/resolution strings below).
 _DNS_FAILURE_MARKERS = (
     "temporary failure in name resolution",
     "failed to lookup address information",
     "name or service not known",
     "nodename nor servname provided",
-    "dns error",
 )
 
 
@@ -111,9 +113,10 @@ def retry_on_wal_contention(
 
     NOTE: the name is historical — this helper no longer retries only WAL
     contention. It retries any transient DB error: WAL single-writer
-    contention (``wal_insert_begin failed`` / ``database is locked``) and
+    contention (``wal_insert_begin failed`` / ``database is locked``),
     Turso Hrana stream death (``stream not found`` / server-initiated
-    closes). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
+    closes), and transient DNS resolution failures (``temporary failure in
+    name resolution`` / ``name or service not known`` / ...). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
     jitter (0.5x-1.5x) so multiple processes sharing the replica do not
     retry in lockstep and re-collide. Non-transient exceptions propagate
     immediately; the last exception is re-raised when all attempts are

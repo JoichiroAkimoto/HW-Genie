@@ -7,7 +7,7 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, tick } from "../toe-bridge.ts";
+import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, realmDiag, safeGameOf, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -212,5 +212,125 @@ test("traps are removed after full capture (Goodwin coexistence)", () => {
     }
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
+  }
+});
+
+test("non-function BattlePresets never passes the engine gate", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    const holder = {};
+    // Pollute captures with non-callable classes (trap self-capture bug).
+    holder["game.battle.controller.thread.BattlePresets"] = { notAFunction: true };
+    holder["game.battle.controller.instant.BattleInstantPlay"] = { notAFunction: true };
+    holder["game.data.storage.DataStorage"] = {};
+    assert.strictEqual(hasBattleEngine({ BattlePresets: {}, BattleInstantPlay: {}, DataStorage: {} }), false);
+    assert.strictEqual(hasLocalEngine(), false);
+  } finally {
+    for (const p of [
+      "game.battle.controller.thread.BattlePresets",
+      "game.battle.controller.instant.BattleInstantPlay",
+      "game.data.storage.DataStorage",
+    ]) {
+      try { delete Object.prototype[p]; } catch {}
+    }
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
+test("double ensureEngineBridge does not mis-log owned traps", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  globalThis.window = {};
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => { logs.push(a.join(" ")); };
+  try {
+    ensureEngineBridge();
+    ensureEngineBridge();
+    assert.ok(!logs.some((l) => l.includes("already owned")), `no owned log on re-install, got: ${logs}`);
+  } finally {
+    console.log = origLog;
+    for (const p of [
+      "game.battle.controller.thread.BattlePresets",
+      "game.battle.controller.instant.BattleInstantPlay",
+      "game.battle.controller.instant.MultiBattleInstantReplay",
+      "game.battle.controller.MultiBattleResult",
+      "game.data.storage.DataStorage",
+      "game.data.storage.battle.BattleConfigStorage",
+    ]) {
+      try { delete Object.prototype[p]; } catch {}
+    }
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
+test("submitWithRetry retries once after failure", async () => {
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) return { ok: false, status: 404 };
+    return { ok: true, status: 200 };
+  };
+  try {
+    const ok = await submitWithRetry("jid", "acc", { progress: [], result: { win: true, stars: 3 } }, "http://127.0.0.1:1");
+    assert.strictEqual(ok, true);
+    assert.strictEqual(calls, 2);
+  } finally {
+    if (origFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = origFetch;
+  }
+});
+
+test("submitWithRetry reports failure after second miss", async () => {
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: false, status: 404 };
+  };
+  try {
+    const ok = await submitWithRetry("jid", "acc", { progress: [], result: { win: false, stars: 0 } }, "http://127.0.0.1:1");
+    assert.strictEqual(ok, false);
+    assert.strictEqual(calls, 2);
+  } finally {
+    if (origFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = origFetch;
+  }
+});
+
+test("tick retries submit once on 404 (injected failing fetch)", async () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+  const origFetch = globalThis.fetch;
+  let submits = 0;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return { ok: true, status: 200, json: async () => ({ id: "j1", account: "", battle: { type: "titan_arena" } }) };
+    }
+    if (u.includes("/result")) {
+      submits += 1;
+      if (submits === 1) return { ok: false, status: 404 };
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  try {
+    await tick("", "http://127.0.0.1:1");
+    assert.strictEqual(submits, 2);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
   }
 });

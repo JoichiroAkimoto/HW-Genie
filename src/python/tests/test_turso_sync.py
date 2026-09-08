@@ -873,6 +873,10 @@ def test_is_transient_db_error_includes_dns_failure():
     assert is_dns_error(ValueError("Temporary failure in name resolution"))
     assert is_dns_error(ValueError("failed to lookup address information"))
     assert is_dns_error(ValueError("Name or service not known"))
+    assert is_dns_error(ValueError("nodename nor servname provided"))
+    # Generic "dns error" alone over-matches and is NOT a marker.
+    assert not is_dns_error(ValueError("dns error"))
+    assert not is_dns_error(ValueError("error trying to connect: dns error"))
     # 設定ミス等の恒久エラーは対象外のまま
     assert not is_transient_db_error(ValueError("no such table: accounts"))
     assert not is_dns_error(ValueError("connection refused"))

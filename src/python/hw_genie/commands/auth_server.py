@@ -1,8 +1,9 @@
 """Auth server module for automatic authentication header capture.
 
 Also hosts a tiny in-memory ToE job queue so the Python CLI can request a
-``progress/result`` from the userscript's ``Game.BattleCalc`` over HTTP. The
-userscript polls ``GET /toe/job`` and posts back via ``POST /toe/result``.
+``progress/result`` from the userscript's in-page battle engine over HTTP.
+Routes: ``POST /toe/job``, ``GET /toe/next``, ``GET /toe/job/{id}``,
+``POST /toe/job/{id}/result``.
 """
 from __future__ import annotations
 
@@ -101,15 +102,18 @@ class ToeJobStore:
                 "result": None,
                 "created_at": time.time(),
                 "claimed_at": None,
+                "claimed_by": None,
             }
         return job_id
 
     def get(self, job_id: str, account: str) -> Optional[dict[str, Any]]:
         with self._lock:
             job = self._jobs.get(job_id)
-        if not job or job.get("account") != account:
-            return None
-        return job
+            if not job or job.get("account") != account:
+                return None
+            # Shallow copy under lock: FastAPI serializes after we release,
+            # so a concurrent submit must not tear the live dict mid-encode.
+            return dict(job)
 
     def _is_reclaimable(self, job: dict[str, Any], now: float) -> bool:
         """An in-flight job is reclaimable once its claim is older than the timeout."""
@@ -149,7 +153,10 @@ class ToeJobStore:
             job = pending[0]
             job["status"] = "in_flight"
             job["claimed_at"] = now
-        return job
+            job["claimed_by"] = account
+            # Shallow copy under lock (see get()): the caller serializes
+            # outside the lock while submit() may mutate the live dict.
+            return dict(job)
 
     def submit(self, job_id: str, account: str, result: dict[str, Any]) -> bool:
         with self._lock:
@@ -160,14 +167,14 @@ class ToeJobStore:
             # can never clobber the reclaimer's result (no last-writer-wins).
             if job.get("status") == "done":
                 return False
-            # Strict account check, but allow fallback when userscript polled without account (empty) or account mismatch due to alias vs numeric id
-            if job.get("account") != account and account != "" and job.get("account") != "":
-                # Allow submitting with empty or with any account if job was claimed via fallback (account mismatch is tolerated for localhost bridge)
-                # Still require job to be in_flight to avoid stale submits
-                if job.get("status") not in ("in_flight", "pending"):
-                    return False
-                # Log mismatch but accept for localhost bridge
-                pass
+            # Strict account check: exact match always accepted. A mismatch is
+            # accepted only when the job was claimed via the account-less
+            # fallback (claimed_by == "" — userscript couldn't read Game yet,
+            # or alias vs numeric-id mismatch forced the fallback path).
+            # Every other mismatch is rejected (route maps to 404) so a
+            # cross-account claim can never compute+submit foreign battles.
+            if job.get("account") != account and job.get("claimed_by") != "":
+                return False
             job["status"] = "done"
             job["result"] = result
             job["finished_at"] = time.time()

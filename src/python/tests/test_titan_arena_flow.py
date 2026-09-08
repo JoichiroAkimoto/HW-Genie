@@ -540,7 +540,10 @@ def test_run_rivals_retries_next_seed_on_abandon(mock_client, mock_sleep, mocker
 
 
 def test_run_rivals_stops_after_consecutive_bridge_timeouts(mock_client, mock_sleep, mocker):
-    """3 straight timeouts abort the tier with a hint instead of grinding."""
+    """3 straight timeouts raise BridgeDeadError instead of grinding."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError
     from hw_genie.commands.titan_arena import _run_rivals
 
     status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
@@ -552,9 +555,203 @@ def test_run_rivals_stops_after_consecutive_bridge_timeouts(mock_client, mock_sl
 
     mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
     client, _ = mock_client
+    with pytest.raises(BridgeDeadError) as excinfo:
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+            threshold=250, stop_on_first_loss=False, team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=9,
+        )
+    assert len(calls) == 3
+    assert excinfo.value.partial_results == []
+
+
+def test_run_rivals_bridge_dead_preserves_partial_results(mock_client, mock_sleep, mocker):
+    """A win before the outage is preserved on the raised BridgeDeadError."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {
+        "status": "battle", "tier": 8,
+        "rivals": {"-1": {"attackScore": 0, "power": "1"}, "-2": {"attackScore": 0, "power": "1"}},
+    }
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(str(rival_id))
+        if str(rival_id) == "-1":
+            return {"estimate": MagicMock(win=True)}
+        return {"estimate": MagicMock(win=False), "bridge_error": "userscript did not finish battle within 5s", "estimate_only": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    # Single-team plan with many attempts so the second rival can time out 3x.
+    client, _ = mock_client
+    with pytest.raises(BridgeDeadError) as excinfo:
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+            threshold=250, stop_on_first_loss=False,
+            team_rotation=None, max_attempts_per_rival=9, end_on_loss=False,
+        )
+    assert excinfo.value.partial_results[0]["win"] is True
+    assert excinfo.value.partial_results[0]["rivalId"] == "-1"
+
+
+def test_tier_bridge_dead_canraid_false_reports_error(mock_client, mock_sleep, mocker):
+    """canRaid=False + bridge dead → summary errors, no misleading 'No rivals'."""
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": status}),
+    ]
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=BridgeDeadError("bridge dead", partial_results=[{"rivalId": "-1", "win": True}]),
+    )
+    summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
+    assert summary["rival_results"] == [{"rivalId": "-1", "win": True}]
+    assert any("bridge dead" in str(e.get("message", "")) for e in summary["errors"])
+    assert summary["completed_tier"] is False
+
+
+def test_tier_bridge_dead_canraid_true_stops_without_complete(mock_client, mock_sleep, mocker):
+    """canRaid=True + raid bridge dead → tier aborts, no CompleteTier grind."""
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": True}
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": status}),
+    ]
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        side_effect=BridgeDeadError("raid bridge dead", partial_results=[]),
+    )
+    spy_complete = mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
+    assert any(e.get("stage") == "raid" for e in summary["errors"])
+    spy_complete.assert_not_called()
+
+
+def test_run_rivals_attempt_plan_bounded(mock_client, mock_sleep, mocker):
+    """25-team rotation × seeds=2 is capped to max_attempts_per_rival StartBattles."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    rotation = [[i, i + 1, i + 2, i + 3, i + 4] for i in range(25)]
     results = _run_rivals(
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
-        threshold=250, stop_on_first_loss=False, team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=9,
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=rotation, seeds_per_team=2, max_attempts_per_rival=3,
     )
     assert len(calls) == 3
-    assert results == []
+    assert len(results) == 3
+    assert all(r.get("abandoned") for r in results)
+
+
+def test_run_rivals_stop_on_first_loss_with_rotation(mock_client, mock_sleep, mocker):
+    """stop_on_first_loss aborts after the first loss even with rotation left."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {
+        "status": "battle", "tier": 8,
+        "rivals": {"-1": {"attackScore": 0, "power": "1"}, "-2": {"attackScore": 0, "power": "1"}},
+    }
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(str(rival_id))
+        return {"estimate": MagicMock(win=False)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=True,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=2,
+    )
+    assert len(calls) == 1
+    assert len(results) == 1
+    assert results[0]["win"] is False
+
+
+def test_run_raid_bridge_breaker_skips_fake_and_raises(mock_client, mock_sleep):
+    """Raid bridge errors skip EndRaid fakes; 3rd consecutive raises."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError, BridgeTimeoutError
+    from hw_genie.commands.titan_arena import _run_raid
+
+    class FlakyEngine:
+        def __init__(self):
+            self.n = 0
+
+        def calc(self, battle):
+            self.n += 1
+            raise BridgeTimeoutError("userscript did not finish battle within 5s")
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {"a": {"attackScore": 0}}}
+    start_payload = {
+        "attackers": {"4003": {"id": 4003}},
+        "rivals": {"r1": {"t": 1}, "r2": {"t": 2}, "r3": {"t": 3}},
+    }
+    mock_call.side_effect = [_ok({"response": start_payload})]
+    with pytest.raises(BridgeDeadError):
+        _run_raid(client, status, [1, 2, 3, 4, 5], FlakyEngine(), 250)
+    # StartRaid only — EndRaid never called with fabricated progress.
+    assert mock_call.call_count == 1
+
+
+def test_run_raid_partial_bridge_errors_skip_only_failed(mock_client, mock_sleep):
+    """One bridge failure among successes submits only verified results."""
+    from hw_genie.battle.engine import BridgeTimeoutError
+    from hw_genie.commands.titan_arena import _run_raid
+
+    calls = {"n": 0}
+
+    class MixedEngine:
+        def calc(self, battle):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise BridgeTimeoutError("userscript did not finish battle within 5s")
+            from hw_genie.battle.engine import BattleEstimate
+
+            return BattleEstimate(win=True, stars=3, progress=[{"r": 1}])
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
+    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}}}
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
+    assert len(summary["battles"]) == 2
+    assert mock_call.call_count == 2
+    end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
+    assert set(end_args) == {"r2"}
+
+
+def test_is_beaten_already_negative_and_log(mock_client, mock_sleep, capsys):
+    """Non-matching NotAvailable detail → False + warning log."""
+    from hw_genie.commands.titan_arena import _is_beaten_already
+
+    assert _is_beaten_already({"error": "NotAvailable", "detail": {"description": "beaten up already"}}) is True
+    assert _is_beaten_already({"error": "NotAvailable", "detail": {"description": "something else changed"}}) is False
+    assert _is_beaten_already({"error": "Other", "detail": "beaten up already"}) is False
+    out = capsys.readouterr().out
+    assert "unexpected detail" in out

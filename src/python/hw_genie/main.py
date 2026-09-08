@@ -839,6 +839,7 @@ def cmd_multi(args):
             engine=getattr(args, "engine", "hybrid") or "hybrid",
             seeds_per_team=int(getattr(args, "seeds", 2) or 2),
             threshold=int(getattr(args, "threshold", 250) or 250),
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
         )
         # bridge の job キューは account 照合だがフォールバック claim が他アカの
         # job を拾う恐れがあるため逐次実行に固定する。
@@ -1247,7 +1248,7 @@ def main():
     p_toe_run.add_argument(
         "--stop-on-loss",
         action="store_true",
-        help="Abort the tier on the first rival loss (per-rival mode only)",
+        help="Abort the tier after the first losing/abandoned rival attempt (stops rotation retries; losing sims already skip EndBattle with no score banking)",
     )
     p_toe_run.add_argument(
         "--seeds",
@@ -1328,6 +1329,11 @@ def main():
         type=int,
         default=250,
         help="attackScore threshold for the 'toe' mode (default: 250 = cleared)",
+    )
+    p_multi.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the 'toe' mode JS bridge (default: http://127.0.0.1:8765)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

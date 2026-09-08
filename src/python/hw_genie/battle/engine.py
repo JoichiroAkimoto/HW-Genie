@@ -155,17 +155,25 @@ def battle_estimate_from_bridge_result(envelope: dict[str, Any]) -> BattleEstima
     ``progress`` from the envelope top level. A flat ``{"win", "stars",
     "progress"}`` dict is also accepted for backwards compatibility.
     """
-    if isinstance(envelope.get("result"), dict):
-        inner = envelope["result"]
-        progress = envelope.get("progress")
-    else:
-        inner = envelope
-        progress = envelope.get("progress")
+    inner = envelope.get("result") if isinstance(envelope.get("result"), dict) else envelope
+    if not isinstance(inner, dict):
+        inner = {}
+    progress = envelope.get("progress")
     return BattleEstimate(
         win=bool(inner.get("win")),
-        stars=int(inner.get("stars", 0)),
-        progress=progress or [],
+        stars=_safe_int(inner.get("stars")),
+        progress=progress if isinstance(progress, list) else [],
     )
+
+
+def _safe_int(value: Any) -> int:
+    """Best-effort int parse for bridge ``stars`` (None/str → 0, never raises)."""
+    try:
+        if value is None:
+            return 0
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 class BridgeError(RuntimeError):
@@ -174,6 +182,18 @@ class BridgeError(RuntimeError):
 
 class BridgeTimeoutError(BridgeError):
     """Raised when the userscript does not answer the job in time."""
+
+
+class BridgeDeadError(BridgeError):
+    """Raised when the JS bridge is considered dead (consecutive timeouts).
+
+    Carries the partial per-rival results collected before the outage so
+    callers can still report progress while aborting the tier loop.
+    """
+
+    def __init__(self, message: str, partial_results: list | None = None) -> None:
+        super().__init__(message)
+        self.partial_results: list = list(partial_results or [])
 
 
 class PlaywrightBattleEngine:
@@ -213,23 +233,28 @@ class PlaywrightBattleEngine:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=self.headless)
-                # Isolated context per battle (equiv. to Firefox container)
-                context = browser.new_context(extra_http_headers=self.headers or None)
-                page = context.new_page()
-                page.goto(self.game_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
-                # Wait for Haxe Game to appear (poll, cross-origin safe via evaluate)
                 try:
-                    page.wait_for_function("() => window.Game && window.Game.BattlePresets", timeout=int(self.timeout * 1000))
-                except Exception as exc:
-                    browser.close()
-                    raise BridgeError(f"Game not loaded within {self.timeout}s: {exc}") from exc
+                    # Isolated context per battle (equiv. to Firefox container)
+                    context = browser.new_context(extra_http_headers=self.headers or None)
+                    page = context.new_page()
+                    page.goto(self.game_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
+                    # Wait for Haxe Game to appear (poll, cross-origin safe via evaluate)
+                    try:
+                        page.wait_for_function("() => window.Game && window.Game.BattlePresets", timeout=int(self.timeout * 1000))
+                    except Exception as exc:
+                        raise BridgeError(f"Game not loaded within {self.timeout}s: {exc}") from exc
 
-                # Run the battle in the page context. The JS mirrors toe-bridge.ts
-                # computeBattle (ported from HerowarsHelper's BattleCalc): Haxe
-                # signal subscription, NOT DOM addEventListener.
-                js_battle = json.dumps(battle)
-                result_json = page.evaluate(
-                    """(battleJson) => {
+                    # Run the battle in the page context. The JS mirrors toe-bridge.ts
+                    # computeBattle (ported from HerowarsHelper's BattleCalc): Haxe
+                    # signal subscription, NOT DOM addEventListener.
+                    # NOTE: Haxe minified ordinals below (DataStorage key 25,
+                    # BattleInstantPlay signal 9) are brittle across game builds.
+                    # They were ported from HerowarsHelper's working BattleCalc;
+                    # re-validate against that source when resolution throws
+                    # (the page.evaluate error below carries the failing key).
+                    js_battle = json.dumps(battle)
+                    result_json = page.evaluate(
+                        """(battleJson) => {
                         const getF = (cls, name) => Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop()[0];
                         const getFn = (cls, n) => Object.keys(cls)[n];
                         const getProtoFn = (cls, n) => Object.keys(cls.prototype)[n];
@@ -254,17 +279,18 @@ class PlaywrightBattleEngine:
                             setTimeout(() => { if (!done) resolve(null); }, 10000);
                         });
                     }""",
-                    js_battle,
-                )
-                browser.close()
-                if not result_json:
-                    raise BridgeError("playwright battle engine returned null (engine unavailable or timeout)")
-                result = json.loads(result_json) if isinstance(result_json, str) else result_json
-                return BattleEstimate(
-                    win=bool(result.get("result", {}).get("win", False)),
-                    stars=int(result.get("result", {}).get("stars", 0)),
-                    progress=result.get("progress") or [],
-                )
+                        js_battle,
+                    )
+                    if not result_json:
+                        raise BridgeError("playwright battle engine returned null (engine unavailable or timeout)")
+                    result = json.loads(result_json) if isinstance(result_json, str) else result_json
+                    return BattleEstimate(
+                        win=bool(result.get("result", {}).get("win", False)),
+                        stars=_safe_int(result.get("result", {}).get("stars", 0)),
+                        progress=result.get("progress") or [],
+                    )
+                finally:
+                    browser.close()
         except BridgeError:
             raise
         except Exception as exc:
@@ -292,14 +318,3 @@ def get_default_engine(
     if mode in ("playwright", "pw"):
         return PlaywrightBattleEngine(headers=headers)
     return JsBridgeBattleEngine(auth_server_url=auth_server_url, user_id=user_id)
-
-
-# Backwards-compatible helper used by the single-rival `toe attack` flow.
-def estimate_battle(battle: dict[str, Any]) -> dict[str, Any]:
-    """Return the dict shape the previous implementation exposed."""
-    est = PythonBattleEngine().calc(battle)
-    return {
-        "win": est.win,
-        "stars": est.stars,
-        "progress": est.progress,
-    }

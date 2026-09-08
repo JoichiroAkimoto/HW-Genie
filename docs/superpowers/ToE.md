@@ -123,28 +123,3 @@
 2	4024	Verdoc
 3	4022	Avalon
 4	4040	Rigel
-
-### ToEローテーション（toe run 自動選択順）
-0	4044	Lumira
-1	4012
-2	4013	Araji
-3	4043	Solaris
-4	4010
-
-0	4044	Lumira
-1	4013	Araji
-2	4043	Solaris
-3	4014
-4	4010
-
-0	4042	Iyari
-1	4013	Araji
-2	4043	Solaris
-3	4014
-4	4010
-
-0	4012
-1	4042	Iyari
-2	4013	Araji
-3	4043	Solaris
-4	4010

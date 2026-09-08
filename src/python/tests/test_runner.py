@@ -1420,10 +1420,67 @@ def test_cmd_multi_toe_forces_sequential(monkeypatch):
         "A",
         (),
         {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
-         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250},
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765"},
     )()
     with pytest.raises(SystemExit) as exc:
         main.cmd_multi(args)
     # no wins and no completion -> failed -> exit 1
     assert exc.value.code == 1
     assert captured["max_parallel"] == 1
+
+
+def test_toe_routine_threads_auth_server_url(monkeypatch):
+    """toe_routine forwards a custom auth server URL to the bridge engine."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_get_default_engine(mode=None, auth_server_url=None, user_id=None, headers=None):
+        seen["url"] = auth_server_url
+        seen["user"] = user_id
+        from hw_genie.battle.engine import PythonBattleEngine
+
+        return PythonBattleEngine()
+
+    monkeypatch.setattr("hw_genie.battle.engine.get_default_engine", fake_get_default_engine)
+    monkeypatch.setattr(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        lambda client, **kw: {"ok": True},
+    )
+    runner.toe_routine(engine="hybrid", auth_server_url="http://127.0.0.1:9999")(FakeClient(), "Joe")
+    assert seen == {"url": "http://127.0.0.1:9999", "user": "99"}
+
+
+def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
+    """multi toe --auth-server-url reaches toe_routine."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765"):
+        captured.update(
+            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url}
+        )
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:9999"},
+    )()
+    try:
+        main.cmd_multi(args)
+    except SystemExit:
+        pass
+    assert captured["url"] == "http://127.0.0.1:9999"

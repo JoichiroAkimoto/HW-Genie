@@ -114,9 +114,11 @@ export function __resetBridgeForTests(): void {
 }
 
 function capturedEngine(): Record<string, unknown> | null {
-  const g = capturedClasses as Record<string, unknown>;
-  if (g["BattlePresets"] && g["BattleInstantPlay"] && g["DataStorage"]) {
-    return g;
+  // Gate through the callable check: polluted captures (non-function
+  // BattlePresets/BattleInstantPlay) must never pass, otherwise the frame
+  // claims jobs it cannot compute and banks dummy losses.
+  if (hasBattleEngine(capturedClasses)) {
+    return capturedClasses as Record<string, unknown>;
   }
   return null;
 }
@@ -158,7 +160,7 @@ export function realmDiag(): string {
  * trap`` would fire our own setter, capture our own trap functions as game
  * classes, and delete the traps before the game bundle ever runs.
  */
-const installedTraps: Record<string, { set: (this: unknown, v: unknown) => void; get: (this: unknown) => unknown }> =
+const installedTraps: Record<string, { set: (this: any, v: unknown) => void; get: (this: any) => unknown }> =
   Object.create(null);
 
 function maybeRemoveTraps(): void {
@@ -196,6 +198,12 @@ export function ensureEngineBridge(): void {
       try {
         const prev = Object.getOwnPropertyDescriptor(Object.prototype, prop);
         if (prev && (prev.set || prev.get)) {
+          // Idempotent re-install: our own trap from a previous
+          // ensureEngineBridge() call is not foreign ownership — skip
+          // without bumping the owned (HWH) diagnostic.
+          if (installedTraps[prop] && prev.set === installedTraps[prop].set) {
+            continue;
+          }
           bridgeDiag.owned += 1;
           log(`trap for ${name}: already owned, skipping`);
           continue; // Owned by HWH's traps — it populates shared window.Game.
@@ -321,19 +329,6 @@ export function safeGameOf(candidate: unknown): unknown {
 }
 
 /** Return the first window context carrying a ``Game`` object (any shape). */
-function getGameWindow(): unknown {
-  for (const c of getCandidateWindows()) {
-    try {
-      if ((c as { Game?: unknown })?.Game) return c;
-    } catch {}
-  }
-  try {
-    return window;
-  } catch {
-    return null;
-  }
-}
-
 function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | null {
   // Primary source: classes captured by our own traps (same-realm refs —
   // always readable). Falls back to scanning window contexts for a shared
@@ -378,7 +373,10 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
  * The game mangles method names per build, but keeps a
  * ``__properties__`` map (minified -> original). These helpers resolve the
  * current minified key, ported verbatim from HerowarsHelper's working
- * ``BattleCalc``. Exported for unit tests.
+ * ``BattleCalc`` (ordinals DataStorage key 25 / BattleInstantPlay signal 9
+ * pinned to that source; re-validate there when a game update breaks
+ * resolution — every throw below is diag-logged with the failing key).
+ * Exported for unit tests.
  */
 export function getF(classF: unknown, nameF: string): string {
   const props = (classF as { prototype?: { __properties__?: Record<string, string> } })?.prototype?.__properties__ ?? {};
@@ -453,7 +451,7 @@ async function pollNextJob(account: string, baseUrl: string): Promise<ToeJob | n
   }
 }
 
-async function submitResult(
+export async function submitResult(
   jobId: string,
   account: string,
   result: BattleResultPayload,
@@ -488,18 +486,34 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     return null;
   }
   try {
-    // Ported from HerowarsHelper's working BattleCalc:
-    // presets take the battle's own progress plus the titan PvP config from
-    // BattleConfigStorage, the instant play reports via a Haxe signal (NOT
-    // DOM addEventListener), and results come from MultiBattleResult getters.
+    // Ported from HerowarsHelper's working BattleCalc (ordinals pinned, see
+    // getF/getFn/getProtoFn docs): presets take the battle's own progress
+    // plus the titan PvP config from BattleConfigStorage, the instant play
+    // reports via a Haxe signal (NOT DOM addEventListener), and results come
+    // from MultiBattleResult getters.
     const b = battle as { progress?: unknown; type?: unknown };
     const dataStorage = game["DataStorage"] as Record<string, unknown>;
     log("computeBattle: resolving config");
-    const configStorageKey = getFn(dataStorage, 25);
+    let configStorageKey: string;
+    let configGetter: string;
+    try {
+      configStorageKey = getFn(dataStorage, 25);
+      configGetter = getF(game["BattleConfigStorage"], battleConfigFor(b.type));
+    } catch (e) {
+      // Ordinal drift after a game update lands here — the key names above
+      // identify which resolver broke, so compare with HerowarsHelper.
+      log("computeBattle: engine ordinal resolution failed:", e);
+      return null;
+    }
     const dataStores = dataStorage as unknown as Record<string, Record<string, () => unknown>>;
-    const configGetter = getF(game["BattleConfigStorage"], battleConfigFor(b.type));
     log(`computeBattle: config key=${String(configStorageKey)} getter=${configGetter}`);
-    const config = dataStores[configStorageKey][configGetter]();
+    let config: unknown;
+    try {
+      config = dataStores[configStorageKey][configGetter]();
+    } catch (e) {
+      log("computeBattle: config lookup failed:", e);
+      return null;
+    }
     log("computeBattle: presets next");
     const presets = new (
       game["BattlePresets"] as new (
@@ -578,14 +592,38 @@ export async function tick(account: string, baseUrl: string): Promise<void> {
     // timeout). Submit a fast loss so Python proceeds instead of waiting
     // out its full bridge timeout.
     log(`job ${job.id}: compute failed, submitting dummy loss`);
-    await submitResult(job.id, account, {
+    await submitWithRetry(job.id, account, {
       progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
       result: { win: false, stars: 0 },
     }, baseUrl);
     return;
   }
   log(`job ${job.id}: complete win=${computed.result.win} stars=${computed.result.stars} rounds=${computed.progress.length}`);
-  await submitResult(job.id, account, computed, baseUrl);
+  await submitWithRetry(job.id, account, computed, baseUrl);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function submitWithRetry(
+  jobId: string,
+  account: string,
+  result: BattleResultPayload,
+  baseUrl: string,
+): Promise<boolean> {
+  let ok = await submitResult(jobId, account, result, baseUrl);
+  if (!ok) {
+    // The job may have expired (TTL cleanup → 404). Retry once after 1s so
+    // a transient window doesn't silently drop a computed battle.
+    log(`job ${jobId}: submit failed, retrying once after 1s`);
+    await sleep(1000);
+    ok = await submitResult(jobId, account, result, baseUrl);
+    if (!ok) {
+      log(`job ${jobId}: submit retry failed (job may have expired)`);
+    }
+  }
+  return ok;
 }
 
 export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number } = {}): () => void {
