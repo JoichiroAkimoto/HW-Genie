@@ -483,3 +483,49 @@ test("Goodwin-second overwrite keeps working after our capture", () => {
     else globalThis.window = prevWindow;
   }
 });
+
+test("delete-after-capture reads as undefined (transparent)", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    function F() {}
+    const holder = {};
+    holder[prop] = F;
+    assert.strictEqual(holder[prop], F);
+    delete holder[prop];
+    // Without the materialized-holder guard this would return the stale
+    // ghost value; transparent behavior is undefined.
+    assert.strictEqual(holder[prop], undefined);
+    assert.ok(!Object.keys(holder).some((k) => k.endsWith("_")));
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});
+
+test("frozen holder still served via ghost fallback", () => {
+  __resetBridgeForTests();
+  const prevWindow = globalThis.window;
+  const prop = "game.battle.controller.thread.BattlePresets";
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    function F() {}
+    const holder = Object.freeze({});
+    // defineProperty on frozen holder throws -> ghost fallback path.
+    observeRegistration("BattlePresets", prop, F, holder);
+    assert.ok(capturedClassNames().includes("BattlePresets"));
+  } finally {
+    try {
+      delete Object.prototype[prop];
+    } catch {}
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+  }
+});

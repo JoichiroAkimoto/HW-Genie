@@ -206,6 +206,11 @@ export function observeRegistration(name: string, prop: string, value: unknown, 
       enumerable: true,
       configurable: true,
     });
+    // Remember materialization: a later `delete holder[prop]` must read as
+    // undefined (as if no trap existed), not as the stale ghost key below.
+    try {
+      materializedHolders.add(holder as object);
+    } catch {}
   } catch {
     try {
       (holder as Record<string, unknown>)[prop + "_"] = value;
@@ -213,6 +218,9 @@ export function observeRegistration(name: string, prop: string, value: unknown, 
   }
   maybeRemoveTraps();
 }
+
+/** Holders materialized with a plain own prop (see observeRegistration). */
+const materializedHolders: WeakSet<object> = new WeakSet();
 
 /** Test-only: clear captured refs, traps and diag counters. */
 export function __resetBridgeForTests(): void {
@@ -344,6 +352,14 @@ export function ensureEngineBridge(): void {
             observeRegistration(name, prop, value, this);
           },
           get(this: Record<string, unknown>) {
+            // A materialized holder that lost its own prop via `delete`
+            // must read as undefined (transparent). Otherwise serve the
+            // frozen-holder ghost fallback.
+            try {
+              if (materializedHolders.has(this)) {
+                return undefined;
+              }
+            } catch {}
             return this[prop + "_"];
           },
         };
