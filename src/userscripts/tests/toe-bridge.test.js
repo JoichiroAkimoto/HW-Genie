@@ -180,7 +180,9 @@ test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
   }
 });
 
-test("traps are removed after full capture (Goodwin coexistence)", () => {
+test("traps stay installed for the session (HWH parity)", () => {
+  // Removing traps mid-boot stalls game loading at 1-2%: the runtime may
+  // resolve classes via these paths lazily. Like HWH, traps persist.
   __resetBridgeForTests();
   const prevWindow = globalThis.window;
   const props = [
@@ -199,15 +201,13 @@ test("traps are removed after full capture (Goodwin coexistence)", () => {
       holder[p] = function () {};
     }
     for (const p of props) {
-      assert.strictEqual(
-        Object.getOwnPropertyDescriptor(Object.prototype, p),
-        undefined,
-        `${p} trap removed`,
-      );
+      const d = Object.getOwnPropertyDescriptor(Object.prototype, p);
+      assert.ok(d && typeof d.set === "function", `${p} trap persists`);
     }
-    // Values stay stored under the HWH-compatible ghost key; the game
-    // holds direct refs post-registration so prototype reads are unneeded.
+    // Values stay stored under the HWH-compatible ghost key and remain
+    // readable through the trap.
     assert.strictEqual(typeof holder[props[0] + "_"], "function");
+    assert.strictEqual(typeof holder[props[0]], "function");
   } finally {
     for (const p of props) {
       try {

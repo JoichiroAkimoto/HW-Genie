@@ -148,15 +148,8 @@ export function capturedClassNames(): string[] {
   return Object.keys(capturedClasses);
 }
 
-/** Test-only: clear captured refs, traps, timers and diag counters. */
+/** Test-only: clear captured refs, traps and diag counters. */
 export function __resetBridgeForTests(): void {
-  if (trapTimeoutId !== null) {
-    try {
-      clearTimeout(trapTimeoutId);
-    } catch {}
-    trapTimeoutId = null;
-  }
-  trapTimeoutScheduled = false;
   engineReadyLogged = false;
   for (const k of Object.keys(capturedClasses)) {
     delete capturedClasses[k];
@@ -218,72 +211,21 @@ export function realmDiag(): string {
 const installedTraps: Record<string, { set: (this: any, v: unknown) => void; get: (this: any) => unknown }> =
   Object.create(null);
 
-/** Remove exactly the traps we installed, if still ours. Returns count removed. */
-function removeOwnTraps(): number {
-  let removed = 0;
-  for (const { prop } of ENGINE_CLASS_PATHS) {
-    try {
-      const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
-      if (cur && installedTraps[prop] && cur.set === installedTraps[prop].set) {
-        delete (Object.prototype as Record<string, unknown>)[prop];
-        removed += 1;
-      }
-    } catch {}
-  }
-  for (const k of Object.keys(installedTraps)) {
-    delete installedTraps[k];
-  }
-  return removed;
-}
-
-/** Remove exactly one own trap (used right after its class is captured). */
-function removeOwnTrap(prop: string): void {
-  try {
-    const cur = Object.getOwnPropertyDescriptor(Object.prototype, prop);
-    if (cur && installedTraps[prop] && cur.set === installedTraps[prop].set) {
-      delete (Object.prototype as Record<string, unknown>)[prop];
-    }
-  } catch {}
-  try {
-    delete installedTraps[prop];
-  } catch {}
-}
-
 let engineReadyLogged = false;
 
 function maybeRemoveTraps(): void {
-  // Once the core engine classes are captured, log readiness. Individual
-  // traps are already removed one-by-one as their class registers (see the
-  // setter), so other scripts only ever observe us during boot.
+  // Readiness log only. Traps intentionally stay installed for the whole
+  // session (exactly like HWH): the game runtime may resolve classes via
+  // these paths lazily, and removing them mid-boot stalls loading at 1-2%.
   if (!engineReadyLogged && CORE_ENGINE_NAMES.every((n) => capturedClasses[n])) {
     engineReadyLogged = true;
     log("engine captured");
   }
 }
 
-let trapTimeoutScheduled = false;
-let trapTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
 export function ensureEngineBridge(): void {
   if (typeof window === "undefined" || typeof Object.defineProperty !== "function") {
     return;
-  }
-  // Time-box: if the bundle never registers (landing tab, slow load past
-  // this point is unlikely — registration happens at boot), remove our
-  // traps so the page is left exactly as found for other scripts.
-  if (!trapTimeoutScheduled) {
-    trapTimeoutScheduled = true;
-    try {
-      trapTimeoutId = setTimeout(() => {
-        trapTimeoutId = null;
-        try {
-          const removed = removeOwnTraps();
-          if (removed > 0) {
-            log(`traps expired after 60s without full capture (removed ${removed})`);
-          }
-        } catch {}
-      }, 60000);
-    } catch {}
   }
   try {
     const existing = (window as unknown as { Game?: Record<string, unknown> }).Game;
@@ -326,9 +268,6 @@ export function ensureEngineBridge(): void {
               }
             } catch {}
             this[prop + "_"] = value;
-            // This class is now captured: remove its trap immediately so the
-            // prototype is pristine again for other scripts.
-            removeOwnTrap(prop);
             maybeRemoveTraps();
           },
           get(this: Record<string, unknown>) {
