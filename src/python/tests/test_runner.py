@@ -1437,11 +1437,14 @@ def test_run_log_toe_empty_without_errors_is_ok():
     assert _run_log_account_failure("toe", with_err, None) is not None
 
 
-def test_cmd_multi_toe_sequential_note_on_stdout(monkeypatch, capsys):
-    """The sequential note must go to stdout so run_logs capture it."""
+def test_cmd_multi_toe_passes_parallel_through(monkeypatch):
+    """multi toe honors --parallel like the other modes (no forced sequential)."""
     from hw_genie import main
 
+    captured = {}
+
     def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallel"] = max_parallel
         return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
 
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
@@ -1452,34 +1455,31 @@ def test_cmd_multi_toe_sequential_note_on_stdout(monkeypatch, capsys):
          "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
          "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
     )()
+    # empty rival_results with no errors is idle (nothing to do) -> ok, no exit
     main.cmd_multi(args)
-    captured = capsys.readouterr()
-    assert "sequentially" in captured.out
-    assert "sequentially" not in captured.err
+    assert captured["max_parallel"] == 4
 
 
-def test_cmd_multi_toe_sequential_note_in_run_log(monkeypatch, capsys):
-    """The sequential note must reach the recorded run_logs DB text."""
+def test_cmd_multi_toe_parallel_defaults_to_env(monkeypatch):
+    """multi toe without --parallel passes None so HW_MAX_PARALLEL applies downstream."""
     from hw_genie import main
 
+    captured = {}
+
     def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallel"] = max_parallel
         return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
 
-    seen = {}
     monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
-    monkeypatch.setattr(
-        "hw_genie.core.run_log.record_run_log",
-        lambda **kw: seen.update(kw),
-    )
     args = type(
         "A",
         (),
-        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
+        {"mode": "toe", "accounts": ["a"], "parallel": None, "debug": False,
          "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
          "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
     )()
     main.cmd_multi(args)
-    assert "sequentially" in (seen.get("log_text") or "")
+    assert captured["max_parallel"] is None
 
 
 def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
@@ -1526,26 +1526,15 @@ def test_toe_routine_threads_max_total_attempts(monkeypatch):
     assert seen["cap"] == 7
 
 
-def test_cmd_multi_toe_forces_sequential(monkeypatch):
-    from hw_genie import main
+def test_cmd_multi_toe_env_parallel_resolved_downstream(monkeypatch):
+    """HW_MAX_PARALLEL applies to multi toe via resolve_max_parallel."""
+    from hw_genie.runner import resolve_max_parallel
 
-    captured = {}
-
-    def fake_run(routine, accounts=None, max_parallel=None):
-        captured["max_parallel"] = max_parallel
-        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
-
-    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
-    args = type(
-        "A",
-        (),
-        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
-         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
-         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
-    )()
-    # empty rival_results with no errors is idle (nothing to do) -> ok, no exit
-    main.cmd_multi(args)
-    assert captured["max_parallel"] == 1
+    monkeypatch.setenv("HW_MAX_PARALLEL", "3")
+    assert resolve_max_parallel(None, 4) == 3
+    monkeypatch.delenv("HW_MAX_PARALLEL")
+    assert resolve_max_parallel(None, 4) == 4
+    assert resolve_max_parallel(2, 4) == 2
 
 
 def test_toe_routine_threads_auth_server_url(monkeypatch):

@@ -824,7 +824,6 @@ def cmd_multi(args):
         )
         sys.exit(2)
 
-    toe_sequential_note = False
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
@@ -846,10 +845,11 @@ def cmd_multi(args):
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
         )
-        # bridge の job キューは account 照合だがフォールバック claim が他アカの
-        # job を拾う恐れがあるため逐次実行に固定する。
-        toe_sequential_note = args.parallel not in (None, 1)
-        max_parallel = 1
+        # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
+        # フォールバックする（run_all_accounts 内の resolve_max_parallel が
+        # 解決）。bridge の job キューは account 照合＋claimed_by ガード済み
+        # のため並列実行可。
+        max_parallel = args.parallel
     else:
         routine = partial(
             full_routine if mode == "full" else daily_routine,
@@ -864,8 +864,6 @@ def cmd_multi(args):
     results: dict = {}
     try:
         with capture:
-            if mode == "toe" and toe_sequential_note:
-                print("Note: multi toe always runs sequentially (max_parallel=1).")
             results = run_all_accounts(
                 routine, accounts=accounts, max_parallel=max_parallel
             )
@@ -1324,7 +1322,7 @@ def main():
         choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear, sequential)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear)",
     )
     p_multi.add_argument(
         "--engine",

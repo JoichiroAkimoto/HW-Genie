@@ -261,8 +261,9 @@ def toe_routine(
     battle engine (``hybrid`` delegates to the userscript via the auth
     server, ``playwright`` drives headless Chromium, ``estimate`` only
     plans). Per-account ``x-auth-user-id`` headers select the bridge job
-    queue entry, so parallel runs must be avoided — run ``multi toe`` with
-    ``max_parallel=1``.
+    queue entry (the server enforces the account match with a claimed_by
+    guard), so parallel runs behave like the other modes: ``--parallel``
+    wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
 
     Returns:
         A routine whose result per account is the tier summary dict
