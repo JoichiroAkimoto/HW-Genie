@@ -252,6 +252,7 @@ def toe_routine(
     seeds_per_team: int = 2,
     threshold: int = 250,
     auth_server_url: str = "http://127.0.0.1:8765",
+    max_total_attempts: int | None = None,
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
 
@@ -289,6 +290,7 @@ def toe_routine(
             engine=eng,
             attack_score_threshold=threshold,
             seeds_per_team=seeds_per_team,
+            max_total_attempts=max_total_attempts,
         )
 
     return run
@@ -689,9 +691,11 @@ def summarize_toe(
 
     Results come from :func:`toe_routine`: per account the tier summary
     dict from ``run_titan_arena_tier``. An account fails when its routine
-    errored, when the summary carries ``errors``, or when no rival was won
-    and the tier did not complete. Columns show wins / attempted rivals /
-    completed flag.
+    errored, when the summary carries ``errors``, or when rivals were
+    attempted but none was won and the tier did not complete. An empty
+    ``rival_results`` with no errors is idle (nothing to do) and counts
+    as ok so cleared accounts don't page every cron run. Columns show
+    wins / attempted rivals / completed flag.
     """
     ok = 0
     failed: list[str] = []
@@ -705,6 +709,8 @@ def summarize_toe(
             rows.append([account, f"{wins}/{total}", completed, str(res.get("daily_reward") or "-")])
             if errors:
                 failed.append(f"{account} ({len(errors)} error(s))")
+            elif not res.get("rival_results") and not res.get("completed_tier"):
+                ok += 1
             elif not wins and not res.get("completed_tier"):
                 failed.append(f"{account} (no rival cleared)")
             else:

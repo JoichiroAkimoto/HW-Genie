@@ -339,11 +339,57 @@ def test_cmd_toe_run_wiring_handles_none(mocker):
     args.stop_on_loss = False
     args.engine = "estimate"
     args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
     cmd_toe_run(args)
     mock_run.assert_called_once()
     kwargs = mock_run.call_args.kwargs
     called_titans = kwargs.get("titans") if "titans" in kwargs else mock_run.call_args.args[1] if len(mock_run.call_args.args) > 1 else None
     assert called_titans is None
+    assert kwargs.get("max_total_attempts") is None
+
+
+def test_cmd_toe_run_threads_max_attempts(mocker):
+    """toe run --max-attempts reaches run_titan_arena_tier as max_total_attempts."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.main.HWClient")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena_tier")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = None
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = 5
+    cmd_toe_run(args)
+    assert mock_run.call_args.kwargs.get("max_total_attempts") == 5
+
+
+def test_tier_threads_max_total_attempts_to_rivals(mock_client, mock_sleep, mocker):
+    """run_titan_arena_tier forwards max_total_attempts to _run_rivals."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    mock_call.side_effect = [
+        _ok({"response": status}),
+    ]
+    seen = {}
+
+    def spy(client, status, titans, engine, threshold, stop, **kw):
+        seen.update(kw)
+        return []
+
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=spy)
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), max_total_attempts=4)
+    assert seen.get("max_total_attempts") == 4
 
 
 def test_cli_parser_toe_optional(mocker):
@@ -777,4 +823,114 @@ def test_end_battle_prints_concise_summary(capsys, mock_client, mock_sleep):
     out = capsys.readouterr().out
     assert "attackScore=250" in out
     assert "rivalTeam" not in out
-    assert len([l for l in out.splitlines() if l.startswith("✅ EndBattle")]) == 1
+    assert len([line for line in out.splitlines() if line.startswith("✅ EndBattle")]) == 1
+
+
+def test_run_rivals_max_total_attempts_caps_rotation(mock_client, mock_sleep, mocker):
+    """max_total_attempts truncates the rotation pass; log shows effective bound."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    rotation = [[i, i + 1, i + 2, i + 3, i + 4] for i in range(5)]
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=rotation, seeds_per_team=2, max_total_attempts=3,
+    )
+    assert len(calls) == 3
+    assert len(results) == 3
+
+
+def test_run_rivals_max_total_attempts_none_is_full_pass(mock_client, mock_sleep, mocker, capsys):
+    """Default None keeps the full pass and logs the effective bound."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    rotation = [[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]]
+    _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=rotation, seeds_per_team=2, max_total_attempts=None,
+    )
+    assert len(calls) == 4
+    out = capsys.readouterr().out
+    assert "Attempt plan per rival: 4/4" in out
+
+
+def test_run_rivals_last_attempt_invalid_battle_is_not_win(mock_client, mock_sleep, mocker):
+    """Last-attempt Invalid battle must not count as a win (no tier-loop spin)."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {"estimate": MagicMock(win=True), "end_error": "Invalid battle"}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=None, max_attempts_per_rival=1, end_on_loss=False,
+    )
+    assert len(results) == 1
+    assert results[0]["win"] is False
+    assert results[0]["end_error"] == "Invalid battle"
+    assert not any(r.get("win") for r in results)
+
+
+def test_summarize_end_battle_none_safe():
+    """None score/earned/stars fall back instead of printing None."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _summarize_end_battle
+
+    est = BattleEstimate(win=True, stars=3, progress=[])
+    line = _summarize_end_battle("-1", est, {"attackScore": None, "attackScoreEarned": None, "result": {"stars": None}})
+    assert "None" not in line
+    assert "stars=3" in line
+    line2 = _summarize_end_battle("-1", est, {"attackScore": None, "result": None})
+    assert "None" not in line2
+    assert "attackScore=?" in line2
+
+
+def test_complete_tier_notavailable_logs_detail(capsys, mock_client, mock_sleep):
+    """NotAvailable includes truncated detail + tier context at info level."""
+    from hw_genie.commands.titan_arena import _complete_tier
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [_err("NotAvailable", {"description": "not ready xyz"})]
+    summary: dict = {"raid_results": [], "completed_tier": False}
+    _complete_tier(client, summary, tier=7)
+    out = capsys.readouterr().out
+    assert "tier=7" in out
+    assert "not ready xyz" in out
+    assert summary["completed_tier"] is False
+
+
+def test_complete_tier_notavailable_after_raid_completed_warns(capsys, mock_client, mock_sleep):
+    """Raid completed + CompleteTier NotAvailable emits a WARNING."""
+    from hw_genie.commands.titan_arena import _complete_tier
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [_err("NotAvailable", {"description": "stuck detail"})]
+    summary: dict = {"raid_results": [{"completed": True}], "completed_tier": False}
+    _complete_tier(client, summary, tier=9)
+    out = capsys.readouterr().out
+    assert "stuck detail" in out
+    assert "⚠️" in out or "WARNING" in out or "raid reported completed" in out

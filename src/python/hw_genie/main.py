@@ -559,6 +559,7 @@ def cmd_toe_run(args):
     else:
         engine = get_default_engine(mode=mode)
     titans = list(args.titans) if getattr(args, "titans", None) else None
+    _max_attempts = getattr(args, "max_attempts", None)
     run_titan_arena_tier(
         client,
         titans=titans,
@@ -566,6 +567,7 @@ def cmd_toe_run(args):
         attack_score_threshold=args.threshold,
         stop_on_first_loss=bool(args.stop_on_loss),
         seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+        max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
     )
 
 
@@ -822,6 +824,7 @@ def cmd_multi(args):
         )
         sys.exit(2)
 
+    toe_sequential_note = False
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
@@ -835,16 +838,17 @@ def cmd_multi(args):
         )
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "toe":
+        _max_attempts = getattr(args, "max_attempts", None)
         routine = toe_routine(
             engine=getattr(args, "engine", "hybrid") or "hybrid",
             seeds_per_team=int(getattr(args, "seeds", 2) or 2),
             threshold=int(getattr(args, "threshold", 250) or 250),
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
+            max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
         )
         # bridge の job キューは account 照合だがフォールバック claim が他アカの
         # job を拾う恐れがあるため逐次実行に固定する。
-        if args.parallel not in (None, 1):
-            print("Note: multi toe always runs sequentially (max_parallel=1).", file=sys.stderr)
+        toe_sequential_note = args.parallel not in (None, 1)
         max_parallel = 1
     else:
         routine = partial(
@@ -860,6 +864,8 @@ def cmd_multi(args):
     results: dict = {}
     try:
         with capture:
+            if mode == "toe" and toe_sequential_note:
+                print("Note: multi toe always runs sequentially (max_parallel=1).")
             results = run_all_accounts(
                 routine, accounts=accounts, max_parallel=max_parallel
             )
@@ -965,6 +971,8 @@ def _run_log_account_failure(
         if isinstance(result, dict):
             if result.get("errors"):
                 return f"{len(result['errors'])} toe error(s)"
+            if not result.get("rival_results") and not result.get("completed_tier"):
+                return None
             wins = sum(1 for r in result.get("rival_results", []) if r.get("win"))
             if not wins and not result.get("completed_tier"):
                 return "no rival cleared"
@@ -1256,6 +1264,12 @@ def main():
         default=2,
         help="Seeds tried per team per rival (each seed = fresh StartBattle; losses are abandoned without EndBattle)",
     )
+    p_toe_run.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Cap total StartBattle attempts per rival (default: full pass = teams x seeds; estimate-engine runs should pass an explicit cap)",
+    )
     p_toe_run.set_defaults(func=cmd_toe_run)
     p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")
     p_toe_status.set_defaults(func=cmd_toe_status)
@@ -1334,6 +1348,12 @@ def main():
         "--auth-server-url",
         default="http://127.0.0.1:8765",
         help="auth server base URL for the 'toe' mode JS bridge (default: http://127.0.0.1:8765)",
+    )
+    p_multi.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Cap total StartBattle attempts per rival for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

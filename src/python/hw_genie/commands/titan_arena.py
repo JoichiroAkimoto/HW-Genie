@@ -40,11 +40,25 @@ def _shorten_response(response: Any, limit: int = 300) -> str:
 
 def _summarize_end_battle(rival_id: str, est: BattleEstimate, response: Any) -> str:
     """Concise one-line EndBattle summary (full payload goes to debug log)."""
-    score = earned = stars = "?"
+    score: Any = "?"
+    earned: Any = "?"
+    stars: Any = "?"
     if isinstance(response, dict):
-        score = response.get("attackScore", "?")
-        earned = response.get("attackScoreEarned", response.get("scoreEarned", "?"))
-        stars = response.get("result", {}).get("stars", est.stars) if isinstance(response.get("result"), dict) else est.stars
+        raw_score = response.get("attackScore")
+        score = raw_score if raw_score is not None else "?"
+        raw_earned = response.get("attackScoreEarned")
+        if raw_earned is None:
+            raw_earned = response.get("scoreEarned")
+        earned = raw_earned if raw_earned is not None else "?"
+        res_obj = response.get("result")
+        if isinstance(res_obj, dict):
+            raw_stars = res_obj.get("stars")
+            if raw_stars is None:
+                raw_stars = getattr(est, "stars", None)
+            stars = raw_stars if raw_stars is not None else "?"
+        else:
+            est_stars = getattr(est, "stars", None)
+            stars = est_stars if est_stars is not None else "?"
     return (
         f"rival {rival_id}: {'WIN' if est.win else 'LOSS'} stars={stars} "
         f"attackScore={score} (+{earned})"
@@ -392,6 +406,7 @@ def run_titan_arena_tier(
     attack_score_threshold: int = AUTO_RIVAL_SCORE_THRESHOLD,
     stop_on_first_loss: bool = False,
     seeds_per_team: int = 2,
+    max_total_attempts: int | None = None,
 ) -> dict[str, Any]:
     """Run a ToE tier end-to-end.
 
@@ -414,6 +429,12 @@ def run_titan_arena_tier(
     tier loop always calls :func:`run_titan_arena` with
     ``end_on_loss=False``, i.e. losing sims skip ``EndBattle`` (no score
     banking) and advance to the next team/seed instead of banking a loss.
+
+    ``max_total_attempts`` caps total StartBattle attempts per rival
+    (``None`` = full pass: ``max_attempts_per_rival`` for a single team,
+    otherwise ``len(rotation) × seeds_per_team``). Estimate-engine runs,
+    whose EndBattle is rejected as ``Invalid battle``, should pass an
+    explicit cap to avoid paying the full sweep per rival.
 
     The function returns a dict summarising the tier outcome (rival results,
     raid results, errors, completed_tier, daily_reward).
@@ -480,13 +501,14 @@ def run_titan_arena_tier(
                 # path in case the user reconnected mid-tier.
                 pass
             else:
-                _complete_tier(client, summary)
+                _complete_tier(client, summary, tier=tier)
                 continue
 
         try:
             rival_results = _run_rivals(
                 client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
                 team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
+                max_total_attempts=max_total_attempts,
             )
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
@@ -503,7 +525,7 @@ def run_titan_arena_tier(
         if not any(r.get("win") for r in rival_results) and not status.get("canRaid"):
             print(f"{Emojis.WARNING}No rival cleared; stopping tier loop.", flush=True)
             return summary
-        _complete_tier(client, summary)
+        _complete_tier(client, summary, tier=tier)
         # Best-effort daily chest; the return value no longer ends the run so
         # remaining rivals (or the next tier) are attacked in the next pass.
         _farm_daily_reward(client, summary)
@@ -651,6 +673,7 @@ def _run_rivals(
     team_rotation: list[list[int]] | None = None,
     seeds_per_team: int = 2,
     end_on_loss: bool = False,
+    max_total_attempts: int | None = None,
 ) -> list[dict[str, Any]]:
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
@@ -663,14 +686,21 @@ def _run_rivals(
     # bridge-dead abort and the tier-level pass cap instead of truncation.
     # With end_on_loss=False, losing sims abandon the battle without
     # EndBattle (no score banking, faster sweeps).
+    # max_total_attempts caps the plan (None = full pass). Estimate-engine
+    # runs should pass an explicit cap to bound per-rival StartBattle cost.
     if team_rotation is None:
         attempt_plan = [(titans, s) for s in range(max(1, max_attempts_per_rival))]
     else:
         teams = list(team_rotation) or [titans]
         attempt_plan = [(team, s) for team in teams for s in range(max(1, seeds_per_team))]
+    full_pass = len(attempt_plan)
+    if max_total_attempts is not None:
+        attempt_plan = attempt_plan[: max(1, max_total_attempts)]
     print(
-        f"{Emojis.INFO}Attempt plan per rival: {len(attempt_plan)} "
-        f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team})",
+        f"{Emojis.INFO}Attempt plan per rival: {len(attempt_plan)}/{full_pass} "
+        f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team}"
+        + (f" cap={max_total_attempts}" if max_total_attempts is not None else "")
+        + ")",
         flush=True,
     )
     results: list[dict[str, Any]] = []
@@ -716,7 +746,11 @@ def _run_rivals(
                 )
                 continue
             est = res.get("estimate")
-            win = bool(est and getattr(est, "win", False))
+            # An "Invalid battle" EndBattle banked nothing server-side, so it
+            # must not count as a win even when the local estimate says win
+            # (estimate engine) — otherwise the tier loop sees progress and
+            # spins to max_passes.
+            win = bool(est and getattr(est, "win", False)) and res.get("end_error") != "Invalid battle"
             entry: dict[str, Any] = {"rivalId": str(rival_id), "win": win, "team": team}
             if res.get("end_error"):
                 entry["end_error"] = res.get("end_error")
@@ -734,7 +768,7 @@ def _run_rivals(
     return results
 
 
-def _complete_tier(client: HWClient, summary: dict[str, Any]) -> None:
+def _complete_tier(client: HWClient, summary: dict[str, Any], tier: Any = None) -> None:
     res = client.call(
         {"calls": [{"name": ApiAction.TITAN_ARENA_COMPLETE_TIER, "args": {}, "ident": "body"}]}
     )
@@ -745,7 +779,24 @@ def _complete_tier(client: HWClient, summary: dict[str, Any]) -> None:
     if res.error_name == "NotAvailable":
         # Normal mid-run state: rivals remain, so there is nothing to
         # complete yet. Not an error — the loop continues with them.
-        print(f"{Emojis.INFO}Tier not yet completeable (rivals remain).", flush=True)
+        detail_preview = _shorten_response(res.detail)
+        tier_label = f" tier={tier}" if tier is not None else ""
+        raid_completed = bool(
+            summary.get("raid_results") and summary["raid_results"][-1].get("completed")
+        )
+        if raid_completed:
+            # Contradiction: the raid claimed the threshold yet the tier is
+            # not completeable — surface loudly so a stuck tier is visible.
+            print(
+                f"{Emojis.WARNING}Tier{tier_label} raid reported completed "
+                f"but CompleteTier NotAvailable: {detail_preview}",
+                flush=True,
+            )
+        else:
+            print(
+                f"{Emojis.INFO}Tier not yet completeable (rivals remain){tier_label}: {detail_preview}",
+                flush=True,
+            )
         return
     summary["errors"].append({"stage": "complete_tier", "error": res.error_name, "detail": res.detail})
     print(f"{Emojis.WARNING}titanArenaCompleteTier failed ({res.error_name}).", flush=True)

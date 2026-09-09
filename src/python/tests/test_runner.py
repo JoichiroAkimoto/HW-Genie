@@ -1406,6 +1406,126 @@ def test_summarize_toe_counts():
     assert summarize_toe(results) == 2
 
 
+def test_summarize_toe_empty_without_errors_is_ok():
+    """Idle/cleared accounts (no targets, no errors) must not fail."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("idle", ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)),
+    ]
+    assert summarize_toe(results) == 0
+
+
+def test_summarize_toe_empty_with_errors_still_fails():
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("bad", ({"rival_results": [], "errors": [{"stage": "tier_loop"}], "completed_tier": False, "daily_reward": None}, None)),
+    ]
+    assert summarize_toe(results) == 1
+
+
+def test_run_log_toe_empty_without_errors_is_ok():
+    """Parity: run-log failure judgement matches summarize_toe for idle."""
+    from hw_genie.main import _run_log_account_failure
+
+    idle = {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+    assert _run_log_account_failure("toe", idle, None) is None
+    attempted_loss = {"rival_results": [{"win": False}], "errors": [], "completed_tier": False}
+    assert _run_log_account_failure("toe", attempted_loss, None) == "no rival cleared"
+    with_err = {"rival_results": [], "errors": [{"stage": "x"}], "completed_tier": False}
+    assert _run_log_account_failure("toe", with_err, None) is not None
+
+
+def test_cmd_multi_toe_sequential_note_on_stdout(monkeypatch, capsys):
+    """The sequential note must go to stdout so run_logs capture it."""
+    from hw_genie import main
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
+    )()
+    main.cmd_multi(args)
+    captured = capsys.readouterr()
+    assert "sequentially" in captured.out
+    assert "sequentially" not in captured.err
+
+
+def test_cmd_multi_toe_sequential_note_in_run_log(monkeypatch, capsys):
+    """The sequential note must reach the recorded run_logs DB text."""
+    from hw_genie import main
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    seen = {}
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr(
+        "hw_genie.core.run_log.record_run_log",
+        lambda **kw: seen.update(kw),
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
+    )()
+    main.cmd_multi(args)
+    assert "sequentially" in (seen.get("log_text") or "")
+
+
+def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
+    """multi toe --max-attempts reaches toe_routine as max_total_attempts."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None):
+        captured["cap"] = max_total_attempts
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": 6},
+    )()
+    main.cmd_multi(args)
+    assert captured["cap"] == 6
+
+
+def test_toe_routine_threads_max_total_attempts(monkeypatch):
+    """toe_routine forwards max_total_attempts to run_titan_arena_tier."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, max_total_attempts=None, **kw):
+        seen["cap"] = max_total_attempts
+        return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    runner.toe_routine(engine="estimate", max_total_attempts=7)(FakeClient(), "Joe")
+    assert seen["cap"] == 7
+
+
 def test_cmd_multi_toe_forces_sequential(monkeypatch):
     from hw_genie import main
 
@@ -1421,12 +1541,10 @@ def test_cmd_multi_toe_forces_sequential(monkeypatch):
         (),
         {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
          "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
-         "auth_server_url": "http://127.0.0.1:8765"},
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
     )()
-    with pytest.raises(SystemExit) as exc:
-        main.cmd_multi(args)
-    # no wins and no completion -> failed -> exit 1
-    assert exc.value.code == 1
+    # empty rival_results with no errors is idle (nothing to do) -> ok, no exit
+    main.cmd_multi(args)
     assert captured["max_parallel"] == 1
 
 
@@ -1461,9 +1579,9 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
 
     captured = {}
 
-    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765"):
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None):
         captured.update(
-            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url}
+            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url, "cap": max_total_attempts}
         )
         return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
 
@@ -1477,7 +1595,7 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
         (),
         {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
          "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
-         "auth_server_url": "http://127.0.0.1:9999"},
+         "auth_server_url": "http://127.0.0.1:9999", "max_attempts": None},
     )()
     try:
         main.cmd_multi(args)
