@@ -114,10 +114,12 @@ AUTO_RIVAL_SCORE_THRESHOLD = 250
 # always goes first and duplicates are skipped.
 MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
 
-# Consecutive tier-loop passes with zero new clears before stopping. With
-# end_on_loss=False losses bank nothing, so such passes are independent
-# fresh draws: a few retries are intentional (seed gacha), but grinding them
-# unboundedly wastes hours on 0%-win matchups.
+# Consecutive raid-tier (canRaid=True) passes with zero new clears before
+# stopping. With end_on_loss=False losses bank nothing, so such passes are
+# independent fresh draws: a few retries are intentional (seed gacha), but
+# grinding them unboundedly wastes hours on 0%-win matchups. Non-raid
+# (canRaid=False) tiers do not use this counter: they stop after exactly 1
+# zero-win pass via the early return in the tier loop below.
 MAX_CONSECUTIVE_NO_PROGRESS_PASSES = 3
 
 
@@ -530,6 +532,7 @@ def run_titan_arena_tier(
         tier = status.get("tier")
         print(f"{Emojis.STEP}Tier: {tier} (canRaid={status.get('canRaid')})", flush=True)
 
+        raid_won = False
         if status.get("canRaid"):
             try:
                 raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold)
@@ -546,8 +549,9 @@ def run_titan_arena_tier(
                 return summary
             if not raid_summary.get("completed", False):
                 # If raid didn't clear the threshold we still try the per-rival
-                # path in case the user reconnected mid-tier.
-                pass
+                # path in case the user reconnected mid-tier. Banked raid wins
+                # count as progress for the no-progress counter below.
+                raid_won = any(b.get("win") for b in raid_summary.get("battles", []) or [])
             else:
                 _complete_tier(client, summary, tier=tier)
                 # Best-effort daily chest, mirroring the per-rival path: a
@@ -581,7 +585,7 @@ def run_titan_arena_tier(
         # Best-effort daily chest; the return value no longer ends the run so
         # remaining rivals (or the next tier) are attacked in the next pass.
         _farm_daily_reward(client, summary)
-        if any(r.get("win") for r in rival_results):
+        if any(r.get("win") for r in rival_results) or raid_won:
             no_progress_passes = 0
         else:
             no_progress_passes += 1

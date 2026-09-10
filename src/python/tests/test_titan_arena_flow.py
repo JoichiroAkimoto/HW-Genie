@@ -1087,3 +1087,58 @@ def test_tier_raid_completed_still_farms_daily_reward(mock_client, mock_sleep, m
 
     run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
     assert len(farm_calls) == 1
+
+
+def test_tier_non_raid_stops_after_single_zero_win_pass(mock_client, mock_sleep, mocker):
+    """canRaid=False with zero wins stops after exactly 1 pass (fast path)."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    calls = {"rivals": 0}
+
+    def fake_rivals(*a, **k):
+        calls["rivals"] += 1
+        return [{"rivalId": "-1", "win": False, "team": [1, 2, 3, 4, 5]}]
+
+    mocker.patch("hw_genie.commands.titan_arena.fetch_titan_arena_status", return_value=status)
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=fake_rivals)
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert calls["rivals"] == 1
+
+
+def test_tier_raid_win_resets_no_progress_counter(mock_client, mock_sleep, mocker):
+    """A banked raid win + zero-win rivals must not increment the counter."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}, "canRaid": True}
+    calls = {"rivals": 0}
+
+    def fake_rivals(*a, **k):
+        calls["rivals"] += 1
+        return [{"rivalId": "-1", "win": False, "team": [1, 2, 3, 4, 5]}]
+
+    raid_results = [
+        {"stage": "raid", "battles": [{"rivalId": "-1", "win": True}], "completed": False},
+        {"stage": "raid", "battles": [{"rivalId": "-1", "win": False}], "completed": False},
+        {"stage": "raid", "battles": [{"rivalId": "-1", "win": False}], "completed": False},
+        {"stage": "raid", "battles": [{"rivalId": "-1", "win": False}], "completed": False},
+    ]
+
+    mocker.patch("hw_genie.commands.titan_arena.fetch_titan_arena_status", return_value=status)
+    mocker.patch("hw_genie.commands.titan_arena._run_raid", side_effect=list(raid_results))
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=fake_rivals)
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    # First pass banks a raid win (counter stays 0); the next 3 zero-win
+    # passes then trip the >=3 stop. Buggy code ignoring raid wins stops
+    # after 3 passes instead.
+    assert calls["rivals"] == 4

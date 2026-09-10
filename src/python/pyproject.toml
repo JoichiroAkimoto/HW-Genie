@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-playwright = ["playwright>=1.40"]
+playwright = ["playwright>=1.62.0"]
 
 
 

@@ -505,7 +505,7 @@ playwright = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.135.3,<0.142.0" },
     { name = "httpx", specifier = "~=0.28.1" },
-    { name = "playwright", marker = "extra == 'playwright'", specifier = ">=1.40" },
+    { name = "playwright", marker = "extra == 'playwright'", specifier = ">=1.62.0" },
     { name = "requests", specifier = ">=2.33,<2.35" },
     { name = "rich", specifier = "~=15.0" },
     { name = "sqlalchemy", specifier = "~=2.0.49" },
