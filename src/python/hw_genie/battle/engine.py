@@ -102,11 +102,13 @@ class JsBridgeBattleEngine:
     back to the Python estimator or abort the tier.
     """
 
-    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 0.25, timeout: float = 30.0):
+    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 0.25, timeout: float = 30.0,
+                 heartbeat_interval: float = 10.0):
         self.auth_server_url = auth_server_url.rstrip("/")
         self.user_id = user_id
         self.poll_interval = poll_interval
         self.timeout = timeout
+        self.heartbeat_interval = heartbeat_interval
 
     def calc(self, battle: dict[str, Any]) -> BattleEstimate:  # pragma: no cover - network
         import json
@@ -128,9 +130,19 @@ class JsBridgeBattleEngine:
             if not job_id:
                 raise BridgeError("auth server did not return a job id")
 
-            deadline = time.time() + self.timeout
+            start = time.time()
+            deadline = start + self.timeout
+            next_heartbeat = start + self.heartbeat_interval if self.heartbeat_interval > 0 else float("inf")
             while time.time() < deadline:
                 time.sleep(self.poll_interval)
+                now = time.time()
+                if now >= next_heartbeat:
+                    print(
+                        f"  … waiting for userscript job {str(job_id)[:8]} "
+                        f"({now - start:.0f}s elapsed, timeout {self.timeout:.0f}s)…",
+                        flush=True,
+                    )
+                    next_heartbeat = now + self.heartbeat_interval
                 poll_req = urllib.request.Request(
                     f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",
                     method="GET",

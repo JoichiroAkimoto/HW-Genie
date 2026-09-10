@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from hw_genie.battle.engine import (
@@ -36,6 +37,18 @@ def _shorten_response(response: Any, limit: int = 300) -> str:
         text = str(response)
     text = " ".join(text.split())
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Compact duration for progress lines (e.g. 45s, 1m05s, 2h03m)."""
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
 
 
 def _summarize_end_battle(rival_id: str, est: BattleEstimate, response: Any) -> str:
@@ -228,6 +241,7 @@ def run_titan_arena(
     dry_run: bool = False,
     estimate_only: bool = False,
     end_on_loss: bool = True,
+    attempt_label: str | None = None,
 ) -> dict[str, Any]:
     """Start a single-rival battle, simulate via ``engine``, and EndBattle.
 
@@ -275,7 +289,8 @@ def run_titan_arena(
     else:
         rival_id_str = str(rival_id)
 
-    print(f"\n{Emojis.STEP}Titan Arena: rivalId={rival_id_str} titans={titans}", flush=True)
+    attempt_prefix = f"[{attempt_label}] " if attempt_label else ""
+    print(f"\n{Emojis.STEP}Titan Arena {attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
     if dry_run:
         print(f"{Emojis.INFO}Dry-run: verifying titanArenaStartBattle is accepted with arbitrary titans...", flush=True)
 
@@ -705,10 +720,15 @@ def _run_rivals(
     )
     results: list[dict[str, Any]] = []
     bridge_timeouts = 0
-    for rival_id in finish_targets:
+    for rival_no, rival_id in enumerate(finish_targets, start=1):
+        rival_start = time.monotonic()
+        print(f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)", flush=True)
         for attempt_no, (team, _seed_no) in enumerate(attempt_plan, start=1):
             try:
-                res = run_titan_arena(client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss)
+                res = run_titan_arena(
+                    client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss,
+                    attempt_label=f"{attempt_no}/{len(attempt_plan)}",
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)
@@ -763,8 +783,14 @@ def _run_rivals(
                 return results
             # Loss/abandon with attempts left: next seed/team.
             if attempt_no < len(attempt_plan):
+                elapsed = time.monotonic() - rival_start
+                pace = elapsed / attempt_no
                 reason = "abandoned, next seed" if res.get("abandoned") else "loss, trying next"
-                print(f"  - rival {rival_id}: {reason} ({attempt_no + 1}/{len(attempt_plan)})...", flush=True)
+                print(
+                    f"  - rival {rival_id}: {reason} ({attempt_no + 1}/{len(attempt_plan)}, "
+                    f"elapsed {_fmt_duration(elapsed)}, ~{_fmt_duration(pace)}/attempt)...",
+                    flush=True,
+                )
     return results
 
 

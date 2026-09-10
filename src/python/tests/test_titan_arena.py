@@ -153,3 +153,50 @@ def test_fallback_progress_is_empty_loss():
     assert _fallback_progress({}, win=False) == [
         {"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}
     ]
+
+
+def test_fmt_duration():
+    from hw_genie.commands.titan_arena import _fmt_duration
+
+    assert _fmt_duration(5) == "5s"
+    assert _fmt_duration(59) == "59s"
+    assert _fmt_duration(65) == "1m05s"
+    assert _fmt_duration(600) == "10m00s"
+    assert _fmt_duration(-3) == "0s"
+
+
+def test_js_bridge_heartbeat_while_waiting(monkeypatch, capsys):
+    """Bridge waits print periodic heartbeats so long calcs don't look hung."""
+    import json as _json
+
+    from hw_genie.battle.engine import JsBridgeBattleEngine
+
+    polls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return _json.dumps(self._payload).encode()
+
+    def fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/toe/job"):
+            return FakeResp({"id": "abcdef1234567890"})
+        polls["n"] += 1
+        if polls["n"] < 3:
+            return FakeResp({"status": "pending"})
+        return FakeResp({"status": "done", "result": {"progress": [], "result": {"win": True, "stars": 3}}})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    eng = JsBridgeBattleEngine("http://127.0.0.1:1", "u", poll_interval=0.01, timeout=5, heartbeat_interval=0.02)
+    est = eng.calc({"attackers": {}, "defenders": [{}]})
+    assert est.win is True and est.stars == 3
+    out = capsys.readouterr().out
+    assert "waiting for userscript job abcdef12" in out

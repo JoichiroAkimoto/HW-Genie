@@ -934,3 +934,51 @@ def test_complete_tier_notavailable_after_raid_completed_warns(capsys, mock_clie
     out = capsys.readouterr().out
     assert "stuck detail" in out
     assert "⚠️" in out or "WARNING" in out or "raid reported completed" in out
+
+
+def test_run_titan_arena_shows_attempt_label(capsys, mock_client, mock_sleep):
+    """Attempt counter prefix appears on the battle header line."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": battle}}),
+        _ok({"response": {"attackScore": 250}}),
+    ]
+    run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
+                    engine=PythonBattleEngine(), attempt_label="3/48")
+    out = capsys.readouterr().out
+    assert "Titan Arena [3/48]" in out
+
+
+def test_run_rivals_shows_rival_counter_and_pace(capsys, mock_client, mock_sleep, mocker):
+    """Rival header shows N/M and retry lines show elapsed pace."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {
+        "-1": {"attackScore": 0, "power": "1"},
+        "-2": {"attackScore": 10, "power": "1"},
+    }}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        if str(rival_id) == "-1":
+            return {"estimate": MagicMock(win=False), "abandoned": True}
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1,
+    )
+    out = capsys.readouterr().out
+    assert "Rival -1 (1/2," in out
+    assert "Rival -2 (2/2," in out
+    assert "elapsed" in out and "/attempt" in out
+    assert results[0]["win"] is False and results[-1]["win"] is True
