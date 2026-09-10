@@ -907,7 +907,7 @@ def cmd_multi(args):
                 hostname=_run_host_identifier(),
             )
         except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the original failure (e.g. 2nd Ctrl+C)
-            print(f"Warning: failed to record run log: {log_exc}", file=sys.stderr)
+            print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
         raise
     account_logs, error_summary = _build_run_log_summary(mode, results)
     record_run_log(

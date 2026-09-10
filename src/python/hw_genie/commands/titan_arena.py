@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Any
 
@@ -22,6 +23,7 @@ from hw_genie.battle.engine import (
     BattleEstimate,
     BridgeError,
     BridgeDeadError,
+    JsBridgeBattleEngine,
     PythonBattleEngine,
 )
 from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
@@ -41,6 +43,8 @@ def _shorten_response(response: Any, limit: int = 300) -> str:
 
 def _fmt_duration(seconds: float) -> str:
     """Compact duration for progress lines (e.g. 45s, 1m05s, 2h03m)."""
+    if not math.isfinite(seconds):
+        return "?"
     total = max(0, int(seconds))
     if total < 60:
         return f"{total}s"
@@ -49,6 +53,17 @@ def _fmt_duration(seconds: float) -> str:
         return f"{minutes}m{secs:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+def _engine_calc(engine: BattleEngine, battle: dict[str, Any]) -> BattleEstimate:
+    """Run ``engine.calc``, routing bridge heartbeats to stdout.
+
+    Only :class:`JsBridgeBattleEngine` emits progress callbacks; other
+    engines use the plain ``calc(battle)`` call.
+    """
+    if isinstance(engine, JsBridgeBattleEngine):
+        return engine.calc(battle, on_progress=lambda msg: print(msg, flush=True))
+    return engine.calc(battle)
 
 
 def _summarize_end_battle(rival_id: str, est: BattleEstimate, response: Any) -> str:
@@ -290,7 +305,7 @@ def run_titan_arena(
         rival_id_str = str(rival_id)
 
     attempt_prefix = f"[{attempt_label}] " if attempt_label else ""
-    print(f"\n{Emojis.STEP}Titan Arena {attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
+    print(f"\n{Emojis.STEP}Titan Arena: {attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
     if dry_run:
         print(f"{Emojis.INFO}Dry-run: verifying titanArenaStartBattle is accepted with arbitrary titans...", flush=True)
 
@@ -335,7 +350,7 @@ def run_titan_arena(
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "dry_run": True}
 
     try:
-        est = engine.calc(battle)
+        est = _engine_calc(engine, battle)
     except (BridgeError, Exception) as exc:
         if isinstance(engine, PythonBattleEngine):
             raise
@@ -590,7 +605,7 @@ def _run_raid(
             "type": "titan_arena",
         }
         try:
-            est = engine.calc(battle)
+            est = _engine_calc(engine, battle)
             results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
             raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
             print(f"  - raid rival {rival_id}: win={est.win}", flush=True)

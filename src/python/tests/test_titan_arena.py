@@ -163,6 +163,9 @@ def test_fmt_duration():
     assert _fmt_duration(65) == "1m05s"
     assert _fmt_duration(600) == "10m00s"
     assert _fmt_duration(-3) == "0s"
+    assert _fmt_duration(float("inf")) == "?"
+    assert _fmt_duration(float("-inf")) == "?"
+    assert _fmt_duration(float("nan")) == "?"
 
 
 def test_js_bridge_heartbeat_while_waiting(monkeypatch, capsys):
@@ -196,7 +199,13 @@ def test_js_bridge_heartbeat_while_waiting(monkeypatch, capsys):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     eng = JsBridgeBattleEngine("http://127.0.0.1:1", "u", poll_interval=0.01, timeout=5, heartbeat_interval=0.02)
-    est = eng.calc({"attackers": {}, "defenders": [{}]})
+    msgs: list = []
+    est = eng.calc({"attackers": {}, "defenders": [{}]}, on_progress=msgs.append)
     assert est.win is True and est.stars == 3
+    assert any("waiting for userscript job abcdef12" in m for m in msgs)
+    # Default (no on_progress) stays silent.
+    polls["n"] = 0
+    est2 = eng.calc({"attackers": {}, "defenders": [{}]})
+    assert est2.win is True
     out = capsys.readouterr().out
-    assert "waiting for userscript job abcdef12" in out
+    assert "waiting for userscript job" not in out

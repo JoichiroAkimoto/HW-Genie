@@ -953,7 +953,27 @@ def test_run_titan_arena_shows_attempt_label(capsys, mock_client, mock_sleep):
     run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
                     engine=PythonBattleEngine(), attempt_label="3/48")
     out = capsys.readouterr().out
-    assert "Titan Arena [3/48]" in out
+    assert "Titan Arena: [3/48]" in out
+
+
+def test_run_titan_arena_header_keeps_colon_without_label(capsys, mock_client, mock_sleep):
+    """No-label header keeps the legacy `Titan Arena: rivalId=` form (log parsers)."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": battle}}),
+        _ok({"response": {"attackScore": 250}}),
+    ]
+    run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
+                    engine=PythonBattleEngine())
+    out = capsys.readouterr().out
+    assert "Titan Arena: rivalId=-1" in out
 
 
 def test_run_rivals_shows_rival_counter_and_pace(capsys, mock_client, mock_sleep, mocker):

@@ -117,9 +117,12 @@ def defer_sigint():
     ``KeyboardInterrupt`` in Python code right after unblocking.
 
     No-op off the main thread (handlers never run there) and on platforms
-    without ``pthread_sigmask``. A Ctrl+C during a (normally fast) DB write
-    is delayed by milliseconds, never lost — sleeps between retries stay
-    interruptible since they run outside the shield.
+    without ``pthread_sigmask``. Fast local DB writes finish in milliseconds
+    so a Ctrl+C landing inside them is deferred only briefly, then delivered
+    as a regular ``KeyboardInterrupt`` right after unblocking. Remote
+    syncs/network attempts can take longer: Ctrl+C during such a call is
+    still deferred until the call returns (delivery is never lost). Sleeps
+    between retries stay interruptible since they run outside the shield.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -139,7 +142,9 @@ def defer_sigint():
         try:
             block(signal.SIG_SETMASK, prev)
         except (OSError, RuntimeError, ValueError):
-            pass
+            logging.getLogger(__name__).warning(
+                "defer_sigint: failed to restore signal mask", exc_info=True
+            )
 
 
 def retry_on_wal_contention(

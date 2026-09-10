@@ -1106,12 +1106,33 @@ def test_defer_sigint_defers_delivery_until_exit():
     prev = _signal.getsignal(_signal.SIGINT)
     try:
         _signal.signal(_signal.SIGINT, lambda *a: delivered.append(1))
+        mask_before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
         with defer_sigint():
             _signal.raise_signal(_signal.SIGINT)
             assert delivered == []  # まだ届かない
         assert delivered == [1]  # 抜けたら届く
+        assert _signal.pthread_sigmask(_signal.SIG_BLOCK, set()) == mask_before
     finally:
         _signal.signal(_signal.SIGINT, prev)
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_restores_mask_on_exception():
+    """Signal mask is restored even when the shielded block raises."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    assert _threading.current_thread() is _threading.main_thread()
+    mask_before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+    with pytest.raises(RuntimeError, match="boom"):
+        with defer_sigint():
+            raise RuntimeError("boom")
+    assert _signal.pthread_sigmask(_signal.SIG_BLOCK, set()) == mask_before
 
 
 @pytest.mark.skipif(

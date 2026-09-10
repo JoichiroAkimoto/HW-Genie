@@ -13,7 +13,7 @@ Pluggable interface so we can swap implementations:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 @dataclass
@@ -110,7 +110,11 @@ class JsBridgeBattleEngine:
         self.timeout = timeout
         self.heartbeat_interval = heartbeat_interval
 
-    def calc(self, battle: dict[str, Any]) -> BattleEstimate:  # pragma: no cover - network
+    def calc(
+        self,
+        battle: dict[str, Any],
+        on_progress: Callable[[str], None] | None = None,
+    ) -> BattleEstimate:  # pragma: no cover - network
         import json
         import time
         import urllib.error
@@ -137,11 +141,11 @@ class JsBridgeBattleEngine:
                 time.sleep(self.poll_interval)
                 now = time.time()
                 if now >= next_heartbeat:
-                    print(
-                        f"  … waiting for userscript job {str(job_id)[:8]} "
-                        f"({now - start:.0f}s elapsed, timeout {self.timeout:.0f}s)…",
-                        flush=True,
-                    )
+                    if on_progress is not None:
+                        on_progress(
+                            f"  … waiting for userscript job {str(job_id)[:8]} "
+                            f"({now - start:.0f}s elapsed, timeout {self.timeout:.0f}s)…",
+                        )
                     next_heartbeat = now + self.heartbeat_interval
                 poll_req = urllib.request.Request(
                     f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",

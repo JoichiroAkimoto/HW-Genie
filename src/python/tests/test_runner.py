@@ -1609,7 +1609,10 @@ def test_cmd_multi_failed_logging_does_not_mask_original_error(monkeypatch, caps
     args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
     with pytest.raises(RuntimeError, match="boom"):
         main.cmd_multi(args)
-    assert "run log" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "run log" in err
+    # str(KeyboardInterrupt) == "" so the fallback type name must appear.
+    assert "KeyboardInterrupt" in err
 
 
 def test_main_keyboard_interrupt_exits_130(monkeypatch, capsys):
