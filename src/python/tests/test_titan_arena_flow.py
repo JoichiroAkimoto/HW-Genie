@@ -1002,3 +1002,88 @@ def test_run_rivals_shows_rival_counter_and_pace(capsys, mock_client, mock_sleep
     assert "Rival -2 (2/2," in out
     assert "elapsed" in out and "/attempt" in out
     assert results[0]["win"] is False and results[-1]["win"] is True
+
+
+def test_run_titan_arena_timeout_sets_structured_flag(mock_client, mock_sleep):
+    """Bridge timeouts carry bridge_timeout=True; legacy message still matches."""
+    from hw_genie.battle.engine import BridgeTimeoutError
+    from hw_genie.commands.titan_arena import _is_bridge_timeout, run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena",
+        "seed": 1,
+        "userId": "1",
+        "typeId": "-1",
+        "attackers": {"4003": {"id": 4003, "power": 100, "hp": 1000}},
+        "defenders": [{"4000": {"id": 4000, "power": 1, "hp": 100}}],
+        "effects": [],
+        "reward": [],
+        "startTime": 0,
+    }
+    mock_call.side_effect = [_ok({"response": {"battle": battle}})]
+
+    class DeadEngine:
+        def calc(self, battle):
+            raise BridgeTimeoutError("userscript did not finish battle within 5s")
+
+    res = run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5], engine=DeadEngine())
+    assert res["bridge_timeout"] is True
+    assert _is_bridge_timeout(res) is True
+    # Legacy fallback for dicts built without the flag.
+    assert _is_bridge_timeout({"bridge_error": "userscript did not finish battle within 5s"}) is True
+    assert _is_bridge_timeout({"bridge_error": "boom"}) is False
+    assert _is_bridge_timeout({}) is False
+
+
+def test_tier_stops_after_consecutive_no_progress_passes(mock_client, mock_sleep, mocker):
+    """canRaid tier with zero wins stops after 3 passes instead of grinding."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}, "canRaid": True}
+    calls = {"rivals": 0}
+
+    def fake_rivals(*a, **k):
+        calls["rivals"] += 1
+        return [{"rivalId": "-1", "win": False, "team": [1, 2, 3, 4, 5]}]
+
+    mocker.patch("hw_genie.commands.titan_arena.fetch_titan_arena_status", return_value=status)
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={"stage": "raid", "battles": [], "completed": False},
+    )
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=fake_rivals)
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    summary = run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert calls["rivals"] == 3
+    assert summary["errors"] == []
+
+
+def test_tier_raid_completed_still_farms_daily_reward(mock_client, mock_sleep, mocker):
+    """A raid-only final-tier clear must not skip the daily chest."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    statuses = [
+        {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}, "canRaid": True},
+        {"status": "peace_time", "tier": 8, "rivals": {}},
+    ]
+    farm_calls = []
+    mocker.patch("hw_genie.commands.titan_arena.fetch_titan_arena_status", side_effect=statuses)
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={"stage": "raid", "battles": [], "completed": True},
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch(
+        "hw_genie.commands.titan_arena._farm_daily_reward",
+        side_effect=lambda *a, **k: farm_calls.append(1) or True,
+    )
+
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert len(farm_calls) == 1

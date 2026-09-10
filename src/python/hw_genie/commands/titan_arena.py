@@ -23,6 +23,7 @@ from hw_genie.battle.engine import (
     BattleEstimate,
     BridgeError,
     BridgeDeadError,
+    BridgeTimeoutError,
     JsBridgeBattleEngine,
     PythonBattleEngine,
 )
@@ -113,9 +114,22 @@ AUTO_RIVAL_SCORE_THRESHOLD = 250
 # always goes first and duplicates are skipped.
 MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
 
+# Consecutive tier-loop passes with zero new clears before stopping. With
+# end_on_loss=False losses bank nothing, so such passes are independent
+# fresh draws: a few retries are intentional (seed gacha), but grinding them
+# unboundedly wastes hours on 0%-win matchups.
+MAX_CONSECUTIVE_NO_PROGRESS_PASSES = 3
+
 
 def _is_bridge_timeout(res: dict[str, Any]) -> bool:
-    """True when the attempt never reached the userscript (bridge timeout)."""
+    """True when the attempt never reached the userscript (bridge timeout).
+
+    Prefers the structured ``bridge_timeout`` flag set by
+    :func:`run_titan_arena`; the message-substring check is a legacy
+    fallback for dicts built without it (e.g. older callers/tests).
+    """
+    if res.get("bridge_timeout") is True:
+        return True
     return "did not finish battle within" in str(res.get("bridge_error") or "")
 
 
@@ -365,7 +379,9 @@ def run_titan_arena(
                 f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser has the game open with the userscript active (any game page works; the Titan Arena screen is not required). Falling back to estimate-only.",
                 flush=True,
             )
-        # Return estimate-only style so the caller can decide; do not call EndBattle with invalid progress
+        # Return estimate-only style so the caller can decide; do not call EndBattle with invalid progress.
+        # bridge_timeout is the structured signal for _is_bridge_timeout (the
+        # message-substring check there is only a legacy fallback).
         fallback = PythonBattleEngine().calc(battle)
         return {
             "status": ResponseStatus.SUCCESS,
@@ -373,6 +389,7 @@ def run_titan_arena(
             "estimate": fallback,
             "estimate_only": True,
             "bridge_error": str(exc),
+            "bridge_timeout": isinstance(exc, BridgeTimeoutError),
         }
     print(
         f"{Emojis.STEP}Engine: win={est.win} stars={est.stars} ({type(engine).__name__})",
@@ -493,6 +510,7 @@ def run_titan_arena_tier(
     # only guards against pathological server states.
     max_passes = 30
     passes = 0
+    no_progress_passes = 0
     while True:
         passes += 1
         if passes > max_passes:
@@ -532,6 +550,10 @@ def run_titan_arena_tier(
                 pass
             else:
                 _complete_tier(client, summary, tier=tier)
+                # Best-effort daily chest, mirroring the per-rival path: a
+                # raid-only final-tier clear must not skip the reward.
+                _farm_daily_reward(client, summary)
+                no_progress_passes = 0
                 continue
 
         try:
@@ -559,6 +581,16 @@ def run_titan_arena_tier(
         # Best-effort daily chest; the return value no longer ends the run so
         # remaining rivals (or the next tier) are attacked in the next pass.
         _farm_daily_reward(client, summary)
+        if any(r.get("win") for r in rival_results):
+            no_progress_passes = 0
+        else:
+            no_progress_passes += 1
+            if no_progress_passes >= MAX_CONSECUTIVE_NO_PROGRESS_PASSES:
+                print(
+                    f"{Emojis.INFO}No new clears in {no_progress_passes} consecutive passes; stopping tier loop.",
+                    flush=True,
+                )
+                return summary
         # Loop again with fresh status until nothing is left to attack or no
         # progress is made.
         continue
