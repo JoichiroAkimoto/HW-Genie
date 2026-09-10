@@ -1591,3 +1591,39 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
     except SystemExit:
         pass
     assert captured["url"] == "http://127.0.0.1:9999"
+
+
+def test_cmd_multi_failed_logging_does_not_mask_original_error(monkeypatch, capsys):
+    """記録自体の失敗（2回目の Ctrl+C 等）が元のエラーを隠さない。"""
+    from hw_genie import main
+
+    def boom(routine, accounts=None, max_parallel=None):
+        raise RuntimeError("boom")
+
+    def log_boom(**kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", boom)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", log_boom)
+
+    args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+    with pytest.raises(RuntimeError, match="boom"):
+        main.cmd_multi(args)
+    assert "run log" in capsys.readouterr().err
+
+
+def test_main_keyboard_interrupt_exits_130(monkeypatch, capsys):
+    """トップレベルの Ctrl+C はトレースバック無しで exit 130。"""
+    import sys
+
+    from hw_genie import main
+
+    def interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hw_genie.core.database.init_db", interrupt)
+    monkeypatch.setattr(sys, "argv", ["hw-genie", "sync"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 130
+    assert "Interrupted" in capsys.readouterr().err

@@ -893,18 +893,21 @@ def cmd_multi(args):
             accounts = _build_run_log_summary(mode, results)[0]
         except Exception:  # pragma: no cover - defensive
             accounts = []
-        record_run_log(
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            mode=mode,
-            status="failed",
-            exit_code=exit_code,
-            accounts=accounts,
-            error_summary=str(exc) or type(exc).__name__,
-            log_text=(capture.getvalue() + "\n" + trace).strip() or None,
-            log_file=os.environ.get("HWGENIE_LOG_FILE"),
-            hostname=_run_host_identifier(),
-        )
+        try:
+            record_run_log(
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                mode=mode,
+                status="failed",
+                exit_code=exit_code,
+                accounts=accounts,
+                error_summary=str(exc) or type(exc).__name__,
+                log_text=(capture.getvalue() + "\n" + trace).strip() or None,
+                log_file=os.environ.get("HWGENIE_LOG_FILE"),
+                hostname=_run_host_identifier(),
+            )
+        except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the original failure (e.g. 2nd Ctrl+C)
+            print(f"Warning: failed to record run log: {log_exc}", file=sys.stderr)
         raise
     account_logs, error_summary = _build_run_log_summary(mode, results)
     record_run_log(
@@ -1452,6 +1455,9 @@ def main():
 
         print(f"\n{Emojis.ERROR}{e}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted (Ctrl+C).", file=sys.stderr)
+        sys.exit(130)
     except Exception as e:
         from hw_genie.core.client import Emojis
 

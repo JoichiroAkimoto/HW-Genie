@@ -1088,3 +1088,57 @@ def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock
 
     assert "sync() failed on connect" in caplog.text
 
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_defers_delivery_until_exit():
+    """SIGINT during the shield is delivered after unblocking, not inside Rust."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    assert _threading.current_thread() is _threading.main_thread()
+    delivered = []
+    prev = _signal.getsignal(_signal.SIGINT)
+    try:
+        _signal.signal(_signal.SIGINT, lambda *a: delivered.append(1))
+        with defer_sigint():
+            _signal.raise_signal(_signal.SIGINT)
+            assert delivered == []  # まだ届かない
+        assert delivered == [1]  # 抜けたら届く
+    finally:
+        _signal.signal(_signal.SIGINT, prev)
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_noop_off_main_thread():
+    """Worker threads must not touch the process signal mask."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    errors = []
+
+    def worker():
+        try:
+            before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            with defer_sigint():
+                during = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            after = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            assert before == during == after
+        except Exception as e:  # noqa: BLE001 - report via list
+            errors.append(e)
+
+    th = _threading.Thread(target=worker)
+    th.start()
+    th.join(timeout=10)
+    assert not th.is_alive()
+    assert errors == []

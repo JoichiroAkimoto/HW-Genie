@@ -2,8 +2,10 @@ import logging
 import os
 import random
 import re
+import signal
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
@@ -102,6 +104,44 @@ def is_wal_contention(exc: BaseException) -> bool:
     return any(marker in msg for marker in _WAL_CONTENTION_MARKERS)
 
 
+@contextmanager
+def defer_sigint():
+    """Defer SIGINT delivery across blocking native (Rust) DB calls.
+
+    CPython runs signal handlers on the main thread only, so a SIGINT that
+    arrives while the main thread is inside the libsql/Turso Rust extension
+    makes pyo3 ``unwrap()`` a ``PyErr(KeyboardInterrupt)`` and the process
+    dies with ``pyo3_runtime.PanicException`` instead of a clean
+    ``KeyboardInterrupt``. Blocking SIGINT for the duration of the native
+    call defers delivery: a pending interrupt is raised as a regular
+    ``KeyboardInterrupt`` in Python code right after unblocking.
+
+    No-op off the main thread (handlers never run there) and on platforms
+    without ``pthread_sigmask``. A Ctrl+C during a (normally fast) DB write
+    is delayed by milliseconds, never lost — sleeps between retries stay
+    interruptible since they run outside the shield.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    block = getattr(signal, "pthread_sigmask", None)
+    if block is None:  # e.g. Windows
+        yield
+        return
+    try:
+        prev = block(signal.SIG_BLOCK, {signal.SIGINT})
+    except (OSError, RuntimeError, ValueError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            block(signal.SIG_SETMASK, prev)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+
 def retry_on_wal_contention(
     fn,
     *,
@@ -121,12 +161,18 @@ def retry_on_wal_contention(
     retry in lockstep and re-collide. Non-transient exceptions propagate
     immediately; the last exception is re-raised when all attempts are
     exhausted. Returns ``fn()``'s value on success.
+
+    Each attempt runs under :func:`defer_sigint` so a Ctrl+C landing inside
+    the native driver is delivered as a clean ``KeyboardInterrupt`` after
+    the call instead of panicking inside Rust (pyo3 ``unwrap`` on
+    ``PyErr(KeyboardInterrupt)``). The backoff sleep stays interruptible.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
     for attempt in range(1, attempts + 1):
         try:
-            return fn()
+            with defer_sigint():
+                return fn()
         except Exception as exc:
             if not is_transient_db_error(exc) or attempt == attempts:
                 raise
