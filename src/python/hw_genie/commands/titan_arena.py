@@ -896,21 +896,6 @@ def _farm_daily_reward(client: HWClient, summary: dict[str, Any]) -> bool:
     return False
 
 
-def _fallback_progress(battle: dict[str, Any], win: bool = False) -> list[dict[str, Any]]:
-    """Empty loss progress (no fabricated wins; engine results only).
-
-    Kept for backwards compatibility; the raid path no longer submits
-    fabricated progress — bridge failures skip EndRaid entries instead.
-    """
-    del battle, win
-    return [
-        {
-            "attackers": {"heroes": {}},
-            "defenders": {"heroes": {}},
-        }
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

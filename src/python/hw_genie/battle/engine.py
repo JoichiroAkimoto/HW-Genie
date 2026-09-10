@@ -352,6 +352,6 @@ def get_default_engine(
     """
     if mode in ("estimate", "offline", "python"):
         return PythonBattleEngine()
-    if mode in ("playwright", "pw"):
+    if mode == "playwright":
         return PlaywrightBattleEngine(headers=headers)
     return JsBridgeBattleEngine(auth_server_url=auth_server_url, user_id=user_id)

@@ -147,14 +147,6 @@ def test_bridge_dead_error_carries_partial_results():
     assert isinstance(err, Exception)
 
 
-def test_fallback_progress_is_empty_loss():
-    from hw_genie.commands.titan_arena import _fallback_progress
-
-    assert _fallback_progress({}, win=False) == [
-        {"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}
-    ]
-
-
 def test_fmt_duration():
     from hw_genie.commands.titan_arena import _fmt_duration
 
