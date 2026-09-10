@@ -212,6 +212,51 @@ class BridgeDeadError(BridgeError):
         self.partial_results: list = list(partial_results or [])
 
 
+#: Battle sim snippet evaluated in the headless page by
+#: :meth:`PlaywrightBattleEngine.calc`. Kept module-level so tests can pin
+#: its error handling. The ``getF``/``getFn``/``getProtoFn`` helpers resolve
+#: Haxe-minified names and must throw a descriptive error (naming the missing
+#: key) when resolution fails — otherwise a game update surfaces only as
+#: ``TypeError: Cannot read properties of undefined`` inside ``evaluate``.
+PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
+                        const getF = (cls, name) => {
+                            const found = Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop();
+                            if (!found) throw new Error("Property " + name + " not found in Haxe class prototype");
+                            return found[0];
+                        };
+                        const getFn = (cls, n) => {
+                            const key = Object.keys(cls)[n];
+                            if (key === undefined) throw new Error("Ordinal " + n + " out of range in Haxe class keys");
+                            return key;
+                        };
+                        const getProtoFn = (cls, n) => {
+                            const key = Object.keys(cls.prototype)[n];
+                            if (key === undefined) throw new Error("Ordinal " + n + " out of range in Haxe prototype keys");
+                            return key;
+                        };
+                        const battle = JSON.parse(battleJson);
+                        const game = window.Game;
+                        if (!game || !game.BattlePresets || !game.BattleInstantPlay || !game.DataStorage) return null;
+                        const ds = game.DataStorage;
+                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanPvpManual')]();
+                        const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
+                        const instant = new game.BattleInstantPlay(battle, presets);
+                        return new Promise((resolve) => {
+                            let done = null;
+                            instant[getProtoFn(game.BattleInstantPlay, 9)].add((bi) => {
+                                const results = bi[getF(game.BattleInstantPlay, 'get_result')]();
+                                done = {
+                                    progress: results[getF(game.MultiBattleResult, 'get_progress')]() || [],
+                                    result: results[getF(game.MultiBattleResult, 'get_result')]() || {win:false, stars:0},
+                                };
+                                resolve(JSON.stringify(done));
+                            });
+                            instant.start();
+                            setTimeout(() => { if (!done) resolve(null); }, 10000);
+                        });
+                    }"""
+
+
 class PlaywrightBattleEngine:
     """Headless browser battle engine via Playwright.
 
@@ -270,31 +315,7 @@ class PlaywrightBattleEngine:
                     # (the page.evaluate error below carries the failing key).
                     js_battle = json.dumps(battle)
                     result_json = page.evaluate(
-                        """(battleJson) => {
-                        const getF = (cls, name) => Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop()[0];
-                        const getFn = (cls, n) => Object.keys(cls)[n];
-                        const getProtoFn = (cls, n) => Object.keys(cls.prototype)[n];
-                        const battle = JSON.parse(battleJson);
-                        const game = window.Game;
-                        if (!game || !game.BattlePresets || !game.BattleInstantPlay || !game.DataStorage) return null;
-                        const ds = game.DataStorage;
-                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanPvpManual')]();
-                        const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
-                        const instant = new game.BattleInstantPlay(battle, presets);
-                        return new Promise((resolve) => {
-                            let done = null;
-                            instant[getProtoFn(game.BattleInstantPlay, 9)].add((bi) => {
-                                const results = bi[getF(game.BattleInstantPlay, 'get_result')]();
-                                done = {
-                                    progress: results[getF(game.MultiBattleResult, 'get_progress')]() || [],
-                                    result: results[getF(game.MultiBattleResult, 'get_result')]() || {win:false, stars:0},
-                                };
-                                resolve(JSON.stringify(done));
-                            });
-                            instant.start();
-                            setTimeout(() => { if (!done) resolve(null); }, 10000);
-                        });
-                    }""",
+                        PLAYWRIGHT_BATTLE_JS,
                         js_battle,
                     )
                     if not result_json:

@@ -209,3 +209,18 @@ def test_js_bridge_heartbeat_while_waiting(monkeypatch, capsys):
     assert est2.win is True
     out = capsys.readouterr().out
     assert "waiting for userscript job" not in out
+
+
+def test_playwright_battle_js_helpers_throw_descriptive_errors():
+    """Embedded Playwright JS must name the missing key on resolution failure.
+
+    Regression: an unguarded `.pop()[0]` surfaced only as
+    `TypeError: Cannot read properties of undefined` after a game update.
+    """
+    from hw_genie.battle.engine import PLAYWRIGHT_BATTLE_JS
+
+    assert "not found in Haxe class prototype" in PLAYWRIGHT_BATTLE_JS
+    assert "out of range in Haxe class keys" in PLAYWRIGHT_BATTLE_JS
+    assert "out of range in Haxe prototype keys" in PLAYWRIGHT_BATTLE_JS
+    # The old unguarded one-liner must not come back.
+    assert "filter(e => e[1] === name).pop()[0]" not in PLAYWRIGHT_BATTLE_JS
