@@ -97,7 +97,9 @@ build_entry() {
 
   if [[ -n "$dev_name" ]]; then
     metadata=$(printf '%s\n' "$metadata" | sed "s|^// @name[[:space:]]\\+.*|// @name         $dev_name|" | sed 's|^// @namespace[[:space:]]\+.*|// @namespace    https://github.com/JoichiroAkimoto/HW-Genie-dev|')
-    echo "Variant: dev → $basename @name/@namespace rewritten for parallel install" >&2
+    # 開発版であることが一目で分かるよう @version に -dev を付与する。
+    metadata=$(printf '%s\n' "$metadata" | sed -E 's|^(// @version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+)$|\1-dev|')
+    echo "Variant: dev → $basename @name/@namespace/@version rewritten for parallel install" >&2
   fi
 
   # Build with bun. --format=iife wraps the bundle (including any imported
@@ -110,15 +112,28 @@ build_entry() {
   # Combine metadata + bundle
   {
     echo "$metadata"
+    if [[ -n "$dev_name" ]]; then
+      # 開発版バナー: Tampermonkey のプレビューや先頭行で開発版と分かるようにする。
+      echo "// ⚠️ DEV BUILD — ToE自動化の都度ON/OFFする開発版。常用時はOFFにすること。"
+    fi
     echo ""
     cat "$DIST_DIR/bundle.tmp.js"
   } > "$output"
+
+  if [[ -n "$dev_name" ]]; then
+    # 開発版のコンソールprefixを分離し、通常版のログと混ざらないようにする。
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|\[HW-Genie/ToE\]|[HW-Genie/ToE Dev]|g" "$output"
+    else
+      sed -i "s|\[HW-Genie/ToE\]|[HW-Genie/ToE Dev]|g" "$output"
+    fi
+  fi
 
   # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）。
   # 構造検証は「先頭が (()=>{ / (() => { で始まり、末尾が }); で終わる」こと。
   # 非 minify（複数行）でも --minify（1 行圧縮）でも動作する。
   local bundle bundle_trimmed
-  bundle=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$output" | tail -n +2 | sed '/^$/d')
+  bundle=$(sed -n '/^\/\/ ==\/UserScript==$/,$p' "$output" | tail -n +2 | sed '/^$/d' | sed '/^\/\/ ⚠️ DEV BUILD/d')
   # 先頭の空白を除去してから判定
   bundle_trimmed=${bundle#"${bundle%%[![:space:]]*}"}
   local iife_open_re='^\(\(\)[[:space:]]*=>[[:space:]]*\{'
@@ -150,6 +165,11 @@ build_entry() {
   # （自動更新のため updateURL は常に最新リリースを指す URL を使う）。
   # 引数解析は「最後に指定した値が有効」（後勝ち）。
   if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
+    # 開発版に更新URLを注入すると通常版を上書きしかねないため禁止する。
+    if [[ "$VARIANT" == "dev" ]]; then
+      echo "ERROR: --inject-* cannot be combined with --dev (dev builds must never auto-update)" >&2
+      exit 1
+    fi
     # downloadURL / updateURL は対で指定する。片方のみだと未置換プレースホルダが
     # 残り下の検証で失敗するため、ここで明示的に弾く。
     if [[ -z "$INJECT_DOWNLOAD_URL" || -z "$INJECT_UPDATE_URL" ]]; then

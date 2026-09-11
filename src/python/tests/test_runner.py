@@ -1630,3 +1630,19 @@ def test_main_keyboard_interrupt_exits_130(monkeypatch, capsys):
         main.main()
     assert exc.value.code == 130
     assert "Interrupted" in capsys.readouterr().err
+
+
+def test_summarize_toe_shows_final_tier_and_remaining(capsys):
+    """Summary table carries the final tier and remaining rival count."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": True}], "errors": [], "completed_tier": True,
+                "daily_reward": "claimed", "final_tier": 8, "remaining_rivals": 0}, None)),
+        ("b", ({"rival_results": [{"win": False}], "errors": [], "completed_tier": False,
+                "daily_reward": None, "final_tier": 5, "remaining_rivals": 3}, None)),
+    ]
+    assert summarize_toe(results) == 1
+    out = capsys.readouterr().out
+    assert "Tier" in out and "Left" in out
+    assert "8" in out and "0" in out

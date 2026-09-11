@@ -697,7 +697,8 @@ def summarize_toe(
     attempted but none was won and the tier did not complete. An empty
     ``rival_results`` with no errors is idle (nothing to do) and counts
     as ok so cleared accounts don't page every cron run. Columns show
-    wins / attempted rivals / completed flag.
+    wins / attempted rivals / completed flag / final tier / remaining
+    rivals.
     """
     ok = 0
     failed: list[str] = []
@@ -708,7 +709,16 @@ def summarize_toe(
             total = len(res.get("rival_results", []))
             completed = "✅" if res.get("completed_tier") else "-"
             errors = res.get("errors", [])
-            rows.append([account, f"{wins}/{total}", completed, str(res.get("daily_reward") or "-")])
+            tier = res.get("final_tier")
+            remaining = res.get("remaining_rivals")
+            rows.append([
+                account,
+                f"{wins}/{total}",
+                completed,
+                str(tier) if tier is not None else "-",
+                str(remaining) if remaining is not None else "-",
+                str(res.get("daily_reward") or "-"),
+            ])
             if errors:
                 failed.append(f"{account} ({len(errors)} error(s))")
             elif not res.get("rival_results") and not res.get("completed_tier"):
@@ -724,9 +734,10 @@ def summarize_toe(
 
     print("\n==================================================")
     print("📊 --- Multi toe summary ---")
+    headers = ["Account", "Won", "TierDone", "Tier", "Left", "Daily"]
     if rows:
-        widths = [max(len(r[i]) for r in rows + [["Account", "Won", "TierDone", "Daily"]]) for i in range(4)]
-        print(" | ".join(h.ljust(w) for h, w in zip(["Account", "Won", "TierDone", "Daily"], widths)))
+        widths = [max(len(r[i]) for r in rows + [headers]) for i in range(6)]
+        print(" | ".join(h.ljust(w) for h, w in zip(headers, widths)))
         for r in rows:
             print(" | ".join(c.ljust(w) for c, w in zip(r, widths)))
     if failed:

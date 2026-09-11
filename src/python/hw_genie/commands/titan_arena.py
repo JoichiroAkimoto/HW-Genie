@@ -511,6 +511,8 @@ def run_titan_arena_tier(
         "errors": [],
         "completed_tier": False,
         "daily_reward": None,
+        "final_tier": None,
+        "remaining_rivals": None,
     }
 
     # Safety cap: each winning pass strictly shrinks the remaining target
@@ -526,6 +528,9 @@ def run_titan_arena_tier(
             print(f"{Emojis.WARNING}Tier loop cap reached; stopping.", flush=True)
             return summary
         status = fetch_titan_arena_status(client)
+        # Track the latest tier / remaining targets for the final summary.
+        summary["final_tier"] = status.get("tier")
+        summary["remaining_rivals"] = len(_select_auto_rivals(status, attack_score_threshold))
         state = status.get("status")
         if state in (None, "disabled"):
             print(f"{Emojis.WARNING}ToE is disabled. aborting.", flush=True)

@@ -1226,3 +1226,19 @@ def test_run_rivals_forwards_account_label(mock_client, mock_sleep, mocker):
                 team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
                 account_label="Champion")
     assert seen and all(label == "Champion" for label in seen)
+
+
+def test_run_titan_arena_tier_records_final_tier_and_remaining(mock_client, mock_sleep):
+    """Tier summary tracks the last seen tier and remaining target count."""
+    client, mock_call = mock_client
+    rivals = {
+        "100": {"userId": "100", "power": "100", "titans": {}, "attackScore": 0, "seed": "0", "defenceScore": "0"},
+        "101": {"userId": "101", "power": "100", "titans": {}, "attackScore": 100, "seed": "0", "defenceScore": "0"},
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": {"status": "peace_time", "tier": 7, "rivals": rivals}}),
+    ]
+    summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
+    assert summary["final_tier"] == 7
+    assert summary["remaining_rivals"] == 2
