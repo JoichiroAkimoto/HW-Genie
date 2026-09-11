@@ -292,6 +292,7 @@ def toe_routine(
             attack_score_threshold=threshold,
             seeds_per_team=seeds_per_team,
             max_total_attempts=max_total_attempts,
+            account_label=account,
         )
 
     return run

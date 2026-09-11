@@ -273,6 +273,7 @@ def run_titan_arena(
     estimate_only: bool = False,
     end_on_loss: bool = True,
     attempt_label: str | None = None,
+    account_label: str | None = None,
 ) -> dict[str, Any]:
     """Start a single-rival battle, simulate via ``engine``, and EndBattle.
 
@@ -321,7 +322,8 @@ def run_titan_arena(
         rival_id_str = str(rival_id)
 
     attempt_prefix = f"[{attempt_label}] " if attempt_label else ""
-    print(f"\n{Emojis.STEP}Titan Arena: {attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
+    account_prefix = f"[{account_label}] " if account_label else ""
+    print(f"\n{Emojis.STEP}Titan Arena: {account_prefix}{attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
     if dry_run:
         print(f"{Emojis.INFO}Dry-run: verifying titanArenaStartBattle is accepted with arbitrary titans...", flush=True)
 
@@ -438,7 +440,8 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate) -> dict[st
         print(f"{Emojis.ERROR}EndBattle failed ({end_res.error_name}): {_shorten_response(response)}", flush=True)
         return {"status": end_res.status, "estimate": est, "end_detail": response}
     logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
-    print(f"{Emojis.SUCCESS}EndBattle: {_summarize_end_battle(rival_id, est, response)}", flush=True)
+    end_emoji = Emojis.VICTORY if est.win else Emojis.SUCCESS
+    print(f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}", flush=True)
     return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
 
 
@@ -456,6 +459,7 @@ def run_titan_arena_tier(
     stop_on_first_loss: bool = False,
     seeds_per_team: int = 2,
     max_total_attempts: int | None = None,
+    account_label: str | None = None,
 ) -> dict[str, Any]:
     """Run a ToE tier end-to-end.
 
@@ -496,6 +500,8 @@ def run_titan_arena_tier(
     engine = engine or PythonBattleEngine()
     rotation = _resolve_team_rotation(client, titans)
     titans = rotation[0]
+    if account_label:
+        print(f"{Emojis.START}Titan Arena tier run — account: {account_label}", flush=True)
     summary: dict[str, Any] = {
         "titans": titans,
         "rotation": rotation,
@@ -565,6 +571,7 @@ def run_titan_arena_tier(
                 client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
                 team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
                 max_total_attempts=max_total_attempts,
+                account_label=account_label,
             )
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
@@ -740,6 +747,7 @@ def _run_rivals(
     seeds_per_team: int = 2,
     end_on_loss: bool = False,
     max_total_attempts: int | None = None,
+    account_label: str | None = None,
 ) -> list[dict[str, Any]]:
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
@@ -779,6 +787,7 @@ def _run_rivals(
                 res = run_titan_arena(
                     client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss,
                     attempt_label=f"{attempt_no}/{len(attempt_plan)}",
+                    account_label=account_label,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 results.append({"rivalId": str(rival_id), "error": str(exc)})

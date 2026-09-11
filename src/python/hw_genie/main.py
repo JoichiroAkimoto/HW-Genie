@@ -520,6 +520,10 @@ def cmd_toe_attack(args):
         )
     rival = getattr(args, "rival", None)
     titans = list(args.titans) if args.titans else None
+    try:
+        account_label = resolve_account(args.account)
+    except Exception:
+        account_label = None
     run_titan_arena(
         client,
         rival_id=rival,
@@ -527,6 +531,7 @@ def cmd_toe_attack(args):
         engine=engine,
         dry_run=bool(args.dry_run),
         estimate_only=bool(args.estimate_only),
+        account_label=account_label,
     )
 
 
@@ -560,6 +565,10 @@ def cmd_toe_run(args):
         engine = get_default_engine(mode=mode)
     titans = list(args.titans) if getattr(args, "titans", None) else None
     _max_attempts = getattr(args, "max_attempts", None)
+    try:
+        account_label = resolve_account(args.account)
+    except Exception:
+        account_label = None
     run_titan_arena_tier(
         client,
         titans=titans,
@@ -568,6 +577,7 @@ def cmd_toe_run(args):
         stop_on_first_loss=bool(args.stop_on_loss),
         seeds_per_team=int(getattr(args, "seeds", 2) or 2),
         max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+        account_label=account_label,
     )
 
 

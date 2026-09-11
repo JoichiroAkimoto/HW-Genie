@@ -224,6 +224,7 @@ class HWResponse:
 
 class Emojis:
     SUCCESS = "✅ "
+    VICTORY = "🏆 "
     ERROR = "❌ "
     WARNING = "⚠️  "
     INFO = "ℹ️  "

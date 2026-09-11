@@ -823,7 +823,7 @@ def test_end_battle_prints_concise_summary(capsys, mock_client, mock_sleep):
     out = capsys.readouterr().out
     assert "attackScore=250" in out
     assert "rivalTeam" not in out
-    assert len([line for line in out.splitlines() if line.startswith("✅ EndBattle")]) == 1
+    assert len([line for line in out.splitlines() if line.startswith("🏆 EndBattle")]) == 1
 
 
 def test_run_rivals_max_total_attempts_caps_rotation(mock_client, mock_sleep, mocker):
@@ -1142,3 +1142,87 @@ def test_tier_raid_win_resets_no_progress_counter(mock_client, mock_sleep, mocke
     # passes then trip the >=3 stop. Buggy code ignoring raid wins stops
     # after 3 passes instead.
     assert calls["rivals"] == 4
+
+
+def test_run_titan_arena_shows_account_label(capsys, mock_client, mock_sleep):
+    """Account label appears on the battle header line when given."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": battle}}),
+        _ok({"response": {"attackScore": 250}}),
+    ]
+    run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
+                    engine=PythonBattleEngine(), account_label="Joe")
+    out = capsys.readouterr().out
+    assert "Titan Arena: [Joe] rivalId=-1" in out
+
+
+def test_end_battle_win_uses_victory_emoji_loss_keeps_success(capsys, mock_client, mock_sleep):
+    """Wins print 🏆, losses keep ✅ so they are visually distinct from Start."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    win_battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    lose_battle = {
+        "type": "titan_arena", "seed": 2,
+        "attackers": {"1": {"power": 1, "hp": 10}},
+        "defenders": [{"2": {"power": 999999, "hp": 10}}],
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"battle": win_battle}}),
+        _ok({"response": {"attackScore": 250}}),
+        _ok({"response": {"battle": lose_battle}}),
+        _ok({"response": {"attackScore": 10}}),
+    ]
+    run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    run_titan_arena(client, rival_id="-2", titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    out = capsys.readouterr().out
+    assert len([line for line in out.splitlines() if line.startswith("🏆 EndBattle")]) == 1
+    assert len([line for line in out.splitlines() if line.startswith("✅ EndBattle")]) == 1
+    # Start lines keep ✅ and stay distinct from wins.
+    assert len([line for line in out.splitlines() if "StartBattle accepted" in line]) == 2
+
+
+def test_run_titan_arena_tier_prints_account_banner(capsys, mock_client, mock_sleep):
+    """Tier banner shows the account when a label is given; silent otherwise."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": {"status": "peace_time", "tier": 1, "rivals": {}}}),
+    ]
+    run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine(), account_label="Joe")
+    out = capsys.readouterr().out
+    assert "account: Joe" in out
+
+
+def test_run_rivals_forwards_account_label(mock_client, mock_sleep, mocker):
+    """_run_rivals passes the account label down to each battle."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    seen = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        seen.append(kw.get("account_label"))
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    _run_rivals(client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+                threshold=250, stop_on_first_loss=False,
+                team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
+                account_label="Champion")
+    assert seen and all(label == "Champion" for label in seen)
