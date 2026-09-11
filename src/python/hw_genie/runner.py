@@ -247,6 +247,57 @@ def full_routine(
     return daily_routine(client, account, item_max_iterations=item_max_iterations)
 
 
+def toe_routine(
+    engine: str = "hybrid",
+    seeds_per_team: int = 2,
+    threshold: int = 250,
+    auth_server_url: str = "http://127.0.0.1:8765",
+    max_total_attempts: int | None = None,
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that clears the Titan Arena tier for any account.
+
+    Runs :func:`hw_genie.commands.titan_arena.run_titan_arena_tier` with the
+    saved-team-first rotation (``--titans`` omitted). ``engine`` selects the
+    battle engine (``hybrid`` delegates to the userscript via the auth
+    server, ``playwright`` drives headless Chromium, ``estimate`` only
+    plans). Per-account ``x-auth-user-id`` headers select the bridge job
+    queue entry (the server enforces the account match with a claimed_by
+    guard), so parallel runs behave like the other modes: ``--parallel``
+    wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
+
+    Returns:
+        A routine whose result per account is the tier summary dict
+        returned by ``run_titan_arena_tier``.
+    """
+    from hw_genie.battle.engine import get_default_engine
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    def run(client: HWClient, account: str) -> object:
+        headers = getattr(client, "headers", {}) or {}
+        if engine == "playwright":
+            eng = get_default_engine(mode=engine, headers=dict(headers))
+        elif engine != "estimate":
+            user_id = str(headers.get("x-auth-user-id", ""))
+            eng = get_default_engine(
+                mode=engine,
+                auth_server_url=auth_server_url,
+                user_id=user_id,
+            )
+        else:
+            eng = get_default_engine(mode=engine)
+        return run_titan_arena_tier(
+            client,
+            titans=None,
+            engine=eng,
+            attack_score_threshold=threshold,
+            seeds_per_team=seeds_per_team,
+            max_total_attempts=max_total_attempts,
+            account_label=account,
+        )
+
+    return run
+
+
 def consumable_routine(
     lib_ids: list[int] | None = None,
     method_override: str | None = None,
@@ -635,6 +686,67 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+def summarize_toe(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+) -> int:
+    """Print a per-account Titan Arena table and return the failed count.
+
+    Results come from :func:`toe_routine`: per account the tier summary
+    dict from ``run_titan_arena_tier``. An account fails when its routine
+    errored, when the summary carries ``errors``, or when rivals were
+    attempted but none was won and the tier did not complete. An empty
+    ``rival_results`` with no errors is idle (nothing to do) and counts
+    as ok so cleared accounts don't page every cron run. Columns show
+    wins / attempted rivals / completed flag / final tier / remaining
+    rivals.
+    """
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, dict):
+            wins = sum(1 for r in res.get("rival_results", []) if r.get("win"))
+            total = len(res.get("rival_results", []))
+            completed = "✅" if res.get("completed_tier") else "-"
+            errors = res.get("errors", [])
+            tier = res.get("final_tier")
+            remaining = res.get("remaining_rivals")
+            rows.append([
+                account,
+                f"{wins}/{total}",
+                completed,
+                str(tier) if tier is not None else "-",
+                str(remaining) if remaining is not None else "-",
+                str(res.get("daily_reward") or "-"),
+            ])
+            if errors:
+                failed.append(f"{account} ({len(errors)} error(s))")
+            elif not res.get("rival_results") and not res.get("completed_tier"):
+                ok += 1
+            elif not wins and not res.get("completed_tier"):
+                failed.append(f"{account} (no rival cleared)")
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (toe result unavailable)")
+        else:
+            failed.append(account)
+
+    print("\n==================================================")
+    print("📊 --- Multi toe summary ---")
+    headers = ["Account", "Won", "TierDone", "Tier", "Left", "Daily"]
+    if rows:
+        widths = [max(len(r[i]) for r in rows + [headers]) for i in range(6)]
+        print(" | ".join(h.ljust(w) for h, w in zip(headers, widths)))
+        for r in rows:
+            print(" | ".join(c.ljust(w) for c, w in zip(r, widths)))
+    if failed:
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("==================================================")
+    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 __all__ = [
     "list_account_aliases",
     "run_for_account",
@@ -644,6 +756,8 @@ __all__ = [
     "quests_routine",
     "asgard_shop_routine",
     "consumable_routine",
+    "toe_routine",
+    "summarize_toe",
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",

@@ -1,10 +1,20 @@
-"""Auth server module for automatic authentication header capture."""
+"""Auth server module for automatic authentication header capture.
+
+Also hosts a tiny in-memory ToE job queue so the Python CLI can request a
+``progress/result`` from the userscript's in-page battle engine over HTTP.
+Routes: ``POST /toe/job``, ``GET /toe/next``, ``GET /toe/job/{id}``,
+``POST /toe/job/{id}/result``.
+"""
+from __future__ import annotations
 
 import os
 import secrets
-from typing import Optional
+import threading
+import time
+import uuid
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -35,7 +45,7 @@ def _get_allowed_origins() -> list[str]:
 
 
 ALLOWED_ORIGINS = _get_allowed_origins()
-REQUIRED_HEADERS = [
+REQUIRED_HEADER_KEYS = [
     "x-auth-application-id",
     "x-auth-network-ident",
     "x-auth-session-id",
@@ -61,9 +71,128 @@ class AuthSuccessResponse(BaseModel):
     player: dict
 
 
+# ---------------------------------------------------------------------------
+# ToE job queue (in-memory). The Python CLI pushes a battle and waits for the
+# userscript to compute the result via the in-page ``Game.BattleCalc``.
+# ---------------------------------------------------------------------------
+
+
+class ToeJobStore:
+    """Thread-safe in-memory FIFO for ToE bridge jobs.
+
+    For a real deployment this would be backed by the Turso DB; the in-memory
+    implementation is enough to validate the round trip while the userscript
+    is running in the same host.
+    """
+
+    def __init__(self, ttl_seconds: int = 300, in_flight_timeout_seconds: int = 60) -> None:
+        self._lock = threading.Lock()
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._ttl = ttl_seconds
+        self._in_flight_timeout = in_flight_timeout_seconds
+
+    def add(self, account: str, battle: dict[str, Any]) -> str:
+        job_id = uuid.uuid4().hex
+        with self._lock:
+            self._jobs[job_id] = {
+                "id": job_id,
+                "account": account,
+                "battle": battle,
+                "status": "pending",
+                "result": None,
+                "created_at": time.time(),
+                "claimed_at": None,
+                "claimed_by": None,
+            }
+        return job_id
+
+    def get(self, job_id: str, account: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.get("account") != account:
+                return None
+            # Shallow copy under lock: FastAPI serializes after we release,
+            # so a concurrent submit must not tear the live dict mid-encode.
+            return dict(job)
+
+    def _is_reclaimable(self, job: dict[str, Any], now: float) -> bool:
+        """An in-flight job is reclaimable once its claim is older than the timeout."""
+        claimed_at = job.get("claimed_at")
+        if claimed_at is None:
+            return True
+        try:
+            return (now - float(claimed_at)) >= self._in_flight_timeout
+        except (TypeError, ValueError):
+            return True
+
+    def claim(self, account: str) -> Optional[dict[str, Any]]:
+        """Return the oldest pending job for ``account`` and mark it as in-flight.
+
+        Jobs stuck in ``in-flight`` past ``in_flight_timeout_seconds`` (e.g. a
+        tab closed mid-calc) are treated as pending again so the queue cannot
+        wedge head-of-line.
+        """
+        now = time.time()
+        with self._lock:
+            if account:
+                candidates = [j for j in self._jobs.values() if j.get("account") == account]
+            else:
+                # Fallback: no account known (userscript couldn't read Game yet) → oldest pending for any account
+                candidates = list(self._jobs.values())
+            pending = sorted(
+                (
+                    j
+                    for j in candidates
+                    if j.get("status") == "pending"
+                    or (j.get("status") == "in_flight" and self._is_reclaimable(j, now))
+                ),
+                key=lambda j: j["created_at"],
+            )
+            if not pending:
+                return None
+            job = pending[0]
+            job["status"] = "in_flight"
+            job["claimed_at"] = now
+            job["claimed_by"] = account
+            # Shallow copy under lock (see get()): the caller serializes
+            # outside the lock while submit() may mutate the live dict.
+            return dict(job)
+
+    def submit(self, job_id: str, account: str, result: dict[str, Any]) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return False
+            # Done is terminal: reject late submits so a slow first claimant
+            # can never clobber the reclaimer's result (no last-writer-wins).
+            if job.get("status") == "done":
+                return False
+            # Strict account check: exact match always accepted. A mismatch is
+            # accepted only when the job was claimed via the account-less
+            # fallback (claimed_by == "" — userscript couldn't read Game yet,
+            # or alias vs numeric-id mismatch forced the fallback path).
+            # Every other mismatch is rejected (route maps to 404) so a
+            # cross-account claim can never compute+submit foreign battles.
+            if job.get("account") != account and job.get("claimed_by") != "":
+                return False
+            job["status"] = "done"
+            job["result"] = result
+            job["finished_at"] = time.time()
+        return True
+
+    def cleanup(self) -> int:
+        """Drop jobs older than ``ttl_seconds`` regardless of status. Returns count dropped."""
+        cutoff = time.time() - self._ttl
+        with self._lock:
+            stale = [jid for jid, j in self._jobs.items() if j.get("created_at", 0) < cutoff]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+        return len(stale)
+
+
 def validate_auth_headers(headers: dict[str, str]) -> bool:
     """Check that all required x-auth-* headers are present."""
-    return all(key in headers for key in REQUIRED_HEADERS)
+    return all(key in headers for key in REQUIRED_HEADER_KEYS)
 
 
 class AuthServer:
@@ -91,6 +220,7 @@ class AuthServer:
 
 # Global server instance for nonce management
 _auth_server = AuthServer()
+_toe_jobs = ToeJobStore()
 
 
 def create_app() -> FastAPI:
@@ -124,7 +254,7 @@ def create_app() -> FastAPI:
 
         # Validate headers
         if not validate_auth_headers(request.headers):
-            raise HTTPException(status_code=400, detail=f"Missing required headers. Required: {REQUIRED_HEADERS}")
+            raise HTTPException(status_code=400, detail=f"Missing required headers. Required: {REQUIRED_HEADER_KEYS}")
 
         # Update session
         account = request.account
@@ -138,6 +268,49 @@ def create_app() -> FastAPI:
         else:
             raise HTTPException(status_code=500, detail=result.get("message", "Failed to update session"))
 
+    # ---- ToE bridge ----------------------------------------------------
+    # NOTE: Pydantic models declared as inner classes inside create_app() are
+    # not picked up correctly as request bodies by FastAPI in this project's
+    # pinned versions (they get treated as query parameters and 422). Use plain
+    # ``dict[str, Any]`` and validate manually instead. The models still live as
+    # type aliases for downstream clients.
+
+    @app.post("/toe/job")
+    def post_toe_job(job_request: dict[str, Any] = Body(...)):
+        _toe_jobs.cleanup()
+        account = str(job_request.get("account", ""))
+        battle = job_request.get("battle") or {}
+        if not account or not isinstance(battle, dict):
+            raise HTTPException(status_code=400, detail="account and battle are required")
+        job_id = _toe_jobs.add(account, battle)
+        return {"id": job_id, "status": "pending"}
+
+    @app.get("/toe/next")
+    def get_toe_next(account: str = ""):
+        """Return the oldest pending job for ``account`` (or 204 if none)."""
+        job = _toe_jobs.claim(account or "")
+        if not job:
+            raise HTTPException(status_code=204, detail="No pending job")
+        return job
+
+    @app.get("/toe/job/{job_id}")
+    def get_toe_job(job_id: str, account: str):
+        job = _toe_jobs.get(job_id, account)
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found")
+        return job
+
+    @app.post("/toe/job/{job_id}/result")
+    def post_toe_result(job_id: str, submit_request: dict[str, Any] = Body(...)):
+        account = str(submit_request.get("account", ""))
+        result = submit_request.get("result")
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=400, detail="result is required")
+        ok = _toe_jobs.submit(job_id, account, result)
+        if not ok:
+            raise HTTPException(status_code=404, detail="job not found")
+        return {"status": "ok"}
+
     return app
 
 
@@ -146,7 +319,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8765, once: bool = False) ->
 
     Args:
         host: Host to bind to (default: 127.0.0.1)
-        port: Port to bind to (default: 8765)
+        port: Port to listen on (default: 8765)
         once: If True, exit after first successful auth capture
     """
     # Ensure DB tables are created before starting the server
