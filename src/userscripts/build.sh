@@ -62,6 +62,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# dev+inject の組み合わせは副作用（tsc/bun/dist 書き込み）の前に即失敗させる。
+if [[ "$VARIANT" == "dev" ]] && [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
+  echo "ERROR: --inject-* cannot be combined with --dev (dev builds must never auto-update)" >&2
+  exit 1
+fi
+
 mkdir -p "$DIST_DIR"
 
 # 型チェックを先に実行（bun は型を無視してビルドするため、型エラーを最速で
@@ -96,7 +102,12 @@ build_entry() {
   fi
 
   if [[ -n "$dev_name" ]]; then
-    metadata=$(printf '%s\n' "$metadata" | sed "s|^// @name[[:space:]]\\+.*|// @name         $dev_name|" | sed 's|^// @namespace[[:space:]]\+.*|// @namespace    https://github.com/JoichiroAkimoto/HW-Genie-dev|')
+    metadata=$(printf '%s\n' "$metadata" | sed -E "s|^// @name[[:space:]]+.*|// @name         $dev_name|" | sed -E 's|^// @namespace[[:space:]]+.*|// @namespace    https://github.com/JoichiroAkimoto/HW-Genie-dev|')
+    # @version が厳密な X.Y.Z でなければ -dev 付与が無言 no-op になるため先に検証する。
+    if ! grep -qE '^// @version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+$' <<< "$metadata"; then
+      echo "ERROR: @version must be strict X.Y.Z for -dev rewrite ($entry)" >&2
+      exit 1
+    fi
     # 開発版であることが一目で分かるよう @version に -dev を付与する。
     metadata=$(printf '%s\n' "$metadata" | sed -E 's|^(// @version[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+)$|\1-dev|')
     echo "Variant: dev → $basename @name/@namespace/@version rewritten for parallel install" >&2
@@ -165,11 +176,6 @@ build_entry() {
   # （自動更新のため updateURL は常に最新リリースを指す URL を使う）。
   # 引数解析は「最後に指定した値が有効」（後勝ち）。
   if [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
-    # 開発版に更新URLを注入すると通常版を上書きしかねないため禁止する。
-    if [[ "$VARIANT" == "dev" ]]; then
-      echo "ERROR: --inject-* cannot be combined with --dev (dev builds must never auto-update)" >&2
-      exit 1
-    fi
     # downloadURL / updateURL は対で指定する。片方のみだと未置換プレースホルダが
     # 残り下の検証で失敗するため、ここで明示的に弾く。
     if [[ -z "$INJECT_DOWNLOAD_URL" || -z "$INJECT_UPDATE_URL" ]]; then
