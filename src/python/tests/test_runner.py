@@ -1646,3 +1646,50 @@ def test_summarize_toe_shows_final_tier_and_remaining(capsys):
     out = capsys.readouterr().out
     assert "Tier" in out and "Left" in out
     assert "8" in out and "0" in out
+
+
+def test_summarize_toe_fully_cleared_counts_ok(capsys):
+    """remaining_rivals == 0 means complete even with banked losses only."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": False}], "errors": [],
+                "completed_tier": False, "daily_reward": None,
+                "final_tier": 8, "remaining_rivals": 0}, None)),
+    ]
+    assert summarize_toe(results) == 0
+    out = capsys.readouterr().out
+    assert "Left" in out
+
+
+def test_summarize_toe_table_columns_align(capsys):
+    """All table lines share the same display width (emoji/CJK aware)."""
+    from hw_genie.core.utils import display_width
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("Joe", ({"rival_results": [{"win": True}], "errors": [],
+                  "completed_tier": True, "daily_reward": "claimed",
+                  "final_tier": 8, "remaining_rivals": 0}, None)),
+        ("長い名前のアカウント", ({"rival_results": [{"win": False}], "errors": [],
+                  "completed_tier": False, "daily_reward": None,
+                  "final_tier": 12, "remaining_rivals": 3}, None)),
+    ]
+    summarize_toe(results)
+    out = capsys.readouterr().out
+    table = [line for line in out.splitlines() if " | " in line]
+    assert len(table) == 3  # header + 2 rows
+    widths = {display_width(line) for line in table}
+    assert widths and len(widths) == 1
+
+
+def test_run_log_toe_fully_cleared_is_ok():
+    """Parity: remaining_rivals == 0 is ok in run_logs too."""
+    from hw_genie.main import _run_log_account_failure
+
+    cleared = {"rival_results": [{"win": False}], "errors": [],
+               "completed_tier": False, "daily_reward": None,
+               "final_tier": 8, "remaining_rivals": 0}
+    assert _run_log_account_failure("toe", cleared, None) is None
+    stuck = dict(cleared, remaining_rivals=2)
+    assert _run_log_account_failure("toe", stuck, None) == "no rival cleared"

@@ -694,11 +694,13 @@ def summarize_toe(
     Results come from :func:`toe_routine`: per account the tier summary
     dict from ``run_titan_arena_tier``. An account fails when its routine
     errored, when the summary carries ``errors``, or when rivals were
-    attempted but none was won and the tier did not complete. An empty
-    ``rival_results`` with no errors is idle (nothing to do) and counts
-    as ok so cleared accounts don't page every cron run. Columns show
-    wins / attempted rivals / completed flag / final tier / remaining
-    rivals.
+    attempted but none was won and the tier did not complete. A summary
+    with ``remaining_rivals == 0`` means fully cleared and counts as ok
+    even without wins/completion flags; an empty ``rival_results`` with no
+    errors is idle (nothing to do) and also counts as ok so cleared
+    accounts don't page every cron run. Columns show wins / attempted
+    rivals / completed flag / final tier / remaining rivals. Column widths
+    use display width (emoji/CJK aware) so rows never shift.
     """
     ok = 0
     failed: list[str] = []
@@ -721,6 +723,11 @@ def summarize_toe(
             ])
             if errors:
                 failed.append(f"{account} ({len(errors)} error(s))")
+            elif remaining == 0:
+                # Fully cleared: nothing left to attack counts as complete,
+                # even if no battle was won banked this run (e.g. raid-only
+                # clears or a final no-target pass).
+                ok += 1
             elif not res.get("rival_results") and not res.get("completed_tier"):
                 ok += 1
             elif not wins and not res.get("completed_tier"):
@@ -732,17 +739,25 @@ def summarize_toe(
         else:
             failed.append(account)
 
-    print("\n==================================================")
-    print("📊 --- Multi toe summary ---")
     headers = ["Account", "Won", "TierDone", "Tier", "Left", "Daily"]
+    rule_width = 50
     if rows:
-        widths = [max(len(r[i]) for r in rows + [headers]) for i in range(6)]
-        print(" | ".join(h.ljust(w) for h, w in zip(headers, widths)))
+        widths = [
+            max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
+            for i in range(len(headers))
+        ]
+        plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
+        rule_width = max(rule_width, _display_width(plain_header))
+    rule = "=" * rule_width
+    print("\n" + rule)
+    print("📊 --- Multi toe summary ---")
+    if rows:
+        print(plain_header)
         for r in rows:
-            print(" | ".join(c.ljust(w) for c, w in zip(r, widths)))
+            print(" | ".join(_pad(c, widths[i]) for i, c in enumerate(r)))
     if failed:
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
-    print("==================================================")
+    print(rule)
     print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
     return len(failed)
 

@@ -982,6 +982,8 @@ def _run_log_account_failure(
         if isinstance(result, dict):
             if result.get("errors"):
                 return f"{len(result['errors'])} toe error(s)"
+            if result.get("remaining_rivals") == 0:
+                return None
             if not result.get("rival_results") and not result.get("completed_tier"):
                 return None
             wins = sum(1 for r in result.get("rival_results", []) if r.get("win"))
