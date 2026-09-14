@@ -1360,3 +1360,67 @@ def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
     end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
     assert set(end_args) == {"r2"}
     assert summary["battles"][0] == {"rivalId": "r1", "win": False, "dummy": True}
+
+
+def test_run_rivals_stop_on_first_loss_ignores_unverified(mock_client, mock_sleep, mocker):
+    """Unverified attempts never trigger the stop_on_first_loss abort."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    class RefusedEngine:
+        def calc(self, battle):
+            raise BridgeError("Connection refused")
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena",
+        "seed": 1,
+        "userId": "1",
+        "typeId": "-1",
+        "attackers": {"4003": {"id": 4003, "power": 100, "hp": 1000}},
+        "defenders": [{"4000": {"id": 4000, "power": 1, "hp": 100}}],
+        "effects": [],
+        "reward": [],
+        "startTime": 0,
+    }
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}}
+    mock_call.side_effect = [_ok({"response": {"battle": battle}}) for _ in range(3)]
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=RefusedEngine(),
+        threshold=250, stop_on_first_loss=True,
+        team_rotation=None, max_attempts_per_rival=3,
+    )
+    assert len(results) == 3
+    assert all(r.get("unverified") is True for r in results)
+
+
+def test_run_raid_dummy_resets_breaker(mock_client, mock_sleep):
+    """A dummy proves bridge contact, so it resets the consecutive counter."""
+    from hw_genie.battle.engine import BattleEstimate, BridgeTimeoutError
+    from hw_genie.commands.titan_arena import _run_raid
+
+    calls = {"n": 0}
+
+    def calc(battle):
+        calls["n"] += 1
+        if battle["typeId"] in ("r1", "r2", "r4"):
+            raise BridgeTimeoutError("userscript did not finish battle within 5s")
+        return BattleEstimate(
+            win=False,
+            stars=0,
+            progress=[{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}],
+        )
+
+    class MixedEngine:
+        pass
+
+    MixedEngine.calc = staticmethod(calc)
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
+    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}, "r3": {"t": 3}, "r4": {"t": 4}}}
+    mock_call.side_effect = [_ok({"response": start_payload})]
+    # error,error,dummy(reset),error → must NOT raise (would raise at 3 without reset).
+    summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
+    assert len(summary["battles"]) == 4
+    assert summary["battles"][2] == {"rivalId": "r3", "win": False, "dummy": True}

@@ -479,7 +479,9 @@ def run_titan_arena_tier(
 
     ``stop_on_first_loss`` aborts the per-rival loop after the first losing
     (or abandoned) attempt — including rotation retries — so a weak rotation
-    stops fast. This is orthogonal to the per-battle abandon policy: the
+    stops fast. Unverified attempts (bridge failure, nothing banked) never
+    trigger the abort since they carry no signal about team strength.
+    This is orthogonal to the per-battle abandon policy: the
     tier loop always calls :func:`run_titan_arena` with
     ``end_on_loss=False``, i.e. losing sims skip ``EndBattle`` (no score
     banking) and advance to the next team/seed instead of banking a loss.
@@ -679,6 +681,9 @@ def _run_raid(
             if not _has_any_heroes(est.progress):
                 # Userscript dummy loss (in-page calc failed): unverified, so
                 # keep it out of EndRaid. The per-rival path retries it later.
+                # A dummy proves the bridge answered, so it resets the
+                # consecutive-error count like any successful contact.
+                bridge_errors = 0
                 raid_summary["battles"].append({"rivalId": str(rival_id), "win": False, "dummy": True})
                 print(f"  - raid rival {rival_id}: dummy loss skipped (unverified calc)", flush=True)
                 continue
@@ -827,6 +832,10 @@ def _run_rivals(
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)
                 break
+            # NOTE: only timeouts feed the dead-bridge counter. Non-timeout
+            # bridge failures also yield unverified results, but each of
+            # those fails fast (no 30s wait) and the tier still stops via
+            # the no-progress rule, so they don't need the fast abort.
             if _is_bridge_timeout(res):
                 bridge_timeouts += 1
                 print(
@@ -883,7 +892,10 @@ def _run_rivals(
             results.append(entry)
             if win:
                 break
-            if stop_on_first_loss:
+            # Unverified attempts (bridge failed, nothing banked) never
+            # trigger the abort: they carry no signal about team strength,
+            # so the rotation keeps trying the next team/seed.
+            if stop_on_first_loss and not unverified:
                 return results
             # Loss/abandon with attempts left: next seed/team.
             if attempt_no < len(attempt_plan):
