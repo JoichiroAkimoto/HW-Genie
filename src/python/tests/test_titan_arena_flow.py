@@ -778,7 +778,11 @@ def test_run_raid_partial_bridge_errors_skip_only_failed(mock_client, mock_sleep
                 raise BridgeTimeoutError("userscript did not finish battle within 5s")
             from hw_genie.battle.engine import BattleEstimate
 
-            return BattleEstimate(win=True, stars=3, progress=[{"r": 1}])
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 10}}}, "defenders": {"heroes": {}}}],
+            )
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
@@ -1244,3 +1248,115 @@ def test_run_titan_arena_tier_records_final_tier_and_remaining(mock_client, mock
     summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
     assert summary["final_tier"] == 7
     assert summary["remaining_rivals"] == 2
+
+
+def test_run_rivals_estimate_only_fallback_never_wins(mock_client, mock_sleep):
+    """Bridge failure fallback (no EndBattle sent) must not count as a win."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    class RefusedEngine:
+        def calc(self, battle):
+            raise BridgeError("Connection refused")
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena",
+        "seed": 1,
+        "userId": "1",
+        "typeId": "-1",
+        "attackers": {"4003": {"id": 4003, "power": 100, "hp": 1000}},
+        "defenders": [{"4000": {"id": 4000, "power": 1, "hp": 100}}],
+        "effects": [],
+        "reward": [],
+        "startTime": 0,
+    }
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}}
+    mock_call.side_effect = [_ok({"response": {"battle": battle}}) for _ in range(3)]
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=RefusedEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=None, max_attempts_per_rival=3,
+    )
+    assert len(results) == 3
+    assert all(r["win"] is False for r in results)
+    assert all(r.get("unverified") is True for r in results)
+    # StartBattle only — no EndBattle was ever sent.
+    assert mock_call.call_count == 3
+
+
+def test_run_raid_bridge_breaker_resets_on_success(mock_client, mock_sleep):
+    """Interleaved bridge errors must not trip the outage breaker."""
+    from hw_genie.battle.engine import BridgeTimeoutError
+    from hw_genie.commands.titan_arena import _run_raid
+
+    calls = {"n": 0}
+
+    class FlakyEngine:
+        def calc(self, battle):
+            calls["n"] += 1
+            if calls["n"] % 2 == 1:
+                raise BridgeTimeoutError("userscript did not finish battle within 5s")
+            from hw_genie.battle.engine import BattleEstimate
+
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 10}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
+    start_payload = {"attackers": {"4003": {}}, "rivals": {f"r{i}": {"t": i} for i in range(1, 6)}}
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {}}}),
+    ]
+    summary = _run_raid(client, status, [1, 2, 3, 4, 5], FlakyEngine(), 250)
+    assert len(summary["battles"]) == 5
+    assert "error" not in summary
+
+
+def test_has_any_heroes():
+    """Empty-heroes dummy progress is detectable; genuine results pass."""
+    from hw_genie.commands.titan_arena import _has_any_heroes
+
+    assert _has_any_heroes([{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}]) is False
+    assert _has_any_heroes([]) is False
+    assert _has_any_heroes("nope") is False
+    assert _has_any_heroes([{"attackers": {"heroes": {"1": {"hp": 0}}}, "defenders": {"heroes": {}}}]) is True
+
+
+def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
+    """Userscript dummy losses are skipped so they can't void the raid."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    def calc(battle):
+        if battle["typeId"] == "r1":
+            return BattleEstimate(
+                win=False, stars=0,
+                progress=[{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}],
+            )
+        return BattleEstimate(
+            win=True,
+            stars=3,
+            progress=[{"attackers": {"heroes": {"1": {"hp": 10}}}, "defenders": {"heroes": {}}}],
+        )
+
+    class DummyEngine:
+        pass
+
+    DummyEngine.calc = staticmethod(calc)
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
+    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}}}
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(client, status, [1, 2, 3, 4, 5], DummyEngine(), 250)
+    end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
+    assert set(end_args) == {"r2"}
+    assert summary["battles"][0] == {"rivalId": "r1", "win": False, "dummy": True}

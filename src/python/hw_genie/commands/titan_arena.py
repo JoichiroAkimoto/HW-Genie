@@ -613,6 +613,27 @@ def run_titan_arena_tier(
         continue
 
 
+def _has_any_heroes(progress: Any) -> bool:
+    """True when at least one progress round carries hero entries.
+
+    The userscript submits an all-empty progress
+    (``[{attackers: {heroes: {}}, defenders: {heroes: {}}}]``) when its
+    in-page calc fails. Such dummy losses must be excluded from EndRaid:
+    if the server validates raid results like EndBattle, one dummy could
+    void the whole raid including genuine wins.
+    """
+    if not isinstance(progress, list):
+        return False
+    for round_ in progress:
+        if not isinstance(round_, dict):
+            continue
+        for side in ("attackers", "defenders"):
+            heroes = round_.get(side, {})
+            if isinstance(heroes, dict) and heroes.get("heroes"):
+                return True
+    return False
+
+
 def _run_raid(
     client: HWClient,
     status: dict[str, Any],
@@ -655,6 +676,13 @@ def _run_raid(
         }
         try:
             est = _engine_calc(engine, battle)
+            if not _has_any_heroes(est.progress):
+                # Userscript dummy loss (in-page calc failed): unverified, so
+                # keep it out of EndRaid. The per-rival path retries it later.
+                raid_summary["battles"].append({"rivalId": str(rival_id), "win": False, "dummy": True})
+                print(f"  - raid rival {rival_id}: dummy loss skipped (unverified calc)", flush=True)
+                continue
+            bridge_errors = 0
             results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
             raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
             print(f"  - raid rival {rival_id}: win={est.win}", flush=True)
@@ -675,7 +703,7 @@ def _run_raid(
             continue
 
     if not results:
-        raid_summary["error"] = "all raid battles failed (bridge errors); EndRaid skipped"
+        raid_summary["error"] = "no verified raid results; EndRaid skipped"
         print(f"{Emojis.WARNING}{raid_summary['error']}", flush=True)
         return raid_summary
 
@@ -835,9 +863,19 @@ def _run_rivals(
             # An "Invalid battle" EndBattle banked nothing server-side, so it
             # must not count as a win even when the local estimate says win
             # (estimate engine) — otherwise the tier loop sees progress and
-            # spins to max_passes.
-            win = bool(est and getattr(est, "win", False)) and res.get("end_error") != "Invalid battle"
+            # spins to max_passes. The same holds for estimate-only fallbacks
+            # (bridge failed with a non-timeout error): no EndBattle was sent,
+            # so there is nothing verified to count. Unverified attempts move
+            # on to the next attempt instead of stopping the rotation.
+            unverified = bool(res.get("estimate_only"))
+            win = (
+                bool(est and getattr(est, "win", False))
+                and res.get("end_error") != "Invalid battle"
+                and not unverified
+            )
             entry: dict[str, Any] = {"rivalId": str(rival_id), "win": win, "team": team}
+            if unverified:
+                entry["unverified"] = True
             if res.get("end_error"):
                 entry["end_error"] = res.get("end_error")
             if res.get("abandoned"):
