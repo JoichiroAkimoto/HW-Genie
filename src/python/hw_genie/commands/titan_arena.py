@@ -817,7 +817,7 @@ def _run_rivals(
         flush=True,
     )
     results: list[dict[str, Any]] = []
-    bridge_timeouts = 0
+    bridge_errors = 0
     for rival_no, rival_id in enumerate(finish_targets, start=1):
         rival_start = time.monotonic()
         print(f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)", flush=True)
@@ -832,27 +832,35 @@ def _run_rivals(
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)
                 break
-            # NOTE: only timeouts feed the dead-bridge counter. Non-timeout
-            # bridge failures also yield unverified results, but each of
-            # those fails fast (no 30s wait) and the tier still stops via
-            # the no-progress rule, so they don't need the fast abort.
-            if _is_bridge_timeout(res):
-                bridge_timeouts += 1
-                print(
-                    f"  - rival {rival_id}: userscript not responding "
-                    f"({bridge_timeouts}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
-                    flush=True,
-                )
-                if bridge_timeouts >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
+            # Any bridge failure (timeout or fast-fail like 404/connection
+            # refused, i.e. any bridge_error) counts toward the dead-bridge
+            # abort, mirroring _run_raid. Pure estimate-only without
+            # bridge_error (explicit --estimate-only) is verified contact
+            # and resets the counter.
+            if res.get("bridge_error") or _is_bridge_timeout(res):
+                bridge_errors += 1
+                if _is_bridge_timeout(res):
+                    print(
+                        f"  - rival {rival_id}: userscript not responding "
+                        f"({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  - rival {rival_id}: bridge error {res.get('bridge_error')} "
+                        f"({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
+                        flush=True,
+                    )
+                if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
                     msg = (
                         "userscript not answering "
-                        f"({bridge_timeouts} consecutive bridge timeouts). Open the game in the browser "
+                        f"({bridge_errors} consecutive bridge errors). Open the game in the browser "
                         "with the userscript active, then re-run. Stopping tier loop."
                     )
                     print(f"{Emojis.WARNING}{msg}", flush=True)
                     raise BridgeDeadError(msg, partial_results=results) from None
                 continue
-            bridge_timeouts = 0
+            bridge_errors = 0
             if _is_beaten_already(res):
                 # Stale snapshot: the rival is actually cleared. Refresh to
                 # confirm and count it as cleared so the tier can complete.

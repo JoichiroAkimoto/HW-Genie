@@ -1250,39 +1250,27 @@ def test_run_titan_arena_tier_records_final_tier_and_remaining(mock_client, mock
     assert summary["remaining_rivals"] == 2
 
 
-def test_run_rivals_estimate_only_fallback_never_wins(mock_client, mock_sleep):
-    """Bridge failure fallback (no EndBattle sent) must not count as a win."""
-    from hw_genie.battle.engine import BridgeError
+def test_run_rivals_estimate_only_fallback_never_wins(mock_client, mock_sleep, mocker):
+    """Pure estimate-only (no EndBattle sent) must not count as a win."""
     from hw_genie.commands.titan_arena import _run_rivals
 
-    class RefusedEngine:
-        def calc(self, battle):
-            raise BridgeError("Connection refused")
+    # Pure estimate-only without bridge_error (explicit --estimate-only mode):
+    # stays on the unverified path without tripping the dead-bridge abort.
+    # Estimate claims win, but nothing was banked so win must be False.
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        return {"estimate": MagicMock(win=True), "estimate_only": True}
 
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
     client, mock_call = mock_client
-    battle = {
-        "type": "titan_arena",
-        "seed": 1,
-        "userId": "1",
-        "typeId": "-1",
-        "attackers": {"4003": {"id": 4003, "power": 100, "hp": 1000}},
-        "defenders": [{"4000": {"id": 4000, "power": 1, "hp": 100}}],
-        "effects": [],
-        "reward": [],
-        "startTime": 0,
-    }
     status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}}
-    mock_call.side_effect = [_ok({"response": {"battle": battle}}) for _ in range(3)]
     results = _run_rivals(
-        client, status, titans=[1, 2, 3, 4, 5], engine=RefusedEngine(),
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=None, max_attempts_per_rival=3,
     )
     assert len(results) == 3
     assert all(r["win"] is False for r in results)
     assert all(r.get("unverified") is True for r in results)
-    # StartBattle only — no EndBattle was ever sent.
-    assert mock_call.call_count == 3
 
 
 def test_run_raid_bridge_breaker_resets_on_success(mock_client, mock_sleep):
@@ -1364,29 +1352,18 @@ def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
 
 def test_run_rivals_stop_on_first_loss_ignores_unverified(mock_client, mock_sleep, mocker):
     """Unverified attempts never trigger the stop_on_first_loss abort."""
-    from hw_genie.battle.engine import BridgeError
     from hw_genie.commands.titan_arena import _run_rivals
 
-    class RefusedEngine:
-        def calc(self, battle):
-            raise BridgeError("Connection refused")
+    # Pure estimate-only without bridge_error: unverified but not a bridge
+    # failure, so the full plan runs without either abort tripping.
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        return {"estimate": MagicMock(win=False), "estimate_only": True}
 
-    client, mock_call = mock_client
-    battle = {
-        "type": "titan_arena",
-        "seed": 1,
-        "userId": "1",
-        "typeId": "-1",
-        "attackers": {"4003": {"id": 4003, "power": 100, "hp": 1000}},
-        "defenders": [{"4000": {"id": 4000, "power": 1, "hp": 100}}],
-        "effects": [],
-        "reward": [],
-        "startTime": 0,
-    }
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
     status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}}
-    mock_call.side_effect = [_ok({"response": {"battle": battle}}) for _ in range(3)]
     results = _run_rivals(
-        client, status, titans=[1, 2, 3, 4, 5], engine=RefusedEngine(),
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=True,
         team_rotation=None, max_attempts_per_rival=3,
     )
@@ -1424,3 +1401,117 @@ def test_run_raid_dummy_resets_breaker(mock_client, mock_sleep):
     summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
     assert len(summary["battles"]) == 4
     assert summary["battles"][2] == {"rivalId": "r3", "win": False, "dummy": True}
+
+
+def test_run_rivals_non_timeout_bridge_errors_raise_dead(mock_client, mock_sleep, mocker):
+    """3 consecutive non-timeout bridge errors raise BridgeDeadError fast."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "bridge_error": "auth-server 404", "estimate_only": True, "bridge_timeout": False}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    rotation = [[i, i + 1, i + 2, i + 3, i + 4] for i in range(5)]
+    with pytest.raises(BridgeDeadError) as excinfo:
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+            threshold=250, stop_on_first_loss=False,
+            team_rotation=rotation, seeds_per_team=2, end_on_loss=False,
+        )
+    # Large plan (5x2=10) but abort after 3 consecutive bridge errors.
+    assert len(calls) == 3
+    assert excinfo.value.partial_results == []
+
+
+def test_run_rivals_mixed_timeout_and_non_timeout_count_together(mock_client, mock_sleep, mocker):
+    """Timeouts + non-timeout bridge errors share one consecutive counter."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    seq = [
+        {"estimate": MagicMock(win=False), "bridge_error": "userscript did not finish battle within 5s", "estimate_only": True, "bridge_timeout": True},
+        {"estimate": MagicMock(win=False), "bridge_error": "Connection refused", "estimate_only": True, "bridge_timeout": False},
+        {"estimate": MagicMock(win=False), "bridge_error": "userscript did not finish battle within 5s", "estimate_only": True, "bridge_timeout": True},
+    ]
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return seq[len(calls) - 1]
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    with pytest.raises(BridgeDeadError):
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+            threshold=250, stop_on_first_loss=False,
+            team_rotation=None, max_attempts_per_rival=9, end_on_loss=False,
+        )
+    assert len(calls) == 3
+
+
+def test_run_rivals_bridge_counter_resets_on_verified(mock_client, mock_sleep, mocker):
+    """Verified contact resets the consecutive bridge-error counter."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    seq = [
+        {"estimate": MagicMock(win=False), "bridge_error": "Connection refused", "estimate_only": True, "bridge_timeout": False},
+        {"estimate": MagicMock(win=False)},
+        {"estimate": MagicMock(win=False), "bridge_error": "Connection refused", "estimate_only": True, "bridge_timeout": False},
+        {"estimate": MagicMock(win=False), "bridge_error": "Connection refused", "estimate_only": True, "bridge_timeout": False},
+    ]
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return seq[len(calls) - 1]
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    # error,verified(reset),error,error → only 2 consecutive at the end, no raise.
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=None, max_attempts_per_rival=4, end_on_loss=False,
+    )
+    assert len(calls) == 4
+    assert len(results) == 1
+    assert results[0]["win"] is False
+    assert results[0].get("unverified") is None
+
+
+def test_run_rivals_pure_estimate_only_does_not_trigger_dead(mock_client, mock_sleep, mocker):
+    """Pure estimate-only without bridge_error is not a bridge failure."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": MagicMock(win=False), "estimate_only": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    rotation = [[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]]
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=rotation, seeds_per_team=2, end_on_loss=False,
+    )
+    assert len(calls) == 4
+    assert len(results) == 4
+    assert all(r.get("unverified") is True for r in results)
+    assert all(r["win"] is False for r in results)
