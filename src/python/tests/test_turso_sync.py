@@ -860,6 +860,44 @@ def test_is_transient_db_error_hrana_variants():
         assert is_transient_db_error(ValueError(v)), v
 
 
+def test_is_transient_db_error_includes_dns_failure():
+    """起動直後の一時的な DNS 解決失敗は再試行対象として判定される。"""
+    from hw_genie.core.database import is_dns_error, is_transient_db_error
+
+    assert is_transient_db_error(
+        ValueError(
+            "Hrana: `http error: `error trying to connect: dns error: "
+            "failed to lookup address information: Temporary failure in name resolution``"
+        )
+    )
+    assert is_dns_error(ValueError("Temporary failure in name resolution"))
+    assert is_dns_error(ValueError("failed to lookup address information"))
+    assert is_dns_error(ValueError("Name or service not known"))
+    assert is_dns_error(ValueError("nodename nor servname provided"))
+    # Generic "dns error" alone over-matches and is NOT a marker.
+    assert not is_dns_error(ValueError("dns error"))
+    assert not is_dns_error(ValueError("error trying to connect: dns error"))
+    # 設定ミス等の恒久エラーは対象外のまま
+    assert not is_transient_db_error(ValueError("no such table: accounts"))
+    assert not is_dns_error(ValueError("connection refused"))
+
+
+def test_retry_on_wal_contention_recovers_from_dns_error(mock_sleep):
+    """DNS 一時失敗が2回続いても3回目で回復する。"""
+    from hw_genie.core.database import retry_on_wal_contention
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ValueError("Temporary failure in name resolution")
+        return "ok"
+
+    assert retry_on_wal_contention(flaky, attempts=5) == "ok"
+    assert len(calls) == 3
+
+
 def test_is_hrana_stream_error_covers_real_client_strings():
     """libsql クライアントが送出しうる切断系メッセージを捕捉する。"""
     from hw_genie.core.database import is_hrana_stream_error, is_transient_db_error
@@ -1050,3 +1088,78 @@ def test_on_connect_sync_warns_after_retries_exhausted(monkeypatch, caplog, mock
 
     assert "sync() failed on connect" in caplog.text
 
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_defers_delivery_until_exit():
+    """SIGINT during the shield is delivered after unblocking, not inside Rust."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    assert _threading.current_thread() is _threading.main_thread()
+    delivered = []
+    prev = _signal.getsignal(_signal.SIGINT)
+    try:
+        _signal.signal(_signal.SIGINT, lambda *a: delivered.append(1))
+        mask_before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+        with defer_sigint():
+            _signal.raise_signal(_signal.SIGINT)
+            assert delivered == []  # まだ届かない
+        assert delivered == [1]  # 抜けたら届く
+        assert _signal.pthread_sigmask(_signal.SIG_BLOCK, set()) == mask_before
+    finally:
+        _signal.signal(_signal.SIGINT, prev)
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_restores_mask_on_exception():
+    """Signal mask is restored even when the shielded block raises."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    assert _threading.current_thread() is _threading.main_thread()
+    mask_before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+    with pytest.raises(RuntimeError, match="boom"):
+        with defer_sigint():
+            raise RuntimeError("boom")
+    assert _signal.pthread_sigmask(_signal.SIG_BLOCK, set()) == mask_before
+
+
+@pytest.mark.skipif(
+    getattr(__import__("signal"), "pthread_sigmask", None) is None,
+    reason="POSIX-only",
+)
+def test_defer_sigint_noop_off_main_thread():
+    """Worker threads must not touch the process signal mask."""
+    import signal as _signal
+    import threading as _threading
+
+    from hw_genie.core.database import defer_sigint
+
+    errors = []
+
+    def worker():
+        try:
+            before = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            with defer_sigint():
+                during = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            after = _signal.pthread_sigmask(_signal.SIG_BLOCK, set())
+            assert before == during == after
+        except Exception as e:  # noqa: BLE001 - report via list
+            errors.append(e)
+
+    th = _threading.Thread(target=worker)
+    th.start()
+    th.join(timeout=10)
+    assert not th.is_alive()
+    assert errors == []
