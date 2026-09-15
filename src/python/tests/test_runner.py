@@ -1488,8 +1488,9 @@ def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
 
     captured = {}
 
-    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None):
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
         captured["cap"] = max_total_attempts
+        captured["progress"] = progress
         return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
 
     monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
@@ -1568,9 +1569,9 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
 
     captured = {}
 
-    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None):
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
         captured.update(
-            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url, "cap": max_total_attempts}
+            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url, "cap": max_total_attempts, "progress": progress}
         )
         return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
 
@@ -2033,3 +2034,229 @@ def test_run_all_accounts_systemexit_propagates(monkeypatch):
         assert exc.value.code == 130
     finally:
         runner.reset_cancel()
+
+
+# --- Compact ToE progress output (quiet|line|verbose) ---
+
+
+def test_toe_progress_parser_defaults_to_line(mocker):
+    """toe attack/run and multi toe default --progress to line; choices parse."""
+    import sys
+
+    from hw_genie import main
+
+    mocker.patch("hw_genie.core.database.init_db")
+    mocker.patch("hw_genie.core.database.install_token_masking_filter")
+    mocker.patch("hw_genie.main.setup_logging")
+    mock_attack = mocker.patch("hw_genie.main.cmd_toe_attack")
+    mock_run = mocker.patch("hw_genie.main.cmd_toe_run")
+    mock_multi = mocker.patch("hw_genie.main.cmd_multi")
+
+    sys.argv = ["hw-genie", "toe", "attack", "-a", "TestUser"]
+    main.main()
+    assert mock_attack.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "toe", "attack", "-a", "TestUser", "--progress", "quiet"]
+    main.main()
+    assert mock_attack.call_args.args[0].progress == "quiet"
+
+    sys.argv = ["hw-genie", "toe", "run", "-a", "TestUser"]
+    main.main()
+    assert mock_run.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "toe", "run", "-a", "TestUser", "--progress", "verbose"]
+    main.main()
+    assert mock_run.call_args.args[0].progress == "verbose"
+
+    sys.argv = ["hw-genie", "multi", "toe"]
+    main.main()
+    assert mock_multi.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "multi", "toe", "--progress", "quiet"]
+    main.main()
+    assert mock_multi.call_args.args[0].progress == "quiet"
+
+
+def test_cmd_toe_attack_forwards_progress(mocker):
+    """toe attack threads --progress through to run_titan_arena."""
+    from hw_genie.main import cmd_toe_attack
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.main.HWClient")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=MagicMock())
+    args = MagicMock()
+    args.account = "TestUser"
+    args.rival = None
+    args.titans = None
+    args.dry_run = False
+    args.estimate_only = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.progress = "quiet"
+    cmd_toe_attack(args)
+    assert mock_run.call_args.kwargs.get("progress") == "quiet"
+
+
+def test_cmd_toe_run_forwards_progress(mocker):
+    """toe run threads --progress through to run_titan_arena_tier."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.HWClient")
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena_tier")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=MagicMock())
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = None
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
+    args.progress = "line"
+    cmd_toe_run(args)
+    assert mock_run.call_args.kwargs.get("progress") == "line"
+
+
+def test_cmd_multi_toe_forwards_progress(monkeypatch):
+    """multi toe threads --progress through to toe_routine."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
+        captured["progress"] = progress
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None, "progress": "quiet"},
+    )()
+    main.cmd_multi(args)
+    assert captured["progress"] == "quiet"
+
+
+def test_toe_routine_line_mode_shares_dashboard(monkeypatch):
+    """line mode shares one dashboard; quiet/verbose use none."""
+    from hw_genie import runner
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    monkeypatch.setattr(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        lambda client, **kw: {"ok": True, "progress": kw.get("progress"), "has_dashboard": kw.get("dashboard") is not None},
+    )
+    line_run = runner.toe_routine(engine="estimate", progress="line")
+    assert isinstance(line_run.dashboard, runner.ToeProgressDashboard)
+    res = line_run(FakeClient(), "Joe")
+    assert res["progress"] == "line" and res["has_dashboard"] is True
+
+    quiet_run = runner.toe_routine(engine="estimate", progress="quiet")
+    assert getattr(quiet_run, "dashboard", None) is None
+
+
+def test_dashboard_lock_ordering_two_accounts(capsys):
+    """Two workers updating concurrently keep intact per-account lines."""
+    import threading
+
+    from hw_genie.runner import ToeProgressDashboard
+
+    dash = ToeProgressDashboard(throttle_secs=0)
+    assert hasattr(dash, "_lock")
+    barrier = threading.Barrier(2)
+
+    def worker(account):
+        barrier.wait()
+        for i in range(20):
+            dash.update(account, f"rival -{i} [{i}/20] wins 0 pace 1s/attempt")
+
+    threads = [threading.Thread(target=worker, args=(acc,)) for acc in ("alpha", "beta")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    alpha_lines = [line for line in out.splitlines() if line.startswith("[alpha]")]
+    beta_lines = [line for line in out.splitlines() if line.startswith("[beta]")]
+    assert len(alpha_lines) == 20 and len(beta_lines) == 20
+    # No interleaved fragments: every line belongs wholly to one account.
+    for line in out.splitlines():
+        assert not (line.startswith("[alpha]") and "[beta]" in line)
+        assert not (line.startswith("[beta]") and "[alpha]" in line)
+
+
+def test_dashboard_updates_do_not_reorder_results(monkeypatch):
+    """Dashboard printing never affects API parallelism or result ordering."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+        monkeypatch.setattr(
+            "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": acc}
+        )
+        monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+        dash = runner.ToeProgressDashboard(throttle_secs=0)
+
+        def routine(client, account):
+            dash.update(account, "rival -1 [1/2] wins 0 pace 1s/attempt")
+            return f"ok:{account}"
+
+        results = runner.run_all_accounts(routine, accounts=["zulu", "alpha", "mike"], max_parallel=2)
+        assert list(results) == ["zulu", "alpha", "mike"]
+        assert results["alpha"] == ("ok:alpha", None)
+    finally:
+        runner.reset_cancel()
+
+
+def test_sanitize_progress_log_collapses_carriage_returns():
+    """Stored logs keep final visible text with no bare \\r."""
+    from hw_genie.runner import sanitize_progress_log
+
+    assert sanitize_progress_log(None) is None
+    assert sanitize_progress_log("plain line\n") == "plain line\n"
+    assert "\r" not in sanitize_progress_log("old\rnew line\n")
+    assert sanitize_progress_log("old\rnew line\n") == "new line\n"
+    assert sanitize_progress_log("\r[alpha] rival -1 [2/4] wins 1") == "[alpha] rival -1 [2/4] wins 1"
+
+
+def test_cmd_multi_stored_log_contains_no_cr(monkeypatch):
+    """multi run-log text is sanitized even when workers emit \\r updates."""
+    from hw_genie import main
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return 1
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        print("before\rafter line")
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None, "progress": "line"},
+    )()
+    main.cmd_multi(args)
+    assert "\r" not in (records.get("log_text") or "")
+    assert "after line" in (records.get("log_text") or "")

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 import time
 from typing import Any
 
@@ -74,14 +75,138 @@ def _fmt_duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
-def _engine_calc(engine: BattleEngine, battle: dict[str, Any]) -> BattleEstimate:
+# --- Compact ToE progress output (quiet|line|verbose) ---
+# verbose = today's full output (backward compat, function default).
+# quiet   = only rival-decided lines + tier summary + errors.
+# line    = one updating line per account + rival-decided + summary.
+# CLI default is `line` (see main.py parsers); function default stays
+# `verbose` so existing callers/tests keep today's output.
+VALID_PROGRESS_MODES = ("quiet", "line", "verbose")
+PROGRESS_THROTTLE_SECS = 5.0
+
+
+def _normalize_progress(progress: Any) -> str:
+    """Return a valid progress mode, falling back to ``verbose``."""
+    if isinstance(progress, str) and progress in VALID_PROGRESS_MODES:
+        return progress
+    return "verbose"
+
+
+def _is_tty() -> bool:
+    """True when stdout is an interactive terminal."""
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _vprint(progress: str, msg: str) -> None:
+    """Print ``msg`` only in verbose mode (per-attempt details)."""
+    if _normalize_progress(progress) == "verbose":
+        print(msg, flush=True)
+
+
+def _aprint(progress: str, msg: str) -> None:
+    """Print ``msg`` in all modes (rival-decided / summary / errors).
+
+    In ``line`` + TTY mode the in-place status line (``\\r`` without
+    newline) is active, so start on a fresh line to avoid overwriting it.
+    """
+    if _normalize_progress(progress) == "line" and _is_tty():
+        try:
+            sys.stdout.write("\n")
+        except Exception:
+            pass
+    print(msg, flush=True)
+
+
+def _emit_status_line(
+    account: str | None,
+    text: str,
+    dashboard: Any,
+    state: dict[str, Any],
+    progress: str,
+    force: bool = False,
+) -> None:
+    """Emit one throttled per-account status line (``line`` mode only).
+
+    Delegates to the shared multi-account dashboard when one is provided
+    (lock-guarded, per-account throttling); otherwise falls back to a
+    local throttled print (TTY: ``\\r`` in-place update, non-TTY: at most
+    one line per :data:`PROGRESS_THROTTLE_SECS`).
+    """
+    if _normalize_progress(progress) != "line":
+        return
+    acc = str(account or "?")
+    line = text if text.startswith(f"[{acc}]") else f"[{acc}] {text}"
+    if dashboard is not None and hasattr(dashboard, "update"):
+        try:
+            dashboard.update(acc, line, force=force)
+            return
+        except Exception:
+            pass
+    try:
+        is_tty = _is_tty()
+    except Exception:
+        is_tty = False
+    if is_tty:
+        try:
+            sys.stdout.write("\r" + line)
+            sys.stdout.flush()
+        except Exception:
+            pass
+        return
+    now = time.monotonic()
+    try:
+        throttle = float(state.get("throttle_secs", PROGRESS_THROTTLE_SECS))
+    except Exception:
+        throttle = PROGRESS_THROTTLE_SECS
+    last = float(state.get("last_emit", 0.0) or 0.0)
+    if force or (now - last) >= throttle:
+        state["last_emit"] = now
+        print(line, flush=True)
+
+
+def _build_status_text(
+    rival_id: str,
+    attempt_no: int,
+    total: int,
+    wins: int,
+    last: str,
+    elapsed: float,
+) -> str:
+    """Build the per-account status body (caller adds ``[account]``)."""
+    pace = elapsed / attempt_no if attempt_no > 0 else 0.0
+    suffix = f" last={last}" if last else ""
+    return (
+        f"rival {rival_id} [{attempt_no}/{total}] "
+        f"wins {wins}{suffix} "
+        f"pace {_fmt_duration(pace)}/attempt elapsed {_fmt_duration(elapsed)}"
+    )
+
+
+def _finish_status_line(progress: str) -> None:
+    """Terminate an active TTY ``\\r`` status line with a newline."""
+    if _normalize_progress(progress) == "line" and _is_tty():
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+
+def _engine_calc(engine: BattleEngine, battle: dict[str, Any], progress: str = "verbose") -> BattleEstimate:
     """Run ``engine.calc``, routing bridge heartbeats to stdout.
 
     Only :class:`JsBridgeBattleEngine` emits progress callbacks; other
-    engines use the plain ``calc(battle)`` call.
+    engines use the plain ``calc(battle)`` call. Heartbeats print only in
+    ``verbose`` mode so ``quiet``/``line`` stay compact (suppression here
+    keeps :mod:`hw_genie.battle.engine` untouched).
     """
     if isinstance(engine, JsBridgeBattleEngine):
-        return engine.calc(battle, on_progress=lambda msg: print(msg, flush=True))
+        if _normalize_progress(progress) == "verbose":
+            return engine.calc(battle, on_progress=lambda msg: print(msg, flush=True))
+        return engine.calc(battle, on_progress=None)
     return engine.calc(battle)
 
 
@@ -293,6 +418,8 @@ def run_titan_arena(
     end_on_loss: bool = True,
     attempt_label: str | None = None,
     account_label: str | None = None,
+    progress: str = "verbose",
+    dashboard: Any = None,
 ) -> dict[str, Any]:
     """Start a single-rival battle, simulate via ``engine``, and EndBattle.
 
@@ -306,7 +433,14 @@ def run_titan_arena(
 
     With ``end_on_loss=False``, a losing simulation abandons the battle
     without calling EndBattle (no score banking, but faster tier sweeps).
+
+    ``progress`` selects output compactness: ``verbose`` (today's full
+    output), ``line`` (per-attempt details suppressed; the tier loop owns
+    the updating status line), ``quiet`` (only rival-decided + errors).
+    ``dashboard`` is accepted for signature symmetry with the tier loop
+    and currently unused here.
     """
+    progress = _normalize_progress(progress)
     if isinstance(client_or_headers, dict):
         client = HWClient(client_or_headers)
     else:
@@ -342,9 +476,9 @@ def run_titan_arena(
 
     attempt_prefix = f"[{attempt_label}] " if attempt_label else ""
     account_prefix = f"[{account_label}] " if account_label else ""
-    print(f"\n{Emojis.STEP}Titan Arena: {account_prefix}{attempt_prefix}rivalId={rival_id_str} titans={titans}", flush=True)
+    _vprint(progress, f"\n{Emojis.STEP}Titan Arena: {account_prefix}{attempt_prefix}rivalId={rival_id_str} titans={titans}")
     if dry_run:
-        print(f"{Emojis.INFO}Dry-run: verifying titanArenaStartBattle is accepted with arbitrary titans...", flush=True)
+        _vprint(progress, f"{Emojis.INFO}Dry-run: verifying titanArenaStartBattle is accepted with arbitrary titans...")
 
     start_payload = {
         "calls": [
@@ -381,13 +515,13 @@ def run_titan_arena(
     battle: dict[str, Any] = {}
     if isinstance(start_res.detail, dict):
         battle = start_res.detail.get("response", {}).get("battle", {})
-    print(f"{Emojis.SUCCESS}StartBattle accepted (type={battle.get('type')} seed={battle.get('seed')})", flush=True)
+    _vprint(progress, f"{Emojis.SUCCESS}StartBattle accepted (type={battle.get('type')} seed={battle.get('seed')})")
     if dry_run:
-        print(f"{Emojis.INFO}Dry-run: not calling titanArenaEndBattle.", flush=True)
+        _vprint(progress, f"{Emojis.INFO}Dry-run: not calling titanArenaEndBattle.")
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "dry_run": True}
 
     try:
-        est = _engine_calc(engine, battle)
+        est = _engine_calc(engine, battle, progress)
     except (KeyboardInterrupt, InterruptedError):
         raise
     except (BridgeError, Exception) as exc:
@@ -416,23 +550,21 @@ def run_titan_arena(
             "bridge_error": str(exc),
             "bridge_timeout": isinstance(exc, BridgeTimeoutError),
         }
-    print(
-        f"{Emojis.STEP}Engine: win={est.win} stars={est.stars} ({type(engine).__name__})",
-        flush=True,
-    )
+    _vprint(progress, f"{Emojis.STEP}Engine: win={est.win} stars={est.stars} ({type(engine).__name__})")
     if estimate_only:
-        print(f"{Emojis.INFO}Estimate-only: not calling titanArenaEndBattle.", flush=True)
+        _vprint(progress, f"{Emojis.INFO}Estimate-only: not calling titanArenaEndBattle.")
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "estimate_only": True}
 
     if not est.win and not end_on_loss:
-        print(f"{Emojis.INFO}Loss — abandoning battle without EndBattle (no score banking).", flush=True)
+        _vprint(progress, f"{Emojis.INFO}Loss — abandoning battle without EndBattle (no score banking).")
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "abandoned": True}
 
-    return _end_battle(client, rival_id_str, est)
+    return _end_battle(client, rival_id_str, est, progress)
 
 
-def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate) -> dict[str, Any]:
-    print(f"{Emojis.STEP}Calling titanArenaEndBattle...", flush=True)
+def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: str = "verbose") -> dict[str, Any]:
+    progress = _normalize_progress(progress)
+    _vprint(progress, f"{Emojis.STEP}Calling titanArenaEndBattle...")
     end_payload = {
         "calls": [
             {
@@ -462,7 +594,7 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate) -> dict[st
         return {"status": end_res.status, "estimate": est, "end_detail": response}
     logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
     end_emoji = Emojis.VICTORY if est.win else Emojis.SUCCESS
-    print(f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}", flush=True)
+    _aprint(progress, f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}")
     return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
 
 
@@ -481,6 +613,8 @@ def run_titan_arena_tier(
     seeds_per_team: int = 2,
     max_total_attempts: int | None = None,
     account_label: str | None = None,
+    progress: str = "verbose",
+    dashboard: Any = None,
 ) -> dict[str, Any]:
     """Run a ToE tier end-to-end.
 
@@ -514,7 +648,13 @@ def run_titan_arena_tier(
 
     The function returns a dict summarising the tier outcome (rival results,
     raid results, errors, completed_tier, daily_reward).
+
+    ``progress`` selects output compactness (see :func:`run_titan_arena`).
+    ``dashboard`` is the shared multi-account status display (see
+    ``hw_genie.runner.ToeProgressDashboard``); when ``None`` and
+    ``progress="line"``, a local throttled line is used.
     """
+    progress = _normalize_progress(progress)
     if isinstance(client_or_headers, dict):
         client = HWClient(client_or_headers)
     else:
@@ -584,7 +724,7 @@ def run_titan_arena_tier(
         raid_won = False
         if status.get("canRaid"):
             try:
-                raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold)
+                raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold, progress, dashboard)
             except BridgeDeadError as exc:
                 summary["raid_results"].append({"stage": "raid", "battles": [], "completed": False, "bridge_dead": True})
                 summary["rival_results"].extend(exc.partial_results)
@@ -620,6 +760,8 @@ def run_titan_arena_tier(
                 team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
                 max_total_attempts=max_total_attempts,
                 account_label=account_label,
+                progress=progress,
+                dashboard=dashboard,
             )
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
@@ -687,10 +829,13 @@ def _run_raid(
     titans: list[int],
     engine: BattleEngine,
     threshold: int,
+    progress: str = "verbose",
+    dashboard: Any = None,
 ) -> dict[str, Any]:
+    progress = _normalize_progress(progress)
     rivals = (status.get("rivals") or {}) if isinstance(status.get("rivals"), dict) else {}
     raid_summary: dict[str, Any] = {"stage": "raid", "battles": [], "completed": False}
-    print(f"{Emojis.STEP}Raid phase: {len(rivals)} rival(s)", flush=True)
+    _vprint(progress, f"{Emojis.STEP}Raid phase: {len(rivals)} rival(s)")
     start = client.call(
         {"calls": [{"name": ApiAction.TITAN_ARENA_START_RAID, "args": {"titans": titans}, "ident": "body"}]}
     )
@@ -724,7 +869,7 @@ def _run_raid(
             "type": "titan_arena",
         }
         try:
-            est = _engine_calc(engine, battle)
+            est = _engine_calc(engine, battle, progress)
             if not _has_any_heroes(est.progress):
                 # Userscript dummy loss (in-page calc failed): unverified, so
                 # keep it out of EndRaid. The per-rival path retries it later.
@@ -732,12 +877,12 @@ def _run_raid(
                 # consecutive-error count like any successful contact.
                 bridge_errors = 0
                 raid_summary["battles"].append({"rivalId": str(rival_id), "win": False, "dummy": True})
-                print(f"  - raid rival {rival_id}: dummy loss skipped (unverified calc)", flush=True)
+                _vprint(progress, f"  - raid rival {rival_id}: dummy loss skipped (unverified calc)")
                 continue
             bridge_errors = 0
             results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
             raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
-            print(f"  - raid rival {rival_id}: win={est.win}", flush=True)
+            _vprint(progress, f"  - raid rival {rival_id}: win={est.win}")
         except (KeyboardInterrupt, InterruptedError):
             raise
         except (BridgeError, Exception) as exc:
@@ -745,7 +890,7 @@ def _run_raid(
                 raise
             bridge_errors += 1
             raid_summary["battles"].append({"rivalId": str(rival_id), "error": str(exc)})
-            print(f"  - raid rival {rival_id}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})", flush=True)
+            _vprint(progress, f"  - raid rival {rival_id}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
             if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
                 raise BridgeDeadError(
                     f"userscript not answering during raid ({bridge_errors} consecutive bridge errors)",
@@ -838,7 +983,10 @@ def _run_rivals(
     end_on_loss: bool = False,
     max_total_attempts: int | None = None,
     account_label: str | None = None,
+    progress: str = "verbose",
+    dashboard: Any = None,
 ) -> list[dict[str, Any]]:
+    progress = _normalize_progress(progress)
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
         return []
@@ -860,20 +1008,30 @@ def _run_rivals(
     full_pass = len(attempt_plan)
     if max_total_attempts is not None:
         attempt_plan = attempt_plan[: max(1, max_total_attempts)]
-    print(
+    _vprint(
+        progress,
         f"{Emojis.INFO}Attempt plan per rival: {len(attempt_plan)}/{full_pass} "
         f"(teams={len(team_rotation) if team_rotation else 1} seeds={seeds_per_team}"
         + (f" cap={max_total_attempts}" if max_total_attempts is not None else "")
         + ")",
-        flush=True,
     )
     results: list[dict[str, Any]] = []
     bridge_errors = 0
+    acc_key = str(account_label or "?")
+    line_state: dict[str, Any] = {"last_emit": 0.0, "throttle_secs": PROGRESS_THROTTLE_SECS}
+
+    def _update_line(rival_id: str, attempt_no: int, last: str, rival_start: float) -> None:
+        wins = sum(1 for r in results if r.get("win"))
+        elapsed = time.monotonic() - rival_start
+        body = _build_status_text(str(rival_id), attempt_no, len(attempt_plan), wins, last, elapsed)
+        _emit_status_line(acc_key, body, dashboard, line_state, progress)
+
     for rival_no, rival_id in enumerate(finish_targets, start=1):
         if _cancel_requested():
             raise _interrupted_error(results)
         rival_start = time.monotonic()
-        print(f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)", flush=True)
+        _vprint(progress, f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)")
+        rival_reported = False
         for attempt_no, (team, _seed_no) in enumerate(attempt_plan, start=1):
             if _cancel_requested():
                 raise _interrupted_error(results)
@@ -882,12 +1040,16 @@ def _run_rivals(
                     client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss,
                     attempt_label=f"{attempt_no}/{len(attempt_plan)}",
                     account_label=account_label,
+                    progress=progress,
+                    dashboard=dashboard,
                 )
             except (KeyboardInterrupt, InterruptedError):
                 raise _interrupted_error(results)
             except Exception as exc:  # pragma: no cover - defensive
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
-                print(f"  - rival {rival_id}: exception {exc}", flush=True)
+                rival_reported = True
+                _aprint(progress, f"  - rival {rival_id}: exception {exc}")
+                _update_line(str(rival_id), attempt_no, "error", rival_start)
                 break
             # Any bridge failure (timeout or fast-fail like 404/connection
             # refused, i.e. any bridge_error) counts toward the dead-bridge
@@ -897,41 +1059,48 @@ def _run_rivals(
             if res.get("bridge_error") or _is_bridge_timeout(res):
                 bridge_errors += 1
                 if _is_bridge_timeout(res):
-                    print(
+                    _vprint(
+                        progress,
                         f"  - rival {rival_id}: userscript not responding "
                         f"({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
-                        flush=True,
                     )
                 else:
-                    print(
+                    _vprint(
+                        progress,
                         f"  - rival {rival_id}: bridge error {res.get('bridge_error')} "
                         f"({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})...",
-                        flush=True,
                     )
+                _update_line(str(rival_id), attempt_no, "bridge-error", rival_start)
                 if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
                     msg = (
                         "userscript not answering "
                         f"({bridge_errors} consecutive bridge errors). Open the game in the browser "
                         "with the userscript active, then re-run. Stopping tier loop."
                     )
-                    print(f"{Emojis.WARNING}{msg}", flush=True)
+                    _aprint(progress, f"{Emojis.WARNING}{msg}")
                     raise BridgeDeadError(msg, partial_results=results) from None
                 continue
             bridge_errors = 0
             if _is_beaten_already(res):
                 # Stale snapshot: the rival is actually cleared. Refresh to
                 # confirm and count it as cleared so the tier can complete.
+                rival_reported = True
                 if _is_already_cleared(client, str(rival_id), threshold):
-                    print(f"  - rival {rival_id}: already cleared (stale snapshot).", flush=True)
+                    _aprint(progress, f"  - rival {rival_id}: already cleared (stale snapshot).")
                     results.append({"rivalId": str(rival_id), "win": True, "already_cleared": True})
+                    _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN (already cleared)")
+                    _update_line(str(rival_id), attempt_no, "WIN", rival_start)
                 else:
                     results.append({"rivalId": str(rival_id), "win": False, "start_error": res.get("error")})
+                    _aprint(progress, f"{Emojis.INFO}rival {rival_id}: no win (start error {res.get('error')})")
+                    _update_line(str(rival_id), attempt_no, "loss", rival_start)
                 break
             if res.get("end_error") == "Invalid battle" and attempt_no < len(attempt_plan):
-                print(
+                _vprint(
+                    progress,
                     f"  - rival {rival_id}: Invalid battle, retrying ({attempt_no + 1}/{len(attempt_plan)})...",
-                    flush=True,
                 )
+                _update_line(str(rival_id), attempt_no, "retry", rival_start)
                 continue
             est = res.get("estimate")
             # An "Invalid battle" EndBattle banked nothing server-side, so it
@@ -956,22 +1125,35 @@ def _run_rivals(
                 entry["abandoned"] = True
             results.append(entry)
             if win:
+                rival_reported = True
+                _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN ({attempt_no}/{len(attempt_plan)})")
+                _update_line(str(rival_id), attempt_no, "WIN", rival_start)
                 break
+            _update_line(str(rival_id), attempt_no, "unverified" if unverified else "loss", rival_start)
             # Unverified attempts (bridge failed, nothing banked) never
             # trigger the abort: they carry no signal about team strength,
             # so the rotation keeps trying the next team/seed.
             if stop_on_first_loss and not unverified:
+                rival_reported = True
+                _aprint(progress, f"{Emojis.INFO}rival {rival_id}: loss, stopping tier loop.")
+                _finish_status_line(progress)
                 return results
             # Loss/abandon with attempts left: next seed/team.
             if attempt_no < len(attempt_plan):
                 elapsed = time.monotonic() - rival_start
                 pace = elapsed / attempt_no
                 reason = "abandoned, next seed" if res.get("abandoned") else "loss, trying next"
-                print(
+                _vprint(
+                    progress,
                     f"  - rival {rival_id}: {reason} ({attempt_no + 1}/{len(attempt_plan)}, "
                     f"elapsed {_fmt_duration(elapsed)}, ~{_fmt_duration(pace)}/attempt)...",
-                    flush=True,
                 )
+        if not rival_reported:
+            entries = [r for r in results if str(r.get("rivalId")) == str(rival_id)]
+            if entries and not any(r.get("win") for r in entries) and len(entries) >= len(attempt_plan):
+                _aprint(progress, f"{Emojis.INFO}rival {rival_id}: no win after {len(entries)} attempts")
+                _update_line(str(rival_id), len(attempt_plan), "loss", rival_start)
+    _finish_status_line(progress)
     return results
 
 

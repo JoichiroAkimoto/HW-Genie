@@ -490,6 +490,37 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def _resolve_toe_progress(args, default: str = "line") -> str:
+    """Return a valid ``--progress`` mode for ToE commands.
+
+    ``MagicMock``-style legacy args (tests) auto-create attributes, so only
+    exact ``quiet``/``line``/``verbose`` strings are honored; anything else
+    falls back to ``default`` (the CLI parser default ``line``).
+    """
+    try:
+        value = getattr(args, "progress", default)
+    except Exception:
+        return default
+    if isinstance(value, str) and value in ("quiet", "line", "verbose"):
+        return value
+    return default
+
+
+def _sanitize_progress_log_text(text: str | None) -> str | None:
+    """Strip ``\\r`` in-place updates before persisting run-log output."""
+    if text is None or "\r" not in text:
+        return text
+    try:
+        from hw_genie.runner import sanitize_progress_log
+
+        return sanitize_progress_log(text)
+    except Exception:
+        return "\n".join(
+            line.rsplit("\r", 1)[-1] if "\r" in line else line
+            for line in text.split("\n")
+        )
+
+
 def cmd_toe_attack(args):
     """Titan Arena attack with arbitrary titans (app-native, no browser)."""
     headers = _ensure_session(args)
@@ -532,6 +563,7 @@ def cmd_toe_attack(args):
         dry_run=bool(args.dry_run),
         estimate_only=bool(args.estimate_only),
         account_label=account_label,
+        progress=_resolve_toe_progress(args),
     )
 
 
@@ -578,6 +610,7 @@ def cmd_toe_run(args):
         seeds_per_team=int(getattr(args, "seeds", 2) or 2),
         max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
         account_label=account_label,
+        progress=_resolve_toe_progress(args),
     )
     if isinstance(summary, dict) and summary.get("interrupted"):
         sys.exit(130)
@@ -860,6 +893,7 @@ def cmd_multi(args):
             threshold=int(getattr(args, "threshold", 250) or 250),
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            progress=_resolve_toe_progress(args),
         )
         # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
         # フォールバックする（run_all_accounts 内の resolve_max_parallel が
@@ -964,7 +998,7 @@ def cmd_multi(args):
                     exit_code=exit_code,
                     accounts=accounts,
                     error_summary=str(exc) or type(exc).__name__,
-                    log_text=(capture.getvalue() + "\n" + trace).strip() or None,
+                    log_text=(_sanitize_progress_log_text(capture.getvalue()) + "\n" + trace).strip() or None,
                     log_file=os.environ.get("HWGENIE_LOG_FILE"),
                     hostname=_run_host_identifier(),
                 )
@@ -999,7 +1033,7 @@ def cmd_multi(args):
                 exit_code=130,
                 accounts=account_logs,
                 error_summary=error_summary,
-                log_text=capture.getvalue() or None,
+                log_text=_sanitize_progress_log_text(capture.getvalue()) or None,
                 log_file=os.environ.get("HWGENIE_LOG_FILE"),
                 hostname=_run_host_identifier(),
             )
@@ -1015,7 +1049,7 @@ def cmd_multi(args):
         exit_code=1 if failed else 0,
         accounts=account_logs,
         error_summary=error_summary,
-        log_text=capture.getvalue() or None,
+        log_text=_sanitize_progress_log_text(capture.getvalue()) or None,
         log_file=os.environ.get("HWGENIE_LOG_FILE"),
         hostname=_run_host_identifier(),
     )
@@ -1327,6 +1361,12 @@ def main():
         default="http://127.0.0.1:8765",
         help="auth server base URL for the JS bridge (used with --engine hybrid)",
     )
+    p_toe_attack.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
+    )
     p_toe_attack.set_defaults(func=cmd_toe_attack)
     p_toe_run = toe_sub.add_parser("run", parents=[parent_parser], help="Drive a full ToE tier end-to-end (raid + rivals + CompleteTier)")
     p_toe_run.add_argument(
@@ -1371,6 +1411,12 @@ def main():
         type=int,
         default=None,
         help="Cap total StartBattle attempts per rival (default: full pass = teams x seeds; estimate-engine runs should pass an explicit cap)",
+    )
+    p_toe_run.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
     )
     p_toe_run.set_defaults(func=cmd_toe_run)
     p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")
@@ -1503,6 +1549,12 @@ def main():
         type=int,
         default=9999,
         help="Item raid iteration count for 'daily'/'full' modes (each request raids 10 times). Default: until stamina runs out.",
+    )
+    p_multi.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness for the 'toe' mode: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
     )
     p_multi.set_defaults(func=cmd_multi)
 

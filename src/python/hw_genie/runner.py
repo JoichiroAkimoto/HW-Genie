@@ -76,6 +76,90 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# --- Compact ToE progress: per-account status dashboard --------------------
+# Multi ToE runs fan out across threads; without coordination their
+# per-attempt lines interleave. The dashboard gives each worker one
+# lock-guarded status line keyed by account
+# (`[acc] rival X [a/b] wins w pace ...`). TTY: ``\r`` in-place update;
+# non-TTY: plain throttled lines. The lock only guards printing — API
+# parallelism and result ordering are untouched.
+
+TOE_PROGRESS_THROTTLE_SECS = 5.0
+
+
+def sanitize_progress_log(text: str | None) -> str | None:
+    """Collapse ``\\r`` in-place updates for stored run logs.
+
+    Keeps only the text after the last ``\\r`` on each line (the final
+    visible status), so :class:`OutputCapture` buffers never persist bare
+    carriage returns. ``None`` passes through; text without ``\\r`` is
+    returned unchanged.
+    """
+    if text is None or "\r" not in text:
+        return text
+    return "\n".join(
+        line.rsplit("\r", 1)[-1] if "\r" in line else line
+        for line in text.split("\n")
+    )
+
+
+class ToeProgressDashboard:
+    """Thread-safe per-account one-line status display for multi ToE runs."""
+
+    def __init__(self, throttle_secs: float = TOE_PROGRESS_THROTTLE_SECS) -> None:
+        self._lock = threading.Lock()
+        try:
+            self._throttle = float(throttle_secs)
+        except (TypeError, ValueError):
+            self._throttle = TOE_PROGRESS_THROTTLE_SECS
+        self._last_emit: dict[str, float] = {}
+
+    def update(self, account: str, message: str, force: bool = False) -> None:
+        """Render ``message`` as ``account``'s status line (thread-safe)."""
+        import sys
+        import time as _time
+
+        acc = str(account or "?")
+        text = message if message.startswith(f"[{acc}]") else f"[{acc}] {message}"
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        with self._lock:
+            if is_tty:
+                try:
+                    sys.stdout.write("\r" + text)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                return
+            now = _time.monotonic()
+            last = self._last_emit.get(acc, 0.0)
+            if force or (now - last) >= self._throttle:
+                self._last_emit[acc] = now
+                try:
+                    print(text, flush=True)
+                except Exception:
+                    pass
+
+    def finish(self, account: str | None = None) -> None:
+        """Terminate an active TTY status line (newline); no-op otherwise."""
+        import sys
+
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            return
+        with self._lock:
+            try:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+
 def run_for_account(
     account: str,
     routine: Callable[[HWClient, str], object],
@@ -313,6 +397,7 @@ def toe_routine(
     threshold: int = 250,
     auth_server_url: str = "http://127.0.0.1:8765",
     max_total_attempts: int | None = None,
+    progress: str = "verbose",
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
 
@@ -325,12 +410,20 @@ def toe_routine(
     guard), so parallel runs behave like the other modes: ``--parallel``
     wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
 
+    ``progress`` selects output compactness (``quiet``/``line``/``verbose``;
+    unknown values fall back to ``verbose``). In ``line`` mode all workers
+    share one :class:`ToeProgressDashboard` so per-account status lines
+    stay lock-guarded without affecting API parallelism or result order.
+
     Returns:
         A routine whose result per account is the tier summary dict
         returned by ``run_titan_arena_tier``.
     """
     from hw_genie.battle.engine import get_default_engine
     from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
+    _dashboard = ToeProgressDashboard() if _mode == "line" else None
 
     def run(client: HWClient, account: str) -> object:
         headers = getattr(client, "headers", {}) or {}
@@ -345,16 +438,32 @@ def toe_routine(
             )
         else:
             eng = get_default_engine(mode=engine)
-        return run_titan_arena_tier(
-            client,
-            titans=None,
-            engine=eng,
-            attack_score_threshold=threshold,
-            seeds_per_team=seeds_per_team,
-            max_total_attempts=max_total_attempts,
-            account_label=account,
-        )
+        try:
+            return run_titan_arena_tier(
+                client,
+                titans=None,
+                engine=eng,
+                attack_score_threshold=threshold,
+                seeds_per_team=seeds_per_team,
+                max_total_attempts=max_total_attempts,
+                account_label=account,
+                progress=_mode,
+                dashboard=_dashboard,
+            )
+        except TypeError:
+            # Backward compat: older/stubbed run_titan_arena_tier without
+            # progress/dashboard kwargs (e.g. test doubles).
+            return run_titan_arena_tier(
+                client,
+                titans=None,
+                engine=eng,
+                attack_score_threshold=threshold,
+                seeds_per_team=seeds_per_team,
+                max_total_attempts=max_total_attempts,
+                account_label=account,
+            )
 
+    run.dashboard = _dashboard  # type: ignore[attr-defined]
     return run
 
 
@@ -831,6 +940,9 @@ __all__ = [
     "request_cancel",
     "is_cancelled",
     "reset_cancel",
+    "ToeProgressDashboard",
+    "sanitize_progress_log",
+    "TOE_PROGRESS_THROTTLE_SECS",
     "daily_routine",
     "full_routine",
     "quests_routine",

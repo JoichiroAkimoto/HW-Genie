@@ -1673,3 +1673,164 @@ def test_cmd_toe_run_interrupted_summary_exits_130(mocker):
     with pytest.raises(SystemExit) as exc:
         cmd_toe_run(args)
     assert exc.value.code == 130
+
+
+# --- Compact ToE progress output (quiet|line|verbose) ---
+
+
+def test_progress_function_defaults_stay_verbose():
+    """Public functions keep verbose default so existing callers are unchanged."""
+    import inspect
+
+    from hw_genie.commands.titan_arena import run_titan_arena, run_titan_arena_tier
+
+    assert inspect.signature(run_titan_arena).parameters["progress"].default == "verbose"
+    assert inspect.signature(run_titan_arena_tier).parameters["progress"].default == "verbose"
+
+
+def test_quiet_suppresses_per_attempt_lines(capsys, mock_client, mock_sleep):
+    """quiet/line suppress noise but keep the decided EndBattle summary."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    battle = {
+        "type": "titan_arena", "seed": 1,
+        "attackers": {"1": {"power": 999999, "hp": 10}},
+        "defenders": [{"2": {"power": 1, "hp": 10}}],
+    }
+    for mode in ("quiet", "line"):
+        mock_call.side_effect = [
+            _ok({"response": {"battle": battle}}),
+            _ok({"response": {"attackScore": 250}}),
+        ]
+        run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
+                        engine=PythonBattleEngine(), progress=mode)
+        out = capsys.readouterr().out
+        assert "Titan Arena:" not in out
+        assert "StartBattle accepted" not in out
+        assert "Engine:" not in out
+        assert "Calling titanArenaEndBattle" not in out
+        assert "EndBattle:" in out
+        assert ("WIN" in out or "LOSS" in out)
+
+
+def test_quiet_rivals_keep_decided_lines_but_drop_plan(capsys, mock_client, mock_sleep, mocker):
+    """quiet drops plan/rival headers and pace lines but keeps WIN decided lines."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1, progress="quiet",
+    )
+    out = capsys.readouterr().out
+    assert results[0]["win"] is True
+    assert "Attempt plan per rival" not in out
+    assert "Rival -1 (1/1" not in out
+    assert "elapsed" not in out
+    assert "rival -1: WIN" in out
+
+
+def test_line_mode_non_tty_throttles_status_lines(capsys, mock_client, mock_sleep, mocker, monkeypatch):
+    """Non-TTY line mode emits throttled plain lines with [a/b] and pace."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {"estimate": MagicMock(win=False), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    # Freeze time: all attempts within one throttle window (5s) → 1 status line.
+    times = iter([100.0 + i * 0.1 for i in range(50)])
+    monkeypatch.setattr("time.monotonic", lambda: next(times))
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=2,
+        progress="line", account_label="Joe",
+    )
+    out = capsys.readouterr().out
+    assert len(results) == 4
+    assert "\r" not in out
+    status_lines = [line for line in out.splitlines() if line.startswith("[Joe] rival -1 [")]
+    assert len(status_lines) == 1, f"expected 1 throttled line, got {status_lines}"
+    assert "[1/4]" in status_lines[0]
+    assert "wins 0" in status_lines[0]
+    assert "pace" in status_lines[0] and "/attempt" in status_lines[0]
+    # Rival-decided summary still present alongside the status line.
+    assert "rival -1: no win after 4 attempts" in out
+
+
+def test_line_mode_tty_uses_carriage_return(capsys, mock_client, mock_sleep, mocker, monkeypatch):
+    """TTY line mode updates in place with \\r instead of new lines."""
+    from hw_genie.commands import titan_arena as ta_mod
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    monkeypatch.setattr(ta_mod, "_is_tty", lambda: True)
+    client, _ = mock_client
+    _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
+        progress="line", account_label="Joe",
+    )
+    out = capsys.readouterr().out
+    assert "\r[Joe] rival -1 [1/1]" in out
+    assert "rival -1: WIN" in out
+
+
+def test_engine_heartbeat_suppressed_outside_verbose(capsys, monkeypatch):
+    """Bridge heartbeats print only in verbose mode (quiet/line stay silent)."""
+    import json as _json
+
+    from hw_genie.battle.engine import JsBridgeBattleEngine
+    from hw_genie.commands.titan_arena import _engine_calc
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return _json.dumps(self._payload).encode()
+
+    polls = {"n": 0}
+
+    def fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/toe/job"):
+            return FakeResp({"id": "abcdef1234567890"})
+        polls["n"] += 1
+        if polls["n"] < 4:
+            return FakeResp({"status": "pending"})
+        return FakeResp({"status": "done", "result": {"progress": [], "result": {"win": True, "stars": 3}}})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    eng = JsBridgeBattleEngine("http://127.0.0.1:1", "u", poll_interval=0.01, timeout=5, heartbeat_interval=0.02)
+    _engine_calc(eng, {"attackers": {}, "defenders": [{}]}, progress="quiet")
+    assert "waiting for userscript job" not in capsys.readouterr().out
+    polls["n"] = 0
+    _engine_calc(eng, {"attackers": {}, "defenders": [{}]}, progress="line")
+    assert "waiting for userscript job" not in capsys.readouterr().out
+    polls["n"] = 0
+    _engine_calc(eng, {"attackers": {}, "defenders": [{}]}, progress="verbose")
+    assert "waiting for userscript job" in capsys.readouterr().out
