@@ -569,7 +569,7 @@ def cmd_toe_run(args):
         account_label = resolve_account(args.account)
     except Exception:
         account_label = None
-    run_titan_arena_tier(
+    summary = run_titan_arena_tier(
         client,
         titans=titans,
         engine=engine,
@@ -579,6 +579,8 @@ def cmd_toe_run(args):
         max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
         account_label=account_label,
     )
+    if isinstance(summary, dict) and summary.get("interrupted"):
+        sys.exit(130)
 
 
 def cmd_toe_status(args):
@@ -800,6 +802,7 @@ def cmd_db_check(args):
 
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    import signal
     import traceback
     from datetime import datetime, timezone
 
@@ -809,8 +812,11 @@ def cmd_multi(args):
         consumable_routine,
         daily_routine,
         full_routine,
+        is_cancelled,
         list_account_aliases,
         quests_routine,
+        request_cancel,
+        reset_cancel,
         summarize_asgard_shop,
         summarize_consumable,
         summarize_quests,
@@ -872,53 +878,134 @@ def cmd_multi(args):
     started_at = datetime.now(timezone.utc)
     capture = OutputCapture()
     results: dict = {}
+    # Cooperative Ctrl+C: 1st press sets the shared cancel event so tier/
+    # bridge loops stop after the current attempt; 2nd press forces abort.
+    reset_cancel()
     try:
-        with capture:
-            results = run_all_accounts(
-                routine, accounts=accounts, max_parallel=max_parallel
-            )
-            if mode == "quests":
-                failed = summarize_quests(results.items(), dry_run=dry_run)
-            elif mode == "asgard-shop":
-                failed = summarize_asgard_shop(results.items())
-            elif mode == "consumable":
-                failed = summarize_consumable(results.items(), dry_run=dry_run)
-            elif mode == "toe":
-                failed = summarize_toe(results.items())
-            else:
-                failed = summarize(results.items())
-    except BaseException as exc:
-        # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
-        # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
-        # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
-        # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
-        trace = traceback.format_exc()
-        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
-            exit_code = exc.code
-        elif isinstance(exc, KeyboardInterrupt):
-            exit_code = 130
-        else:
-            exit_code = 1
+        _orig_sigint = signal.getsignal(signal.SIGINT)
+    except Exception:  # pragma: no cover - defensive
+        _orig_sigint = None
+    _sig_state: dict = {"count": 0}
+
+    def _sigint_handler(signum, frame):  # pragma: no cover - signal path
+        if _sig_state["count"] == 0:
+            _sig_state["count"] += 1
+            try:
+                request_cancel()
+            except Exception:
+                pass
+            try:
+                print(
+                    "\nstopping after current attempt... (press again to force abort)",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        # 2nd press: restore the original handler, then force an immediate
+        # abort. SystemExit(130) is not caught by the cooperative
+        # `except KeyboardInterrupt` paths (runner / tier loops), so it
+        # bypasses partial-result gathering instead of re-entering it.
         try:
-            accounts = _build_run_log_summary(mode, results)[0]
+            if _orig_sigint is not None:
+                signal.signal(signal.SIGINT, _orig_sigint)
+            else:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+        except Exception:
+            pass
+        try:
+            print("\nforced abort.", flush=True)
+        except Exception:
+            pass
+        raise SystemExit(130)
+
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except Exception:  # pragma: no cover - non-main thread
+        pass
+    try:
+        try:
+            with capture:
+                results = run_all_accounts(
+                    routine, accounts=accounts, max_parallel=max_parallel
+                )
+                if mode == "quests":
+                    failed = summarize_quests(results.items(), dry_run=dry_run)
+                elif mode == "asgard-shop":
+                    failed = summarize_asgard_shop(results.items())
+                elif mode == "consumable":
+                    failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode == "toe":
+                    failed = summarize_toe(results.items())
+                else:
+                    failed = summarize(results.items())
+        except BaseException as exc:
+            # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
+            # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
+            # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
+            # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
+            trace = traceback.format_exc()
+            if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+                exit_code = exc.code
+            elif isinstance(exc, KeyboardInterrupt):
+                exit_code = 130
+            else:
+                exit_code = 1
+            try:
+                accounts = _build_run_log_summary(mode, results)[0]
+            except Exception:  # pragma: no cover - defensive
+                accounts = []
+            try:
+                record_run_log(
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    mode=mode,
+                    status="failed",
+                    exit_code=exit_code,
+                    accounts=accounts,
+                    error_summary=str(exc) or type(exc).__name__,
+                    log_text=(capture.getvalue() + "\n" + trace).strip() or None,
+                    log_file=os.environ.get("HWGENIE_LOG_FILE"),
+                    hostname=_run_host_identifier(),
+                )
+            except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the original failure (e.g. 2nd Ctrl+C)
+                print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
+            raise
+    finally:
+        try:
+            if _orig_sigint is None:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+            else:
+                signal.signal(signal.SIGINT, _orig_sigint)
         except Exception:  # pragma: no cover - defensive
-            accounts = []
+            pass
+    if is_cancelled():
+        # Partial return caused by Ctrl+C: the mid-run summary was already
+        # printed inside the capture above; record an interrupted run log.
+        try:
+            account_logs, error_summary = _build_run_log_summary(mode, results)
+        except Exception:  # pragma: no cover - defensive
+            account_logs, error_summary = [], None
+        if not error_summary:
+            error_summary = "interrupted by user"
+        elif "interrupt" not in error_summary.lower():
+            error_summary = f"{error_summary}; interrupted by user"
         try:
             record_run_log(
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 mode=mode,
                 status="failed",
-                exit_code=exit_code,
-                accounts=accounts,
-                error_summary=str(exc) or type(exc).__name__,
-                log_text=(capture.getvalue() + "\n" + trace).strip() or None,
+                exit_code=130,
+                accounts=account_logs,
+                error_summary=error_summary,
+                log_text=capture.getvalue() or None,
                 log_file=os.environ.get("HWGENIE_LOG_FILE"),
                 hostname=_run_host_identifier(),
             )
-        except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the original failure (e.g. 2nd Ctrl+C)
+        except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the interrupt (e.g. 2nd Ctrl+C)
             print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
-        raise
+        sys.exit(130)
     account_logs, error_summary = _build_run_log_summary(mode, results)
     record_run_log(
         started_at=started_at,
@@ -980,6 +1067,8 @@ def _run_log_account_failure(
         return "asgard-shop result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
+            if result.get("interrupted"):
+                return "interrupted by user"
             if result.get("errors"):
                 return f"{len(result['errors'])} toe error(s)"
             if result.get("remaining_rivals") == 0:

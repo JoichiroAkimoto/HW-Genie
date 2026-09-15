@@ -1693,3 +1693,343 @@ def test_run_log_toe_fully_cleared_is_ok():
     assert _run_log_account_failure("toe", cleared, None) is None
     stuck = dict(cleared, remaining_rivals=2)
     assert _run_log_account_failure("toe", stuck, None) == "no rival cleared"
+
+
+def test_run_all_accounts_partial_on_keyboard_interrupt(monkeypatch):
+    """KeyboardInterrupt mid-run returns partial with InterruptedError entries."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self, acc, *, done, result=None):
+                self._acc = acc
+                self._done = done
+                self._result = result
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                if not self._done:
+                    self._cancelled = True
+                    return True
+                return False
+
+            def result(self):
+                assert self._result is not None
+                return self._result
+
+        fut_a = _FakeFuture("a", done=True, result=("a", "ok-a", None))
+        fut_b = _FakeFuture("b", done=False, result=("b", "ok-b", None))
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return {"a": fut_a, "b": fut_b}[acc]
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        results = runner.run_all_accounts(lambda c, a: None, accounts=["a", "b"], max_parallel=2)
+        assert list(results) == ["a", "b"]
+        assert results["a"] == ("ok-a", None)
+        assert results["b"][0] is None
+        assert isinstance(results["b"][1], InterruptedError)
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_cancels_pending_futures(monkeypatch):
+    """Pending futures are cancelled when the wait loop is interrupted."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self, acc, *, done, result=None):
+                self._acc = acc
+                self._done = done
+                self._result = result
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                if not self._done:
+                    self._cancelled = True
+                    return True
+                return False
+
+            def result(self):
+                assert self._result is not None
+                return self._result
+
+        fut_a = _FakeFuture("a", done=True, result=("a", "ok-a", None))
+        fut_b = _FakeFuture("b", done=False, result=None)
+        fut_b._result = ("b", None, None)
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return {"a": fut_a, "b": fut_b}[acc]
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        runner.run_all_accounts(lambda c, a: None, accounts=["a", "b"], max_parallel=2)
+        assert fut_b.cancel_called is True
+        assert fut_a.cancel_called is False
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_sigint_first_cooperative_second_forces(monkeypatch):
+    """1st Ctrl+C is cooperative (KI); 2nd forces SystemExit(130), restoring handler."""
+    import signal
+
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        installed_handlers: list = []
+        restore_calls: list = []
+        orig = signal.SIG_DFL
+        monkeypatch.setattr(signal, "getsignal", lambda sig: orig)
+
+        def fake_signal(sig, handler):
+            if callable(handler):
+                installed_handlers.append(handler)
+            else:
+                restore_calls.append(handler)
+                installed_handlers.append(handler)
+            return None
+
+        monkeypatch.setattr(signal, "signal", fake_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+        assert runner.is_cancelled() is False
+        assert installed_handlers, "custom SIGINT handler must be installed"
+        handler = installed_handlers[0]
+        assert callable(handler)
+
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+        assert runner.is_cancelled() is True
+
+        with pytest.raises(SystemExit) as exc:
+            handler(signal.SIGINT, None)
+        assert exc.value.code == 130
+        assert restore_calls, "2nd press must restore the original handler"
+        assert restore_calls[0] is orig
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_finally_restores_dfl_when_no_orig(monkeypatch):
+    """Non-main-thread / no-signal edge: never leave the custom handler installed."""
+    import signal
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        calls: list = []
+
+        def fake_getsignal(sig):
+            raise ValueError("getsignal: no handler in non-main thread")
+
+        def fake_signal(sig, handler):
+            calls.append(handler)
+            return None
+
+        monkeypatch.setattr(signal, "getsignal", fake_getsignal)
+        monkeypatch.setattr(signal, "signal", fake_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+        assert calls, "finally must attempt a restore even without orig"
+        assert calls[-1] is signal.SIG_DFL
+        assert not any(callable(c) and c not in (signal.SIG_DFL, signal.SIG_IGN) for c in calls[-1:]), \
+            "last restore must not be the custom handler"
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_signal_install_failure_still_runs(monkeypatch):
+    """signal.signal raising (non-main thread) must not break the run."""
+    import signal
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        monkeypatch.setattr(signal, "getsignal", lambda sig: signal.SIG_DFL)
+
+        def boom_signal(sig, handler):
+            raise ValueError("signal only works in main thread")
+
+        monkeypatch.setattr(signal, "signal", boom_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_interrupted_log_failure_still_exits_130(monkeypatch, capsys):
+    """2nd Ctrl+C during interrupted-path DB write cannot mask exit 130."""
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {"a": (None, InterruptedError("interrupted by user"))}
+
+        def log_boom(**kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", log_boom)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(args)
+        assert exc.value.code == 130
+        err = capsys.readouterr().err
+        assert "run log" in err
+    finally:
+        runner.reset_cancel()
+
+
+def test_summarize_toe_interrupted_error_never_ok(capsys):
+    """(None, InterruptedError) entries never count as ok."""
+    from hw_genie.runner import summarize_toe
+
+    assert summarize_toe([("a", (None, InterruptedError("interrupted by user")))]) == 1
+    out = capsys.readouterr().out
+    assert "Failed (1)" in out
+
+
+def test_summarize_toe_interrupted_flag_never_ok(capsys):
+    """A tier summary with interrupted=True counts as failed even with wins."""
+    from hw_genie.runner import summarize_toe
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [{"stage": "interrupted", "message": "interrupted by user"}],
+        "completed_tier": False,
+        "daily_reward": None,
+        "final_tier": 7,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    assert summarize_toe([("a", (summary, None))]) == 1
+    out = capsys.readouterr().out
+    assert "interrupted" in out.lower()
+
+
+def test_run_log_toe_interrupted_error_never_ok():
+    """_build_run_log_summary('toe', ...) marks InterruptedError entries ok=False."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    assert _run_log_account_failure("toe", None, InterruptedError("interrupted by user")) is not None
+    entries, summary = _build_run_log_summary("toe", {"a": (None, InterruptedError("interrupted by user"))})
+    assert entries == [{"account": "a", "ok": False, "error": "interrupted by user"}]
+    assert summary is not None and "a" in summary
+
+
+def test_run_log_toe_interrupted_flag_never_ok():
+    """An interrupted tier dict never counts as ok in run_logs."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [{"stage": "interrupted", "message": "interrupted by user"}],
+        "completed_tier": False,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    assert _run_log_account_failure("toe", summary, None) == "interrupted by user"
+    entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
+    assert entries[0]["ok"] is False
+    assert "interrupted" in entries[0]["error"].lower()
+
+
+def test_run_all_accounts_systemexit_propagates(monkeypatch):
+    """2nd-press SystemExit during result fetch must not be stored as a result."""
+    import pytest
+
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+        class _FakeFuture:
+            def done(self):
+                return True
+
+            def cancelled(self):
+                return False
+
+            def cancel(self):
+                return False
+
+            def result(self):
+                raise SystemExit(130)
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return _FakeFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(SystemExit) as exc:
+            runner.run_all_accounts(lambda c, a: None, accounts=["a"], max_parallel=1)
+        assert exc.value.code == 130
+    finally:
+        runner.reset_cancel()

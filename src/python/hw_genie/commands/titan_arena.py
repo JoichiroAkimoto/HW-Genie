@@ -32,6 +32,24 @@ from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
 logger = logging.getLogger(__name__)
 
 
+def _cancel_requested() -> bool:
+    """True when a cooperative Ctrl+C cancellation was requested."""
+    try:
+        from hw_genie.runner import is_cancelled
+
+        return bool(is_cancelled())
+    except Exception:
+        return False
+
+
+def _interrupted_error(partial_results: list | None = None) -> InterruptedError:
+    """Build an InterruptedError carrying already-collected partial results."""
+    err = InterruptedError("interrupted by user")
+    # BridgeDeadError-style payload so tier callers can still report progress.
+    err.partial_results = list(partial_results or [])  # type: ignore[attr-defined]
+    return err
+
+
 def _shorten_response(response: Any, limit: int = 300) -> str:
     """One-line preview of an EndBattle response for error output."""
     try:
@@ -370,6 +388,8 @@ def run_titan_arena(
 
     try:
         est = _engine_calc(engine, battle)
+    except (KeyboardInterrupt, InterruptedError):
+        raise
     except (BridgeError, Exception) as exc:
         if isinstance(engine, PythonBattleEngine):
             raise
@@ -516,7 +536,20 @@ def run_titan_arena_tier(
         "daily_reward": None,
         "final_tier": None,
         "remaining_rivals": None,
+        "interrupted": False,
     }
+
+    def _mark_interrupted(
+        summary: dict[str, Any], partial: list | None = None
+    ) -> dict[str, Any]:
+        summary["interrupted"] = True
+        if partial:
+            summary["rival_results"].extend(partial)
+        summary["errors"].append(
+            {"stage": "interrupted", "message": "interrupted by user"}
+        )
+        print(f"{Emojis.WARNING}Interrupted by user; stopping tier loop.", flush=True)
+        return summary
 
     # Safety cap: each winning pass strictly shrinks the remaining target
     # set (cleared rivals hit 250), so the loop terminates naturally. The cap
@@ -525,6 +558,8 @@ def run_titan_arena_tier(
     passes = 0
     no_progress_passes = 0
     while True:
+        if _cancel_requested():
+            return _mark_interrupted(summary)
         passes += 1
         if passes > max_passes:
             summary["errors"].append({"stage": "tier_loop", "message": "max passes reached"})
@@ -556,6 +591,9 @@ def run_titan_arena_tier(
                 summary["errors"].append({"stage": "raid", "message": str(exc)})
                 print(f"{Emojis.WARNING}Bridge dead during raid ({exc}); stopping tier loop.", flush=True)
                 return summary
+            except (KeyboardInterrupt, InterruptedError) as exc:
+                partial = getattr(exc, "partial_results", None)
+                return _mark_interrupted(summary, partial if isinstance(partial, list) else None)
             summary["raid_results"].append(raid_summary)
             if raid_summary.get("bridge_dead"):
                 summary["errors"].append({"stage": "raid", "message": raid_summary.get("error", "bridge dead")})
@@ -567,6 +605,8 @@ def run_titan_arena_tier(
                 # count as progress for the no-progress counter below.
                 raid_won = any(b.get("win") for b in raid_summary.get("battles", []) or [])
             else:
+                if _cancel_requested():
+                    return _mark_interrupted(summary)
                 _complete_tier(client, summary, tier=tier)
                 # Best-effort daily chest, mirroring the per-rival path: a
                 # raid-only final-tier clear must not skip the reward.
@@ -586,9 +626,14 @@ def run_titan_arena_tier(
             summary["errors"].append({"stage": "rivals", "message": str(exc)})
             print(f"{Emojis.WARNING}Bridge dead ({exc}); stopping tier loop.", flush=True)
             return summary
+        except (KeyboardInterrupt, InterruptedError) as exc:
+            partial = getattr(exc, "partial_results", None)
+            return _mark_interrupted(summary, partial if isinstance(partial, list) else None)
         # A bridge-dead sentinel is never mixed into rival_results anymore
         # (it raises); an empty list here genuinely means "no targets".
         summary["rival_results"].extend(rival_results)
+        if _cancel_requested():
+            return _mark_interrupted(summary)
         if not rival_results:
             print(f"{Emojis.INFO}No rivals to attack (threshold={attack_score_threshold})", flush=True)
             _farm_daily_reward(client, summary)
@@ -665,6 +710,8 @@ def _run_raid(
     results: dict[str, dict[str, Any]] = {}
     bridge_errors = 0
     for rival_id, rival_defenders in raid_rivals.items():
+        if _cancel_requested():
+            raise _interrupted_error([])
         battle = {
             "userId": str(status.get("userId") or rival_id),
             "typeId": str(rival_id),
@@ -691,6 +738,8 @@ def _run_raid(
             results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
             raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
             print(f"  - raid rival {rival_id}: win={est.win}", flush=True)
+        except (KeyboardInterrupt, InterruptedError):
+            raise
         except (BridgeError, Exception) as exc:
             if isinstance(engine, PythonBattleEngine):
                 raise
@@ -707,6 +756,8 @@ def _run_raid(
             # out of the results so the server scores only verified battles.
             continue
 
+    if _cancel_requested():
+        raise _interrupted_error([])
     if not results:
         raid_summary["error"] = "no verified raid results; EndRaid skipped"
         print(f"{Emojis.WARNING}{raid_summary['error']}", flush=True)
@@ -819,15 +870,21 @@ def _run_rivals(
     results: list[dict[str, Any]] = []
     bridge_errors = 0
     for rival_no, rival_id in enumerate(finish_targets, start=1):
+        if _cancel_requested():
+            raise _interrupted_error(results)
         rival_start = time.monotonic()
         print(f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)", flush=True)
         for attempt_no, (team, _seed_no) in enumerate(attempt_plan, start=1):
+            if _cancel_requested():
+                raise _interrupted_error(results)
             try:
                 res = run_titan_arena(
                     client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss,
                     attempt_label=f"{attempt_no}/{len(attempt_plan)}",
                     account_label=account_label,
                 )
+            except (KeyboardInterrupt, InterruptedError):
+                raise _interrupted_error(results)
             except Exception as exc:  # pragma: no cover - defensive
                 results.append({"rivalId": str(rival_id), "error": str(exc)})
                 print(f"  - rival {rival_id}: exception {exc}", flush=True)

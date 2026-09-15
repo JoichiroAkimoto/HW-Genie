@@ -93,6 +93,16 @@ def _build_progress(battle: dict[str, Any], win: bool) -> list[dict[str, Any]]:
     ]
 
 
+def _cancel_requested() -> bool:
+    """True when a cooperative Ctrl+C cancellation was requested."""
+    try:
+        from hw_genie.runner import is_cancelled
+
+        return bool(is_cancelled())
+    except Exception:
+        return False
+
+
 class JsBridgeBattleEngine:
     """Delegate the simulation to the userscript via the auth server job queue.
 
@@ -122,6 +132,8 @@ class JsBridgeBattleEngine:
 
         try:
             job_body = json.dumps({"account": self.user_id, "battle": battle}).encode("utf-8")
+            if _cancel_requested():
+                raise InterruptedError("interrupted by user")
             req = urllib.request.Request(
                 f"{self.auth_server_url}/toe/job",
                 data=job_body,
@@ -138,7 +150,11 @@ class JsBridgeBattleEngine:
             deadline = start + self.timeout
             next_heartbeat = start + self.heartbeat_interval if self.heartbeat_interval > 0 else float("inf")
             while time.time() < deadline:
+                if _cancel_requested():
+                    raise InterruptedError("interrupted by user")
                 time.sleep(self.poll_interval)
+                if _cancel_requested():
+                    raise InterruptedError("interrupted by user")
                 now = time.time()
                 if now >= next_heartbeat:
                     if on_progress is not None:
@@ -156,6 +172,8 @@ class JsBridgeBattleEngine:
                 if payload.get("status") == "done":
                     return battle_estimate_from_bridge_result(payload.get("result") or {})
             raise BridgeTimeoutError(f"userscript did not finish battle within {self.timeout}s")
+        except (KeyboardInterrupt, InterruptedError):
+            raise
         except BridgeError:
             raise
         except Exception as exc:

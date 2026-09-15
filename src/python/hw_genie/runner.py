@@ -14,6 +14,7 @@ for good concurrency and keeps each account's work isolated behind its own
 
 import logging
 import re
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence
@@ -23,6 +24,24 @@ from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import display_width, pad, rank_color, style
 
 logger = logging.getLogger(__name__)
+
+
+_cancel_event = threading.Event()
+
+
+def request_cancel() -> None:
+    """Signal cooperative cancellation (Ctrl+C) to running workers."""
+    _cancel_event.set()
+
+
+def is_cancelled() -> bool:
+    """True when a Ctrl+C cancellation has been requested."""
+    return _cancel_event.is_set()
+
+
+def reset_cancel() -> None:
+    """Clear the cancellation flag (call before starting a new run)."""
+    _cancel_event.clear()
 
 
 def list_account_aliases() -> list[str]:
@@ -122,17 +141,58 @@ def run_all_accounts(
     )
 
     results: dict[str, tuple[object | None, BaseException | None]] = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(run_for_account, acc, routine): acc for acc in accounts
-        }
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = {
+        pool.submit(run_for_account, acc, routine): acc for acc in accounts
+    }
+    try:
         for fut in as_completed(futures):
             acc, res, err = fut.result()
             results[acc] = (res, err)
+    except KeyboardInterrupt:
+        request_cancel()
+        for fut in futures:
+            if not fut.done():
+                try:
+                    fut.cancel()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+        for fut, acc in futures.items():
+            if acc in results:
+                continue
+            if fut.done() and not fut.cancelled():
+                try:
+                    _acc, res, err = fut.result()
+                    results[_acc] = (res, err)
+                except KeyboardInterrupt:
+                    results[acc] = (None, InterruptedError("interrupted by user"))
+                except Exception as exc:  # noqa: BLE001 - preserve failure (SystemExit from 2nd Ctrl+C must propagate, not be stored)
+                    try:
+                        from concurrent.futures import CancelledError as _CE
 
-    # 完了順ではなく投入順（= 登録順）で返す。dict は挿入順を保持するため、
-    # summarize などの呼び出し側はそのまま並び順を表示に使える。
-    return {acc: results[acc] for acc in accounts}
+                        if isinstance(exc, _CE):
+                            results[acc] = (
+                                None,
+                                InterruptedError("interrupted by user"),
+                            )
+                            continue
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    results[acc] = (None, exc)
+            else:
+                results.setdefault(
+                    acc, (None, InterruptedError("interrupted by user"))
+                )
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # pragma: no cover - Python < 3.9
+            pool.shutdown(wait=False)
+        return {acc: results.get(acc, (None, InterruptedError("interrupted by user"))) for acc in accounts}
+    else:
+        pool.shutdown(wait=True)
+        # 完了順ではなく投入順（= 登録順）で返す。dict は挿入順を保持するため、
+        # summarize などの呼び出し側はそのまま並び順を表示に使える。
+        return {acc: results[acc] for acc in accounts}
 
 
 # --- Convenience routines usable with run_all_accounts / run_for_account ---
@@ -721,7 +781,9 @@ def summarize_toe(
                 str(remaining) if remaining is not None else "-",
                 str(res.get("daily_reward") or "-"),
             ])
-            if errors:
+            if res.get("interrupted"):
+                failed.append(f"{account} (interrupted)")
+            elif errors:
                 failed.append(f"{account} ({len(errors)} error(s))")
             elif remaining == 0:
                 # Fully cleared: nothing left to attack counts as complete,
@@ -766,6 +828,9 @@ __all__ = [
     "list_account_aliases",
     "run_for_account",
     "run_all_accounts",
+    "request_cancel",
+    "is_cancelled",
+    "reset_cancel",
     "daily_routine",
     "full_routine",
     "quests_routine",

@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from hw_genie.battle.engine import PythonBattleEngine
 from hw_genie.commands.titan_arena import run_titan_arena, run_titan_arena_tier
 
@@ -1515,3 +1517,159 @@ def test_run_rivals_pure_estimate_only_does_not_trigger_dead(mock_client, mock_s
     assert len(results) == 4
     assert all(r.get("unverified") is True for r in results)
     assert all(r["win"] is False for r in results)
+
+
+def test_tier_cancel_stops_after_current_attempt(mock_client, mocker):
+    """Cancel set mid-run stops after the current attempt with interrupted summary."""
+    from hw_genie import runner
+    from hw_genie.battle.engine import PythonBattleEngine
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+    from hw_genie.runner import summarize_toe
+
+    runner.reset_cancel()
+    try:
+        client, mock_call = mock_client
+        status = {
+            "status": "battle", "tier": 7, "canRaid": False,
+            "rivals": {"-1": {"attackScore": 0}, "-2": {"attackScore": 0}},
+        }
+        mock_call.side_effect = [_ok({"response": status})]
+        calls: list[str] = []
+
+        def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+            calls.append(str(rival_id))
+            if len(calls) == 1:
+                runner.request_cancel()
+                return {"estimate": MagicMock(win=True)}
+            return {"estimate": MagicMock(win=True)}
+
+        mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+        mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+        mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+        summary = run_titan_arena_tier(
+            client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        )
+        assert summary.get("interrupted") is True
+        assert any(e.get("stage") == "interrupted" for e in summary.get("errors", []))
+        # Only the in-flight rival finished; the next rival never started and
+        # no EndBattle was fabricated for it.
+        assert calls == ["-1"]
+        assert len(summary["rival_results"]) == 1
+        assert summary["rival_results"][0]["win"] is True
+        assert summary["completed_tier"] is False
+        # Interrupted summaries count as failed, not ok.
+        assert summarize_toe([("acc", (summary, None))]) == 1
+    finally:
+        runner.reset_cancel()
+
+
+def test_bridge_calc_raises_promptly_on_cancel(monkeypatch):
+    """JsBridge poll loop aborts fast on cancel instead of waiting 30s."""
+    import json
+    import threading
+    import time
+    import urllib.request
+
+    import pytest
+
+    from hw_genie import runner
+    from hw_genie.battle.engine import JsBridgeBattleEngine
+
+    runner.reset_cancel()
+    try:
+        eng = JsBridgeBattleEngine(
+            auth_server_url="http://127.0.0.1:8765",
+            user_id="1",
+            poll_interval=0.01,
+            timeout=30.0,
+        )
+
+        class _FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+        def fake_urlopen(req, timeout=5):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url.endswith("/toe/job"):
+                return _FakeResp({"id": "job123"})
+            return _FakeResp({"status": "pending"})
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        timer = threading.Timer(0.05, runner.request_cancel)
+        timer.start()
+        try:
+            start = time.monotonic()
+            with pytest.raises(InterruptedError):
+                eng.calc({"attackers": {}})
+            elapsed = time.monotonic() - start
+        finally:
+            timer.cancel()
+        assert elapsed < 5.0
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_toe_run_keyboard_interrupt_during_rivals_exits_130(mock_client, mock_sleep, mocker):
+    """Single `toe run`: KI inside _run_rivals must exit 130, not 0."""
+    from hw_genie.main import cmd_toe_run
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok({"response": {"status": "battle", "tier": 7, "canRaid": False,
+                          "rivals": {"-1": {"attackScore": 0}}}}),
+    ]
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.HWClient", return_value=client)
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=KeyboardInterrupt(),
+    )
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = [1, 2, 3, 4, 5]
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
+    with pytest.raises(SystemExit) as exc:
+        cmd_toe_run(args)
+    assert exc.value.code == 130
+
+
+def test_cmd_toe_run_interrupted_summary_exits_130(mocker):
+    """Single `toe run`: a returned interrupted summary must exit 130."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.HWClient")
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+    mocker.patch(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        return_value={"interrupted": True, "rival_results": [], "errors": [{"stage": "interrupted"}]},
+    )
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = None
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
+    with pytest.raises(SystemExit) as exc:
+        cmd_toe_run(args)
+    assert exc.value.code == 130
