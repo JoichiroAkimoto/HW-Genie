@@ -601,19 +601,28 @@ def cmd_toe_run(args):
         account_label = resolve_account(args.account)
     except Exception:
         account_label = None
-    summary = run_titan_arena_tier(
-        client,
-        titans=titans,
-        engine=engine,
-        attack_score_threshold=args.threshold,
-        stop_on_first_loss=bool(args.stop_on_loss),
-        seeds_per_team=int(getattr(args, "seeds", 2) or 2),
-        max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
-        account_label=account_label,
-        progress=_resolve_toe_progress(args),
-    )
+    try:
+        summary = run_titan_arena_tier(
+            client,
+            titans=titans,
+            engine=engine,
+            attack_score_threshold=args.threshold,
+            stop_on_first_loss=bool(args.stop_on_loss),
+            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            account_label=account_label,
+            progress=_resolve_toe_progress(args),
+        )
+    except (KeyboardInterrupt, InterruptedError):
+        # Cooperative 1st-press stop before a summary exists: clean complete.
+        # (2nd-press SystemExit(130) is not caught here and still aborts.)
+        return
     if isinstance(summary, dict) and summary.get("interrupted"):
-        sys.exit(130)
+        # User-aborted tier counts as COMPLETE (ok) unless real bridge/API
+        # errors ride along; the interrupt marker itself never fails.
+        if _toe_real_errors(summary.get("errors", [])):
+            sys.exit(1)
+        return
 
 
 def cmd_toe_status(args):
@@ -1014,23 +1023,32 @@ def cmd_multi(args):
         except Exception:  # pragma: no cover - defensive
             pass
     if is_cancelled():
-        # Partial return caused by Ctrl+C: the mid-run summary was already
-        # printed inside the capture above; record an interrupted run log.
+        # Cooperative 1st-press stop: the mid-run summary was already
+        # printed inside the capture above. A user-aborted account/tier
+        # counts as COMPLETE (ok); only real failures fail the run.
         try:
             account_logs, error_summary = _build_run_log_summary(mode, results)
         except Exception:  # pragma: no cover - defensive
             account_logs, error_summary = [], None
-        if not error_summary:
-            error_summary = "interrupted by user"
-        elif "interrupt" not in error_summary.lower():
-            error_summary = f"{error_summary}; interrupted by user"
+        has_failures = bool(error_summary) or any(
+            isinstance(e, dict) and not e.get("ok", True) for e in account_logs
+        )
+        if has_failures:
+            status, exit_code = "failed", 1
+            if error_summary and "interrupt" not in error_summary.lower():
+                error_summary = f"{error_summary}; interrupted by user"
+            elif not error_summary:
+                error_summary = "interrupted by user"
+        else:
+            status, exit_code = "ok", 0
+            error_summary = None
         try:
             record_run_log(
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 mode=mode,
-                status="failed",
-                exit_code=130,
+                status=status,
+                exit_code=exit_code,
                 accounts=account_logs,
                 error_summary=error_summary,
                 log_text=_sanitize_progress_log_text(capture.getvalue()) or None,
@@ -1039,7 +1057,15 @@ def cmd_multi(args):
             )
         except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the interrupt (e.g. 2nd Ctrl+C)
             print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
-        sys.exit(130)
+            if isinstance(log_exc, (KeyboardInterrupt, SystemExit)):
+                # 2nd-press force abort during the DB write stays immediate
+                # (130) and is never masked as a clean complete.
+                if isinstance(log_exc, SystemExit) and isinstance(log_exc.code, int):
+                    raise
+                sys.exit(130)
+        if exit_code:
+            sys.exit(exit_code)
+        return
     account_logs, error_summary = _build_run_log_summary(mode, results)
     record_run_log(
         started_at=started_at,
@@ -1057,6 +1083,40 @@ def cmd_multi(args):
         sys.exit(1)
 
 
+def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
+    """True when ``err`` is a cooperative user cancel (counts as ok for toe)."""
+    if err is None:
+        return False
+    if isinstance(err, (InterruptedError, KeyboardInterrupt)):
+        return True
+    try:
+        return "interrupted by user" in str(err).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _is_toe_interrupt_entry(entry: object) -> bool:
+    """True for the ``interrupted by user`` marker in a tier ``errors`` list."""
+    if isinstance(entry, dict):
+        if entry.get("stage") == "interrupted":
+            return True
+        try:
+            return "interrupted by user" in str(entry.get("message", "")).lower()
+        except Exception:  # pragma: no cover - defensive
+            return False
+    try:
+        return "interrupted by user" in str(entry).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _toe_real_errors(errors: object) -> list:
+    """Return tier ``errors`` without the cooperative-interrupt marker."""
+    if not isinstance(errors, list):
+        return list(errors) if errors else []
+    return [e for e in errors if not _is_toe_interrupt_entry(e)]
+
+
 def _run_log_account_failure(
     mode: str, result: object | None, err: BaseException | None
 ) -> str | None:
@@ -1066,10 +1126,14 @@ def _run_log_account_failure(
     functions so ``run_logs`` rows stay consistent with the printed summary:
     quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
     and unavailable statuses all count as failures, matching the ``failed``
-    counter returned by ``summarize``. Exceptions are reported by their first
-    message line.
+    counter returned by ``summarize``. A cooperative user cancel counts as
+    COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
+    ``interrupted=True`` tier summaries without real bridge/API errors map
+    to None. Exceptions are reported by their first message line.
     """
     if err is not None:
+        if mode == "toe" and _is_toe_interrupt_exc(err):
+            return None
         message = str(err).strip().splitlines()
         return message[0] if message else type(err).__name__
     if mode == "quests":
@@ -1101,10 +1165,11 @@ def _run_log_account_failure(
         return "asgard-shop result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
+            real_errors = _toe_real_errors(result.get("errors", []))
             if result.get("interrupted"):
-                return "interrupted by user"
-            if result.get("errors"):
-                return f"{len(result['errors'])} toe error(s)"
+                return f"{len(real_errors)} toe error(s)" if real_errors else None
+            if real_errors:
+                return f"{len(real_errors)} toe error(s)"
             if result.get("remaining_rivals") == 0:
                 return None
             if not result.get("rival_results") and not result.get("completed_tier"):

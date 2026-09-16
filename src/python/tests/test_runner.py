@@ -1941,17 +1941,18 @@ def test_cmd_multi_interrupted_log_failure_still_exits_130(monkeypatch, capsys):
         runner.reset_cancel()
 
 
-def test_summarize_toe_interrupted_error_never_ok(capsys):
-    """(None, InterruptedError) entries never count as ok."""
+def test_summarize_toe_interrupted_error_counts_ok(capsys):
+    """(None, InterruptedError) entries count as COMPLETE (ok), not failed."""
     from hw_genie.runner import summarize_toe
 
-    assert summarize_toe([("a", (None, InterruptedError("interrupted by user")))]) == 1
+    assert summarize_toe([("a", (None, InterruptedError("interrupted by user")))]) == 0
     out = capsys.readouterr().out
-    assert "Failed (1)" in out
+    assert "1 account(s) completed, ❌ 0 failed." in out
+    assert "a" in out
 
 
-def test_summarize_toe_interrupted_flag_never_ok(capsys):
-    """A tier summary with interrupted=True counts as failed even with wins."""
+def test_summarize_toe_interrupted_flag_counts_ok(capsys):
+    """A tier summary with interrupted=True (marker only) counts as ok."""
     from hw_genie.runner import summarize_toe
 
     summary = {
@@ -1963,23 +1964,45 @@ def test_summarize_toe_interrupted_flag_never_ok(capsys):
         "remaining_rivals": 2,
         "interrupted": True,
     }
+    assert summarize_toe([("a", (summary, None))]) == 0
+    out = capsys.readouterr().out
+    assert "1 account(s) completed, ❌ 0 failed." in out
+
+
+def test_summarize_toe_interrupted_with_real_errors_still_fails(capsys):
+    """interrupted=True with real bridge/API errors still counts as failed."""
+    from hw_genie.runner import summarize_toe
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [
+            {"stage": "interrupted", "message": "interrupted by user"},
+            {"stage": "rivals", "message": "bridge dead"},
+        ],
+        "completed_tier": False,
+        "daily_reward": None,
+        "final_tier": 7,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
     assert summarize_toe([("a", (summary, None))]) == 1
     out = capsys.readouterr().out
-    assert "interrupted" in out.lower()
+    assert "Failed (1)" in out
+    assert "1 error(s)" in out
 
 
-def test_run_log_toe_interrupted_error_never_ok():
-    """_build_run_log_summary('toe', ...) marks InterruptedError entries ok=False."""
+def test_run_log_toe_interrupted_error_counts_ok():
+    """_build_run_log_summary('toe', ...) marks InterruptedError entries ok=True."""
     from hw_genie.main import _build_run_log_summary, _run_log_account_failure
 
-    assert _run_log_account_failure("toe", None, InterruptedError("interrupted by user")) is not None
+    assert _run_log_account_failure("toe", None, InterruptedError("interrupted by user")) is None
     entries, summary = _build_run_log_summary("toe", {"a": (None, InterruptedError("interrupted by user"))})
-    assert entries == [{"account": "a", "ok": False, "error": "interrupted by user"}]
-    assert summary is not None and "a" in summary
+    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert summary is None
 
 
-def test_run_log_toe_interrupted_flag_never_ok():
-    """An interrupted tier dict never counts as ok in run_logs."""
+def test_run_log_toe_interrupted_flag_counts_ok():
+    """An interrupted tier dict without real errors counts as ok in run_logs."""
     from hw_genie.main import _build_run_log_summary, _run_log_account_failure
 
     summary = {
@@ -1989,10 +2012,89 @@ def test_run_log_toe_interrupted_flag_never_ok():
         "remaining_rivals": 2,
         "interrupted": True,
     }
-    assert _run_log_account_failure("toe", summary, None) == "interrupted by user"
+    assert _run_log_account_failure("toe", summary, None) is None
+    entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
+    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert err_summary is None
+
+
+def test_run_log_toe_interrupted_with_real_errors_still_fails():
+    """An interrupted tier dict with real errors still fails in run_logs."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [
+            {"stage": "interrupted", "message": "interrupted by user"},
+            {"stage": "rivals", "message": "bridge dead"},
+        ],
+        "completed_tier": False,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    reason = _run_log_account_failure("toe", summary, None)
+    assert reason is not None and "1 toe error(s)" in reason
     entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
     assert entries[0]["ok"] is False
-    assert "interrupted" in entries[0]["error"].lower()
+    assert err_summary is not None and "a" in err_summary
+
+
+def test_cmd_multi_toe_pure_interrupt_exits_zero(monkeypatch):
+    """Cooperative cancel with no real failures is a clean complete (exit 0)."""
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        records = {}
+
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {"a": (None, InterruptedError("interrupted by user"))}
+
+        def fake_record(**kwargs):
+            records.update(kwargs)
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        main.cmd_multi(args)  # must not raise SystemExit
+        assert records["status"] == "ok"
+        assert records["exit_code"] == 0
+        assert records["accounts"] == [{"account": "a", "ok": True, "error": None}]
+        assert records["error_summary"] is None
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_toe_interrupt_with_real_failures_exits_1(monkeypatch):
+    """Cancel with real failures alongside still exits 1 (not 130)."""
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {
+                "a": (None, InterruptedError("interrupted by user")),
+                "b": (None, RuntimeError("boom")),
+            }
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a", "b"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(args)
+        assert exc.value.code == 1
+    finally:
+        runner.reset_cancel()
 
 
 def test_run_all_accounts_systemexit_propagates(monkeypatch):

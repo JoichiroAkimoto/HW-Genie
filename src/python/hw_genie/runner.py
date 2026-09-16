@@ -855,6 +855,40 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
+    """True when ``err`` is a cooperative user cancel (not a real failure)."""
+    if err is None:
+        return False
+    if isinstance(err, (InterruptedError, KeyboardInterrupt)):
+        return True
+    try:
+        return "interrupted by user" in str(err).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _is_toe_interrupt_entry(entry: object) -> bool:
+    """True for the ``interrupted by user`` marker in a tier ``errors`` list."""
+    if isinstance(entry, dict):
+        if entry.get("stage") == "interrupted":
+            return True
+        try:
+            return "interrupted by user" in str(entry.get("message", "")).lower()
+        except Exception:  # pragma: no cover - defensive
+            return False
+    try:
+        return "interrupted by user" in str(entry).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _toe_real_errors(errors: object) -> list:
+    """Return ``errors`` without the cooperative-interrupt marker entries."""
+    if not isinstance(errors, list):
+        return list(errors) if errors else []
+    return [e for e in errors if not _is_toe_interrupt_entry(e)]
+
+
 def summarize_toe(
     results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
 ) -> int:
@@ -862,24 +896,34 @@ def summarize_toe(
 
     Results come from :func:`toe_routine`: per account the tier summary
     dict from ``run_titan_arena_tier``. An account fails when its routine
-    errored, when the summary carries ``errors``, or when rivals were
-    attempted but none was won and the tier did not complete. A summary
-    with ``remaining_rivals == 0`` means fully cleared and counts as ok
-    even without wins/completion flags; an empty ``rival_results`` with no
-    errors is idle (nothing to do) and also counts as ok so cleared
-    accounts don't page every cron run. Columns show wins / attempted
-    rivals / completed flag / final tier / remaining rivals. Column widths
-    use display width (emoji/CJK aware) so rows never shift.
+    errored (other than a cooperative user cancel), when the summary
+    carries real ``errors``, or when rivals were attempted but none was
+    won and the tier did not complete. A user-aborted account/tier
+    (``InterruptedError`` entry or ``interrupted=True`` summary without
+    real errors) counts as COMPLETE (ok): the interrupt marker itself in
+    ``errors`` never fails the account; only real bridge/API errors do.
+    A summary with ``remaining_rivals == 0`` means fully cleared and
+    counts as ok even without wins/completion flags; an empty
+    ``rival_results`` with no errors is idle (nothing to do) and also
+    counts as ok so cleared accounts don't page every cron run. Columns
+    show wins / attempted rivals / completed flag / final tier /
+    remaining rivals. Column widths use display width (emoji/CJK aware)
+    so rows never shift.
     """
     ok = 0
     failed: list[str] = []
     rows: list[list[str]] = []
     for account, (res, err) in results:
+        if err is not None and _is_toe_interrupt_exc(err):
+            rows.append([account, "-", "-", "-", "-", "-"])
+            ok += 1
+            continue
         if err is None and isinstance(res, dict):
             wins = sum(1 for r in res.get("rival_results", []) if r.get("win"))
             total = len(res.get("rival_results", []))
             completed = "✅" if res.get("completed_tier") else "-"
             errors = res.get("errors", [])
+            real_errors = _toe_real_errors(errors)
             tier = res.get("final_tier")
             remaining = res.get("remaining_rivals")
             rows.append([
@@ -891,9 +935,12 @@ def summarize_toe(
                 str(res.get("daily_reward") or "-"),
             ])
             if res.get("interrupted"):
-                failed.append(f"{account} (interrupted)")
-            elif errors:
-                failed.append(f"{account} ({len(errors)} error(s))")
+                if real_errors:
+                    failed.append(f"{account} ({len(real_errors)} error(s))")
+                else:
+                    ok += 1
+            elif real_errors:
+                failed.append(f"{account} ({len(real_errors)} error(s))")
             elif remaining == 0:
                 # Fully cleared: nothing left to attack counts as complete,
                 # even if no battle was won banked this run (e.g. raid-only

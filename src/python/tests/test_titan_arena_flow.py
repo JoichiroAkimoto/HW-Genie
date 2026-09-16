@@ -1557,8 +1557,8 @@ def test_tier_cancel_stops_after_current_attempt(mock_client, mocker):
         assert len(summary["rival_results"]) == 1
         assert summary["rival_results"][0]["win"] is True
         assert summary["completed_tier"] is False
-        # Interrupted summaries count as failed, not ok.
-        assert summarize_toe([("acc", (summary, None))]) == 1
+        # User-aborted tiers count as COMPLETE (ok), not failed.
+        assert summarize_toe([("acc", (summary, None))]) == 0
     finally:
         runner.reset_cancel()
 
@@ -1618,8 +1618,8 @@ def test_bridge_calc_raises_promptly_on_cancel(monkeypatch):
         runner.reset_cancel()
 
 
-def test_cmd_toe_run_keyboard_interrupt_during_rivals_exits_130(mock_client, mock_sleep, mocker):
-    """Single `toe run`: KI inside _run_rivals must exit 130, not 0."""
+def test_cmd_toe_run_keyboard_interrupt_during_rivals_exits_zero(mock_client, mock_sleep, mocker):
+    """Single `toe run`: cooperative KI inside _run_rivals is a clean complete (exit 0)."""
     from hw_genie.main import cmd_toe_run
 
     client, mock_call = mock_client
@@ -1644,13 +1644,11 @@ def test_cmd_toe_run_keyboard_interrupt_during_rivals_exits_130(mock_client, moc
     args.auth_server_url = "http://127.0.0.1:8765"
     args.seeds = 2
     args.max_attempts = None
-    with pytest.raises(SystemExit) as exc:
-        cmd_toe_run(args)
-    assert exc.value.code == 130
+    cmd_toe_run(args)  # must not raise SystemExit
 
 
-def test_cmd_toe_run_interrupted_summary_exits_130(mocker):
-    """Single `toe run`: a returned interrupted summary must exit 130."""
+def test_cmd_toe_run_interrupted_summary_exits_zero(mocker):
+    """Single `toe run`: a returned interrupted summary without real errors exits 0."""
     from hw_genie.main import cmd_toe_run
 
     mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
@@ -1670,9 +1668,37 @@ def test_cmd_toe_run_interrupted_summary_exits_130(mocker):
     args.auth_server_url = "http://127.0.0.1:8765"
     args.seeds = 2
     args.max_attempts = None
+    cmd_toe_run(args)  # must not raise SystemExit
+
+
+def test_cmd_toe_run_interrupted_summary_with_real_errors_exits_1(mocker):
+    """Single `toe run`: interrupted + real errors exits 1 (not 130)."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.HWClient")
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+    mocker.patch(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        return_value={
+            "interrupted": True,
+            "rival_results": [],
+            "errors": [{"stage": "interrupted"}, {"stage": "rivals", "message": "bridge dead"}],
+        },
+    )
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = None
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
     with pytest.raises(SystemExit) as exc:
         cmd_toe_run(args)
-    assert exc.value.code == 130
+    assert exc.value.code == 1
 
 
 # --- Compact ToE progress output (quiet|line|verbose) ---
