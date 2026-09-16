@@ -1371,3 +1371,994 @@ def test_cmd_multi_daily_threads_iterations(monkeypatch):
     main.cmd_multi(args)
     assert captured["routine"].func is runner.daily_routine
     assert captured["routine"].keywords["item_max_iterations"] == 9
+
+
+def test_toe_routine_runs_tier_with_rotation(monkeypatch):
+    """toe_routine drives run_titan_arena_tier with saved-team rotation."""
+    from hw_genie import runner
+
+    calls = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, **kw):
+        calls["titans"] = titans
+        calls["engine"] = type(engine).__name__
+        calls["threshold"] = attack_score_threshold
+        calls["seeds"] = seeds_per_team
+        return {"rival_results": [{"win": True}], "errors": [], "completed_tier": True, "daily_reward": "claimed"}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    res = runner.toe_routine(engine="hybrid", seeds_per_team=3, threshold=200)(FakeClient(), "Joe")
+    assert calls == {"titans": None, "engine": "JsBridgeBattleEngine", "threshold": 200, "seeds": 3}
+    assert res["completed_tier"] is True
+
+
+def test_summarize_toe_counts():
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": True}], "errors": [], "completed_tier": True, "daily_reward": "claimed"}, None)),
+        ("b", ({"rival_results": [{"win": False}], "errors": [], "completed_tier": False, "daily_reward": None}, None)),
+        ("c", (None, RuntimeError("x"))),
+    ]
+    assert summarize_toe(results) == 2
+
+
+def test_summarize_toe_empty_without_errors_is_ok():
+    """Idle/cleared accounts (no targets, no errors) must not fail."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("idle", ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)),
+    ]
+    assert summarize_toe(results) == 0
+
+
+def test_summarize_toe_empty_with_errors_still_fails():
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("bad", ({"rival_results": [], "errors": [{"stage": "tier_loop"}], "completed_tier": False, "daily_reward": None}, None)),
+    ]
+    assert summarize_toe(results) == 1
+
+
+def test_run_log_toe_empty_without_errors_is_ok():
+    """Parity: run-log failure judgement matches summarize_toe for idle."""
+    from hw_genie.main import _run_log_account_failure
+
+    idle = {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+    assert _run_log_account_failure("toe", idle, None) is None
+    attempted_loss = {"rival_results": [{"win": False}], "errors": [], "completed_tier": False}
+    assert _run_log_account_failure("toe", attempted_loss, None) == "no rival cleared"
+    with_err = {"rival_results": [], "errors": [{"stage": "x"}], "completed_tier": False}
+    assert _run_log_account_failure("toe", with_err, None) is not None
+
+
+def test_cmd_multi_toe_passes_parallel_through(monkeypatch):
+    """multi toe honors --parallel like the other modes (no forced sequential)."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallel"] = max_parallel
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 4, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
+    )()
+    # empty rival_results with no errors is idle (nothing to do) -> ok, no exit
+    main.cmd_multi(args)
+    assert captured["max_parallel"] == 4
+
+
+def test_cmd_multi_toe_parallel_defaults_to_env(monkeypatch):
+    """multi toe without --parallel passes None so HW_MAX_PARALLEL applies downstream."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        captured["max_parallel"] = max_parallel
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": None, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None},
+    )()
+    main.cmd_multi(args)
+    assert captured["max_parallel"] is None
+
+
+def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
+    """multi toe --max-attempts reaches toe_routine as max_total_attempts."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
+        captured["cap"] = max_total_attempts
+        captured["progress"] = progress
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": 6},
+    )()
+    main.cmd_multi(args)
+    assert captured["cap"] == 6
+
+
+def test_toe_routine_threads_max_total_attempts(monkeypatch):
+    """toe_routine forwards max_total_attempts to run_titan_arena_tier."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, max_total_attempts=None, **kw):
+        seen["cap"] = max_total_attempts
+        return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    runner.toe_routine(engine="estimate", max_total_attempts=7)(FakeClient(), "Joe")
+    assert seen["cap"] == 7
+
+
+def test_cmd_multi_toe_env_parallel_resolved_downstream(monkeypatch):
+    """HW_MAX_PARALLEL applies to multi toe via resolve_max_parallel."""
+    from hw_genie.runner import resolve_max_parallel
+
+    monkeypatch.setenv("HW_MAX_PARALLEL", "3")
+    assert resolve_max_parallel(None, 4) == 3
+    monkeypatch.delenv("HW_MAX_PARALLEL")
+    assert resolve_max_parallel(None, 4) == 4
+    assert resolve_max_parallel(2, 4) == 2
+
+
+def test_toe_routine_threads_auth_server_url(monkeypatch):
+    """toe_routine forwards a custom auth server URL to the bridge engine."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_get_default_engine(mode=None, auth_server_url=None, user_id=None, headers=None):
+        seen["url"] = auth_server_url
+        seen["user"] = user_id
+        from hw_genie.battle.engine import PythonBattleEngine
+
+        return PythonBattleEngine()
+
+    monkeypatch.setattr("hw_genie.battle.engine.get_default_engine", fake_get_default_engine)
+    monkeypatch.setattr(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        lambda client, **kw: {"ok": True},
+    )
+    runner.toe_routine(engine="hybrid", auth_server_url="http://127.0.0.1:9999")(FakeClient(), "Joe")
+    assert seen == {"url": "http://127.0.0.1:9999", "user": "99"}
+
+
+def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
+    """multi toe --auth-server-url reaches toe_routine."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
+        captured.update(
+            {"engine": engine, "seeds": seeds_per_team, "threshold": threshold, "url": auth_server_url, "cap": max_total_attempts, "progress": progress}
+        )
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:9999", "max_attempts": None},
+    )()
+    try:
+        main.cmd_multi(args)
+    except SystemExit:
+        pass
+    assert captured["url"] == "http://127.0.0.1:9999"
+
+
+def test_cmd_multi_failed_logging_does_not_mask_original_error(monkeypatch, capsys):
+    """記録自体の失敗（2回目の Ctrl+C 等）が元のエラーを隠さない。"""
+    from hw_genie import main
+
+    def boom(routine, accounts=None, max_parallel=None):
+        raise RuntimeError("boom")
+
+    def log_boom(**kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", boom)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", log_boom)
+
+    args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+    with pytest.raises(RuntimeError, match="boom"):
+        main.cmd_multi(args)
+    err = capsys.readouterr().err
+    assert "run log" in err
+    # str(KeyboardInterrupt) == "" so the fallback type name must appear.
+    assert "KeyboardInterrupt" in err
+
+
+def test_main_keyboard_interrupt_exits_130(monkeypatch, capsys):
+    """トップレベルの Ctrl+C はトレースバック無しで exit 130。"""
+    import sys
+
+    from hw_genie import main
+
+    def interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("hw_genie.core.database.init_db", interrupt)
+    monkeypatch.setattr(sys, "argv", ["hw-genie", "sync"])
+    with pytest.raises(SystemExit) as exc:
+        main.main()
+    assert exc.value.code == 130
+    assert "Interrupted" in capsys.readouterr().err
+
+
+def test_summarize_toe_shows_final_tier_and_remaining(capsys):
+    """Summary table carries the final tier and remaining rival count."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": True}], "errors": [], "completed_tier": True,
+                "daily_reward": "claimed", "final_tier": 8, "remaining_rivals": 0}, None)),
+        ("b", ({"rival_results": [{"win": False}], "errors": [], "completed_tier": False,
+                "daily_reward": None, "final_tier": 5, "remaining_rivals": 3}, None)),
+    ]
+    assert summarize_toe(results) == 1
+    out = capsys.readouterr().out
+    assert "Tier" in out and "Left" in out
+    assert "8" in out and "0" in out
+
+
+def test_summarize_toe_fully_cleared_counts_ok(capsys):
+    """remaining_rivals == 0 means complete even with banked losses only."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("a", ({"rival_results": [{"win": False}], "errors": [],
+                "completed_tier": False, "daily_reward": None,
+                "final_tier": 8, "remaining_rivals": 0}, None)),
+    ]
+    assert summarize_toe(results) == 0
+    out = capsys.readouterr().out
+    assert "Left" in out
+
+
+def test_summarize_toe_table_columns_align(capsys):
+    """All table lines share the same display width (emoji/CJK aware)."""
+    from hw_genie.core.utils import display_width
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        ("Joe", ({"rival_results": [{"win": True}], "errors": [],
+                  "completed_tier": True, "daily_reward": "claimed",
+                  "final_tier": 8, "remaining_rivals": 0}, None)),
+        ("長い名前のアカウント", ({"rival_results": [{"win": False}], "errors": [],
+                  "completed_tier": False, "daily_reward": None,
+                  "final_tier": 12, "remaining_rivals": 3}, None)),
+    ]
+    summarize_toe(results)
+    out = capsys.readouterr().out
+    table = [line for line in out.splitlines() if " | " in line]
+    assert len(table) == 3  # header + 2 rows
+    widths = {display_width(line) for line in table}
+    assert widths and len(widths) == 1
+
+
+def test_run_log_toe_fully_cleared_is_ok():
+    """Parity: remaining_rivals == 0 is ok in run_logs too."""
+    from hw_genie.main import _run_log_account_failure
+
+    cleared = {"rival_results": [{"win": False}], "errors": [],
+               "completed_tier": False, "daily_reward": None,
+               "final_tier": 8, "remaining_rivals": 0}
+    assert _run_log_account_failure("toe", cleared, None) is None
+    stuck = dict(cleared, remaining_rivals=2)
+    assert _run_log_account_failure("toe", stuck, None) == "no rival cleared"
+
+
+def test_run_all_accounts_partial_on_keyboard_interrupt(monkeypatch):
+    """KeyboardInterrupt mid-run returns partial with InterruptedError entries."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self, acc, *, done, result=None):
+                self._acc = acc
+                self._done = done
+                self._result = result
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                if not self._done:
+                    self._cancelled = True
+                    return True
+                return False
+
+            def result(self):
+                assert self._result is not None
+                return self._result
+
+        fut_a = _FakeFuture("a", done=True, result=("a", "ok-a", None))
+        fut_b = _FakeFuture("b", done=False, result=("b", "ok-b", None))
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return {"a": fut_a, "b": fut_b}[acc]
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        results = runner.run_all_accounts(lambda c, a: None, accounts=["a", "b"], max_parallel=2)
+        assert list(results) == ["a", "b"]
+        assert results["a"] == ("ok-a", None)
+        assert results["b"][0] is None
+        assert isinstance(results["b"][1], InterruptedError)
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_cancels_pending_futures(monkeypatch):
+    """Pending futures are cancelled when the wait loop is interrupted."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self, acc, *, done, result=None):
+                self._acc = acc
+                self._done = done
+                self._result = result
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                if not self._done:
+                    self._cancelled = True
+                    return True
+                return False
+
+            def result(self):
+                assert self._result is not None
+                return self._result
+
+        fut_a = _FakeFuture("a", done=True, result=("a", "ok-a", None))
+        fut_b = _FakeFuture("b", done=False, result=None)
+        fut_b._result = ("b", None, None)
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return {"a": fut_a, "b": fut_b}[acc]
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        runner.run_all_accounts(lambda c, a: None, accounts=["a", "b"], max_parallel=2)
+        assert fut_b.cancel_called is True
+        assert fut_a.cancel_called is False
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_sigint_first_cooperative_second_forces(monkeypatch):
+    """1st Ctrl+C is cooperative (KI); 2nd forces SystemExit(130), restoring handler."""
+    import signal
+
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        installed_handlers: list = []
+        restore_calls: list = []
+        orig = signal.SIG_DFL
+        monkeypatch.setattr(signal, "getsignal", lambda sig: orig)
+
+        def fake_signal(sig, handler):
+            if callable(handler):
+                installed_handlers.append(handler)
+            else:
+                restore_calls.append(handler)
+                installed_handlers.append(handler)
+            return None
+
+        monkeypatch.setattr(signal, "signal", fake_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+        assert runner.is_cancelled() is False
+        assert installed_handlers, "custom SIGINT handler must be installed"
+        handler = installed_handlers[0]
+        assert callable(handler)
+
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+        assert runner.is_cancelled() is True
+
+        with pytest.raises(SystemExit) as exc:
+            handler(signal.SIGINT, None)
+        assert exc.value.code == 130
+        assert restore_calls, "2nd press must restore the original handler"
+        assert restore_calls[0] is orig
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_finally_restores_dfl_when_no_orig(monkeypatch):
+    """Non-main-thread / no-signal edge: never leave the custom handler installed."""
+    import signal
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        calls: list = []
+
+        def fake_getsignal(sig):
+            raise ValueError("getsignal: no handler in non-main thread")
+
+        def fake_signal(sig, handler):
+            calls.append(handler)
+            return None
+
+        monkeypatch.setattr(signal, "getsignal", fake_getsignal)
+        monkeypatch.setattr(signal, "signal", fake_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+        assert calls, "finally must attempt a restore even without orig"
+        assert calls[-1] is signal.SIG_DFL
+        assert not any(callable(c) and c not in (signal.SIG_DFL, signal.SIG_IGN) for c in calls[-1:]), \
+            "last restore must not be the custom handler"
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_signal_install_failure_still_runs(monkeypatch):
+    """signal.signal raising (non-main thread) must not break the run."""
+    import signal
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        monkeypatch.setattr(signal, "getsignal", lambda sig: signal.SIG_DFL)
+
+        def boom_signal(sig, handler):
+            raise ValueError("signal only works in main thread")
+
+        monkeypatch.setattr(signal, "signal", boom_signal)
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", lambda *a, **k: {})
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "daily", "accounts": ["a"], "parallel": 1, "debug": False})()
+        main.cmd_multi(args)
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_interrupted_log_failure_still_exits_130(monkeypatch, capsys):
+    """2nd Ctrl+C during interrupted-path DB write cannot mask exit 130."""
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {"a": (None, InterruptedError("interrupted by user"))}
+
+        def log_boom(**kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", log_boom)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(args)
+        assert exc.value.code == 130
+        err = capsys.readouterr().err
+        assert "run log" in err
+    finally:
+        runner.reset_cancel()
+
+
+def test_summarize_toe_interrupted_error_counts_ok(capsys):
+    """(None, InterruptedError) entries count as COMPLETE (ok), not failed."""
+    from hw_genie.runner import summarize_toe
+
+    assert summarize_toe([("a", (None, InterruptedError("interrupted by user")))]) == 0
+    out = capsys.readouterr().out
+    assert "1 account(s) completed, ❌ 0 failed." in out
+    assert "a" in out
+
+
+def test_summarize_toe_interrupted_flag_counts_ok(capsys):
+    """A tier summary with interrupted=True (marker only) counts as ok."""
+    from hw_genie.runner import summarize_toe
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [{"stage": "interrupted", "message": "interrupted by user"}],
+        "completed_tier": False,
+        "daily_reward": None,
+        "final_tier": 7,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    assert summarize_toe([("a", (summary, None))]) == 0
+    out = capsys.readouterr().out
+    assert "1 account(s) completed, ❌ 0 failed." in out
+
+
+def test_summarize_toe_interrupted_with_real_errors_still_fails(capsys):
+    """interrupted=True with real bridge/API errors still counts as failed."""
+    from hw_genie.runner import summarize_toe
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [
+            {"stage": "interrupted", "message": "interrupted by user"},
+            {"stage": "rivals", "message": "bridge dead"},
+        ],
+        "completed_tier": False,
+        "daily_reward": None,
+        "final_tier": 7,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    assert summarize_toe([("a", (summary, None))]) == 1
+    out = capsys.readouterr().out
+    assert "Failed (1)" in out
+    assert "1 error(s)" in out
+
+
+def test_run_log_toe_interrupted_error_counts_ok():
+    """_build_run_log_summary('toe', ...) marks InterruptedError entries ok=True."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    assert _run_log_account_failure("toe", None, InterruptedError("interrupted by user")) is None
+    entries, summary = _build_run_log_summary("toe", {"a": (None, InterruptedError("interrupted by user"))})
+    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert summary is None
+
+
+def test_run_log_toe_interrupted_flag_counts_ok():
+    """An interrupted tier dict without real errors counts as ok in run_logs."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [{"stage": "interrupted", "message": "interrupted by user"}],
+        "completed_tier": False,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    assert _run_log_account_failure("toe", summary, None) is None
+    entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
+    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert err_summary is None
+
+
+def test_run_log_toe_interrupted_with_real_errors_still_fails():
+    """An interrupted tier dict with real errors still fails in run_logs."""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    summary = {
+        "rival_results": [{"rivalId": "-1", "win": True}],
+        "errors": [
+            {"stage": "interrupted", "message": "interrupted by user"},
+            {"stage": "rivals", "message": "bridge dead"},
+        ],
+        "completed_tier": False,
+        "remaining_rivals": 2,
+        "interrupted": True,
+    }
+    reason = _run_log_account_failure("toe", summary, None)
+    assert reason is not None and "1 toe error(s)" in reason
+    entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
+    assert entries[0]["ok"] is False
+    assert err_summary is not None and "a" in err_summary
+
+
+def test_cmd_multi_toe_pure_interrupt_exits_zero(monkeypatch):
+    """Cooperative cancel with no real failures is a clean complete (exit 0)."""
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        records = {}
+
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {"a": (None, InterruptedError("interrupted by user"))}
+
+        def fake_record(**kwargs):
+            records.update(kwargs)
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        main.cmd_multi(args)  # must not raise SystemExit
+        assert records["status"] == "ok"
+        assert records["exit_code"] == 0
+        assert records["accounts"] == [{"account": "a", "ok": True, "error": None}]
+        assert records["error_summary"] is None
+    finally:
+        runner.reset_cancel()
+
+
+def test_cmd_multi_toe_interrupt_with_real_failures_exits_1(monkeypatch):
+    """Cancel with real failures alongside still exits 1 (not 130)."""
+    import pytest
+
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None):
+            runner.request_cancel()
+            return {
+                "a": (None, InterruptedError("interrupted by user")),
+                "b": (None, RuntimeError("boom")),
+            }
+
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+        args = type("A", (), {"mode": "toe", "accounts": ["a", "b"], "parallel": 1, "debug": False,
+                              "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+                              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None})()
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(args)
+        assert exc.value.code == 1
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_systemexit_propagates(monkeypatch):
+    """2nd-press SystemExit during result fetch must not be stored as a result."""
+    import pytest
+
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+        class _FakeFuture:
+            def done(self):
+                return True
+
+            def cancelled(self):
+                return False
+
+            def cancel(self):
+                return False
+
+            def result(self):
+                raise SystemExit(130)
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return _FakeFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(SystemExit) as exc:
+            runner.run_all_accounts(lambda c, a: None, accounts=["a"], max_parallel=1)
+        assert exc.value.code == 130
+    finally:
+        runner.reset_cancel()
+
+
+# --- Compact ToE progress output (quiet|line|verbose) ---
+
+
+def test_toe_progress_parser_defaults_to_line(mocker):
+    """toe attack/run and multi toe default --progress to line; choices parse."""
+    import sys
+
+    from hw_genie import main
+
+    mocker.patch("hw_genie.core.database.init_db")
+    mocker.patch("hw_genie.core.database.install_token_masking_filter")
+    mocker.patch("hw_genie.main.setup_logging")
+    mock_attack = mocker.patch("hw_genie.main.cmd_toe_attack")
+    mock_run = mocker.patch("hw_genie.main.cmd_toe_run")
+    mock_multi = mocker.patch("hw_genie.main.cmd_multi")
+
+    sys.argv = ["hw-genie", "toe", "attack", "-a", "TestUser"]
+    main.main()
+    assert mock_attack.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "toe", "attack", "-a", "TestUser", "--progress", "quiet"]
+    main.main()
+    assert mock_attack.call_args.args[0].progress == "quiet"
+
+    sys.argv = ["hw-genie", "toe", "run", "-a", "TestUser"]
+    main.main()
+    assert mock_run.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "toe", "run", "-a", "TestUser", "--progress", "verbose"]
+    main.main()
+    assert mock_run.call_args.args[0].progress == "verbose"
+
+    sys.argv = ["hw-genie", "multi", "toe"]
+    main.main()
+    assert mock_multi.call_args.args[0].progress == "line"
+
+    sys.argv = ["hw-genie", "multi", "toe", "--progress", "quiet"]
+    main.main()
+    assert mock_multi.call_args.args[0].progress == "quiet"
+
+
+def test_cmd_toe_attack_forwards_progress(mocker):
+    """toe attack threads --progress through to run_titan_arena."""
+    from hw_genie.main import cmd_toe_attack
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.main.HWClient")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=MagicMock())
+    args = MagicMock()
+    args.account = "TestUser"
+    args.rival = None
+    args.titans = None
+    args.dry_run = False
+    args.estimate_only = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.progress = "quiet"
+    cmd_toe_attack(args)
+    assert mock_run.call_args.kwargs.get("progress") == "quiet"
+
+
+def test_cmd_toe_run_forwards_progress(mocker):
+    """toe run threads --progress through to run_titan_arena_tier."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.HWClient")
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena_tier")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=MagicMock())
+    args = MagicMock()
+    args.account = "TestUser"
+    args.titans = None
+    args.threshold = 250
+    args.stop_on_loss = False
+    args.engine = "estimate"
+    args.auth_server_url = "http://127.0.0.1:8765"
+    args.seeds = 2
+    args.max_attempts = None
+    args.progress = "line"
+    cmd_toe_run(args)
+    assert mock_run.call_args.kwargs.get("progress") == "line"
+
+
+def test_cmd_multi_toe_forwards_progress(monkeypatch):
+    """multi toe threads --progress through to toe_routine."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=2, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
+        captured["progress"] = progress
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None, "progress": "quiet"},
+    )()
+    main.cmd_multi(args)
+    assert captured["progress"] == "quiet"
+
+
+def test_toe_routine_line_mode_shares_dashboard(monkeypatch):
+    """line mode shares one dashboard; quiet/verbose use none."""
+    from hw_genie import runner
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    monkeypatch.setattr(
+        "hw_genie.commands.titan_arena.run_titan_arena_tier",
+        lambda client, **kw: {"ok": True, "progress": kw.get("progress"), "has_dashboard": kw.get("dashboard") is not None},
+    )
+    line_run = runner.toe_routine(engine="estimate", progress="line")
+    assert isinstance(line_run.dashboard, runner.ToeProgressDashboard)
+    res = line_run(FakeClient(), "Joe")
+    assert res["progress"] == "line" and res["has_dashboard"] is True
+
+    quiet_run = runner.toe_routine(engine="estimate", progress="quiet")
+    assert getattr(quiet_run, "dashboard", None) is None
+
+
+def test_dashboard_lock_ordering_two_accounts(capsys):
+    """Two workers updating concurrently keep intact per-account lines."""
+    import threading
+
+    from hw_genie.runner import ToeProgressDashboard
+
+    dash = ToeProgressDashboard(throttle_secs=0)
+    assert hasattr(dash, "_lock")
+    barrier = threading.Barrier(2)
+
+    def worker(account):
+        barrier.wait()
+        for i in range(20):
+            dash.update(account, f"rival -{i} [{i}/20] wins 0 pace 1s/attempt")
+
+    threads = [threading.Thread(target=worker, args=(acc,)) for acc in ("alpha", "beta")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    alpha_lines = [line for line in out.splitlines() if line.startswith("[alpha]")]
+    beta_lines = [line for line in out.splitlines() if line.startswith("[beta]")]
+    assert len(alpha_lines) == 20 and len(beta_lines) == 20
+    # No interleaved fragments: every line belongs wholly to one account.
+    for line in out.splitlines():
+        assert not (line.startswith("[alpha]") and "[beta]" in line)
+        assert not (line.startswith("[beta]") and "[alpha]" in line)
+
+
+def test_dashboard_updates_do_not_reorder_results(monkeypatch):
+    """Dashboard printing never affects API parallelism or result ordering."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+        monkeypatch.setattr(
+            "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": acc}
+        )
+        monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+        dash = runner.ToeProgressDashboard(throttle_secs=0)
+
+        def routine(client, account):
+            dash.update(account, "rival -1 [1/2] wins 0 pace 1s/attempt")
+            return f"ok:{account}"
+
+        results = runner.run_all_accounts(routine, accounts=["zulu", "alpha", "mike"], max_parallel=2)
+        assert list(results) == ["zulu", "alpha", "mike"]
+        assert results["alpha"] == ("ok:alpha", None)
+    finally:
+        runner.reset_cancel()
+
+
+def test_sanitize_progress_log_collapses_carriage_returns():
+    """Stored logs keep final visible text with no bare \\r."""
+    from hw_genie.runner import sanitize_progress_log
+
+    assert sanitize_progress_log(None) is None
+    assert sanitize_progress_log("plain line\n") == "plain line\n"
+    assert "\r" not in sanitize_progress_log("old\rnew line\n")
+    assert sanitize_progress_log("old\rnew line\n") == "new line\n"
+    assert sanitize_progress_log("\r[alpha] rival -1 [2/4] wins 1") == "[alpha] rival -1 [2/4] wins 1"
+
+
+def test_cmd_multi_stored_log_contains_no_cr(monkeypatch):
+    """multi run-log text is sanitized even when workers emit \\r updates."""
+    from hw_genie import main
+
+    records = {}
+
+    def fake_record(**kwargs):
+        records.update(kwargs)
+        return 1
+
+    def fake_run(routine, accounts=None, max_parallel=None):
+        print("before\rafter line")
+        return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", fake_record)
+
+    args = type(
+        "A",
+        (),
+        {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+         "dry_run": False, "engine": "hybrid", "seeds": 2, "threshold": 250,
+         "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None, "progress": "line"},
+    )()
+    main.cmd_multi(args)
+    assert "\r" not in (records.get("log_text") or "")
+    assert "after line" in (records.get("log_text") or "")

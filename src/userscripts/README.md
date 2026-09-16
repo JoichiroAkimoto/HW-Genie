@@ -36,6 +36,30 @@ bash ./build.sh \
 
 > **注意:** `--inject-download-url` や `--inject-update-url` を指定しないローカルビルドでは、`__DOWNLOAD_URL__` や `__UPDATE_URL__` のプレースホルダーが残るため、配布物として使用することはできません。
 
+### DEV版ビルド（ToE自動化時のみONにする開発版）
+
+HW Goodwin 等との干渉を避けるため、ToE自動化を行うときだけDEV版を有効化し、
+終わったら無効化して通常版に戻す運用を推奨します。
+
+```bash
+bash build.sh --dev
+# または
+npm run build:dev
+```
+
+`dist/hw-genie-auth-capture-dev.user.js` が生成されます。DEV版の識別子:
+
+- `@name` が `HW-Genie Auth Capture (Dev)`、`@namespace` が `.../HW-Genie-dev`
+  （通常版と並行インストール可能）
+- `@version` に `-dev` サフィックス（例: `1.0.7-dev`）
+- 先頭行に `// ⚠️ DEV BUILD ...` バナー、コンソールログは `[HW-Genie/ToE Dev]`
+  プレフィックス（通常版の `[HW-Genie/ToE]` と混ざらない）
+- `@downloadURL` / `@updateURL` は注入不可（`--inject-*` と `--dev` の併用は
+  ビルドエラー）。自動更新で通常版を上書きしないための保護です
+
+運用手順: ToE実行前にDEV版をON → 実行後にOFF → 通常版に戻す。
+挙動自体は通常版と同一に保つため、DEV版で動いたものは通常版でも動きます。
+
 ## テスト
 
 ```bash

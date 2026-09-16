@@ -18,6 +18,7 @@ from hw_genie.commands.item_raid import run_item_raid
 from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
+from hw_genie.commands.titan_arena import AUTO_RIVAL_SCORE_THRESHOLD
 from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
@@ -489,6 +490,151 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def _resolve_toe_progress(args, default: str = "line") -> str:
+    """Return a valid ``--progress`` mode for ToE commands.
+
+    ``MagicMock``-style legacy args (tests) auto-create attributes, so only
+    exact ``quiet``/``line``/``verbose`` strings are honored; anything else
+    falls back to ``default`` (the CLI parser default ``line``).
+    """
+    try:
+        value = getattr(args, "progress", default)
+    except Exception:
+        return default
+    if isinstance(value, str) and value in ("quiet", "line", "verbose"):
+        return value
+    return default
+
+
+def _sanitize_progress_log_text(text: str | None) -> str | None:
+    """Strip ``\\r`` in-place updates before persisting run-log output."""
+    if text is None or "\r" not in text:
+        return text
+    try:
+        from hw_genie.runner import sanitize_progress_log
+
+        return sanitize_progress_log(text)
+    except Exception:
+        return "\n".join(
+            line.rsplit("\r", 1)[-1] if "\r" in line else line
+            for line in text.split("\n")
+        )
+
+
+def cmd_toe_attack(args):
+    """Titan Arena attack with arbitrary titans (app-native, no browser)."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.commands.titan_arena import run_titan_arena
+    from hw_genie.battle.engine import get_default_engine
+
+    # ToE bridge は userscript の Game.ModelManager.player.userInfo.id (x-auth-user-id)
+    # と同じ文字列で job を紐付ける。alias ("Joe") ではなく数値 userId を使う。
+    engine_mode = getattr(args, "engine", "estimate")
+    if engine_mode == "playwright":
+        engine = get_default_engine(mode=engine_mode, headers=headers)
+    else:
+        user_id = headers.get("x-auth-user-id", "") if engine_mode != "estimate" else ""
+        if not user_id and engine_mode != "estimate":
+            try:
+                from hw_genie.core.session_manager import SessionManager
+
+                resolved = resolve_account(args.account)
+                data = SessionManager.load(resolved)
+                user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
+            except Exception:
+                user_id = ""
+        engine = get_default_engine(
+            mode=engine_mode,
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+            user_id=user_id,
+        )
+    rival = getattr(args, "rival", None)
+    titans = list(args.titans) if args.titans else None
+    try:
+        account_label = resolve_account(args.account)
+    except Exception:
+        account_label = None
+    run_titan_arena(
+        client,
+        rival_id=rival,
+        titans=titans,
+        engine=engine,
+        dry_run=bool(args.dry_run),
+        estimate_only=bool(args.estimate_only),
+        account_label=account_label,
+        progress=_resolve_toe_progress(args),
+    )
+
+
+def cmd_toe_run(args):
+    """Drive a full ToE tier end-to-end (raid + rivals + CompleteTier)."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.battle.engine import get_default_engine
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    mode = getattr(args, "engine", "estimate")
+    if mode == "playwright":
+        engine = get_default_engine(mode=mode, headers=headers)
+    elif mode != "estimate":
+        user_id = headers.get("x-auth-user-id", "")
+        if not user_id:
+            try:
+                from hw_genie.core.session_manager import SessionManager
+
+                resolved = resolve_account(args.account)
+                data = SessionManager.load(resolved)
+                user_id = str((data.get("player") or {}).get("id") or data.get("player", {}).get("userId") or "")
+            except Exception:
+                user_id = ""
+        engine = get_default_engine(
+            mode=mode,
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+            user_id=user_id,
+        )
+    else:
+        engine = get_default_engine(mode=mode)
+    titans = list(args.titans) if getattr(args, "titans", None) else None
+    _max_attempts = getattr(args, "max_attempts", None)
+    try:
+        account_label = resolve_account(args.account)
+    except Exception:
+        account_label = None
+    try:
+        summary = run_titan_arena_tier(
+            client,
+            titans=titans,
+            engine=engine,
+            attack_score_threshold=args.threshold,
+            stop_on_first_loss=bool(args.stop_on_loss),
+            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            account_label=account_label,
+            progress=_resolve_toe_progress(args),
+        )
+    except (KeyboardInterrupt, InterruptedError):
+        # Cooperative 1st-press stop before a summary exists: clean complete.
+        # (2nd-press SystemExit(130) is not caught here and still aborts.)
+        return
+    if isinstance(summary, dict) and summary.get("interrupted"):
+        # User-aborted tier counts as COMPLETE (ok) unless real bridge/API
+        # errors ride along; the interrupt marker itself never fails.
+        if _toe_real_errors(summary.get("errors", [])):
+            sys.exit(1)
+        return
+
+
+def cmd_toe_status(args):
+    """Show Titan Arena status."""
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    from hw_genie.commands.titan_arena import fetch_titan_arena_status
+    status = fetch_titan_arena_status(client)
+    import json
+    print(json.dumps(status, indent=2, ensure_ascii=False))
+
+
 def cmd_chat(args):
     """ギルドチャット（chatGetAll）の取得・表示"""
     from hw_genie.commands.chat import run_chat
@@ -698,6 +844,7 @@ def cmd_db_check(args):
 
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
+    import signal
     import traceback
     from datetime import datetime, timezone
 
@@ -707,11 +854,16 @@ def cmd_multi(args):
         consumable_routine,
         daily_routine,
         full_routine,
+        is_cancelled,
         list_account_aliases,
         quests_routine,
+        request_cancel,
+        reset_cancel,
         summarize_asgard_shop,
         summarize_consumable,
         summarize_quests,
+        summarize_toe,
+        toe_routine,
     )
 
     mode = args.mode
@@ -725,7 +877,7 @@ def cmd_multi(args):
     if mode not in ("quests", "consumable") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests' and 'consumable' modes "
-            "(daily/full/asgard-shop routines always execute their operations).",
+            "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -742,6 +894,21 @@ def cmd_multi(args):
             lib_ids=args.lib, method_override=args.method, dry_run=dry_run
         )
         max_parallel = 1 if dry_run else args.parallel
+    elif mode == "toe":
+        _max_attempts = getattr(args, "max_attempts", None)
+        routine = toe_routine(
+            engine=getattr(args, "engine", "hybrid") or "hybrid",
+            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            threshold=int(getattr(args, "threshold", 250) or 250),
+            auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
+            max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            progress=_resolve_toe_progress(args),
+        )
+        # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
+        # フォールバックする（run_all_accounts 内の resolve_max_parallel が
+        # 解決）。bridge の job キューは account 照合＋claimed_by ガード済み
+        # のため並列実行可。
+        max_parallel = args.parallel
     else:
         routine = partial(
             full_routine if mode == "full" else daily_routine,
@@ -754,48 +921,151 @@ def cmd_multi(args):
     started_at = datetime.now(timezone.utc)
     capture = OutputCapture()
     results: dict = {}
+    # Cooperative Ctrl+C: 1st press sets the shared cancel event so tier/
+    # bridge loops stop after the current attempt; 2nd press forces abort.
+    reset_cancel()
     try:
-        with capture:
-            results = run_all_accounts(
-                routine, accounts=accounts, max_parallel=max_parallel
-            )
-            if mode == "quests":
-                failed = summarize_quests(results.items(), dry_run=dry_run)
-            elif mode == "asgard-shop":
-                failed = summarize_asgard_shop(results.items())
-            elif mode == "consumable":
-                failed = summarize_consumable(results.items(), dry_run=dry_run)
-            else:
-                failed = summarize(results.items())
-    except BaseException as exc:
-        # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
-        # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
-        # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
-        # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
-        trace = traceback.format_exc()
-        if isinstance(exc, SystemExit) and isinstance(exc.code, int):
-            exit_code = exc.code
-        elif isinstance(exc, KeyboardInterrupt):
-            exit_code = 130
-        else:
-            exit_code = 1
+        _orig_sigint = signal.getsignal(signal.SIGINT)
+    except Exception:  # pragma: no cover - defensive
+        _orig_sigint = None
+    _sig_state: dict = {"count": 0}
+
+    def _sigint_handler(signum, frame):  # pragma: no cover - signal path
+        if _sig_state["count"] == 0:
+            _sig_state["count"] += 1
+            try:
+                request_cancel()
+            except Exception:
+                pass
+            try:
+                print(
+                    "\nstopping after current attempt... (press again to force abort)",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        # 2nd press: restore the original handler, then force an immediate
+        # abort. SystemExit(130) is not caught by the cooperative
+        # `except KeyboardInterrupt` paths (runner / tier loops), so it
+        # bypasses partial-result gathering instead of re-entering it.
         try:
-            accounts = _build_run_log_summary(mode, results)[0]
+            if _orig_sigint is not None:
+                signal.signal(signal.SIGINT, _orig_sigint)
+            else:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+        except Exception:
+            pass
+        try:
+            print("\nforced abort.", flush=True)
+        except Exception:
+            pass
+        raise SystemExit(130)
+
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except Exception:  # pragma: no cover - non-main thread
+        pass
+    try:
+        try:
+            with capture:
+                results = run_all_accounts(
+                    routine, accounts=accounts, max_parallel=max_parallel
+                )
+                if mode == "quests":
+                    failed = summarize_quests(results.items(), dry_run=dry_run)
+                elif mode == "asgard-shop":
+                    failed = summarize_asgard_shop(results.items())
+                elif mode == "consumable":
+                    failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode == "toe":
+                    failed = summarize_toe(results.items())
+                else:
+                    failed = summarize(results.items())
+        except BaseException as exc:
+            # 例外・割り込み（KeyboardInterrupt 等）でも失敗として記録する。
+            # トレースは main() のハンドラが capture 終了後に stderr へ出すため、
+            # ここでキャプチャ済み出力に追記して DB 側にも残す。ハンドラ内の
+            # サマリ構築が失敗しても元例外を隠蔽しないよう防御する。
+            trace = traceback.format_exc()
+            if isinstance(exc, SystemExit) and isinstance(exc.code, int):
+                exit_code = exc.code
+            elif isinstance(exc, KeyboardInterrupt):
+                exit_code = 130
+            else:
+                exit_code = 1
+            try:
+                accounts = _build_run_log_summary(mode, results)[0]
+            except Exception:  # pragma: no cover - defensive
+                accounts = []
+            try:
+                record_run_log(
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    mode=mode,
+                    status="failed",
+                    exit_code=exit_code,
+                    accounts=accounts,
+                    error_summary=str(exc) or type(exc).__name__,
+                    log_text=(_sanitize_progress_log_text(capture.getvalue()) + "\n" + trace).strip() or None,
+                    log_file=os.environ.get("HWGENIE_LOG_FILE"),
+                    hostname=_run_host_identifier(),
+                )
+            except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the original failure (e.g. 2nd Ctrl+C)
+                print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
+            raise
+    finally:
+        try:
+            if _orig_sigint is None:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+            else:
+                signal.signal(signal.SIGINT, _orig_sigint)
         except Exception:  # pragma: no cover - defensive
-            accounts = []
-        record_run_log(
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            mode=mode,
-            status="failed",
-            exit_code=exit_code,
-            accounts=accounts,
-            error_summary=str(exc) or type(exc).__name__,
-            log_text=(capture.getvalue() + "\n" + trace).strip() or None,
-            log_file=os.environ.get("HWGENIE_LOG_FILE"),
-            hostname=_run_host_identifier(),
+            pass
+    if is_cancelled():
+        # Cooperative 1st-press stop: the mid-run summary was already
+        # printed inside the capture above. A user-aborted account/tier
+        # counts as COMPLETE (ok); only real failures fail the run.
+        try:
+            account_logs, error_summary = _build_run_log_summary(mode, results)
+        except Exception:  # pragma: no cover - defensive
+            account_logs, error_summary = [], None
+        has_failures = bool(error_summary) or any(
+            isinstance(e, dict) and not e.get("ok", True) for e in account_logs
         )
-        raise
+        if has_failures:
+            status, exit_code = "failed", 1
+            if error_summary and "interrupt" not in error_summary.lower():
+                error_summary = f"{error_summary}; interrupted by user"
+            elif not error_summary:
+                error_summary = "interrupted by user"
+        else:
+            status, exit_code = "ok", 0
+            error_summary = None
+        try:
+            record_run_log(
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                mode=mode,
+                status=status,
+                exit_code=exit_code,
+                accounts=account_logs,
+                error_summary=error_summary,
+                log_text=_sanitize_progress_log_text(capture.getvalue()) or None,
+                log_file=os.environ.get("HWGENIE_LOG_FILE"),
+                hostname=_run_host_identifier(),
+            )
+        except BaseException as log_exc:  # noqa: BLE001 - logging must never mask the interrupt (e.g. 2nd Ctrl+C)
+            print(f"Warning: failed to record run log: {str(log_exc) or type(log_exc).__name__}", file=sys.stderr)
+            if isinstance(log_exc, (KeyboardInterrupt, SystemExit)):
+                # 2nd-press force abort during the DB write stays immediate
+                # (130) and is never masked as a clean complete.
+                if isinstance(log_exc, SystemExit) and isinstance(log_exc.code, int):
+                    raise
+                sys.exit(130)
+        if exit_code:
+            sys.exit(exit_code)
+        return
     account_logs, error_summary = _build_run_log_summary(mode, results)
     record_run_log(
         started_at=started_at,
@@ -805,12 +1075,46 @@ def cmd_multi(args):
         exit_code=1 if failed else 0,
         accounts=account_logs,
         error_summary=error_summary,
-        log_text=capture.getvalue() or None,
+        log_text=_sanitize_progress_log_text(capture.getvalue()) or None,
         log_file=os.environ.get("HWGENIE_LOG_FILE"),
         hostname=_run_host_identifier(),
     )
     if failed:
         sys.exit(1)
+
+
+def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
+    """True when ``err`` is a cooperative user cancel (counts as ok for toe)."""
+    if err is None:
+        return False
+    if isinstance(err, (InterruptedError, KeyboardInterrupt)):
+        return True
+    try:
+        return "interrupted by user" in str(err).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _is_toe_interrupt_entry(entry: object) -> bool:
+    """True for the ``interrupted by user`` marker in a tier ``errors`` list."""
+    if isinstance(entry, dict):
+        if entry.get("stage") == "interrupted":
+            return True
+        try:
+            return "interrupted by user" in str(entry.get("message", "")).lower()
+        except Exception:  # pragma: no cover - defensive
+            return False
+    try:
+        return "interrupted by user" in str(entry).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _toe_real_errors(errors: object) -> list:
+    """Return tier ``errors`` without the cooperative-interrupt marker."""
+    if not isinstance(errors, list):
+        return list(errors) if errors else []
+    return [e for e in errors if not _is_toe_interrupt_entry(e)]
 
 
 def _run_log_account_failure(
@@ -822,10 +1126,14 @@ def _run_log_account_failure(
     functions so ``run_logs`` rows stay consistent with the printed summary:
     quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
     and unavailable statuses all count as failures, matching the ``failed``
-    counter returned by ``summarize``. Exceptions are reported by their first
-    message line.
+    counter returned by ``summarize``. A cooperative user cancel counts as
+    COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
+    ``interrupted=True`` tier summaries without real bridge/API errors map
+    to None. Exceptions are reported by their first message line.
     """
     if err is not None:
+        if mode == "toe" and _is_toe_interrupt_exc(err):
+            return None
         message = str(err).strip().splitlines()
         return message[0] if message else type(err).__name__
     if mode == "quests":
@@ -855,6 +1163,22 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "toe":
+        if isinstance(result, dict):
+            real_errors = _toe_real_errors(result.get("errors", []))
+            if result.get("interrupted"):
+                return f"{len(real_errors)} toe error(s)" if real_errors else None
+            if real_errors:
+                return f"{len(real_errors)} toe error(s)"
+            if result.get("remaining_rivals") == 0:
+                return None
+            if not result.get("rival_results") and not result.get("completed_tier"):
+                return None
+            wins = sum(1 for r in result.get("rival_results", []) if r.get("win"))
+            if not wins and not result.get("completed_tier"):
+                return "no rival cleared"
+            return None
+        return "toe result unavailable"
     # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
     from hw_genie.core.client import PlayerStatus
 
@@ -1070,6 +1394,99 @@ def main():
     raw_json_group.add_argument("--json", action="store_true", help="Print parsed messages as JSON")
     p_chat.set_defaults(func=cmd_chat)
 
+    # Titan Arena (ToE)
+    p_toe = subparsers.add_parser("toe", parents=[parent_parser], help="Titan Arena (ToE) operations")
+    toe_sub = p_toe.add_subparsers(dest="toe_type", help="ToE operation")
+    p_toe_attack = toe_sub.add_parser("attack", parents=[parent_parser], help="Start a Titan Arena battle with arbitrary titans")
+    p_toe_attack.add_argument(
+        "--rival",
+        required=False,
+        default=None,
+        help="Rival ID (omitted → auto-select lowest score wall/player via titanArenaGetStatus, threshold=250)",
+    )
+    p_toe_attack.add_argument(
+        "--titans",
+        nargs=5,
+        type=int,
+        required=False,
+        default=None,
+        metavar="TITAN_ID",
+        help="5 titan IDs (omitted → auto-resolve via teamGetAll.titan_arena)",
+    )
+    p_toe_attack.add_argument("--dry-run", action="store_true", help="Verify startBattle only (no endBattle)")
+    p_toe_attack.add_argument("--estimate-only", action="store_true", help="Estimate win/lose without calling endBattle")
+    p_toe_attack.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid", "playwright"],
+        default="estimate",
+        help="Battle engine: 'estimate' (power-based, server rejects EndBattle), 'hybrid' (delegate to userscript via auth server), or 'playwright' (headless Chromium, no manual screen required)",
+    )
+    p_toe_attack.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the JS bridge (used with --engine hybrid)",
+    )
+    p_toe_attack.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
+    )
+    p_toe_attack.set_defaults(func=cmd_toe_attack)
+    p_toe_run = toe_sub.add_parser("run", parents=[parent_parser], help="Drive a full ToE tier end-to-end (raid + rivals + CompleteTier)")
+    p_toe_run.add_argument(
+        "--titans",
+        nargs=5,
+        type=int,
+        required=False,
+        default=None,
+        metavar="TITAN_ID",
+        help="5 titan IDs (omitted → auto-resolve via teamGetAll.titan_arena)",
+    )
+    p_toe_run.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid", "playwright"],
+        default="estimate",
+        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (full automation via userscript), or 'playwright' (headless Chromium, no manual screen required)",
+    )
+    p_toe_run.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the JS bridge (used with --engine hybrid)",
+    )
+    p_toe_run.add_argument(
+        "--threshold",
+        type=int,
+        default=AUTO_RIVAL_SCORE_THRESHOLD,
+        help=f"attackScore threshold that defines 'rivals worth finishing' (default: {AUTO_RIVAL_SCORE_THRESHOLD} = cleared)",
+    )
+    p_toe_run.add_argument(
+        "--stop-on-loss",
+        action="store_true",
+        help="Abort the tier after the first losing/abandoned rival attempt (stops rotation retries; losing sims already skip EndBattle with no score banking)",
+    )
+    p_toe_run.add_argument(
+        "--seeds",
+        type=int,
+        default=2,
+        help="Seeds tried per team per rival (each seed = fresh StartBattle; losses are abandoned without EndBattle)",
+    )
+    p_toe_run.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Cap total StartBattle attempts per rival (default: full pass = teams x seeds; estimate-engine runs should pass an explicit cap)",
+    )
+    p_toe_run.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
+    )
+    p_toe_run.set_defaults(func=cmd_toe_run)
+    p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")
+    p_toe_status.set_defaults(func=cmd_toe_status)
+
     # Daily
     p_daily = subparsers.add_parser("daily", parents=[parent_parser], help="Daily routine")
     p_daily.add_argument("--curl", "-c", help="Curl command to extract item raid payload")
@@ -1117,10 +1534,39 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), or 'consumable' (consume all registered consumables)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear)",
+    )
+    p_multi.add_argument(
+        "--engine",
+        choices=["estimate", "hybrid", "playwright"],
+        default="hybrid",
+        help="Battle engine for the 'toe' mode (default: hybrid)",
+    )
+    p_multi.add_argument(
+        "--seeds",
+        type=int,
+        default=2,
+        help="Seeds tried per team per rival for the 'toe' mode (default: 2)",
+    )
+    p_multi.add_argument(
+        "--threshold",
+        type=int,
+        default=250,
+        help="attackScore threshold for the 'toe' mode (default: 250 = cleared)",
+    )
+    p_multi.add_argument(
+        "--auth-server-url",
+        default="http://127.0.0.1:8765",
+        help="auth server base URL for the 'toe' mode JS bridge (default: http://127.0.0.1:8765)",
+    )
+    p_multi.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Cap total StartBattle attempts per rival for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(
@@ -1168,6 +1614,12 @@ def main():
         type=int,
         default=9999,
         help="Item raid iteration count for 'daily'/'full' modes (each request raids 10 times). Default: until stamina runs out.",
+    )
+    p_multi.add_argument(
+        "--progress",
+        choices=["quiet", "line", "verbose"],
+        default="line",
+        help="Output compactness for the 'toe' mode: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
     )
     p_multi.set_defaults(func=cmd_multi)
 
@@ -1221,6 +1673,9 @@ def main():
 
         print(f"\n{Emojis.ERROR}{e}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted (Ctrl+C).", file=sys.stderr)
+        sys.exit(130)
     except Exception as e:
         from hw_genie.core.client import Emojis
 

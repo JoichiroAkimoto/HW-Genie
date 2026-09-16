@@ -14,6 +14,7 @@ for good concurrency and keeps each account's work isolated behind its own
 
 import logging
 import re
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence
@@ -23,6 +24,24 @@ from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import display_width, pad, rank_color, style
 
 logger = logging.getLogger(__name__)
+
+
+_cancel_event = threading.Event()
+
+
+def request_cancel() -> None:
+    """Signal cooperative cancellation (Ctrl+C) to running workers."""
+    _cancel_event.set()
+
+
+def is_cancelled() -> bool:
+    """True when a Ctrl+C cancellation has been requested."""
+    return _cancel_event.is_set()
+
+
+def reset_cancel() -> None:
+    """Clear the cancellation flag (call before starting a new run)."""
+    _cancel_event.clear()
 
 
 def list_account_aliases() -> list[str]:
@@ -55,6 +74,90 @@ def _env_int(name: str, default: int) -> int:
         return int(__import__("os").environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+# --- Compact ToE progress: per-account status dashboard --------------------
+# Multi ToE runs fan out across threads; without coordination their
+# per-attempt lines interleave. The dashboard gives each worker one
+# lock-guarded status line keyed by account
+# (`[acc] rival X [a/b] wins w pace ...`). TTY: ``\r`` in-place update;
+# non-TTY: plain throttled lines. The lock only guards printing — API
+# parallelism and result ordering are untouched.
+
+TOE_PROGRESS_THROTTLE_SECS = 5.0
+
+
+def sanitize_progress_log(text: str | None) -> str | None:
+    """Collapse ``\\r`` in-place updates for stored run logs.
+
+    Keeps only the text after the last ``\\r`` on each line (the final
+    visible status), so :class:`OutputCapture` buffers never persist bare
+    carriage returns. ``None`` passes through; text without ``\\r`` is
+    returned unchanged.
+    """
+    if text is None or "\r" not in text:
+        return text
+    return "\n".join(
+        line.rsplit("\r", 1)[-1] if "\r" in line else line
+        for line in text.split("\n")
+    )
+
+
+class ToeProgressDashboard:
+    """Thread-safe per-account one-line status display for multi ToE runs."""
+
+    def __init__(self, throttle_secs: float = TOE_PROGRESS_THROTTLE_SECS) -> None:
+        self._lock = threading.Lock()
+        try:
+            self._throttle = float(throttle_secs)
+        except (TypeError, ValueError):
+            self._throttle = TOE_PROGRESS_THROTTLE_SECS
+        self._last_emit: dict[str, float] = {}
+
+    def update(self, account: str, message: str, force: bool = False) -> None:
+        """Render ``message`` as ``account``'s status line (thread-safe)."""
+        import sys
+        import time as _time
+
+        acc = str(account or "?")
+        text = message if message.startswith(f"[{acc}]") else f"[{acc}] {message}"
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        with self._lock:
+            if is_tty:
+                try:
+                    sys.stdout.write("\r" + text)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                return
+            now = _time.monotonic()
+            last = self._last_emit.get(acc, 0.0)
+            if force or (now - last) >= self._throttle:
+                self._last_emit[acc] = now
+                try:
+                    print(text, flush=True)
+                except Exception:
+                    pass
+
+    def finish(self, account: str | None = None) -> None:
+        """Terminate an active TTY status line (newline); no-op otherwise."""
+        import sys
+
+        try:
+            is_tty = bool(sys.stdout.isatty())
+        except Exception:
+            is_tty = False
+        if not is_tty:
+            return
+        with self._lock:
+            try:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
 
 
 def run_for_account(
@@ -122,17 +225,58 @@ def run_all_accounts(
     )
 
     results: dict[str, tuple[object | None, BaseException | None]] = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(run_for_account, acc, routine): acc for acc in accounts
-        }
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = {
+        pool.submit(run_for_account, acc, routine): acc for acc in accounts
+    }
+    try:
         for fut in as_completed(futures):
             acc, res, err = fut.result()
             results[acc] = (res, err)
+    except KeyboardInterrupt:
+        request_cancel()
+        for fut in futures:
+            if not fut.done():
+                try:
+                    fut.cancel()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+        for fut, acc in futures.items():
+            if acc in results:
+                continue
+            if fut.done() and not fut.cancelled():
+                try:
+                    _acc, res, err = fut.result()
+                    results[_acc] = (res, err)
+                except KeyboardInterrupt:
+                    results[acc] = (None, InterruptedError("interrupted by user"))
+                except Exception as exc:  # noqa: BLE001 - preserve failure (SystemExit from 2nd Ctrl+C must propagate, not be stored)
+                    try:
+                        from concurrent.futures import CancelledError as _CE
 
-    # 完了順ではなく投入順（= 登録順）で返す。dict は挿入順を保持するため、
-    # summarize などの呼び出し側はそのまま並び順を表示に使える。
-    return {acc: results[acc] for acc in accounts}
+                        if isinstance(exc, _CE):
+                            results[acc] = (
+                                None,
+                                InterruptedError("interrupted by user"),
+                            )
+                            continue
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    results[acc] = (None, exc)
+            else:
+                results.setdefault(
+                    acc, (None, InterruptedError("interrupted by user"))
+                )
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # pragma: no cover - Python < 3.9
+            pool.shutdown(wait=False)
+        return {acc: results.get(acc, (None, InterruptedError("interrupted by user"))) for acc in accounts}
+    else:
+        pool.shutdown(wait=True)
+        # 完了順ではなく投入順（= 登録順）で返す。dict は挿入順を保持するため、
+        # summarize などの呼び出し側はそのまま並び順を表示に使える。
+        return {acc: results[acc] for acc in accounts}
 
 
 # --- Convenience routines usable with run_all_accounts / run_for_account ---
@@ -245,6 +389,82 @@ def full_routine(
     )
     client.exchange_stones()
     return daily_routine(client, account, item_max_iterations=item_max_iterations)
+
+
+def toe_routine(
+    engine: str = "hybrid",
+    seeds_per_team: int = 2,
+    threshold: int = 250,
+    auth_server_url: str = "http://127.0.0.1:8765",
+    max_total_attempts: int | None = None,
+    progress: str = "verbose",
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that clears the Titan Arena tier for any account.
+
+    Runs :func:`hw_genie.commands.titan_arena.run_titan_arena_tier` with the
+    saved-team-first rotation (``--titans`` omitted). ``engine`` selects the
+    battle engine (``hybrid`` delegates to the userscript via the auth
+    server, ``playwright`` drives headless Chromium, ``estimate`` only
+    plans). Per-account ``x-auth-user-id`` headers select the bridge job
+    queue entry (the server enforces the account match with a claimed_by
+    guard), so parallel runs behave like the other modes: ``--parallel``
+    wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
+
+    ``progress`` selects output compactness (``quiet``/``line``/``verbose``;
+    unknown values fall back to ``verbose``). In ``line`` mode all workers
+    share one :class:`ToeProgressDashboard` so per-account status lines
+    stay lock-guarded without affecting API parallelism or result order.
+
+    Returns:
+        A routine whose result per account is the tier summary dict
+        returned by ``run_titan_arena_tier``.
+    """
+    from hw_genie.battle.engine import get_default_engine
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
+    _dashboard = ToeProgressDashboard() if _mode == "line" else None
+
+    def run(client: HWClient, account: str) -> object:
+        headers = getattr(client, "headers", {}) or {}
+        if engine == "playwright":
+            eng = get_default_engine(mode=engine, headers=dict(headers))
+        elif engine != "estimate":
+            user_id = str(headers.get("x-auth-user-id", ""))
+            eng = get_default_engine(
+                mode=engine,
+                auth_server_url=auth_server_url,
+                user_id=user_id,
+            )
+        else:
+            eng = get_default_engine(mode=engine)
+        try:
+            return run_titan_arena_tier(
+                client,
+                titans=None,
+                engine=eng,
+                attack_score_threshold=threshold,
+                seeds_per_team=seeds_per_team,
+                max_total_attempts=max_total_attempts,
+                account_label=account,
+                progress=_mode,
+                dashboard=_dashboard,
+            )
+        except TypeError:
+            # Backward compat: older/stubbed run_titan_arena_tier without
+            # progress/dashboard kwargs (e.g. test doubles).
+            return run_titan_arena_tier(
+                client,
+                titans=None,
+                engine=eng,
+                attack_score_threshold=threshold,
+                seeds_per_team=seeds_per_team,
+                max_total_attempts=max_total_attempts,
+                account_label=account,
+            )
+
+    run.dashboard = _dashboard  # type: ignore[attr-defined]
+    return run
 
 
 def consumable_routine(
@@ -635,15 +855,148 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
+    """True when ``err`` is a cooperative user cancel (not a real failure)."""
+    if err is None:
+        return False
+    if isinstance(err, (InterruptedError, KeyboardInterrupt)):
+        return True
+    try:
+        return "interrupted by user" in str(err).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _is_toe_interrupt_entry(entry: object) -> bool:
+    """True for the ``interrupted by user`` marker in a tier ``errors`` list."""
+    if isinstance(entry, dict):
+        if entry.get("stage") == "interrupted":
+            return True
+        try:
+            return "interrupted by user" in str(entry.get("message", "")).lower()
+        except Exception:  # pragma: no cover - defensive
+            return False
+    try:
+        return "interrupted by user" in str(entry).lower()
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _toe_real_errors(errors: object) -> list:
+    """Return ``errors`` without the cooperative-interrupt marker entries."""
+    if not isinstance(errors, list):
+        return list(errors) if errors else []
+    return [e for e in errors if not _is_toe_interrupt_entry(e)]
+
+
+def summarize_toe(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+) -> int:
+    """Print a per-account Titan Arena table and return the failed count.
+
+    Results come from :func:`toe_routine`: per account the tier summary
+    dict from ``run_titan_arena_tier``. An account fails when its routine
+    errored (other than a cooperative user cancel), when the summary
+    carries real ``errors``, or when rivals were attempted but none was
+    won and the tier did not complete. A user-aborted account/tier
+    (``InterruptedError`` entry or ``interrupted=True`` summary without
+    real errors) counts as COMPLETE (ok): the interrupt marker itself in
+    ``errors`` never fails the account; only real bridge/API errors do.
+    A summary with ``remaining_rivals == 0`` means fully cleared and
+    counts as ok even without wins/completion flags; an empty
+    ``rival_results`` with no errors is idle (nothing to do) and also
+    counts as ok so cleared accounts don't page every cron run. Columns
+    show wins / attempted rivals / completed flag / final tier /
+    remaining rivals. Column widths use display width (emoji/CJK aware)
+    so rows never shift.
+    """
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is not None and _is_toe_interrupt_exc(err):
+            rows.append([account, "-", "-", "-", "-", "-"])
+            ok += 1
+            continue
+        if err is None and isinstance(res, dict):
+            wins = sum(1 for r in res.get("rival_results", []) if r.get("win"))
+            total = len(res.get("rival_results", []))
+            completed = "✅" if res.get("completed_tier") else "-"
+            errors = res.get("errors", [])
+            real_errors = _toe_real_errors(errors)
+            tier = res.get("final_tier")
+            remaining = res.get("remaining_rivals")
+            rows.append([
+                account,
+                f"{wins}/{total}",
+                completed,
+                str(tier) if tier is not None else "-",
+                str(remaining) if remaining is not None else "-",
+                str(res.get("daily_reward") or "-"),
+            ])
+            if res.get("interrupted"):
+                if real_errors:
+                    failed.append(f"{account} ({len(real_errors)} error(s))")
+                else:
+                    ok += 1
+            elif real_errors:
+                failed.append(f"{account} ({len(real_errors)} error(s))")
+            elif remaining == 0:
+                # Fully cleared: nothing left to attack counts as complete,
+                # even if no battle was won banked this run (e.g. raid-only
+                # clears or a final no-target pass).
+                ok += 1
+            elif not res.get("rival_results") and not res.get("completed_tier"):
+                ok += 1
+            elif not wins and not res.get("completed_tier"):
+                failed.append(f"{account} (no rival cleared)")
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (toe result unavailable)")
+        else:
+            failed.append(account)
+
+    headers = ["Account", "Won", "TierDone", "Tier", "Left", "Daily"]
+    rule_width = 50
+    if rows:
+        widths = [
+            max([_display_width(headers[i]), *(_display_width(r[i]) for r in rows)])
+            for i in range(len(headers))
+        ]
+        plain_header = " | ".join(_pad(h, widths[i]) for i, h in enumerate(headers))
+        rule_width = max(rule_width, _display_width(plain_header))
+    rule = "=" * rule_width
+    print("\n" + rule)
+    print("📊 --- Multi toe summary ---")
+    if rows:
+        print(plain_header)
+        for r in rows:
+            print(" | ".join(_pad(c, widths[i]) for i, c in enumerate(r)))
+    if failed:
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print(rule)
+    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 __all__ = [
     "list_account_aliases",
     "run_for_account",
     "run_all_accounts",
+    "request_cancel",
+    "is_cancelled",
+    "reset_cancel",
+    "ToeProgressDashboard",
+    "sanitize_progress_log",
+    "TOE_PROGRESS_THROTTLE_SECS",
     "daily_routine",
     "full_routine",
     "quests_routine",
     "asgard_shop_routine",
     "consumable_routine",
+    "toe_routine",
+    "summarize_toe",
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",

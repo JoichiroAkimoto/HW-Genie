@@ -2,8 +2,10 @@ import logging
 import os
 import random
 import re
+import signal
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NotRequired, TypedDict
 import urllib.parse
@@ -63,21 +65,86 @@ def is_hrana_stream_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _HRANA_STREAM_MARKERS)
 
 
+# Substrings that identify transient DNS resolution failures (e.g. Docker
+# bridge DNS on WSL right after container start: the first lookup can fail
+# while later ones succeed). Worth retrying like any transient network
+# error; persistent misconfiguration still surfaces after attempts are
+# exhausted. Keep markers lowercase; matches are case-insensitive.
+# NOTE: no generic "dns error" marker — it over-matches unrelated messages
+# (e.g. Hrana "dns error" wrappers are already covered by the specific
+# lookup/resolution strings below).
+_DNS_FAILURE_MARKERS = (
+    "temporary failure in name resolution",
+    "failed to lookup address information",
+    "name or service not known",
+    "nodename nor servname provided",
+)
+
+
+def is_dns_error(exc: BaseException) -> bool:
+    """True when ``exc`` indicates a transient DNS resolution failure."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _DNS_FAILURE_MARKERS)
+
+
 def is_transient_db_error(exc: BaseException) -> bool:
     """True when ``exc`` is a transient DB error worth retrying.
 
     Covers SQLite WAL single-writer contention (``wal_insert_begin failed`` /
-    ``database is locked``) and Turso Hrana stream death (``stream not
-    found`` / server-initiated closes). Both are resolved by re-opening a
-    fresh connection.
+    ``database is locked``), Turso Hrana stream death (``stream not
+    found`` / server-initiated closes), and transient DNS resolution
+    failures. All are resolved by retrying with a fresh connection.
     """
-    return is_wal_contention(exc) or is_hrana_stream_error(exc)
+    return is_wal_contention(exc) or is_hrana_stream_error(exc) or is_dns_error(exc)
 
 
 def is_wal_contention(exc: BaseException) -> bool:
     """True when ``exc`` indicates SQLite WAL single-writer contention."""
     msg = str(exc).lower()
     return any(marker in msg for marker in _WAL_CONTENTION_MARKERS)
+
+
+@contextmanager
+def defer_sigint():
+    """Defer SIGINT delivery across blocking native (Rust) DB calls.
+
+    CPython runs signal handlers on the main thread only, so a SIGINT that
+    arrives while the main thread is inside the libsql/Turso Rust extension
+    makes pyo3 ``unwrap()`` a ``PyErr(KeyboardInterrupt)`` and the process
+    dies with ``pyo3_runtime.PanicException`` instead of a clean
+    ``KeyboardInterrupt``. Blocking SIGINT for the duration of the native
+    call defers delivery: a pending interrupt is raised as a regular
+    ``KeyboardInterrupt`` in Python code right after unblocking.
+
+    No-op off the main thread (handlers never run there) and on platforms
+    without ``pthread_sigmask``. Fast local DB writes finish in milliseconds
+    so a Ctrl+C landing inside them is deferred only briefly, then delivered
+    as a regular ``KeyboardInterrupt`` right after unblocking. Remote
+    syncs/network attempts can take longer: Ctrl+C during such a call is
+    still deferred until the call returns (delivery is never lost). Sleeps
+    between retries stay interruptible since they run outside the shield.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    block = getattr(signal, "pthread_sigmask", None)
+    if block is None:  # e.g. Windows
+        yield
+        return
+    try:
+        prev = block(signal.SIG_BLOCK, {signal.SIGINT})
+    except (OSError, RuntimeError, ValueError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            block(signal.SIG_SETMASK, prev)
+        except (OSError, RuntimeError, ValueError):
+            logging.getLogger(__name__).warning(
+                "defer_sigint: failed to restore signal mask", exc_info=True
+            )
 
 
 def retry_on_wal_contention(
@@ -91,19 +158,26 @@ def retry_on_wal_contention(
 
     NOTE: the name is historical — this helper no longer retries only WAL
     contention. It retries any transient DB error: WAL single-writer
-    contention (``wal_insert_begin failed`` / ``database is locked``) and
+    contention (``wal_insert_begin failed`` / ``database is locked``),
     Turso Hrana stream death (``stream not found`` / server-initiated
-    closes). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
+    closes), and transient DNS resolution failures (``temporary failure in
+    name resolution`` / ``name or service not known`` / ...). Backoff is ``base_delay * 2 ** (attempt - 1)`` with random
     jitter (0.5x-1.5x) so multiple processes sharing the replica do not
     retry in lockstep and re-collide. Non-transient exceptions propagate
     immediately; the last exception is re-raised when all attempts are
     exhausted. Returns ``fn()``'s value on success.
+
+    Each attempt runs under :func:`defer_sigint` so a Ctrl+C landing inside
+    the native driver is delivered as a clean ``KeyboardInterrupt`` after
+    the call instead of panicking inside Rust (pyo3 ``unwrap`` on
+    ``PyErr(KeyboardInterrupt)``). The backoff sleep stays interruptible.
     """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
     for attempt in range(1, attempts + 1):
         try:
-            return fn()
+            with defer_sigint():
+                return fn()
         except Exception as exc:
             if not is_transient_db_error(exc) or attempt == attempts:
                 raise
