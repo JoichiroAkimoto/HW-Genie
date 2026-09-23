@@ -324,6 +324,9 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
   Raid 可能 Tier は常に Raid から開始される。
   明示編成: `hw-genie toe run -a VitaminD --titans 4003 4023 4004 4001 4000`
   - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
+  - 各試行の負けも `EndBattle` で部分スコアをバンクするのが既定
+    （`--seeds` 既定 10）。`--no-end-on-loss` で負けのバンクを抑止
+    （高速掃引、best-loss fallback は継続）。
   - プラン全滅しても勝てない rival には最善負けの確保（best-loss fallback）:
     検証済み敗北の中で stars 最大の編成を `end_on_loss=True` で 1 回だけ
     再実行し、部分 `attackScore` をバンクする。estimate エンジン・未検証

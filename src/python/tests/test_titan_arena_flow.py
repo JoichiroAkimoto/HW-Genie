@@ -2283,3 +2283,85 @@ def test_run_rivals_banking_status_line_total_bumped(mock_client, mock_sleep, mo
     out = capsys.readouterr().out
     assert "[3/3]" in out
     assert "[3/2]" not in out
+
+
+def test_cli_parser_toe_run_defaults_seeds_10(mocker):
+    """`toe run` defaults to 10 seeds with banking enabled."""
+    from hw_genie.main import main
+    import sys
+
+    mocker.patch("hw_genie.core.database.init_db")
+    mocker.patch("hw_genie.core.database.install_token_masking_filter")
+    mocker.patch("hw_genie.main.setup_logging")
+    mock_run = mocker.patch("hw_genie.main.cmd_toe_run")
+    sys.argv = ["hw-genie", "toe", "run", "-a", "TestUser"]
+    main()
+    mock_run.assert_called_once()
+    args = mock_run.call_args.args[0]
+    assert args.seeds == 10
+    assert args.no_end_on_loss is False
+    assert args.no_bank_best_loss is False
+
+
+def test_cmd_toe_run_end_on_loss_default_and_opt_out(mocker):
+    """toe run banks losses by default; --no-end-on-loss disables it."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.main.HWClient")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena_tier")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+
+    def make_args(no_end):
+        args = MagicMock()
+        args.account = "TestUser"
+        args.titans = None
+        args.threshold = 250
+        args.stop_on_loss = False
+        args.engine = "estimate"
+        args.auth_server_url = "http://127.0.0.1:8765"
+        args.seeds = 10
+        args.max_attempts = None
+        args.no_bank_best_loss = False
+        args.no_end_on_loss = no_end
+        return args
+
+    cmd_toe_run(make_args(False))
+    assert mock_run.call_args.kwargs.get("end_on_loss") is True
+    cmd_toe_run(make_args(True))
+    assert mock_run.call_args.kwargs.get("end_on_loss") is False
+
+
+def test_resolve_toe_end_on_loss_magicmock_safe(mocker):
+    """Legacy bare-MagicMock args keep banking enabled (explicit True opts out)."""
+    from hw_genie.main import _resolve_toe_end_on_loss
+
+    assert _resolve_toe_end_on_loss(MagicMock()) is True
+
+    class NoFlag:
+        pass
+
+    assert _resolve_toe_end_on_loss(NoFlag()) is True
+    assert _resolve_toe_end_on_loss(MagicMock(no_end_on_loss=True)) is False
+    assert _resolve_toe_end_on_loss(MagicMock(no_end_on_loss=False)) is True
+
+
+def test_tier_threads_end_on_loss_to_rivals(mock_client, mock_sleep, mocker):
+    """run_titan_arena_tier banks losses by default and forwards opt-out."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    seen = []
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    mock_call.side_effect = [_ok({"response": status}), _ok({"response": status})]
+
+    def spy(client, status, titans, engine, threshold, stop, **kw):
+        seen.append(kw.get("end_on_loss"))
+        return []
+
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=spy)
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), end_on_loss=False)
+    assert seen == [True, False]

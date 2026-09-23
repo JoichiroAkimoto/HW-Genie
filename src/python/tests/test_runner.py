@@ -2382,3 +2382,57 @@ def test_toe_routine_threads_bank_best_loss(monkeypatch):
     assert seen["bank"] is True
     runner.toe_routine(engine="estimate", bank_best_loss=False)(FakeClient(), "Joe")
     assert seen["bank"] is False
+
+
+def test_toe_routine_defaults_seeds_10_and_end_on_loss(monkeypatch):
+    """toe_routine defaults to 10 seeds with loss banking enabled."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, max_total_attempts=None, **kw):
+        seen["seeds"] = seeds_per_team
+        seen["bank"] = kw.get("end_on_loss")
+        return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    runner.toe_routine(engine="estimate")(FakeClient(), "Joe")
+    assert seen == {"seeds": 10, "bank": True}
+    runner.toe_routine(engine="estimate", seeds_per_team=3, end_on_loss=False)(FakeClient(), "Joe")
+    assert seen == {"seeds": 3, "bank": False}
+
+
+def test_cmd_multi_toe_threads_no_end_on_loss(monkeypatch):
+    """multi toe --no-end-on-loss reaches toe_routine (default banking on)."""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_toe_routine(engine="hybrid", seeds_per_team=10, threshold=250, auth_server_url="http://127.0.0.1:8765", max_total_attempts=None, progress="line", **kw):
+        captured["seeds"] = seeds_per_team
+        captured["bank"] = kw.get("end_on_loss")
+        return lambda c, a: ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)
+
+    monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
+    monkeypatch.setattr(
+        "hw_genie.main.run_all_accounts",
+        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+    )
+
+    def make_args(no_end):
+        return type(
+            "A",
+            (),
+            {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
+             "dry_run": False, "engine": "hybrid", "seeds": 10, "threshold": 250,
+             "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None,
+             "no_bank_best_loss": False, "no_end_on_loss": no_end},
+        )()
+
+    main.cmd_multi(make_args(False))
+    assert captured == {"seeds": 10, "bank": True}
+    main.cmd_multi(make_args(True))
+    assert captured == {"seeds": 10, "bank": False}

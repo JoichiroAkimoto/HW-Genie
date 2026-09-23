@@ -626,6 +626,7 @@ def run_titan_arena_tier(
     engine: BattleEngine | None = None,
     attack_score_threshold: int = AUTO_RIVAL_SCORE_THRESHOLD,
     stop_on_first_loss: bool = False,
+    end_on_loss: bool = True,
     seeds_per_team: int = 2,
     bank_best_loss: bool = True,
     max_total_attempts: int | None = None,
@@ -653,9 +654,11 @@ def run_titan_arena_tier(
     stops fast. Unverified attempts (bridge failure, nothing banked) never
     trigger the abort since they carry no signal about team strength.
     This is orthogonal to the per-battle abandon policy: the
-    tier loop always calls :func:`run_titan_arena` with
-    ``end_on_loss=False``, i.e. losing sims skip ``EndBattle`` (no score
-    banking) and advance to the next team/seed instead of banking a loss.
+    tier loop calls :func:`run_titan_arena` with ``end_on_loss``
+    (default ``True``), i.e. losing sims also send ``EndBattle`` so partial
+    attackScore is banked on every attempt; pass ``end_on_loss=False``
+    (CLI ``--no-end-on-loss``) to skip ``EndBattle`` on losses and advance
+    to the next team/seed instead (faster sweeps, no score banking).
     When the plan is exhausted with no win, ``bank_best_loss`` (default
     ``True``) re-runs the highest-stars losing team once with
     ``end_on_loss=True`` so partial attackScore is banked; the estimate
@@ -783,7 +786,7 @@ def run_titan_arena_tier(
         try:
             rival_results = _run_rivals(
                 client, status, titans, engine, attack_score_threshold, stop_on_first_loss,
-                team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=False,
+                team_rotation=rotation, seeds_per_team=seeds_per_team, end_on_loss=end_on_loss,
                 bank_best_loss=bank_best_loss,
                 max_total_attempts=max_total_attempts,
                 account_label=account_label,
