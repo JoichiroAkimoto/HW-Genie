@@ -17,7 +17,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認。1000 上限アイテムは分割消費、マトリョーシカ系は残りが無くなるまでラウンドを自動繰り返し）。
 *   **guild-chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表形式と要約表示（`--type` / `--count` / `--last-id` / `--raw` / `--json`）。
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
-*   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
+*   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid 優先、全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
 *   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`）。
 *   **db-inspect**: データベース（Turso クラウド / ローカルレプリカ）の確認。
@@ -36,7 +36,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ギルドチャット**: `uv run hw-genie chat`（`chatGetAll` / `chatType=clan` の履歴を表形式と要約で表示。`--type` / `--count` / `--last-id` / `--raw` / `--json`。詳細は `.agents/skills/guild-chat/SKILL.md`）
 *   **Titan Arena**: `uv run hw-genie toe status -a <account>` / `toe attack -a <account> [--rival ID] [--titans 5個] [--dry-run]`（省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250）/ `toe run -a <account> [--titans 5個] [--threshold 250]`（詳細は `docs/api/GUILD_API.md#titan-arena-toe`）
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
-*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds` / `--threshold` / `--max-attempts` 対応）、`--dry-run` でプラン表示のみ（quests / consumable のみ。toe を含む他モードではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable 失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
+*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--no-end-on-loss` / `--no-bank-best-loss` 対応）、`--dry-run` でプラン表示のみ（quests / consumable のみ。toe を含む他モードではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable 失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
 *   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）
@@ -99,3 +99,6 @@ Python スクリプトの仕様（引数、動作、出力等）を変更した�
 3.  **README.md**: プロジェクト全体の機能概要。
 
 エージェントは「コードを直して終わり」ではなく、常にこれらドキュメントとの整合性を保つ責任があります。
+
+### 実在アカウント名の非混入（重要）
+コード・コメント・ドキュメント・スキル・テスト・コミットメッセージのいずれにも、実在のプレイヤー名／アカウント名（登録アカウントの実名など）を書かないでください。実行例やテストデータには `Alice` / `Bob` / `Carol` / `Dave` などの一般的なプレースホルダ名を使ってください。既存の混入を見つけた場合は同PRで置換してください。

@@ -393,10 +393,12 @@ def full_routine(
 
 def toe_routine(
     engine: str = "hybrid",
-    seeds_per_team: int = 2,
+    seeds_per_team: int = 10,
     threshold: int = 250,
     auth_server_url: str = "http://127.0.0.1:8765",
     max_total_attempts: int | None = None,
+    end_on_loss: bool = True,
+    bank_best_loss: bool = True,
     progress: str = "verbose",
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
@@ -409,6 +411,8 @@ def toe_routine(
     queue entry (the server enforces the account match with a claimed_by
     guard), so parallel runs behave like the other modes: ``--parallel``
     wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
+    Losing sims bank ``EndBattle`` by default (``end_on_loss=True``);
+    pass ``False`` (CLI ``--no-end-on-loss``) for faster no-banking sweeps.
 
     ``progress`` selects output compactness (``quiet``/``line``/``verbose``;
     unknown values fall back to ``verbose``). In ``line`` mode all workers
@@ -445,6 +449,8 @@ def toe_routine(
                 engine=eng,
                 attack_score_threshold=threshold,
                 seeds_per_team=seeds_per_team,
+                end_on_loss=end_on_loss,
+                bank_best_loss=bank_best_loss,
                 max_total_attempts=max_total_attempts,
                 account_label=account,
                 progress=_mode,
@@ -452,7 +458,10 @@ def toe_routine(
             )
         except TypeError:
             # Backward compat: older/stubbed run_titan_arena_tier without
-            # progress/dashboard kwargs (e.g. test doubles).
+            # progress/dashboard/bank_best_loss/end_on_loss kwargs (e.g. test
+            # doubles). The retry intentionally omits the new kwargs so old
+            # doubles keep working; the production path above already passes
+            # them (with the current defaults: banking enabled).
             return run_titan_arena_tier(
                 client,
                 titans=None,

@@ -49,11 +49,11 @@ test("非 2xx + 非 JSON ボディで例外を投げず false を返す（res.ok
 test("200 + status:success で true を返し、player 名も返す", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
-    authResponse: makeResponse(200, JSON.stringify({ status: "success", player: { name: "Joe" } })),
+    authResponse: makeResponse(200, JSON.stringify({ status: "success", player: { name: "Alice" } })),
   });
   const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.playerName, "Joe");
+  assert.strictEqual(result.playerName, "Alice");
 });
 
 test("200 + status:error で false を返す", async () => {

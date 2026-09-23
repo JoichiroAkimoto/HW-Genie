@@ -674,7 +674,7 @@ def test_consumable_routine_wraps_run(mock_client, mock_sleep):
         empty,  # 検証: 残りなし
     ]
 
-    result = routine(client, "The Best")
+    result = routine(client, "Bob")
 
     assert isinstance(result, list)
     assert len(result) == len(CONSUMABLE_USE_TARGETS)

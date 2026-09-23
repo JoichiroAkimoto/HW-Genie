@@ -24,7 +24,7 @@ def _record(now=None, **kwargs):
         mode=kwargs.get("mode", "daily"),
         status=kwargs.get("status", "ok"),
         exit_code=kwargs.get("exit_code", 0),
-        accounts=kwargs.get("accounts", [_run_entry("Joe")]),
+        accounts=kwargs.get("accounts", [_run_entry("Alice")]),
         error_summary=kwargs.get("error_summary"),
         log_text=kwargs.get("log_text", "line1\nline2\n"),
         log_file=kwargs.get("log_file"),
@@ -41,7 +41,7 @@ def _insert_raw(now: datetime, log_text: str = "old"):
             mode="daily",
             status="ok",
             exit_code=0,
-            accounts=[_run_entry("Joe")],
+            accounts=[_run_entry("Alice")],
             error_summary=None,
             log_text=log_text,
             log_file=None,
@@ -66,7 +66,7 @@ def test_record_and_list():
     assert row.mode == "daily"
     assert row.status == "ok"
     assert row.exit_code == 0
-    assert row.accounts == [{"account": "Joe", "ok": True, "error": None}]
+    assert row.accounts == [{"account": "Alice", "ok": True, "error": None}]
     assert row.error_summary is None
     assert row.log_text == "line1\nline2\n"
     assert row.log_file == "data/logs/hwda_20260812_013936.log"
@@ -77,16 +77,16 @@ def test_record_failed_with_error_summary():
         status="failed",
         exit_code=1,
         accounts=[
-            _run_entry("Joe", ok=False, error="Auth token expired"),
-            _run_entry("The Best"),
+            _run_entry("Alice", ok=False, error="Auth token expired"),
+            _run_entry("Bob"),
         ],
-        error_summary="1 account(s) failed: Joe (Auth token expired)",
+        error_summary="1 account(s) failed: Alice (Auth token expired)",
     )
     row = get_run_log(run_id)
     assert row is not None
     assert row.status == "failed"
     assert row.exit_code == 1
-    assert row.error_summary == "1 account(s) failed: Joe (Auth token expired)"
+    assert row.error_summary == "1 account(s) failed: Alice (Auth token expired)"
 
 
 def test_get_run_log_missing():
@@ -167,7 +167,7 @@ def test_record_best_effort_on_db_error():
                 mode="daily",
                 status="ok",
                 exit_code=0,
-                accounts=[_run_entry("Joe")],
+                accounts=[_run_entry("Alice")],
                 error_summary=None,
                 log_text=None,
             )
@@ -179,18 +179,18 @@ def test_build_run_log_summary_quests_failure():
     from hw_genie.main import _build_run_log_summary
 
     results = {
-        "Joe": ((["q1"], ["q2"], []), None),
+        "Alice": ((["q1"], ["q2"], []), None),
         "Ace": ((["q1"], [], []), None),
         "Bug": (([], [], []), RuntimeError("auth failed")),
     }
     entries, error_summary = _build_run_log_summary("quests", results)
     assert entries == [
-        {"account": "Joe", "ok": False, "error": "1 quest(s) failed"},
+        {"account": "Alice", "ok": False, "error": "1 quest(s) failed"},
         {"account": "Ace", "ok": True, "error": None},
         {"account": "Bug", "ok": False, "error": "auth failed"},
     ]
     assert error_summary == (
-        "2 account(s) failed: Joe (1 quest(s) failed), Bug (auth failed)"
+        "2 account(s) failed: Alice (1 quest(s) failed), Bug (auth failed)"
     )
 
 
@@ -200,7 +200,7 @@ def test_build_run_log_summary_consumable_failure():
     from hw_genie.main import _build_run_log_summary
 
     results = {
-        "Joe": ([ConsumableUseResult(lib_id=1, status=ResponseStatus.SUCCESS)], None),
+        "Alice": ([ConsumableUseResult(lib_id=1, status=ResponseStatus.SUCCESS)], None),
         "Ace": ([ConsumableUseResult(lib_id=2, status=ResponseStatus.ERROR)], None),
         "Bug": ([ConsumableUseResult(lib_id=3, status=ResponseStatus.UNEXPECTED)], None),
     }
@@ -238,7 +238,7 @@ def test_build_run_log_summary_asgard_failure():
         coins=1, spent=0, remaining=1, bought=0, skipped=False,
         items=[AsgardResult(action="x", status=ResponseStatus.ERROR)],
     )
-    results = {"Joe": (ok, None), "Ace": (fetch_err, None), "Bug": (purchase_err, None)}
+    results = {"Alice": (ok, None), "Ace": (fetch_err, None), "Bug": (purchase_err, None)}
     entries, error_summary = _build_run_log_summary("asgard-shop", results)
     assert entries[0]["ok"] is True
     assert entries[1] == {"account": "Ace", "ok": False, "error": "shop fetch failed: fetch boom"}
@@ -254,7 +254,7 @@ def test_build_run_log_summary_daily_status_unavailable():
     from hw_genie.main import _build_run_log_summary
 
     results = {
-        "Joe": (PlayerStatus(name="Alpha", level=130), None),
+        "Alice": (PlayerStatus(name="Alpha", level=130), None),
         "Ace": (None, None),
         "Bug": (PlayerStatus(name="Unknown", level=0), None),
     }

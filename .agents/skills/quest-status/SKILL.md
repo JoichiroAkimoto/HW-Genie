@@ -55,7 +55,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
 
    # 対話的ウィザード（TTY では rich による全画面リフレッシュ表示）
    uv run hw-genie quests -a <ACCOUNT> --edit-defaults
-   #  例: ⚙️  quest_defaults for Joe
+   #  例: ⚙️  quest_defaults for Alice
    #      ┌─────────────┬───────────────┬───────────────────────┬─────────┐
    #      │ # │ ID   │ Quest                    │ Operations (note) │ Status  │
    #      ├─────────────┼───────────────┼───────────────────────┼─────────┤

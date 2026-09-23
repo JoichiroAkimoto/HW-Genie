@@ -506,6 +506,34 @@ def _resolve_toe_progress(args, default: str = "line") -> str:
     return default
 
 
+def _resolve_toe_bank_best_loss(args) -> bool:
+    """Return whether best-loss banking is enabled for ToE commands.
+
+    Only an explicit ``--no-bank-best-loss`` (real ``True``) disables it;
+    anything else — including auto-created ``MagicMock`` attributes in
+    legacy tests — keeps the default ``True``.
+    """
+    try:
+        value = getattr(args, "no_bank_best_loss", False)
+    except Exception:
+        return True
+    return False if value is True else True
+
+
+def _resolve_toe_end_on_loss(args) -> bool:
+    """Return whether losing sims send EndBattle for ToE tier runs.
+
+    Only an explicit ``--no-end-on-loss`` (real ``True``) disables it;
+    anything else — including auto-created ``MagicMock`` attributes in
+    legacy tests — keeps the default ``True``.
+    """
+    try:
+        value = getattr(args, "no_end_on_loss", False)
+    except Exception:
+        return True
+    return False if value is True else True
+
+
 def _sanitize_progress_log_text(text: str | None) -> str | None:
     """Strip ``\\r`` in-place updates before persisting run-log output."""
     if text is None or "\r" not in text:
@@ -529,7 +557,7 @@ def cmd_toe_attack(args):
     from hw_genie.battle.engine import get_default_engine
 
     # ToE bridge は userscript の Game.ModelManager.player.userInfo.id (x-auth-user-id)
-    # と同じ文字列で job を紐付ける。alias ("Joe") ではなく数値 userId を使う。
+    # と同じ文字列で job を紐付ける。alias ("Alice") ではなく数値 userId を使う。
     engine_mode = getattr(args, "engine", "estimate")
     if engine_mode == "playwright":
         engine = get_default_engine(mode=engine_mode, headers=headers)
@@ -608,7 +636,9 @@ def cmd_toe_run(args):
             engine=engine,
             attack_score_threshold=args.threshold,
             stop_on_first_loss=bool(args.stop_on_loss),
-            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            end_on_loss=_resolve_toe_end_on_loss(args),
+            seeds_per_team=int(getattr(args, "seeds", 10) or 10),
+            bank_best_loss=_resolve_toe_bank_best_loss(args),
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
             account_label=account_label,
             progress=_resolve_toe_progress(args),
@@ -898,10 +928,12 @@ def cmd_multi(args):
         _max_attempts = getattr(args, "max_attempts", None)
         routine = toe_routine(
             engine=getattr(args, "engine", "hybrid") or "hybrid",
-            seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            seeds_per_team=int(getattr(args, "seeds", 10) or 10),
             threshold=int(getattr(args, "threshold", 250) or 250),
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            end_on_loss=_resolve_toe_end_on_loss(args),
+            bank_best_loss=_resolve_toe_bank_best_loss(args),
             progress=_resolve_toe_progress(args),
         )
         # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
@@ -1463,13 +1495,23 @@ def main():
     p_toe_run.add_argument(
         "--stop-on-loss",
         action="store_true",
-        help="Abort the tier after the first losing/abandoned rival attempt (stops rotation retries; losing sims already skip EndBattle with no score banking)",
+        help="Abort the tier after the first losing rival attempt (stops rotation retries; combine with --no-end-on-loss for no score banking)",
+    )
+    p_toe_run.add_argument(
+        "--no-bank-best-loss",
+        action="store_true",
+        help="Skip the best-loss fallback (by default, a rival with no win after the full plan banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
     )
     p_toe_run.add_argument(
         "--seeds",
         type=int,
-        default=2,
-        help="Seeds tried per team per rival (each seed = fresh StartBattle; losses are abandoned without EndBattle)",
+        default=10,
+        help="Seeds tried per team per rival (each seed = fresh StartBattle; losing sims bank EndBattle unless --no-end-on-loss)",
+    )
+    p_toe_run.add_argument(
+        "--no-end-on-loss",
+        action="store_true",
+        help="Skip EndBattle on losing sims (no score banking; faster sweeps, best-loss fallback still applies)",
     )
     p_toe_run.add_argument(
         "--max-attempts",
@@ -1548,8 +1590,8 @@ def main():
     p_multi.add_argument(
         "--seeds",
         type=int,
-        default=2,
-        help="Seeds tried per team per rival for the 'toe' mode (default: 2)",
+        default=10,
+        help="Seeds tried per team per rival for the 'toe' mode (default: 10)",
     )
     p_multi.add_argument(
         "--threshold",
@@ -1567,6 +1609,16 @@ def main():
         type=int,
         default=None,
         help="Cap total StartBattle attempts per rival for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap)",
+    )
+    p_multi.add_argument(
+        "--no-bank-best-loss",
+        action="store_true",
+        help="Skip the best-loss fallback in the 'toe' mode (by default, a rival with no win banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
+    )
+    p_multi.add_argument(
+        "--no-end-on-loss",
+        action="store_true",
+        help="Skip EndBattle on losing sims in the 'toe' mode (no score banking; faster sweeps)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

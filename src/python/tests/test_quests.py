@@ -1,6 +1,6 @@
 """``hw_genie.commands.quests`` のテスト。
 
-モックデータは VitaminD / Champion の実レスポンス（questGetAll）の一部を元に
+モックデータは questGetAll レスポンス形式の抜粋を元に
 作成している。ID・state・progress・報酬の形状は実際の API レスポンスに従う。
 """
 
@@ -128,7 +128,7 @@ def test_format_create_time(monkeypatch):
 
 def test_run_quest_status_default_shows_only_uncompleted(capsys):
     client = _make_client()
-    quests = run_quest_status(client, account_alias="VitaminD")
+    quests = run_quest_status(client, account_alias="Dave")
     out = capsys.readouterr().out
 
     # 未完了デイリーが名称付きで表示される
@@ -148,7 +148,7 @@ def test_run_quest_status_default_shows_only_uncompleted(capsys):
 
 def test_run_quest_status_show_all_includes_state3(capsys):
     client = _make_client()
-    run_quest_status(client, account_alias="VitaminD", show_all=True)
+    run_quest_status(client, account_alias="Dave", show_all=True)
     out = capsys.readouterr().out
     assert "20010002" in out
     assert "claimable" in out
@@ -156,7 +156,7 @@ def test_run_quest_status_show_all_includes_state3(capsys):
 
 def test_run_quest_status_category_filter(capsys):
     client = _make_client()
-    run_quest_status(client, account_alias="VitaminD", category="daily")
+    run_quest_status(client, account_alias="Dave", category="daily")
     out = capsys.readouterr().out
     assert "Daily Quests" in out
     assert "Guild Quests" not in out
@@ -165,7 +165,7 @@ def test_run_quest_status_category_filter(capsys):
 
 def test_run_quest_status_raw(capsys):
     client = _make_client()
-    run_quest_status(client, account_alias="VitaminD", raw=True)
+    run_quest_status(client, account_alias="Dave", raw=True)
     out = capsys.readouterr().out
     payload = json.loads(out)
     assert isinstance(payload, list)
@@ -178,7 +178,7 @@ def test_run_quest_status_failure(capsys):
     res.status = ResponseStatus.ERROR
     res.error_name = "InvalidSession"
     client.quest_get_all = MagicMock(return_value=res)
-    quests = run_quest_status(client, account_alias="VitaminD")
+    quests = run_quest_status(client, account_alias="Dave")
     out = capsys.readouterr().out
     assert quests == []
     assert "Failed to fetch quests" in out
@@ -197,19 +197,19 @@ def test_ensure_defaults_resolve_casing_variant_alias():
     from hw_genie.core.session_manager import SessionManager
 
     SessionManager.repo.save_data(
-        "Champion",
-        {"headers": {"x-auth-token": "t"}, "player": {"id": "c1", "name": "Champion"}},
+        "Carol",
+        {"headers": {"x-auth-token": "t"}, "player": {"id": "c1", "name": "Carol"}},
     )
 
-    defaults = ensure_quest_defaults("champion")
+    defaults = ensure_quest_defaults("carol")
     assert defaults and all("enabled" in conf for conf in defaults.values())
 
-    guild = ensure_quest_guild_defaults("Champion ")
+    guild = ensure_quest_guild_defaults("Carol ")
     assert guild["enabled"] is False
 
-    # 正規エイリアス Champion の行に保存され、別行は作られていないこと
+    # 正規エイリアス Carol の行に保存され、別行は作られていないこと
     # （DB 保存時に JSON キーが文字列化されるため int 化して比較）
-    data = SessionManager.repo.get_data("Champion")
+    data = SessionManager.repo.get_data("Carol")
     assert {int(k): v for k, v in data["quest_defaults"].items()} == defaults
     assert data["quest_guild_defaults"] == guild
-    assert SessionManager.list_accounts() == ["Champion"]
+    assert SessionManager.list_accounts() == ["Carol"]
