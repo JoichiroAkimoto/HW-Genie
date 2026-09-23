@@ -320,8 +320,17 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
   省略時は `teamGetAll.titan_arena` を自動解決。`canRaid=true` なら一括
   レイド、なければ `attackScore < threshold`（既定 250）の rivals を
   自動選択して個別バトル → `CompleteTier` → 日次報酬受け取り）。
+  新 Tier に進むと次の周回で改めて `canRaid` を確認するため、
+  Raid 可能 Tier は常に Raid から開始される。
   明示編成: `hw-genie toe run -a VitaminD --titans 4003 4023 4004 4001 4000`
   - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
+  - プラン全滅しても勝てない rival には最善負けの確保（best-loss fallback）:
+    検証済み敗北の中で stars 最大の編成を `end_on_loss=True` で 1 回だけ
+    再実行し、部分 `attackScore` をバンクする。estimate エンジン・未検証
+    のみの rival・`--stop-on-loss` 時はスキップ。`--no-bank-best-loss` で無効化。
+  - 回転テーブル `STATIC_TEAM_ROTATION` には水3火2の
+    `[4003, 4004, 4014, 4001, 4010]` を含む（Champion Tier8 の光壁 `-480913`
+    に 15 seeds で WIN の実績）。
   - `--engine estimate`（既定）: アプリ単体。勝敗は power ベースで
     簡易判定。完全勝利には `--engine hybrid` を指定
   - `--engine hybrid`: auth server 経由で userscript のバトルエンジン

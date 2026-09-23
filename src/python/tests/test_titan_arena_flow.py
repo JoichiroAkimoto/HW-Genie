@@ -485,11 +485,13 @@ def test_resolve_team_rotation_saved_first_and_deduped(mock_client, mock_sleep):
     assert rotation.index([4044, 4003, 4043, 4002, 4004]) > rotation.index([4012, 4042, 4013, 4043, 4010])
     # No duplicates anywhere (saved + static combined)
     assert len({tuple(t) for t in rotation}) == len(rotation)
-    assert len(rotation) == 27  # saved dupes static#1, so 1 + 27 - 1
+    assert len(rotation) == 28  # saved dupes static#1, so 1 + 28 - 1
     # 水+1 Tenebris/Eden mixed team
     assert [4033, 4003, 4023, 4004, 4000] in rotation
     # 水2火3
     assert [4003, 4013, 4004, 4014, 4010] in rotation
+    # 水3火2（Champion Tier8 の光壁 -480913 に WIN の実績）
+    assert [4003, 4004, 4014, 4001, 4010] in rotation
 
 
 def test_resolve_team_rotation_explicit_is_single(mock_client, mock_sleep):
@@ -1862,3 +1864,205 @@ def test_engine_heartbeat_suppressed_outside_verbose(capsys, monkeypatch):
     polls["n"] = 0
     _engine_calc(eng, {"attackers": {}, "defenders": [{}]}, progress="verbose")
     assert "waiting for userscript job" in capsys.readouterr().out
+
+
+def _bridge_engine():
+    from hw_genie.battle.engine import JsBridgeBattleEngine
+
+    return JsBridgeBattleEngine(auth_server_url="http://127.0.0.1:9", user_id="1")
+
+
+def _loss(stars):
+    from hw_genie.battle.engine import BattleEstimate
+
+    return BattleEstimate(win=False, stars=stars, progress=[])
+
+
+def test_run_rivals_banks_best_loss_after_full_plan(mock_client, mock_sleep, mocker):
+    """No win in the plan → one extra EndBattle with the highest-stars team."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append((list(titans), end_on_loss))
+        if end_on_loss:
+            return {"estimate": _loss(1)}
+        stars = 2 if list(titans) == [9, 9, 9, 9, 9] else 0
+        return {"estimate": _loss(stars), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1, end_on_loss=False,
+    )
+    assert calls == [([1, 2, 3, 4, 5], False), ([9, 9, 9, 9, 9], False), ([9, 9, 9, 9, 9], True)]
+    assert len(results) == 3
+    assert results[-1]["banked_loss"] is True
+    assert results[-1]["win"] is False
+    assert results[-1]["team"] == [9, 9, 9, 9, 9]
+
+
+def test_run_rivals_best_loss_fallback_win_counts(mock_client, mock_sleep, mocker):
+    """A win on the best-loss banking attempt is recorded as a win."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        if end_on_loss:
+            return {"estimate": BattleEstimate(win=True, stars=1, progress=[])}
+        return {"estimate": _loss(0), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+    )
+    assert results[-1]["banked_loss"] is True
+    assert results[-1]["win"] is True
+
+
+def test_run_rivals_no_best_loss_fallback_for_estimate_engine(mock_client, mock_sleep, mocker):
+    """Estimate-engine progress is always rejected, so no banking attempt."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append((list(titans), end_on_loss))
+        return {"estimate": _loss(0), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+    )
+    assert len(calls) == 2
+    assert all("banked_loss" not in r for r in results)
+
+
+def test_run_rivals_no_best_loss_fallback_when_opted_out(mock_client, mock_sleep, mocker):
+    """bank_best_loss=False disables the extra banking attempt."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append((list(titans), end_on_loss))
+        return {"estimate": _loss(0), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+        bank_best_loss=False,
+    )
+    assert len(calls) == 2
+    assert all("banked_loss" not in r for r in results)
+
+
+def test_run_rivals_no_best_loss_fallback_all_unverified(mock_client, mock_sleep, mocker):
+    """Unverified-only rivals carry no bankable result, so no fallback."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": _loss(0), "estimate_only": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+    )
+    assert len(calls) == 2
+    assert all(r.get("unverified") for r in results)
+    assert all("banked_loss" not in r for r in results)
+
+
+def test_run_rivals_no_best_loss_fallback_on_stop_on_loss(mock_client, mock_sleep, mocker):
+    """--stop-on-loss keeps its fast abort without a banking attempt."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(1)
+        return {"estimate": _loss(0), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=True,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=2, end_on_loss=False,
+    )
+    assert len(calls) == 1
+    assert all("banked_loss" not in r for r in results)
+
+
+def test_tier_threads_bank_best_loss_to_rivals(mock_client, mock_sleep, mocker):
+    """run_titan_arena_tier forwards bank_best_loss to _run_rivals (default True)."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    seen = []
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    mock_call.side_effect = [_ok({"response": status}), _ok({"response": status})]
+
+    def spy(client, status, titans, engine, threshold, stop, **kw):
+        seen.append(kw.get("bank_best_loss"))
+        return []
+
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=spy)
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), bank_best_loss=False)
+    assert seen == [True, False]
+
+
+def test_cmd_toe_run_bank_best_loss_default_and_opt_out(mocker):
+    """toe run banks by default; --no-bank-best-loss disables it."""
+    from hw_genie.main import cmd_toe_run
+
+    mocker.patch("hw_genie.main._ensure_session", return_value={"x-auth-token": "t"})
+    mocker.patch("hw_genie.main.resolve_account", return_value="TestUser")
+    mocker.patch("hw_genie.main.HWClient")
+    mock_run = mocker.patch("hw_genie.commands.titan_arena.run_titan_arena_tier")
+    mocker.patch("hw_genie.battle.engine.get_default_engine", return_value=PythonBattleEngine())
+
+    def make_args(no_bank):
+        args = MagicMock()
+        args.account = "TestUser"
+        args.titans = None
+        args.threshold = 250
+        args.stop_on_loss = False
+        args.engine = "estimate"
+        args.auth_server_url = "http://127.0.0.1:8765"
+        args.seeds = 2
+        args.max_attempts = None
+        args.no_bank_best_loss = no_bank
+        return args
+
+    cmd_toe_run(make_args(False))
+    assert mock_run.call_args.kwargs.get("bank_best_loss") is True
+    cmd_toe_run(make_args(True))
+    assert mock_run.call_args.kwargs.get("bank_best_loss") is False

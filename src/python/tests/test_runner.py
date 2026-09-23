@@ -2362,3 +2362,23 @@ def test_cmd_multi_stored_log_contains_no_cr(monkeypatch):
     main.cmd_multi(args)
     assert "\r" not in (records.get("log_text") or "")
     assert "after line" in (records.get("log_text") or "")
+
+
+def test_toe_routine_threads_bank_best_loss(monkeypatch):
+    """toe_routine forwards bank_best_loss to run_titan_arena_tier (default True)."""
+    from hw_genie import runner
+
+    seen = {}
+
+    class FakeClient:
+        headers = {"x-auth-user-id": "99"}
+
+    def fake_tier(client, titans=None, engine=None, attack_score_threshold=250, seeds_per_team=2, max_total_attempts=None, **kw):
+        seen["bank"] = kw.get("bank_best_loss")
+        return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
+
+    monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
+    runner.toe_routine(engine="estimate")(FakeClient(), "Joe")
+    assert seen["bank"] is True
+    runner.toe_routine(engine="estimate", bank_best_loss=False)(FakeClient(), "Joe")
+    assert seen["bank"] is False

@@ -609,6 +609,7 @@ def cmd_toe_run(args):
             attack_score_threshold=args.threshold,
             stop_on_first_loss=bool(args.stop_on_loss),
             seeds_per_team=int(getattr(args, "seeds", 2) or 2),
+            bank_best_loss=not bool(getattr(args, "no_bank_best_loss", False)),
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
             account_label=account_label,
             progress=_resolve_toe_progress(args),
@@ -902,6 +903,7 @@ def cmd_multi(args):
             threshold=int(getattr(args, "threshold", 250) or 250),
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
+            bank_best_loss=not bool(getattr(args, "no_bank_best_loss", False)),
             progress=_resolve_toe_progress(args),
         )
         # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
@@ -1466,6 +1468,11 @@ def main():
         help="Abort the tier after the first losing/abandoned rival attempt (stops rotation retries; losing sims already skip EndBattle with no score banking)",
     )
     p_toe_run.add_argument(
+        "--no-bank-best-loss",
+        action="store_true",
+        help="Skip the best-loss fallback (by default, a rival with no win after the full plan banks one EndBattle with the highest-stars losing team)",
+    )
+    p_toe_run.add_argument(
         "--seeds",
         type=int,
         default=2,
@@ -1567,6 +1574,11 @@ def main():
         type=int,
         default=None,
         help="Cap total StartBattle attempts per rival for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap)",
+    )
+    p_multi.add_argument(
+        "--no-bank-best-loss",
+        action="store_true",
+        help="Skip the best-loss fallback in the 'toe' mode (by default, a rival with no win banks one EndBattle with the highest-stars losing team)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

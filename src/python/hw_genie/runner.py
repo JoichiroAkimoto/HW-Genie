@@ -397,6 +397,7 @@ def toe_routine(
     threshold: int = 250,
     auth_server_url: str = "http://127.0.0.1:8765",
     max_total_attempts: int | None = None,
+    bank_best_loss: bool = True,
     progress: str = "verbose",
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
@@ -445,6 +446,7 @@ def toe_routine(
                 engine=eng,
                 attack_score_threshold=threshold,
                 seeds_per_team=seeds_per_team,
+                bank_best_loss=bank_best_loss,
                 max_total_attempts=max_total_attempts,
                 account_label=account,
                 progress=_mode,
