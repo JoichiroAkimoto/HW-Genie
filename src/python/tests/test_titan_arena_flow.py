@@ -2066,3 +2066,220 @@ def test_cmd_toe_run_bank_best_loss_default_and_opt_out(mocker):
     assert mock_run.call_args.kwargs.get("bank_best_loss") is True
     cmd_toe_run(make_args(True))
     assert mock_run.call_args.kwargs.get("bank_best_loss") is False
+
+
+def test_run_rivals_best_loss_tie_break_earliest_first(mock_client, mock_sleep, mocker):
+    """Equal stars → the earliest-seen losing team is banked."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append((list(titans), end_on_loss))
+        if end_on_loss:
+            return {"estimate": _loss(1)}
+        return {"estimate": _loss(2), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1, end_on_loss=False,
+    )
+    assert calls[-1] == ([1, 2, 3, 4, 5], True)
+    assert results[-1]["team"] == [1, 2, 3, 4, 5]
+    assert results[-1]["banked_loss"] is True
+
+
+def test_loss_stars_non_int_and_none():
+    """Non-int/None stars rank as 0 instead of raising."""
+    from hw_genie.commands.titan_arena import _loss_stars
+
+    assert _loss_stars(MagicMock(stars=None)) == 0
+    assert _loss_stars(MagicMock(stars="x")) == 0
+    assert _loss_stars(MagicMock(stars=2.9)) == 2
+    assert _loss_stars(MagicMock(stars=3)) == 3
+    assert _loss_stars(object()) == 0
+
+
+def test_run_rivals_fallback_bridge_dead_raise(mock_client, mock_sleep, mocker):
+    """Fallback timeout completing 3 consecutive bridge errors raises BridgeDeadError."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeDeadError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        calls.append(end_on_loss)
+        if end_on_loss:
+            return {"estimate": _loss(0), "bridge_error": "userscript did not finish battle within 5s", "estimate_only": True, "bridge_timeout": True}
+        if len(calls) == 1:
+            return {"estimate": _loss(1), "abandoned": True}
+        return {"estimate": _loss(0), "bridge_error": "userscript did not finish battle within 5s", "estimate_only": True, "bridge_timeout": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    with pytest.raises(BridgeDeadError) as excinfo:
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+            threshold=250, stop_on_first_loss=False,
+            team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=3, end_on_loss=False,
+        )
+    # attempt1 verified loss (resets counter, banks the candidate),
+    # attempts 2-3 timeouts (counter=2), fallback timeout → 3rd → dead.
+    assert calls == [False, False, False, True]
+    assert len(excinfo.value.partial_results) == 2
+    assert excinfo.value.partial_results[0]["win"] is False
+    assert excinfo.value.partial_results[-1].get("banked_loss") is True
+    assert excinfo.value.partial_results[-1].get("unverified") is True
+
+
+def test_run_rivals_fallback_beaten_already_cleared_and_not(mock_client, mock_sleep, mocker):
+    """Fallback beaten-already → WIN when cleared, loss otherwise."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        if end_on_loss:
+            return {"error": "NotAvailable", "detail": {"description": "beaten up already"}}
+        return {"estimate": _loss(1), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    mocker.patch("hw_genie.commands.titan_arena._is_already_cleared", return_value=True)
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1, end_on_loss=False,
+    )
+    assert results[-1] == {"rivalId": "-1", "win": True, "already_cleared": True}
+
+    mocker.patch("hw_genie.commands.titan_arena._is_already_cleared", return_value=False)
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1, end_on_loss=False,
+    )
+    assert results[-1]["win"] is False
+    assert results[-1]["banked_loss"] is True
+    assert results[-1]["start_error"] == "NotAvailable"
+
+
+def test_run_rivals_cancel_before_fallback(mock_client, mock_sleep, mocker):
+    """Cancel set during the last plan attempt aborts before the banking attempt."""
+    import pytest
+
+    from hw_genie import runner
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    runner.reset_cancel()
+    try:
+        status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+        calls = []
+
+        def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+            calls.append(end_on_loss)
+            runner.request_cancel()
+            return {"estimate": _loss(1), "abandoned": True}
+
+        mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+        client, _ = mock_client
+        with pytest.raises(InterruptedError) as excinfo:
+            _run_rivals(
+                client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+                threshold=250, stop_on_first_loss=False,
+                team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1, end_on_loss=False,
+            )
+        # Only the plan attempt ran; no banking attempt followed.
+        assert calls == [False]
+        assert len(excinfo.value.partial_results) == 1
+    finally:
+        runner.reset_cancel()
+
+
+def test_tier_raid_runs_before_rivals(mock_client, mock_sleep, mocker):
+    """canRaid=True fresh status calls _run_raid before _run_rivals."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    order = []
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0}}, "canRaid": True}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[status, {"status": "peace_time", "tier": 8, "rivals": {}}],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        side_effect=lambda *a, **k: order.append("raid") or {"stage": "raid", "battles": [], "completed": False},
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=lambda *a, **k: order.append("rivals") or [{"rivalId": "-1", "win": True}],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert order == ["raid", "rivals"]
+
+
+def test_tier_continues_after_banked_only_pass(mock_client, mock_sleep, mocker):
+    """A pass with banked losses (no wins) attempts completion and continues."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    mock_call.return_value = _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}})
+    statuses = [
+        {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False},
+        {"status": "peace_time", "tier": 7, "rivals": {}},
+    ]
+    fetch = mocker.patch("hw_genie.commands.titan_arena.fetch_titan_arena_status", side_effect=statuses)
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "-1", "win": False, "team": [1, 2, 3, 4, 5], "banked_loss": True}],
+    )
+    spy_complete = mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    summary = run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    assert fetch.call_count == 2
+    spy_complete.assert_called_once()
+    assert any(r.get("banked_loss") for r in summary["rival_results"])
+
+
+def test_run_rivals_banking_status_line_total_bumped(mock_client, mock_sleep, mocker, monkeypatch, capsys):
+    """Banking status line shows [N+1/N+1], not [N+1/N]."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    ticks = {"t": 100.0}
+
+    def fake_monotonic():
+        ticks["t"] += 10.0
+        return ticks["t"]
+
+    monkeypatch.setattr("time.monotonic", fake_monotonic)
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        if end_on_loss:
+            return {"estimate": _loss(1)}
+        return {"estimate": _loss(0), "abandoned": True}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1, end_on_loss=False,
+        progress="line", account_label="Joe",
+    )
+    out = capsys.readouterr().out
+    assert "[3/3]" in out
+    assert "[3/2]" not in out

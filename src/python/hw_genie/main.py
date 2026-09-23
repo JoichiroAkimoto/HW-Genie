@@ -506,6 +506,20 @@ def _resolve_toe_progress(args, default: str = "line") -> str:
     return default
 
 
+def _resolve_toe_bank_best_loss(args) -> bool:
+    """Return whether best-loss banking is enabled for ToE commands.
+
+    Only an explicit ``--no-bank-best-loss`` (real ``True``) disables it;
+    anything else — including auto-created ``MagicMock`` attributes in
+    legacy tests — keeps the default ``True``.
+    """
+    try:
+        value = getattr(args, "no_bank_best_loss", False)
+    except Exception:
+        return True
+    return False if value is True else True
+
+
 def _sanitize_progress_log_text(text: str | None) -> str | None:
     """Strip ``\\r`` in-place updates before persisting run-log output."""
     if text is None or "\r" not in text:
@@ -609,7 +623,7 @@ def cmd_toe_run(args):
             attack_score_threshold=args.threshold,
             stop_on_first_loss=bool(args.stop_on_loss),
             seeds_per_team=int(getattr(args, "seeds", 2) or 2),
-            bank_best_loss=not bool(getattr(args, "no_bank_best_loss", False)),
+            bank_best_loss=_resolve_toe_bank_best_loss(args),
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
             account_label=account_label,
             progress=_resolve_toe_progress(args),
@@ -903,7 +917,7 @@ def cmd_multi(args):
             threshold=int(getattr(args, "threshold", 250) or 250),
             auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765",
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
-            bank_best_loss=not bool(getattr(args, "no_bank_best_loss", False)),
+            bank_best_loss=_resolve_toe_bank_best_loss(args),
             progress=_resolve_toe_progress(args),
         )
         # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
@@ -1470,7 +1484,7 @@ def main():
     p_toe_run.add_argument(
         "--no-bank-best-loss",
         action="store_true",
-        help="Skip the best-loss fallback (by default, a rival with no win after the full plan banks one EndBattle with the highest-stars losing team)",
+        help="Skip the best-loss fallback (by default, a rival with no win after the full plan banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
     )
     p_toe_run.add_argument(
         "--seeds",
@@ -1578,7 +1592,7 @@ def main():
     p_multi.add_argument(
         "--no-bank-best-loss",
         action="store_true",
-        help="Skip the best-loss fallback in the 'toe' mode (by default, a rival with no win banks one EndBattle with the highest-stars losing team)",
+        help="Skip the best-loss fallback in the 'toe' mode (by default, a rival with no win banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(

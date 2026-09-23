@@ -454,7 +454,9 @@ def toe_routine(
             )
         except TypeError:
             # Backward compat: older/stubbed run_titan_arena_tier without
-            # progress/dashboard kwargs (e.g. test doubles).
+            # progress/dashboard/bank_best_loss kwargs (e.g. test doubles).
+            # The retry intentionally omits the new kwargs so old doubles
+            # keep working; the production path above already passes them.
             return run_titan_arena_tier(
                 client,
                 titans=None,

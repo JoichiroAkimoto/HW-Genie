@@ -666,7 +666,11 @@ def run_titan_arena_tier(
     (``None`` = full pass: ``max_attempts_per_rival`` for a single team,
     otherwise ``len(rotation) × seeds_per_team``). Estimate-engine runs,
     whose EndBattle is rejected as ``Invalid battle``, should pass an
-    explicit cap to avoid paying the full sweep per rival.
+    explicit cap to avoid paying the full sweep per rival. The banking
+    attempt is one extra StartBattle outside this cap (the cap targets
+    estimate planning). A pass with no wins but banked-loss entries counts
+    as progress: completion is attempted and the loop continues with fresh
+    status instead of stopping early.
 
     The function returns a dict summarising the tier outcome (rival results,
     raid results, errors, completed_tier, daily_reward).
@@ -804,6 +808,15 @@ def run_titan_arena_tier(
             _farm_daily_reward(client, summary)
             return summary
         if not any(r.get("win") for r in rival_results) and not status.get("canRaid"):
+            if any(r.get("banked_loss") for r in rival_results):
+                # Banked partial score counts as progress: the rival is
+                # touched, so attempt completion and continue with fresh
+                # status (bounded by max_passes; a later pass with no wins
+                # and no banked entries still stops).
+                _complete_tier(client, summary, tier=tier)
+                _farm_daily_reward(client, summary)
+                no_progress_passes = 0
+                continue
             print(f"{Emojis.WARNING}No rival cleared; stopping tier loop.", flush=True)
             return summary
         _complete_tier(client, summary, tier=tier)
@@ -993,6 +1006,45 @@ def _is_already_cleared(client: HWClient, rival_id: str, threshold: int) -> bool
     return not isinstance(info, dict) or (info.get("attackScore") or 0) >= threshold
 
 
+def _decide_attempt_action(
+    res: dict[str, Any],
+    *,
+    attempt_no: int,
+    plan_len: int,
+    stop_on_first_loss: bool = False,
+) -> dict[str, Any]:
+    """Classify one attempt result into a single action descriptor.
+
+    Shared by the plan loop and the best-loss fallback in
+    :func:`_run_rivals` so both paths interpret results identically.
+    Pure (no side effects): the caller executes the action, owning
+    ``bridge_errors`` counting, ``BridgeDeadError`` raises,
+    ``rival_reported`` updates, prints and status-line updates.
+    """
+    if res.get("bridge_error") or _is_bridge_timeout(res):
+        return {"action": "bridge_error", "timeout": _is_bridge_timeout(res)}
+    if _is_beaten_already(res):
+        return {"action": "beaten_already"}
+    if res.get("end_error") == "Invalid battle" and attempt_no < plan_len:
+        return {"action": "retry"}
+    est = res.get("estimate")
+    # An "Invalid battle" EndBattle banked nothing server-side, so it must
+    # not count as a win even when the local estimate says win (estimate
+    # engine) — likewise estimate-only fallbacks (no EndBattle was sent).
+    unverified = bool(res.get("estimate_only"))
+    win = (
+        bool(est and getattr(est, "win", False))
+        and res.get("end_error") != "Invalid battle"
+        and not unverified
+    )
+    return {
+        "action": "record",
+        "win": win,
+        "unverified": unverified,
+        "abort": bool(stop_on_first_loss and not unverified),
+    }
+
+
 def _run_rivals(
     client: HWClient,
     status: dict[str, Any],
@@ -1047,10 +1099,12 @@ def _run_rivals(
     acc_key = str(account_label or "?")
     line_state: dict[str, Any] = {"last_emit": 0.0, "throttle_secs": PROGRESS_THROTTLE_SECS}
 
-    def _update_line(rival_id: str, attempt_no: int, last: str, rival_start: float) -> None:
+    def _update_line(rival_id: str, attempt_no: int, last: str, rival_start: float, total: int | None = None) -> None:
         wins = sum(1 for r in results if r.get("win"))
         elapsed = time.monotonic() - rival_start
-        body = _build_status_text(str(rival_id), attempt_no, len(attempt_plan), wins, last, elapsed)
+        # The banking attempt is one extra StartBattle outside the plan cap,
+        # so its updates pass total=len+1 explicitly; plan attempts use the default.
+        body = _build_status_text(str(rival_id), attempt_no, len(attempt_plan) if total is None else total, wins, last, elapsed)
         _emit_status_line(acc_key, body, dashboard, line_state, progress)
 
     for rival_no, rival_id in enumerate(finish_targets, start=1):
@@ -1089,9 +1143,13 @@ def _run_rivals(
             # abort, mirroring _run_raid. Pure estimate-only without
             # bridge_error (explicit --estimate-only) is verified contact
             # and resets the counter.
-            if res.get("bridge_error") or _is_bridge_timeout(res):
+            action = _decide_attempt_action(
+                res, attempt_no=attempt_no, plan_len=len(attempt_plan),
+                stop_on_first_loss=stop_on_first_loss,
+            )
+            if action["action"] == "bridge_error":
                 bridge_errors += 1
-                if _is_bridge_timeout(res):
+                if action["timeout"]:
                     _vprint(
                         progress,
                         f"  - rival {rival_id}: userscript not responding "
@@ -1114,7 +1172,7 @@ def _run_rivals(
                     raise BridgeDeadError(msg, partial_results=results) from None
                 continue
             bridge_errors = 0
-            if _is_beaten_already(res):
+            if action["action"] == "beaten_already":
                 # Stale snapshot: the rival is actually cleared. Refresh to
                 # confirm and count it as cleared so the tier can complete.
                 rival_reported = True
@@ -1128,7 +1186,7 @@ def _run_rivals(
                     _aprint(progress, f"{Emojis.INFO}rival {rival_id}: no win (start error {res.get('error')})")
                     _update_line(str(rival_id), attempt_no, "loss", rival_start)
                 break
-            if res.get("end_error") == "Invalid battle" and attempt_no < len(attempt_plan):
+            if action["action"] == "retry":
                 _vprint(
                     progress,
                     f"  - rival {rival_id}: Invalid battle, retrying ({attempt_no + 1}/{len(attempt_plan)})...",
@@ -1136,19 +1194,8 @@ def _run_rivals(
                 _update_line(str(rival_id), attempt_no, "retry", rival_start)
                 continue
             est = res.get("estimate")
-            # An "Invalid battle" EndBattle banked nothing server-side, so it
-            # must not count as a win even when the local estimate says win
-            # (estimate engine) — otherwise the tier loop sees progress and
-            # spins to max_passes. The same holds for estimate-only fallbacks
-            # (bridge failed with a non-timeout error): no EndBattle was sent,
-            # so there is nothing verified to count. Unverified attempts move
-            # on to the next attempt instead of stopping the rotation.
-            unverified = bool(res.get("estimate_only"))
-            win = (
-                bool(est and getattr(est, "win", False))
-                and res.get("end_error") != "Invalid battle"
-                and not unverified
-            )
+            unverified = bool(action["unverified"])
+            win = bool(action["win"])
             entry: dict[str, Any] = {"rivalId": str(rival_id), "win": win, "team": team}
             if unverified:
                 entry["unverified"] = True
@@ -1199,6 +1246,8 @@ def _run_rivals(
                 # pending StartBattle seed), hence one fresh attempt with
                 # end_on_loss=True. Estimate-engine progress is always
                 # rejected as "Invalid battle", so it is skipped.
+                if _cancel_requested():
+                    raise _interrupted_error(results)
                 best_stars, _, best_team = max(loss_candidates, key=lambda c: (c[0], -c[1]))
                 _aprint(
                     progress,
@@ -1219,12 +1268,18 @@ def _run_rivals(
                     results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "error": str(exc)})
                     rival_reported = True
                     _aprint(progress, f"  - rival {rival_id}: best-loss banking failed: {exc}")
-                    _update_line(str(rival_id), len(attempt_plan) + 1, "error", rival_start)
+                    _update_line(str(rival_id), len(attempt_plan) + 1, "error", rival_start, total=len(attempt_plan) + 1)
                 else:
-                    if bank_res.get("bridge_error") or _is_bridge_timeout(bank_res):
+                    bank_action = _decide_attempt_action(
+                        bank_res, attempt_no=len(attempt_plan) + 1,
+                        plan_len=len(attempt_plan) + 1,
+                    )
+                    bank_total = len(attempt_plan) + 1
+                    if bank_action["action"] == "bridge_error":
                         bridge_errors += 1
                         results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "unverified": True, "bridge_error": bank_res.get("bridge_error")})
-                        _update_line(str(rival_id), len(attempt_plan) + 1, "bridge-error", rival_start)
+                        rival_reported = True
+                        _update_line(str(rival_id), bank_total, "bridge-error", rival_start, total=bank_total)
                         if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
                             msg = (
                                 "userscript not answering "
@@ -1233,25 +1288,21 @@ def _run_rivals(
                             )
                             _aprint(progress, f"{Emojis.WARNING}{msg}")
                             raise BridgeDeadError(msg, partial_results=results) from None
-                    elif _is_beaten_already(bank_res):
+                    elif bank_action["action"] == "beaten_already":
                         rival_reported = True
                         if _is_already_cleared(client, str(rival_id), threshold):
                             _aprint(progress, f"  - rival {rival_id}: already cleared (stale snapshot).")
                             results.append({"rivalId": str(rival_id), "win": True, "already_cleared": True})
                             _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN (already cleared)")
-                            _update_line(str(rival_id), len(attempt_plan) + 1, "WIN", rival_start)
+                            _update_line(str(rival_id), bank_total, "WIN", rival_start, total=bank_total)
                         else:
                             results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "start_error": bank_res.get("error")})
                             _aprint(progress, f"{Emojis.INFO}rival {rival_id}: no win (start error {bank_res.get('error')})")
-                            _update_line(str(rival_id), len(attempt_plan) + 1, "loss", rival_start)
+                            _update_line(str(rival_id), bank_total, "loss", rival_start, total=bank_total)
                     else:
                         bank_est = bank_res.get("estimate")
-                        bank_unverified = bool(bank_res.get("estimate_only"))
-                        bank_win = (
-                            bool(bank_est and getattr(bank_est, "win", False))
-                            and bank_res.get("end_error") != "Invalid battle"
-                            and not bank_unverified
-                        )
+                        bank_unverified = bool(bank_action["unverified"])
+                        bank_win = bool(bank_action["win"])
                         bank_entry: dict[str, Any] = {"rivalId": str(rival_id), "win": bank_win, "team": best_team, "banked_loss": True}
                         if bank_unverified:
                             bank_entry["unverified"] = True
@@ -1263,10 +1314,10 @@ def _run_rivals(
                         rival_reported = True
                         if bank_win:
                             _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN (best-loss banking)")
-                            _update_line(str(rival_id), len(attempt_plan) + 1, "WIN", rival_start)
+                            _update_line(str(rival_id), bank_total, "WIN", rival_start, total=bank_total)
                         else:
                             _aprint(progress, f"{Emojis.INFO}rival {rival_id}: best loss banked (stars={_loss_stars(bank_est)})")
-                            _update_line(str(rival_id), len(attempt_plan) + 1, "banked-loss", rival_start)
+                            _update_line(str(rival_id), bank_total, "banked-loss", rival_start, total=bank_total)
         if not rival_reported:
             entries = [r for r in results if str(r.get("rivalId")) == str(rival_id)]
             if entries and not any(r.get("win") for r in entries) and len(entries) >= len(attempt_plan):
