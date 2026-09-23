@@ -11,7 +11,7 @@ def client():
 
 def test_toe_job_round_trip(client):
     """A posted job can be claimed via /toe/next and a result POST resolves it."""
-    account = "VitaminD"
+    account = "Dave"
     battle = {
         "type": "titan_arena",
         "seed": 1,

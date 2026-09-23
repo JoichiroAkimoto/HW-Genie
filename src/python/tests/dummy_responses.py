@@ -73,7 +73,7 @@ INVENTORY_GET_CONSUMABLE = {
     "date": 1786306606,
 }
 
-# 215 を全消費済みの在庫（VitaminD 相当: 在庫 0 またはキー消失）。
+# 215 を全消費済みの在庫（在庫 0 またはキー消失のケース）。
 INVENTORY_GET_NO_STOCK = {
     "results": [
         {

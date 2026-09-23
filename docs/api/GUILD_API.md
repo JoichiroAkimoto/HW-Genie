@@ -259,7 +259,7 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 
 `rivalId` と `titans`（5 体のタイタンID）を指定してバトルを開始する。`titans`
 は `teamGetAll.titan_arena` の保存チームに依存せず、任意の 5 体を渡せる
-（VitaminD アカウントで `-470711` / `[4003, 4023, 4004, 4001, 4000]`
+（Dave アカウントで `-470711` / `[4003, 4023, 4004, 4001, 4000]`
 の組み合わせが受理されることを実機検証済み）。
 
 ```json
@@ -308,21 +308,21 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
 
 ### HW-Genie での ToE 自動攻略
 
-* `hw-genie toe status -a VitaminD` で現在の Tier / rivals / defenders を
+* `hw-genie toe status -a Dave` で現在の Tier / rivals / defenders を
   表示
-* `hw-genie toe attack -a VitaminD` で未クリア 1 体を自動攻撃（`--rival`
+* `hw-genie toe attack -a Dave` で未クリア 1 体を自動攻撃（`--rival`
   省略時は `titanArenaGetStatus` から `attackScore < 250` の rival を
   `(attackScore asc, wall優先, power asc)` で選択、`--titans` 省略時は
   `teamGetAll.titan_arena` から自動解決。`--dry-run` / `--estimate-only`
   で EndBattle を抑止）。明示指定も可能:
-  `hw-genie toe attack -a VitaminD --rival -470711 --titans 4003 4023 4004 4001 4000 --dry-run`
-* `hw-genie toe run -a VitaminD` で Tier 全体を自動攻略（`--titans`
+  `hw-genie toe attack -a Dave --rival -470711 --titans 4003 4023 4004 4001 4000 --dry-run`
+* `hw-genie toe run -a Dave` で Tier 全体を自動攻略（`--titans`
   省略時は `teamGetAll.titan_arena` を自動解決。`canRaid=true` なら一括
   レイド、なければ `attackScore < threshold`（既定 250）の rivals を
   自動選択して個別バトル → `CompleteTier` → 日次報酬受け取り）。
   新 Tier に進むと次の周回で改めて `canRaid` を確認するため、
   Raid 可能 Tier は常に Raid から開始される。
-  明示編成: `hw-genie toe run -a VitaminD --titans 4003 4023 4004 4001 4000`
+  明示編成: `hw-genie toe run -a Dave --titans 4003 4023 4004 4001 4000`
   - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
   - 各試行の負けも `EndBattle` で部分スコアをバンクするのが既定
     （`--seeds` 既定 10）。`--no-end-on-loss` で負けのバンクを抑止
@@ -333,7 +333,7 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
     のみの rival・`--stop-on-loss` 時はスキップ。`--no-bank-best-loss` で無効化。
     バンク試行は `--max-attempts` の上限外の +1 回の追加 StartBattle。
   - 回転テーブル `STATIC_TEAM_ROTATION` には水3火2の
-    `[4003, 4004, 4014, 4001, 4010]` を含む（Champion Tier8 の光壁 `-480913`
+    `[4003, 4004, 4014, 4001, 4010]` を含む（Tier8 の光壁 `-480913`
     に 15 seeds で WIN の実績）。
   - `--engine estimate`（既定）: アプリ単体。勝敗は power ベースで
     簡易判定。完全勝利には `--engine hybrid` を指定

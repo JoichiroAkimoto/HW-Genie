@@ -44,9 +44,9 @@ description: HW-Genie を使用して所持している consumable（消費ア�
 消費結果（消費数・報酬のカテゴリ別合計・スキップや失敗の有無）をユーザーに報告してください。`multi` 実行時はアカウント別サマリテーブル（✅ Consumed / ⏭️ Skipped / ❌ Failed）をそのまま提示できます。
 
 ## 使用例
-**ユーザーの入力**: 「The Best と Champion の Equipment Fragment Chest を全部開けて」
+**ユーザーの入力**: 「Bob と Carol の Equipment Fragment Chest を全部開けて」
 
 **AI の動作**:
-1. `uv run hw-genie multi consumable --dry-run "The Best" Champion` でプラン確認（在庫 48 x2 を表示）。
+1. `uv run hw-genie multi consumable --dry-run "Bob" Carol` でプラン確認（在庫 48 x2 を表示）。
 2. ユーザーに実行確認。
-3. `uv run hw-genie multi consumable "The Best" Champion` を実行し、サマリを報告。
+3. `uv run hw-genie multi consumable "Bob" Carol` を実行し、サマリを報告。

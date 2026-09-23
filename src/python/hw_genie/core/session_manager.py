@@ -10,9 +10,9 @@ class SessionManager:
         account = account.strip()
         resolved_account = account
         accounts = cls.list_accounts()
-        # 完全一致（トリム済み）を最優先する。``Champion`` と ``champion`` が
+        # 完全一致（トリム済み）を最優先する。``Carol`` と ``carol`` が
         # 別アカウントとして登録されている場合、case-insensitive の最初の一致
-        # （id 順）に任せると ``save("champion")`` が Champion 行を書き換えて
+        # （id 順）に任せると ``save("carol")`` が Carol 行を書き換えて
         # しまうため。完全一致が無ければ大文字小文字・前後空白を区別せずに
         # 一致する既存エイリアスへ解決し、DB のエイリアス揺れを防ぐ。
         # 未登録ならトリム済みの入力をそのまま使う。

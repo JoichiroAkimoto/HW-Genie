@@ -68,8 +68,8 @@ def _find_account_by_alias(db, alias: str):
 
     Exact (stripped) match is tried first. If not found, a
     case-insensitive, whitespace-insensitive fallback is used so that
-    inputs like ``champion`` / ``Champion `` resolve to the registered
-    ``Champion`` (see run_logs failed cases id 54/55/59). Returns None
+    inputs like ``carol`` / ``Carol `` resolve to the registered
+    ``Carol`` (see run_logs failed cases id 54/55/59). Returns None
     when no account matches.
     """
     if not isinstance(alias, str):
@@ -437,7 +437,7 @@ class SessionRepository:
                     )
                     # case/whitespace-insensitive に既存行へ一致した場合、大文字
                     # 小文字のみの差なら既存（正規）alias を保持する。入力値で
-                    # 無条件に上書きすると ``save("champion")`` が正規行 ``Champion``
+                    # 無条件に上書きすると ``save("carol")`` が正規行 ``Carol``
                     # を小文字へリネームしてしまい、エイリアス揺れ防止の目的が
                     # 無効化される。
                     # - 前後空白のみの差 -> トリム済み入力で正規化

@@ -490,7 +490,7 @@ def test_resolve_team_rotation_saved_first_and_deduped(mock_client, mock_sleep):
     assert [4033, 4003, 4023, 4004, 4000] in rotation
     # 水2火3
     assert [4003, 4013, 4004, 4014, 4010] in rotation
-    # 水3火2（Champion Tier8 の光壁 -480913 に WIN の実績）
+    # 水3火2（Carol Tier8 の光壁 -480913 に WIN の実績）
     assert [4003, 4004, 4014, 4001, 4010] in rotation
 
 
@@ -1171,9 +1171,9 @@ def test_run_titan_arena_shows_account_label(capsys, mock_client, mock_sleep):
         _ok({"response": {"attackScore": 250}}),
     ]
     run_titan_arena(client, rival_id="-1", titans=[1, 2, 3, 4, 5],
-                    engine=PythonBattleEngine(), account_label="Joe")
+                    engine=PythonBattleEngine(), account_label="Alice")
     out = capsys.readouterr().out
-    assert "Titan Arena: [Joe] rivalId=-1" in out
+    assert "Titan Arena: [Alice] rivalId=-1" in out
 
 
 def test_end_battle_win_uses_victory_emoji_loss_keeps_success(capsys, mock_client, mock_sleep):
@@ -1215,9 +1215,9 @@ def test_run_titan_arena_tier_prints_account_banner(capsys, mock_client, mock_sl
         _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
         _ok({"response": {"status": "peace_time", "tier": 1, "rivals": {}}}),
     ]
-    run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine(), account_label="Joe")
+    run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine(), account_label="Alice")
     out = capsys.readouterr().out
-    assert "account: Joe" in out
+    assert "account: Alice" in out
 
 
 def test_run_rivals_forwards_account_label(mock_client, mock_sleep, mocker):
@@ -1236,8 +1236,8 @@ def test_run_rivals_forwards_account_label(mock_client, mock_sleep, mocker):
     _run_rivals(client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
                 threshold=250, stop_on_first_loss=False,
                 team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
-                account_label="Champion")
-    assert seen and all(label == "Champion" for label in seen)
+                account_label="Carol")
+    assert seen and all(label == "Carol" for label in seen)
 
 
 def test_run_titan_arena_tier_records_final_tier_and_remaining(mock_client, mock_sleep):
@@ -1786,12 +1786,12 @@ def test_line_mode_non_tty_throttles_status_lines(capsys, mock_client, mock_slee
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=2,
-        progress="line", account_label="Joe",
+        progress="line", account_label="Alice",
     )
     out = capsys.readouterr().out
     assert len(results) == 4
     assert "\r" not in out
-    status_lines = [line for line in out.splitlines() if line.startswith("[Joe] rival -1 [")]
+    status_lines = [line for line in out.splitlines() if line.startswith("[Alice] rival -1 [")]
     assert len(status_lines) == 1, f"expected 1 throttled line, got {status_lines}"
     assert "[1/4]" in status_lines[0]
     assert "wins 0" in status_lines[0]
@@ -1817,10 +1817,10 @@ def test_line_mode_tty_uses_carriage_return(capsys, mock_client, mock_sleep, moc
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
-        progress="line", account_label="Joe",
+        progress="line", account_label="Alice",
     )
     out = capsys.readouterr().out
-    assert "\r[Joe] rival -1 [1/1]" in out
+    assert "\r[Alice] rival -1 [1/1]" in out
     assert "rival -1: WIN" in out
 
 
@@ -2278,7 +2278,7 @@ def test_run_rivals_banking_status_line_total_bumped(mock_client, mock_sleep, mo
         client, status, titans=[1, 2, 3, 4, 5], engine=_bridge_engine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=1, end_on_loss=False,
-        progress="line", account_label="Joe",
+        progress="line", account_label="Alice",
     )
     out = capsys.readouterr().out
     assert "[3/3]" in out

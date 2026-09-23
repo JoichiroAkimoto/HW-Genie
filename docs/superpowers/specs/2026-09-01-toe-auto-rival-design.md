@@ -4,8 +4,8 @@
 Titan Arena (ToE) の手動 `rivalId` 指定を廃し、`titanArenaGetStatus` から未クリア rival を自動選択して連続攻略する。`--rival` / `--titans` を optional にし、省略時はサーバー状態から自動解決する。既存 `toe run` の Tier 全自動フローは維持しつつ、`toe attack` でも rival 省略で単発自動が可能になる。
 
 ## Goals
-- `uv run hw-genie toe run -a VitaminD` で保存済み編成 + 自動 rival で Tier 全体をクリア
-- `uv run hw-genie toe attack -a VitaminD` で最も優先度の高い未クリア1体を自動で攻撃
+- `uv run hw-genie toe run -a Dave` で保存済み編成 + 自動 rival で Tier 全体をクリア
+- `uv run hw-genie toe attack -a Dave` で最も優先度の高い未クリア1体を自動で攻撃
 - 手動指定 (`--rival` / `--titans` 明示) は従来通り即 StartBattle
 - ソースは既存 `titan_arena.py` / `main.py` の最小差分
 
@@ -48,11 +48,11 @@ Titan Arena (ToE) の手動 `rivalId` 指定を廃し、`titanArenaGetStatus` �
 - Unit: `test_select_auto_rivals_sorts` (attackScore 昇順, wall優先, power昇順のタイ), `test_select_auto_rivals_threshold_boundary` (249/250/251), `test_select_auto_rivals_empty_and_no_wall`, `test_run_titan_arena_auto_picks_lowest_score`, `test_run_titan_arena_explicit_rival_skips_fetch`, `test_run_titan_arena_tier_auto_titans`, `test_run_titan_arena_tier_explicit_titans_skips_resolve`, `test_auto_no_rivals_skips_battle`
 - Flow: `test_run_titan_arena_dry_run_does_not_call_end_battle` / `test_run_titan_arena_estimate_only*` を optional 化 (required=False) に合わせて更新、mock fixture は `titanArenaGetStatus` (`rivals` with attackScore/power) + `teamGetAll` + `StartBattle` battle payload を conftest に追加
 - Regression: 既存 `test_titan_arena_flow.py` の explicit 指定時は fetch/resolve を呼ばないこと、`dry-run`時は fetchは呼ぶが StartBattle/EndBattle は呼ばないことを検証
-- Manual: `uv run hw-genie toe status -a VitaminD` → `uv run hw-genie toe attack -a VitaminD --dry-run` (auto 1体) → `uv run hw-genie toe attack -a VitaminD --rival <id> --dry-run` (明示) → `uv run hw-genie toe run -a VitaminD --dry-run` 相当の estimate 検証 (現行 tier は estimate-only で Invalid battle を確認)
+- Manual: `uv run hw-genie toe status -a Dave` → `uv run hw-genie toe attack -a Dave --dry-run` (auto 1体) → `uv run hw-genie toe attack -a Dave --rival <id> --dry-run` (明示) → `uv run hw-genie toe run -a Dave --dry-run` 相当の estimate 検証 (現行 tier は estimate-only で Invalid battle を確認)
 
 ## Rollout
 - 後方互換: --rival/--titans 明示は従来動作、省略時のみ新 auto パス。`required=False` 変更は breaking ではない
 - ロールアウト: フィーチャーフラグなし、失敗時は summary.errors に残り exit 1、ログに auto-selected rivalId を残すため原因特定可能。ロールバックは `git revert` で1コミット
 - 監視: `run_logs.log_text` の `Auto-selected rival` 行と `summary.rival_results` の `rivalId` で選択検証
 - ドキュメント: `AGENTS.md` / `README.md` の toe 例を `toe run -a <account>` 無引数例に更新、`src/python/hw_genie/main.py --help` 文言を `omitted → auto-select from titanArenaGetStatus / teamGetAll (threshold=250)` に更新、該当 `SKILL.md` があれば同様更新
-- 成功指標: `toe run -a VitaminD` で未クリア (attackScore<250) が0になるまで Tier が進むこと、`toe attack` 省略で最優先 rival 1体がクリアされること、明示指定で従来通り動作すること
+- 成功指標: `toe run -a Dave` で未クリア (attackScore<250) が0になるまで Tier が進むこと、`toe attack` 省略で最優先 rival 1体がクリアされること、明示指定で従来通り動作すること

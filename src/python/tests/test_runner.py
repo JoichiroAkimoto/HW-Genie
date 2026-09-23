@@ -1390,7 +1390,7 @@ def test_toe_routine_runs_tier_with_rotation(monkeypatch):
         return {"rival_results": [{"win": True}], "errors": [], "completed_tier": True, "daily_reward": "claimed"}
 
     monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
-    res = runner.toe_routine(engine="hybrid", seeds_per_team=3, threshold=200)(FakeClient(), "Joe")
+    res = runner.toe_routine(engine="hybrid", seeds_per_team=3, threshold=200)(FakeClient(), "Alice")
     assert calls == {"titans": None, "engine": "JsBridgeBattleEngine", "threshold": 200, "seeds": 3}
     assert res["completed_tier"] is True
 
@@ -1523,7 +1523,7 @@ def test_toe_routine_threads_max_total_attempts(monkeypatch):
         return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
 
     monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
-    runner.toe_routine(engine="estimate", max_total_attempts=7)(FakeClient(), "Joe")
+    runner.toe_routine(engine="estimate", max_total_attempts=7)(FakeClient(), "Alice")
     assert seen["cap"] == 7
 
 
@@ -1559,7 +1559,7 @@ def test_toe_routine_threads_auth_server_url(monkeypatch):
         "hw_genie.commands.titan_arena.run_titan_arena_tier",
         lambda client, **kw: {"ok": True},
     )
-    runner.toe_routine(engine="hybrid", auth_server_url="http://127.0.0.1:9999")(FakeClient(), "Joe")
+    runner.toe_routine(engine="hybrid", auth_server_url="http://127.0.0.1:9999")(FakeClient(), "Alice")
     assert seen == {"url": "http://127.0.0.1:9999", "user": "99"}
 
 
@@ -1669,7 +1669,7 @@ def test_summarize_toe_table_columns_align(capsys):
     from hw_genie.runner import summarize_toe
 
     results = [
-        ("Joe", ({"rival_results": [{"win": True}], "errors": [],
+        ("Alice", ({"rival_results": [{"win": True}], "errors": [],
                   "completed_tier": True, "daily_reward": "claimed",
                   "final_tier": 8, "remaining_rivals": 0}, None)),
         ("長い名前のアカウント", ({"rival_results": [{"win": False}], "errors": [],
@@ -2263,7 +2263,7 @@ def test_toe_routine_line_mode_shares_dashboard(monkeypatch):
     )
     line_run = runner.toe_routine(engine="estimate", progress="line")
     assert isinstance(line_run.dashboard, runner.ToeProgressDashboard)
-    res = line_run(FakeClient(), "Joe")
+    res = line_run(FakeClient(), "Alice")
     assert res["progress"] == "line" and res["has_dashboard"] is True
 
     quiet_run = runner.toe_routine(engine="estimate", progress="quiet")
@@ -2378,9 +2378,9 @@ def test_toe_routine_threads_bank_best_loss(monkeypatch):
         return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
 
     monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
-    runner.toe_routine(engine="estimate")(FakeClient(), "Joe")
+    runner.toe_routine(engine="estimate")(FakeClient(), "Alice")
     assert seen["bank"] is True
-    runner.toe_routine(engine="estimate", bank_best_loss=False)(FakeClient(), "Joe")
+    runner.toe_routine(engine="estimate", bank_best_loss=False)(FakeClient(), "Alice")
     assert seen["bank"] is False
 
 
@@ -2399,9 +2399,9 @@ def test_toe_routine_defaults_seeds_10_and_end_on_loss(monkeypatch):
         return {"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}
 
     monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
-    runner.toe_routine(engine="estimate")(FakeClient(), "Joe")
+    runner.toe_routine(engine="estimate")(FakeClient(), "Alice")
     assert seen == {"seeds": 10, "bank": True}
-    runner.toe_routine(engine="estimate", seeds_per_team=3, end_on_loss=False)(FakeClient(), "Joe")
+    runner.toe_routine(engine="estimate", seeds_per_team=3, end_on_loss=False)(FakeClient(), "Alice")
     assert seen == {"seeds": 3, "bank": False}
 
 

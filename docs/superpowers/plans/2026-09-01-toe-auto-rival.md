@@ -202,10 +202,10 @@ Expected: All checks passed, 622+ passed
 - [ ] **Step 3: Manual verification**
 
 ```bash
-uv run hw-genie toe status -a VitaminD | head -n 50
-uv run hw-genie toe attack -a VitaminD --dry-run  # auto 1体
-uv run hw-genie toe attack -a VitaminD --rival -480711 --titans 4003 4023 4004 4001 4000 --dry-run # explicit
-uv run hw-genie toe run -a VitaminD --dry-run # expect via tier loop but dry-run? use estimate
+uv run hw-genie toe status -a Dave | head -n 50
+uv run hw-genie toe attack -a Dave --dry-run  # auto 1体
+uv run hw-genie toe attack -a Dave --rival -480711 --titans 4003 4023 4004 4001 4000 --dry-run # explicit
+uv run hw-genie toe run -a Dave --dry-run # expect via tier loop but dry-run? use estimate
 ```
 
 - [ ] **Step 4: Commit**

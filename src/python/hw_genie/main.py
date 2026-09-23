@@ -557,7 +557,7 @@ def cmd_toe_attack(args):
     from hw_genie.battle.engine import get_default_engine
 
     # ToE bridge は userscript の Game.ModelManager.player.userInfo.id (x-auth-user-id)
-    # と同じ文字列で job を紐付ける。alias ("Joe") ではなく数値 userId を使う。
+    # と同じ文字列で job を紐付ける。alias ("Alice") ではなく数値 userId を使う。
     engine_mode = getattr(args, "engine", "estimate")
     if engine_mode == "playwright":
         engine = get_default_engine(mode=engine_mode, headers=headers)

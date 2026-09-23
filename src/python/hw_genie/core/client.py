@@ -28,7 +28,7 @@ def resolve_account(account_alias: str | None = None) -> str:
     alias. When the casing or surrounding whitespace differs, the canonical
     (registered) alias is returned so downstream ``update_config_merged``
     calls do not fail with ``Account not found`` (see run_logs failed cases
-    for ``champion`` / ``Champion␣``). When ``None`` (no ``--account`` given)
+    for ``carol`` / ``Carol␣``). When ``None`` (no ``--account`` given)
     the behaviour is:
 
     - exactly one registered account -> that account is used automatically;
