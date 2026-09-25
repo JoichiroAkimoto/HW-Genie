@@ -23,10 +23,6 @@
 //   「open 直後に全ヘッダーを設定する」ゲーム挙動では stale にならない。
 //   同一 XHR の再オープンでヘッダーを更新する場合は、再オープン後に設定
 //   された値が捕捉される（ラッパーは残るが ACTIVE=true で捕捉継続）。
-// - API open 時に load リスナーを 1 回だけ付与し、レスポンス受信を
-//   onApiResponse に通知する（セッション失効検知用。DOM 監視はしない）。
-//   401 は完了レスポンスとして load で届く前提。error/abort 時は通知しない
-//   仕様（load のみ監視）。
 
 // モジュールスコープで一度だけ定義される。テストからは export せず、
 // ラッパー同一性を関数参照の比較で検証する。
@@ -36,16 +32,6 @@ const HW_GENIE_WRAPPED = Symbol("hw-genie-wrapped-setRequestHeader");
 // プロパティで上書きした場合など）でも、残存ラッパーが捕捉を発火しない
 // ようにする。
 const HW_GENIE_ACTIVE = Symbol("hw-genie-active-setRequestHeader");
-// API レスポンス監視の load リスナーを付与済みかを示すフラグ。再オープンで
-// リスナーが積み重ならないようにする（非 API への再オープン時もリスナーは
-// 残すが、ACTIVE=false のため発火しない）。
-const HW_GENIE_RESPONSE_LISTENER = Symbol("hw-genie-response-listener");
-
-/** API レスポンス受信時に呼ばれるコールバック (status / responseText)。 */
-export type ApiResponseCallback = (
-  status: number,
-  responseText: string,
-) => void;
 
 /** API URL かどうかをホスト+パスで判定する（部分文字列一致にしない）。 */
 export function isApiUrl(urlString: string, baseHref: string): boolean {
@@ -63,15 +49,12 @@ export function isApiUrl(urlString: string, baseHref: string): boolean {
 /**
  * XMLHttpRequest.prototype.open をラップして x-auth-* ヘッダーを捕捉する。
  *
- * @param isApi          URL 文字列が捕捉対象か判定する関数
- * @param capture        x-auth-* ヘッダーを捕捉するコールバック
- * @param onApiResponse  API レスポンス受信時に呼ばれるコールバック
- *                      （省略可。省略時はレスポンス監視しない）
+ * @param isApi    URL 文字列が捕捉対象か判定する関数
+ * @param capture  x-auth-* ヘッダーを捕捉するコールバック
  */
 export function installXhrInterceptor(
   isApi: (urlString: string) => boolean,
   capture: (name: string, value: string) => void,
-  onApiResponse?: ApiResponseCallback,
 ): void {
   const originalOpen: (
     method: string,
@@ -112,7 +95,6 @@ export function installXhrInterceptor(
       const self = this as XMLHttpRequest & {
         [HW_GENIE_WRAPPED]?: (name: string, value: string) => void;
         [HW_GENIE_ACTIVE]?: boolean;
-        [HW_GENIE_RESPONSE_LISTENER]?: boolean;
       };
       self[HW_GENIE_ACTIVE] = true;
       const currentSetRequestHeader = self.setRequestHeader;
@@ -133,42 +115,6 @@ export function installXhrInterceptor(
         };
         self[HW_GENIE_WRAPPED] = wrapper;
         self.setRequestHeader = wrapper;
-      }
-      // API レスポンス監視: load 時に onApiResponse を呼ぶリスナーを
-      // インスタンスに 1 回だけ付与する。非 API への再オープン時もリスナーは
-      // 残すが、ACTIVE=false のため発火しない。
-      // 前提: HTTP 401 を含む完了レスポンスは load イベントで届く。
-      // error / abort 時は通知しない仕様（ネットワーク失敗とセッション失効を
-      // 混同しないため。load のみ監視し、error/abort リスナーは付けない）。
-      if (onApiResponse && !self[HW_GENIE_RESPONSE_LISTENER]) {
-        try {
-          self.addEventListener("load", () => {
-            try {
-              if (!self[HW_GENIE_ACTIVE]) {
-                return;
-              }
-              const status = self.status;
-              const responseText = self.responseText;
-              if (
-                typeof status !== "number" ||
-                typeof responseText !== "string"
-              ) {
-                return;
-              }
-              try {
-                onApiResponse(status, responseText);
-              } catch (e) {
-                // コールバックの例外はゲームのリクエストを壊さないよう握りつぶす。
-                console.debug("[HW-Genie] onApiResponse error (ignored):", e);
-              }
-            } catch {
-              // status/response の読み取り失敗は握りつぶす。
-            }
-          });
-          self[HW_GENIE_RESPONSE_LISTENER] = true;
-        } catch {
-          // addEventListener 不在等の失敗は握りつぶす（次回 open で再試行）。
-        }
       }
     } else {
       // 非 API への再オープン: 捕捉を無効化し、可能なら自前のラッパーも
