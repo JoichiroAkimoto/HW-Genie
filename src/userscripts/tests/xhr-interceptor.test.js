@@ -507,3 +507,195 @@ test("実ゲーム相当: API→非 API→API の 3 連続 open でラッパー�
   assert.strictEqual(captured.length, 2);
   assert.strictEqual(xhr._headers["x-auth-token"], "tok3");
 });
+
+// --- セッション失効検知 (onApiResponse) ---
+// addEventListener / load 発火の最小実装を持つ FakeXHR。
+class EventedXHR extends NativeXHR {
+  constructor() {
+    super();
+    this._listeners = {};
+    this.status = 0;
+    this.responseText = "";
+  }
+  addEventListener(type, fn) {
+    (this._listeners[type] ??= []).push(fn);
+  }
+  fire(type) {
+    for (const fn of this._listeners[type] ?? []) {
+      fn.call(this);
+    }
+  }
+}
+
+// テスト間でプロトタイプのパッチが残らないよう、新しい XHR クラスを生成する。
+function freshEventedXHRClass() {
+  return class extends EventedXHR {};
+}
+
+function installGenieWithResponse(XHRClass, captured, onApiResponse) {
+  const originalXHR = globalThis.XMLHttpRequest;
+  globalThis.XMLHttpRequest = XHRClass;
+  try {
+    installXhrInterceptor(
+      (u) => isApiUrl(u, PAGE_URL),
+      (name, value) => captured.push([name, value]),
+      onApiResponse,
+    );
+  } finally {
+    globalThis.XMLHttpRequest = originalXHR;
+  }
+}
+
+test("API XHR の load で onApiResponse が呼ばれる", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+
+  assert.deepStrictEqual(responses, [[200, '{"results":[]}']]);
+});
+
+test("非 API XHR の load では onApiResponse が呼ばれない", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", "https://other.example.com/");
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+
+  assert.strictEqual(responses.length, 0);
+});
+
+test("API→非 API 再オープン後は load でも onApiResponse が呼ばれない", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.open("POST", "https://other.example.com/");
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+
+  assert.strictEqual(responses.length, 0);
+});
+
+test("再オープンしても load リスナーは重複しない（load 1 回で 1 回だけ呼ばれる）", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.open("POST", API_URL);
+  xhr.open("POST", API_URL);
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+
+  assert.strictEqual(responses.length, 1);
+});
+
+test("error/abort 時は onApiResponse を呼ばない（load のみ監視する仕様）", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.status = 401;
+  xhr.responseText = '{"error":{"name":"auth"}}';
+  xhr.fire("error");
+  xhr.fire("abort");
+  assert.strictEqual(responses.length, 0);
+  // load では届く（401 は完了レスポンスとして load で届く前提）。
+  xhr.fire("load");
+  assert.strictEqual(responses.length, 1);
+});
+
+test("API→非API→API 復帰で onApiResponse が再発火する", () => {
+  const XHRClass = freshEventedXHRClass();
+  const captured = [];
+  const responses = [];
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+  assert.strictEqual(responses.length, 1);
+
+  xhr.open("POST", "https://other.example.com/");
+  xhr.fire("load");
+  assert.strictEqual(responses.length, 1);
+
+  xhr.open("POST", API_URL);
+  xhr.fire("load");
+  assert.strictEqual(responses.length, 2);
+});
+
+test("既存 load リスナー＋onload プロパティと共存する（Goodwin 対応の根拠）", () => {
+  // onload プロパティも呼ぶ Fake（ネイティブ XHR の挙動を模す）。
+  class OnloadXHR extends EventedXHR {
+    constructor() {
+      super();
+      this.onload = null;
+    }
+    fire(type) {
+      super.fire(type);
+      if (type === "load" && typeof this.onload === "function") {
+        this.onload.call(this);
+      }
+    }
+  }
+  const XHRClass = class extends OnloadXHR {};
+  const captured = [];
+  const responses = [];
+  const otherLoadCalls = [];
+  let onloadCalls = 0;
+  installGenieWithResponse(XHRClass, captured, (s, t) =>
+    responses.push([s, t]),
+  );
+
+  const xhr = new XHRClass();
+  xhr.open("POST", API_URL);
+  // 他スクリプト相当: 既存 load リスナー＋onload プロパティを後付けする。
+  xhr.addEventListener("load", () => otherLoadCalls.push(1));
+  xhr.onload = () => {
+    onloadCalls += 1;
+  };
+  xhr.status = 200;
+  xhr.responseText = '{"results":[]}';
+  xhr.fire("load");
+
+  assert.strictEqual(responses.length, 1);
+  assert.strictEqual(otherLoadCalls.length, 1);
+  assert.strictEqual(onloadCalls, 1);
+});
