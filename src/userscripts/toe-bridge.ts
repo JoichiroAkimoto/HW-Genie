@@ -27,12 +27,13 @@ const TOE_VARIANT_DEV: string = "__TOE_VARIANT_DEV__";
  * Whether this build runs the ToE bridge (traps + polling).
  *
  * Normal builds: false (auth capture only). DEV builds: true via the
- * build-time sentinel rewrite. Tests flip it with {@link setToeEnabled}.
+ * build-time sentinel rewrite. Tests flip it with
+ * {@link __setToeEnabledForTests}.
  */
 export let TOE_ENABLED: boolean = TOE_VARIANT === TOE_VARIANT_DEV;
 
-/** Set {@link TOE_ENABLED} (test seam; DEV/one-off toggling). */
-export function setToeEnabled(value: boolean): void {
+/** Test-only seam. テスト専用。本番コードからは呼ばないこと。 */
+export function __setToeEnabledForTests(value: boolean): void {
   TOE_ENABLED = value;
 }
 
@@ -244,10 +245,9 @@ const materializedHolders: WeakSet<object> = new WeakSet();
 /** Test-only: clear captured refs, traps and diag counters. */
 export function __resetBridgeForTests(): void {
   engineReadyLogged = false;
-  // Test default mirrors a DEV-capable build (traps on). The shipped normal
-  // default (TOE_ENABLED=false) is asserted by the dedicated first test in
-  // tests/toe-bridge.test.js and by build.sh sentinel verification.
-  TOE_ENABLED = true;
+  // Restore the shipped normal default (TOE_ENABLED=false). Tests needing
+  // DEV behavior opt in explicitly via __setToeEnabledForTests(true).
+  TOE_ENABLED = false;
   for (const k of Object.keys(capturedClasses)) {
     delete capturedClasses[k];
   }
