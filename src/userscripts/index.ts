@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.8
+// @version      1.0.9
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -29,11 +29,6 @@
  * （例: HW Goodwin）の fetch ラッパーと競合して UI を壊すため削除した。
  * したがってゲームが fetch のみで API を呼ぶ環境では認証ヘッダーを捕捉できず、
  * 認証サーバーへの送信は行われない（v1.0.2 と同じ挙動）。
- *
- * セッション失効時 (HTTP 401 / auth・InvalidSession エラー / "Invalid signature"
- * テキスト) は XHR レスポンス監視で検知して location.reload() で自動回復する
- * （RELOAD_COOLDOWN_MS クールダウン・RELOAD_WINDOW_MS 間に
- * MAX_RELOADS_PER_WINDOW 回上限）。
  */
 
 // XHR インターセプタは共有モジュールに分離し、テストから本番コードを
@@ -50,15 +45,6 @@ import {
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
-// セッション失効時の自動リロード判定（純関数モジュール。詳細は auth-recovery.ts）。
-import {
-  STORAGE_KEY,
-  defaultReloadState,
-  evaluateReload,
-  isSessionExpired,
-  sanitizeReloadState,
-} from "./auth-recovery";
-import type { ReloadState } from "./auth-recovery";
 // ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
 // ポーラー。auth server の /toe/* キューを介して Python CLI から依頼される。
 // document-start ですぐトラップだけ仕掛け、XHR フック等は従来通り idle 相当
@@ -202,80 +188,6 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     setInterval(trySend, POLL_INTERVAL_MS);
   }
 
-  // セッション失効時の自動リロード用カウンタ。sessionStorage に保持し、
-  // 読めない環境ではメモリにフォールバックする（どちらも try/catch で防御）。
-  // メモリフォールバック時はリロードで状態が消えて無限ループになるため、
-  // 同一ページ内では最大 1 回までに制限する（memoryFallbackReloaded）。
-  // なおカウンタはタブスコープ (sessionStorage) のため、複数タブ合算ではない。
-  let memoryReloadState: ReloadState | null = null;
-  let sessionStorageUsable = true;
-  let memoryFallbackReloaded = false;
-
-  function readReloadState(): ReloadState {
-    const now = Date.now();
-    try {
-      const raw = sessionStorage.getItem(STORAGE_KEY);
-      if (raw !== null) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          parsed = undefined;
-        }
-        const sane = sanitizeReloadState(parsed, now);
-        if (sane !== null) {
-          memoryReloadState = { ...sane };
-          return { ...sane };
-        }
-        // 破損値はデフォルトに修復＋書き戻し（自己回復）。
-        const repaired = defaultReloadState();
-        writeReloadState(repaired);
-        return { ...repaired };
-      }
-    } catch {
-      // sessionStorage 不可時はメモリにフォールバックする。
-      sessionStorageUsable = false;
-    }
-    if (memoryReloadState) {
-      return { ...memoryReloadState };
-    }
-    return defaultReloadState();
-  }
-
-  function writeReloadState(reloadState: ReloadState): void {
-    memoryReloadState = { ...reloadState };
-    try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(reloadState));
-    } catch {
-      // sessionStorage 不可時はメモリのみ保持する。
-      sessionStorageUsable = false;
-    }
-  }
-
-  function handleApiResponse(status: number, responseText: string): void {
-    if (!isSessionExpired(status, responseText)) {
-      return;
-    }
-    const now = Date.now();
-    const current = readReloadState();
-    const decision = evaluateReload(current, now);
-    if (decision.action !== "reload") {
-      log("Session expired detected but auto-reload suppressed (cooldown/limit).");
-      return;
-    }
-    if (!sessionStorageUsable) {
-      // メモリフォールバック時は同一ページ内で最大 1 回まで。
-      if (memoryFallbackReloaded) {
-        log("Session expired detected but auto-reload suppressed (memory fallback one-shot).");
-        return;
-      }
-      memoryFallbackReloaded = true;
-    }
-    writeReloadState(decision.state);
-    log("Session expired detected. Reloading page to recover session...");
-    location.reload();
-  }
-
   function startToeBridge() {
     // ゲーム本編のタブでのみ engine 検出→poll 開始。landing 等では
     // 1回/分の診断ログのみ出る。
@@ -296,8 +208,6 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     installXhrInterceptor(
       (urlString: string) => isApiUrl(urlString, window.location.href),
       captureHeaders,
-      (status: number, responseText: string) =>
-        handleApiResponse(status, responseText),
     );
   }
 
