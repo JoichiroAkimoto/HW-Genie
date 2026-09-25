@@ -70,9 +70,18 @@ if [[ -n "$BUN_MINIFY" ]]; then
   exit 1
 fi
 if [[ "$VARIANT" == "dev" ]] && [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
+  # ペア存在チェックを先に行う（build_entry 側と同一文言。二重防御）。
+  if [[ -z "$INJECT_DOWNLOAD_URL" || -z "$INJECT_UPDATE_URL" ]]; then
+    echo "ERROR: --inject-download-url and --inject-update-url must be specified together (or use --inject-url for both)" >&2
+    exit 1
+  fi
   # DEV 版への URL 注入は、DEV 専用アセット (-dev.user.js) を指す場合のみ許可する。
   # 通常版 latest を指すと DEV の自動更新で通常版を上書きするため、それは拒否する。
-  if [[ "$INJECT_DOWNLOAD_URL" != *"hw-genie-auth-capture-dev.user.js"* || "$INJECT_UPDATE_URL" != *"hw-genie-auth-capture-dev.user.js"* ]]; then
+  # 部分一致ではなく path suffix で判定する（?/# 以降を除去してから検証）。
+  # クエリ偽装（...user.js?fake=...-dev.user.js）や suffix 偽装（...-dev.user.js.evil.js）を素通しさせない。
+  download_path="${INJECT_DOWNLOAD_URL%%[?#]*}"
+  update_path="${INJECT_UPDATE_URL%%[?#]*}"
+  if [[ "$download_path" != */hw-genie-auth-capture-dev.user.js || "$update_path" != */hw-genie-auth-capture-dev.user.js ]]; then
     echo "ERROR: --inject-* with --dev must point at the -dev asset (got download='${INJECT_DOWNLOAD_URL}' update='${INJECT_UPDATE_URL}')" >&2
     exit 1
   fi
