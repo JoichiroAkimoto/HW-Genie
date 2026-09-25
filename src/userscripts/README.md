@@ -80,6 +80,7 @@ bun test tests/
 - `tests/release-metadata.test.js`: バージョン抽出、タグ照合、生成された成果物のメタデータ（`@version`, `@downloadURL`, `@updateURL`, プレースホルダー残存）の検証契約をテストします。
 - `tests/xhr-interceptor.test.js`: XHR インターセプタの挙動を検証します。他のユーザースクリプト（例: HW Goodwin）と共存できること、同一 XHR の再利用でラッパーが積み重ならないことなどを回帰テストとして固定しています。
 - `tests/session.test.js`: セッション送信の状態機械を検証します。
+- `tests/auth-recovery.test.js`: セッション失効判定と自動リロード可否を検証します。
 
 ## 既知の制限
 
@@ -103,10 +104,37 @@ bun test tests/
   セッションの署名の鮮度（有効期限）は保証しません。ゲーム側でセッションが
   失効した場合は、curl での再認証または auth-server での再キャプチャが必要です
   （v1.0.2 と同じ前提）。
+- セッション失効時（HTTP 401 / `error` の name・文字列値が `auth` /
+  `InvalidSession`（完全一致・大文字区別）/ 非 JSON ボディの `Invalid signature`
+  テキスト）は XHR レスポンス監視（load イベントのみ。error/abort 時は通知
+  しない）で検知して `location.reload()` で自動回復します（DOM 監視なし）。
+  無限ループ防止のため `RELOAD_COOLDOWN_MS`（5 分）クールダウン・
+  `RELOAD_WINDOW_MS`（10 分）間に `MAX_RELOADS_PER_WINDOW`（3 回）までで、
+  超過分はログのみ出力してリロードしません。カウンタは sessionStorage に
+  保持するためタブスコープです（複数タブ合算ではありません）。
+  sessionStorage が使えない環境（プライベートモード等）では自動リロードは
+  動作しません（初回から suppress してリロードしない。メモリ代替で
+  リロードすることはありません）。
+  無効化手順（kill-switch）: ゲームを開いたタブの開発者コンソールで
+  `localStorage.setItem("hw-genie-auto-reload-disabled", "1")` を実行すると、
+  検知してもリロードせずログのみにします。再有効化は
+  `localStorage.removeItem("hw-genie-auto-reload-disabled")` です。
+  kill-switch の localStorage は同一オリジンで全タブ共有のため、1 タブでの
+  設定が全タブに適用されます。localStorage が読めない場合も安全側に倒して
+  リロードしません（fail-closed）。
 - 実機確認（HW Goodwin 併用時）:
   1. HW-Genie のみ有効 → 認証成功ログが出る
   2. HW Goodwin のみ有効 → Goodwin の UI が表示される
   3. 両方有効 → 双方が機能する（Goodwin の UI 表示 + HW-Genie の認証送信）
+- 実機確認（自動リロード。DEV 版で先行検証すること）:
+  (a) セッション失効の検知 → `location.reload()` による回復 → クールダウン・
+  上限超過時の suppress（ログのみ）を確認し、kill-switch
+  （`localStorage.setItem("hw-genie-auto-reload-disabled", "1")`）で無効化
+  できること、解除（`removeItem`）で再有効化できることを確認する。
+  (b) HW Goodwin 併用: DEV 版有効のままダンジョン・コスミック自動攻略が
+  動くこと（Goodwin の UI・自動操作が壊れないこと）。
+  (c) 複数タブ挙動: カウンタはタブスコープ（合算されない）こと、kill-switch
+  は全タブ共有（1 タブの設定が全タブに効く）ことを確認する。
 
 ## 構成
 
@@ -114,4 +142,5 @@ bun test tests/
 - `release-metadata.sh` — メタデータ抽出・タグ検証・成果物バリデーション用 CLI
 - `xhr-interceptor.ts` — XHR インターセプタ（共有モジュール。テストからも import）
 - `session.ts` — セッション送信の状態機械（共有モジュール。テストからも import）
+- `auth-recovery.ts` — セッション失効判定と自動リロード可否（共有モジュール。テストからも import）
 - `tests/` — 回帰テスト・メタデータテスト
