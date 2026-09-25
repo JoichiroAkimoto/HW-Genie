@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.9
+// @version      1.0.10
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -46,7 +46,9 @@ import {
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
 // ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
-// ポーラー。auth server の /toe/* キューを介して Python CLI から依頼される。
+// ポーラー。DEV 版でのみ有効（通常版は TOE_ENABLED=false で不実行。
+// Goodwin 干渉の分離 #134）。auth server の /toe/* キューを介して
+// Python CLI から依頼される。
 // document-start ですぐトラップだけ仕掛け、XHR フック等は従来通り idle 相当
 // まで遅延させる（HW Goodwin 共存のため）。
 import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
@@ -212,7 +214,8 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
   }
 
   // document-start で即時に ToE トラップだけ仕掛ける（バンドル実行前に
-  // 間に合わせるため）。XHR フック・送信ポーリング・ToE poll は従来通り
+  // 間に合わせるため）。通常版は TOE_ENABLED=false で不実行（#134）。
+  // XHR フック・送信ポーリング・ToE poll は従来通り
   // DOMContentLoaded 以降に遅延させ、HW Goodwin 等のラッパーと共存する。
   ensureEngineBridge();
 

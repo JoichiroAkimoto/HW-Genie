@@ -7,13 +7,40 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, observeRegistration, realmDiag, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
+import { TOE_ENABLED, __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, safeGameOf, setToeEnabled, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
   BattleInstantPlay: function () {},
   DataStorage: {},
 };
+
+// NOTE: these two tests must stay first in file order. The default-false
+// assertion only holds on a fresh module import (no reset has run yet).
+
+test("TOE_ENABLED defaults to false in normal source (DEV-only separation)", () => {
+  assert.strictEqual(TOE_ENABLED, false);
+});
+
+test("disabled build installs no traps and starts no polling", () => {
+  setToeEnabled(false);
+  const prevWindow = globalThis.window;
+  globalThis.window = {};
+  try {
+    ensureEngineBridge();
+    const holder = {};
+    holder["game.battle.controller.thread.BattlePresets"] = function () {};
+    assert.deepStrictEqual(capturedClassNames(), []);
+    // No polling, no timers: returns a bare stop handle.
+    const stop = installToeBridge({ authServerUrl: "http://localhost:9" });
+    assert.strictEqual(typeof stop, "function");
+    stop();
+  } finally {
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests(); // restores DEV-capable default for the rest
+  }
+});
 
 test("nullish or empty game objects have no engine", () => {
   assert.strictEqual(hasBattleEngine(null), false);

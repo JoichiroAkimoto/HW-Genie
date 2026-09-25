@@ -138,6 +138,28 @@ build_entry() {
     else
       sed -i "s|\[HW-Genie/ToE\]|[HW-Genie/ToE Dev]|g" "$output"
     fi
+    # DEV 版のみ ToE ブリッジを有効化する（通常版は認証キャプチャ専用）。
+    # Goodwin 干渉の分離 (#134)。番兵文字列は minify でも残るリテラル。
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|__TOE_VARIANT_NORMAL__|__TOE_VARIANT_DEV__|g" "$output"
+    else
+      sed -i "s|__TOE_VARIANT_NORMAL__|__TOE_VARIANT_DEV__|g" "$output"
+    fi
+    if ! grep -qF 'TOE_VARIANT = "__TOE_VARIANT_DEV__"' "$output"; then
+      echo "ERROR: TOE sentinel rewrite failed ($output)" >&2
+      exit 1
+    fi
+  else
+    # 通常版の TOE_VARIANT 代入が NORMAL であることを保証する。
+    # （TOE_VARIANT_DEV 定数の比較用リテラル自体は正当なため、代入行で判定）
+    if ! grep -qF 'TOE_VARIANT = "__TOE_VARIANT_NORMAL__"' "$output"; then
+      echo "ERROR: TOE variant assignment is not NORMAL ($output)" >&2
+      exit 1
+    fi
+    if grep -qF 'TOE_VARIANT = "__TOE_VARIANT_DEV__"' "$output"; then
+      echo "ERROR: DEV sentinel leaked into normal build ($output)" >&2
+      exit 1
+    fi
   fi
 
   # バンドル部分の先頭が単一 IIFE であることを強制（グローバル漏れの回帰防止）。
