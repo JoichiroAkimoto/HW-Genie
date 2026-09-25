@@ -18,7 +18,8 @@ npm run build
 
 `dist/hw-genie-auth-capture.user.js` が生成されます。ビルドは `bun build`（IIFE
 形式）に加えて `tsc --noEmit` の型チェックを実行し、IIFE ラップとメタデータ
-抽出を自動検証します。
+抽出を自動検証します。`--minify` は ToE 番兵ゲートと非互換のため非対応です
+（`build.sh` が明示エラーで拒否します）。
 
 ### リリース用 URL 注入
 
@@ -40,6 +41,14 @@ bash ./build.sh \
 
 HW Goodwin 等との干渉を避けるため、ToE自動化を行うときだけDEV版を有効化し、
 終わったら無効化して通常版に戻す運用を推奨します。
+
+**通常版では ToE 機能は実行されません**（#134）。通常版のバンドルは ToE の
+トラップ設置もポーリングも一切行わず、認証キャプチャ専用です（コード自体は
+バンドルに残ります）。ToE の実行に
+必要なエンジントラップ（`Object.prototype` への設置）は Goodwin の自動攻略と
+干渉するため、DEV 版でのみ有効化されます（ビルド時番兵 `TOE_VARIANT`
+（`__TOE_VARIANT_NORMAL__`/`__TOE_VARIANT_DEV__`）。`TOE_ENABLED` は派生フラグ。
+通常版ビルドに DEV 番兵が混入していないことは `build.sh` が検証します）。
 
 ```bash
 bash build.sh --dev

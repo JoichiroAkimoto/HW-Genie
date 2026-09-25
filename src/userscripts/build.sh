@@ -63,6 +63,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # dev+inject の組み合わせは副作用（tsc/bun/dist 書き込み）の前に即失敗させる。
+# --minify は bun の定数畳み込みが番兵リテラルを消去し sentinel gate が検証
+# 不能になるため、引数解析直後に明示拒否する（副作用の前に fail-fast）。
+if [[ -n "$BUN_MINIFY" ]]; then
+  echo "ERROR: --minify is incompatible with the ToE sentinel gate (bun folds the sentinel literal away, so the NORMAL/DEV rewrite cannot be verified)" >&2
+  exit 1
+fi
 if [[ "$VARIANT" == "dev" ]] && [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
   echo "ERROR: --inject-* cannot be combined with --dev (dev builds must never auto-update)" >&2
   exit 1
@@ -117,7 +123,9 @@ build_entry() {
   # modules) in a single IIFE so no declarations leak onto the page's global
   # scope — important because other userscripts share the page (e.g. HW
   # Goodwin) and the userscript runs with @grant none.
-  # --minify を渡すと 1 行圧縮される（IIFE 構造検証はどちらでも通る）。
+  # --minify は ToE sentinel gate と非互換のため引数解析時点で拒否される
+  # （上記 fail-fast）。$BUN_MINIFY は常に空のはずだが、構造検証コメントと
+  # して残す: IIFE 構造検証はどちらの形式でも通る設計だった。
   bun build "$SCRIPT_DIR/$entry" --outfile "$DIST_DIR/bundle.tmp.js" --format=iife --target=browser $BUN_MINIFY
 
   # Combine metadata + bundle
@@ -137,6 +145,29 @@ build_entry() {
       sed -i '' "s|\[HW-Genie/ToE\]|[HW-Genie/ToE Dev]|g" "$output"
     else
       sed -i "s|\[HW-Genie/ToE\]|[HW-Genie/ToE Dev]|g" "$output"
+    fi
+    # DEV 版のみ ToE ブリッジを有効化する（通常版は認証キャプチャ専用）。
+    # Goodwin 干渉の分離 (#134)。非 minify ビルドでは番兵文字列はリテラルとして残る。
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|__TOE_VARIANT_NORMAL__|__TOE_VARIANT_DEV__|g" "$output"
+    else
+      sed -i "s|__TOE_VARIANT_NORMAL__|__TOE_VARIANT_DEV__|g" "$output"
+    fi
+    if ! grep -qE 'TOE_VARIANT\s*=\s*"__TOE_VARIANT_DEV__"' "$output"; then
+      echo "ERROR: TOE sentinel rewrite failed ($output)" >&2
+      exit 1
+    fi
+  else
+    # 通常版の TOE_VARIANT 代入が NORMAL であることを保証する。
+    # TOE_VARIANT_DEV 定数の宣言行（`TOE_VARIANT_DEV: string = ...`）は
+    # `TOE_VARIANT\s*=` にマッチしない（直後が `_` のため）ので区別できる。
+    if ! grep -qE 'TOE_VARIANT\s*=\s*"__TOE_VARIANT_NORMAL__"' "$output"; then
+      echo "ERROR: TOE variant assignment is not NORMAL ($output)" >&2
+      exit 1
+    fi
+    if grep -qE 'TOE_VARIANT\s*=\s*"__TOE_VARIANT_DEV__"' "$output"; then
+      echo "ERROR: DEV sentinel leaked into normal build ($output)" >&2
+      exit 1
     fi
   fi
 

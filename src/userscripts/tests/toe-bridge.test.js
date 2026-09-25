@@ -7,13 +7,69 @@
 // like the Titan Arena screen had to be open.
 import { test } from "node:test";
 import assert from "node:assert";
-import { __resetBridgeForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, observeRegistration, realmDiag, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
+import { readFileSync } from "node:fs";
+import { TOE_ENABLED, __resetBridgeForTests, __setToeEnabledForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
   BattleInstantPlay: function () {},
   DataStorage: {},
 };
+
+test("TOE_ENABLED defaults to false in normal source (DEV-only separation)", () => {
+  // Assert the shipped source text directly so this holds regardless of
+  // module state or test execution order.
+  const srcUrl = new URL("../toe-bridge.ts", import.meta.url);
+  const src = readFileSync(srcUrl, "utf8");
+  assert.ok(
+    src.includes('const TOE_VARIANT: string = "__TOE_VARIANT_NORMAL__"'),
+    "normal source must ship with the NORMAL sentinel",
+  );
+  // The live module binding agrees once no test has flipped it; the reset
+  // helper also restores this shipped default.
+  __resetBridgeForTests();
+  assert.strictEqual(TOE_ENABLED, false);
+});
+
+test("disabled build installs no traps and starts no polling", () => {
+  __setToeEnabledForTests(false);
+  const prevWindow = globalThis.window;
+  const origSetInterval = globalThis.setInterval;
+  const origSetTimeout = globalThis.setTimeout;
+  let timersStarted = 0;
+  globalThis.window = {};
+  globalThis.setInterval = (...args) => {
+    timersStarted += 1;
+    return origSetInterval(...args);
+  };
+  globalThis.setTimeout = (...args) => {
+    timersStarted += 1;
+    return origSetTimeout(...args);
+  };
+  try {
+    ensureEngineBridge();
+    const holder = {};
+    holder["game.battle.controller.thread.BattlePresets"] = function () {};
+    assert.deepStrictEqual(capturedClassNames(), []);
+    // No polling, no timers: returns a bare stop handle.
+    const stop = installToeBridge({ authServerUrl: "http://localhost:9" });
+    assert.strictEqual(typeof stop, "function");
+    assert.strictEqual(timersStarted, 0, "disabled build must start no timers");
+    // No Object.prototype trap was installed either.
+    const desc = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "game.battle.controller.thread.BattlePresets",
+    );
+    assert.ok(!desc || (desc.set === undefined && desc.get === undefined));
+    stop();
+  } finally {
+    globalThis.setInterval = origSetInterval;
+    globalThis.setTimeout = origSetTimeout;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests(); // restores shipped default for the rest
+  }
+});
 
 test("nullish or empty game objects have no engine", () => {
   assert.strictEqual(hasBattleEngine(null), false);
@@ -111,6 +167,7 @@ test("ensureEngineBridge is a safe no-op without a DOM", () => {
 
 test("ensureEngineBridge captures class registration via traps", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const props = [
     "game.battle.controller.thread.BattlePresets",
@@ -156,6 +213,7 @@ test("realmDiag reports without throwing in bare env", () => {
 
 test("trap capture feeds capturedClassNames (no window.Game needed)", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   // Frozen window: gameBridge() cannot attach Game, but the trap's own
   // capturedClasses store must still receive the class.
@@ -187,6 +245,7 @@ test("traps stay installed for the session (HWH parity)", () => {
   // Removing traps mid-boot stalls game loading at 1-2%: the runtime may
   // resolve classes via these paths lazily. Like HWH, traps persist.
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const props = [
     "game.battle.controller.thread.BattlePresets",
@@ -223,6 +282,7 @@ test("traps stay installed for the session (HWH parity)", () => {
 
 test("non-function BattlePresets never passes the engine gate", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   globalThis.window = {};
   try {
@@ -250,6 +310,7 @@ test("non-function BattlePresets never passes the engine gate", () => {
 
 test("double ensureEngineBridge does not mis-log owned traps", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   globalThis.window = {};
   const logs = [];
@@ -314,6 +375,7 @@ test("submitWithRetry reports failure after second miss", async () => {
 
 test("tick retries submit once on 404 (injected failing fetch)", async () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
   const origFetch = globalThis.fetch;
@@ -353,6 +415,7 @@ test("storeCapturedClass upgrades stale refs", () => {
 
 test("foreign traps are chained, not skipped", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   const foreignSeen = [];
@@ -388,6 +451,7 @@ test("foreign traps are chained, not skipped", () => {
 
 test("re-registration on a fresh holder upgrades the ref", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   globalThis.window = {};
@@ -413,6 +477,7 @@ test("re-registration on a fresh holder upgrades the ref", () => {
 
 test("Goodwin-first: chained foreign trap keeps both sides working", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   globalThis.window = {};
@@ -449,6 +514,7 @@ test("Goodwin-first: chained foreign trap keeps both sides working", () => {
 
 test("Goodwin-second overwrite keeps working after our capture", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   globalThis.window = {};
@@ -486,6 +552,7 @@ test("Goodwin-second overwrite keeps working after our capture", () => {
 
 test("delete-after-capture reads as undefined (transparent)", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   globalThis.window = {};
@@ -511,6 +578,7 @@ test("delete-after-capture reads as undefined (transparent)", () => {
 
 test("frozen holder still served via ghost fallback", () => {
   __resetBridgeForTests();
+  __setToeEnabledForTests(true);
   const prevWindow = globalThis.window;
   const prop = "game.battle.controller.thread.BattlePresets";
   globalThis.window = {};

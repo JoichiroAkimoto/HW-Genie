@@ -17,6 +17,26 @@ const AUTH_SERVER_URL = "http://localhost:8765";
 const POLL_INTERVAL_MS = 1000;
 const REQUEST_TIMEOUT_MS = 5000;
 
+// Build variant sentinel. Normal builds ship with the NORMAL value and never
+// execute any ToE code (Goodwin separation, see #134); `build.sh --dev`
+// rewrites it to the DEV value so DEV builds run the full ToE bridge.
+const TOE_VARIANT: string = "__TOE_VARIANT_NORMAL__";
+const TOE_VARIANT_DEV: string = "__TOE_VARIANT_DEV__";
+
+/**
+ * Whether this build runs the ToE bridge (traps + polling).
+ *
+ * Normal builds: false (auth capture only). DEV builds: true via the
+ * build-time sentinel rewrite. Tests flip it with
+ * {@link __setToeEnabledForTests}.
+ */
+export let TOE_ENABLED: boolean = TOE_VARIANT === TOE_VARIANT_DEV;
+
+/** Test-only seam. テスト専用。本番コードからは呼ばないこと。 */
+export function __setToeEnabledForTests(value: boolean): void {
+  TOE_ENABLED = value;
+}
+
 interface ToeJob {
   id: string;
   account: string;
@@ -225,6 +245,9 @@ const materializedHolders: WeakSet<object> = new WeakSet();
 /** Test-only: clear captured refs, traps and diag counters. */
 export function __resetBridgeForTests(): void {
   engineReadyLogged = false;
+  // Restore the shipped normal default (TOE_ENABLED=false). Tests needing
+  // DEV behavior opt in explicitly via __setToeEnabledForTests(true).
+  TOE_ENABLED = false;
   for (const k of Object.keys(capturedClasses)) {
     delete capturedClasses[k];
   }
@@ -298,6 +321,10 @@ function maybeRemoveTraps(): void {
 }
 
 export function ensureEngineBridge(): void {
+  // Normal builds never install Object.prototype traps (Goodwin separation).
+  if (!TOE_ENABLED) {
+    return;
+  }
   if (typeof window === "undefined" || typeof Object.defineProperty !== "function") {
     return;
   }
@@ -758,6 +785,11 @@ export async function submitWithRetry(
 }
 
 export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number } = {}): () => void {
+  // Normal builds never poll (Goodwin separation). Return the stop handle
+  // shape so callers need no variant branching.
+  if (!TOE_ENABLED) {
+    return () => {};
+  }
   const baseUrl = (opts.authServerUrl ?? AUTH_SERVER_URL).replace(/\/+$/, "");
   const interval = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
   let stopped = false;
