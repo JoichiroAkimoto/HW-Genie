@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.10
+// @version      1.0.11
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -29,6 +29,15 @@
  * （例: HW Goodwin）の fetch ラッパーと競合して UI を壊すため削除した。
  * したがってゲームが fetch のみで API を呼ぶ環境では認証ヘッダーを捕捉できず、
  * 認証サーバーへの送信は行われない（v1.0.2 と同じ挙動）。
+ *
+ * セッション失効時 (HTTP 401 / auth・InvalidSession エラー / "Invalid signature"
+ * テキスト) は XHR レスポンス監視で検知して location.reload() で自動回復する
+ * （RELOAD_COOLDOWN_MS クールダウン・RELOAD_WINDOW_MS 間に
+ * MAX_RELOADS_PER_WINDOW 回上限）。localStorage の
+ * hw-genie-auto-reload-disabled が "1" なら kill-switch として検知しても
+ * リロードせずログのみにする。localStorage が読めない場合も "1" 相当として
+ * リロードしない（fail-closed: 読めない＝止める）。sessionStorage が使えない
+ * 環境では自動リロードは動作しない（suppress。メモリ代替でリロードしない）。
  */
 
 // XHR インターセプタは共有モジュールに分離し、テストから本番コードを
@@ -45,6 +54,12 @@ import {
 // 認証サーバーへの送信クライアント（fetch 注入可能。テストから検証）。
 import { sendHeadersToServer } from "./auth-client";
 import type { SessionState } from "./session";
+// セッション失効時の自動リロード判定（純関数モジュール。詳細は auth-recovery.ts）。
+import {
+  DISABLE_KEY,
+  STORAGE_KEY,
+  createApiResponseHandler,
+} from "./auth-recovery";
 // ToE ブリッジ: Titan Arena のバトル計算を本物のゲームエンジンに委譲する
 // ポーラー。DEV 版でのみ有効（通常版は TOE_ENABLED=false で不実行。
 // Goodwin 干渉の分離 #134）。auth server の /toe/* キューを介して
@@ -190,6 +205,22 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     setInterval(trySend, POLL_INTERVAL_MS);
   }
 
+  // セッション失効時の自動リロード配線。判定ロジックは
+  // createApiResponseHandler（auth-recovery.ts）に寄せ、ここは実
+  // storage・location.reload・Date.now の注入だけ行う。
+  // カウンタはタブスコープ (sessionStorage) のため、複数タブ合算ではない。
+  // sessionStorage が使えない環境では自動リロードは動作しない（suppress）。
+  // localStorage 読み取り失敗時は "1" 相当に読み替えて suppress する
+  //（fail-closed: 読めない＝止める。詳細は auth-recovery.ts）。
+  const handleApiResponse = createApiResponseHandler({
+    readDisabledValue: () => localStorage.getItem(DISABLE_KEY),
+    readStorage: () => sessionStorage.getItem(STORAGE_KEY),
+    writeStorage: (raw: string) => sessionStorage.setItem(STORAGE_KEY, raw),
+    reload: () => location.reload(),
+    now: () => Date.now(),
+    log: (msg: string) => log(msg),
+  });
+
   function startToeBridge() {
     // ゲーム本編のタブでのみ engine 検出→poll 開始。landing 等では
     // 1回/分の診断ログのみ出る。
@@ -210,6 +241,8 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     installXhrInterceptor(
       (urlString: string) => isApiUrl(urlString, window.location.href),
       captureHeaders,
+      (status: number, responseText: string) =>
+        handleApiResponse(status, responseText),
     );
   }
 
