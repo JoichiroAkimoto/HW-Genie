@@ -63,11 +63,34 @@ npm run build:dev
 - `@version` に `-dev` サフィックス（例: `1.0.7-dev`）
 - 先頭行に `// ⚠️ DEV BUILD ...` バナー、コンソールログは `[HW-Genie/ToE Dev]`
   プレフィックス（通常版の `[HW-Genie/ToE]` と混ざらない）
-- `@downloadURL` / `@updateURL` は注入不可（`--inject-*` と `--dev` の併用は
-  ビルドエラー）。自動更新で通常版を上書きしないための保護です
+- `@downloadURL` / `@updateURL` は DEV 専用アセット（`-dev.user.js`）を指す
+  URL のみ注入可。通常版 latest を指す URL はビルドエラー。
+  自動更新で通常版を上書きしないための保護です
 
 運用手順: ToE実行前にDEV版をON → 実行後にOFF → 通常版に戻す。
 挙動自体は通常版と同一に保つため、DEV版で動いたものは通常版でも動きます。
+
+### DEV版の pre-release 配布
+
+`dev-*` タグは自動リリースの対象外（`release.yml` は `v*` のみ）のため、
+手動で pre-release を切ります。pre-release は `latest` に影響しないため、
+通常版の自動更新を乱しません（前例: `dev-20260916-bee72ee`）。
+
+```bash
+cd src/userscripts
+TAG="dev-$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
+BASE="https://github.com/JoichiroAkimoto/HW-Genie/releases/download/${TAG}/hw-genie-auth-capture-dev.user.js"
+bash ./build.sh --dev \
+  --inject-download-url "$BASE" \
+  --inject-update-url "$BASE"
+gh release create "$TAG" --prerelease \
+  --title "DEV build ($TAG)" \
+  --notes "開発版（ToE 自動化用）。通常版と併用時は ToE 実行時のみ ON にすること。" \
+  ./dist/hw-genie-auth-capture-dev.user.js
+```
+
+> 注意: バージョン固定 URL のため DEV 版の自動更新はかかりません。
+> 新しい DEV 版が出たら入れ直してください。
 
 ## テスト
 

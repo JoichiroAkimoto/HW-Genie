@@ -70,8 +70,12 @@ if [[ -n "$BUN_MINIFY" ]]; then
   exit 1
 fi
 if [[ "$VARIANT" == "dev" ]] && [[ -n "$INJECT_DOWNLOAD_URL" || -n "$INJECT_UPDATE_URL" ]]; then
-  echo "ERROR: --inject-* cannot be combined with --dev (dev builds must never auto-update)" >&2
-  exit 1
+  # DEV 版への URL 注入は、DEV 専用アセット (-dev.user.js) を指す場合のみ許可する。
+  # 通常版 latest を指すと DEV の自動更新で通常版を上書きするため、それは拒否する。
+  if [[ "$INJECT_DOWNLOAD_URL" != *"hw-genie-auth-capture-dev.user.js"* || "$INJECT_UPDATE_URL" != *"hw-genie-auth-capture-dev.user.js"* ]]; then
+    echo "ERROR: --inject-* with --dev must point at the -dev asset (got download='${INJECT_DOWNLOAD_URL}' update='${INJECT_UPDATE_URL}')" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$DIST_DIR"
