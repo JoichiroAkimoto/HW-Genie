@@ -167,6 +167,8 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     186: ConsumableInfo(name="Doll of Glorious Heroes", method="consumableUseLootBox"),
     189: ConsumableInfo(name="Doll of Loyal Companions", method="consumableUseLootBox"),
     468: ConsumableInfo(name="Explorer's Bag", method="consumableUseLootBox"),
+    502: ConsumableInfo(name="Ascension Chest", method="consumableUseLootBox"),
+    508: ConsumableInfo(name="Cosmic Titans Battle Chest", method="consumableUseLootBox"),
 }
 
 #: 一括消費（``consumable run``・``multi consumable``）の対象 libId。
@@ -233,6 +235,8 @@ CONSUMABLE_USE_TARGETS: list[int] = [
     186,
     189,
     468,
+    502,
+    508,
 ]
 
 
