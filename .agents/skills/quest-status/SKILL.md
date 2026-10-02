@@ -85,7 +85,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    uv run hw-genie quests -a <ACCOUNT> --set-default 10024 candidates '[{"heroId": 53, "slotId": 2}]'
    ```
    - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。上書きキーはステップの args に**既に存在するキー**にのみ適用され（誤ったキーは警告）、マルチステップ（10028 等）では該当する全ステップに適用されます。
-   - 10028（Titan Artifact）の `shopBuy` は実行時に **shopGetAll の実在庫から reward/cost を動的解決**します（取得は実行単位で 1 回にキャッシュされ複数クエスト間で共有）。在庫取得失敗（認証以外）時のみコード既定値へフォールバックし、**指定 shop / slot が在庫に無い、または指定 slot が購入済み（bought）の場合は実行せず失敗報告**します（固定 reward での NotAvailable 送信を防止）。
+   - 10028（Titan Artifact）の `shopBuy` は実行時に **shopGetAll の実在庫から reward/cost を動的解決**します（取得は実行単位で 1 回にキャッシュされ複数クエスト間で共有）。在庫取得失敗（認証以外）時のみコード既定値へフォールバックし、**指定 shop / slot が在庫に無い、または指定 slot が購入済み（bought）の場合は実行せず失敗報告**します（固定 reward での NotAvailable 送信を防止）。購入スキップ運用（10028 専用）: `quest_defaults[10028]` が `enabled:true` かつ `slot` キーありで null 相当 または `amount` キーありで 0 のとき（OR）、1 段目 `shopBuy` をスキップし 2 段目 `titanArtifactLevelUp` のみ実行します（手持ちフラグメントで強化だけ行う魔法値運用。`amount 0` 推奨、`slot null` も可、どちらでもスキップ。`enabled:false` は全体停止）。受理エイリアスの全集合: slot 側は `None` / `"null"` / `"none"` / `"nil"` / `""`（前後空白除去・大文字小文字無視なので `" NULL "` も可）、amount 側は `0` / `0.0` / `"0"` / `"0.0"` / `" 0 "`（前後空白許容。bool の `True`/`False` は数値とみなさず除外）。スキップ**しない**もの: `slot=0`（有効 slot 扱い）、`amount=None` / `amount=""` / `amount=-1`、`shopId=None`（正常 slot/amount なら無関係）、キー欠損（`slot` や `amount` 自体が未設定。`{"enabled": true}` だけではスキップしない）。手持ち不足でレベルアップが失敗したら購入フォールバックせず失敗報告で止めます。スキップで残りステップが 0 になった場合も黙って落とさず失敗報告します（dry-run の計画表示にも残る）。
 
 ## 表示内容
 - カテゴリ別（Daily / Weekly / Guild / Main / Event / Battle Pass / One-time / Unclassified）に、クエスト ID・名前・進捗（progress/target）・報酬・createTime を表示。

@@ -1967,3 +1967,284 @@ def test_edit_defaults_wizard_hides_note_from_keys(monkeypatch, capsys):
     assert "note" not in key_out
     for key in ("enabled", "ident", "free", "pack"):
         assert key in key_out, f"{key} がキー一覧にない"
+
+
+# --- 10028 購入スキップ運用（slot=null / amount=0 → shopBuy スキップ） ---
+
+
+def test_quest_10028_skip_shop_buy_when_amount_zero(capsys):
+    """amount=0 → shopBuy 未実行・shopGetAll 未呼出・titanArtifactLevelUp のみで成功。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    set_quest_defaults("Alex", 10028, "amount", 0)
+
+    calls = []
+
+    def _op(action, args):
+        calls.append(action)
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert succeeded[0]["quest_id"] == 10028
+    assert calls == [ApiAction.TITAN_ARTIFACT_LEVEL_UP]
+    # shop 在庫参照（shopGetAll → client.call）は発行されない
+    client.call.assert_not_called()
+    client.quest_farm.assert_called_once_with(10028)
+
+
+def test_quest_10028_skip_shop_buy_when_slot_null(capsys):
+    """slot=None → shopBuy 未実行・shopGetAll 未呼出・titanArtifactLevelUp のみで成功。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    set_quest_defaults("Alex", 10028, "slot", None)
+
+    calls = []
+
+    def _op(action, args):
+        calls.append(action)
+        if action == ApiAction.TITAN_ARTIFACT_LEVEL_UP:
+            return _ok_response({"quests": [{"id": 10028, "state": 2}]})
+        return _ok_response({})
+
+    client.quest_operation = MagicMock(side_effect=_op)
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert failed == []
+    assert len(succeeded) == 1
+    assert calls == [ApiAction.TITAN_ARTIFACT_LEVEL_UP]
+    client.call.assert_not_called()
+
+
+def test_quest_10028_skip_shop_buy_level_up_failure_no_fallback(capsys):
+    """スキップ時に手持ち不足でレベルアップ失敗 → 購入なしで failed に1件。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    set_quest_defaults("Alex", 10028, "amount", 0)
+
+    client.quest_operation = MagicMock(return_value=_error_response("NotEnough"))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["quest_id"] == 10028
+    assert failed[0]["step"] == "titanArtifactLevelUp"
+    # shopBuy は試されない（購入フォールバックなし）
+    assert client.quest_operation.call_count == 1
+    assert client.quest_operation.call_args.args[0] == ApiAction.TITAN_ARTIFACT_LEVEL_UP
+    client.call.assert_not_called()
+    client.quest_farm.assert_not_called()
+
+
+def test_quest_10028_skip_dry_run_shows_skip(capsys):
+    """dry-run ではスキップした旨が明示される（failed には入らない）。"""
+    client = _make_client([_active(10028)])
+    _enable("Alex", 10028)
+    set_quest_defaults("Alex", 10028, "amount", 0)
+    client.quest_operation = MagicMock()
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert failed == []
+    assert "skipped shopBuy" in out
+    assert "shopBuy" not in out.replace("skipped shopBuy", "")
+    assert "titanArtifactLevelUp" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_is_shop_buy_skipped_conditions():
+    """スキップ判定ヘルパー: slot null 系 OR amount 0（型変換ミスに注意）。"""
+    from hw_genie.commands.quests import _is_shop_buy_skipped
+
+    assert _is_shop_buy_skipped(None) is False
+    assert _is_shop_buy_skipped({}) is False
+    # 正常値（slot=18/amount=200）はスキップしない
+    assert _is_shop_buy_skipped({"slot": 18, "amount": 200}) is False
+    # slot null 系 → スキップ
+    assert _is_shop_buy_skipped({"slot": None, "amount": 200}) is True
+    assert _is_shop_buy_skipped({"slot": "null", "amount": 200}) is True
+    assert _is_shop_buy_skipped({"slot": "NULL", "amount": 200}) is True
+    assert _is_shop_buy_skipped({"slot": "none", "amount": 200}) is True
+    assert _is_shop_buy_skipped({"slot": "nil", "amount": 200}) is True
+    assert _is_shop_buy_skipped({"slot": "", "amount": 200}) is True
+    # amount 0 系 → スキップ（bool は除外）
+    assert _is_shop_buy_skipped({"slot": 18, "amount": 0}) is True
+    assert _is_shop_buy_skipped({"slot": 18, "amount": 0.0}) is True
+    assert _is_shop_buy_skipped({"slot": 18, "amount": "0"}) is True
+    assert _is_shop_buy_skipped({"slot": 18, "amount": False}) is False
+    assert _is_shop_buy_skipped({"slot": 18, "amount": True}) is False
+
+
+def test_parse_config_value_null_to_none():
+    """--set-default の "null"/"none"/"nil" は None に解釈される。"""
+    from hw_genie.commands.quests import _parse_config_value
+
+    assert _parse_config_value("null") is None
+    assert _parse_config_value("NULL") is None
+    assert _parse_config_value("none") is None
+    assert _parse_config_value("nil") is None
+    # 既存の解釈は壊さない
+    assert _parse_config_value("true") is True
+    assert _parse_config_value("false") is False
+    assert _parse_config_value("0") == 0
+    assert _parse_config_value("hello") == "hello"
+
+
+def test_parse_config_value_strips_whitespace_for_null():
+    """前後空白は strip してから判定する（" NULL " → None）。
+
+    true/false は小文字完全一致のみ（" True " は bool にならず文字列のまま）
+    という非対称は仕様としてロックする（null 系だけ大文字小文字を無視）。
+    """
+    from hw_genie.commands.quests import _parse_config_value
+
+    assert _parse_config_value(" NULL ") is None
+    assert _parse_config_value("  none  ") is None
+    assert _parse_config_value(" 0 ") == 0
+    # 非対称のロック: null 系は大文字無視だが true/false は小文字完全一致のみ
+    assert _parse_config_value(" True ") == " True "
+    assert _parse_config_value("FALSE") == "FALSE"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"slot": 0, "amount": 200}, False),
+        ({"slot": 18, "amount": "0.0"}, True),
+        ({"slot": 18, "amount": " 0 "}, True),
+        ({"slot": 18, "amount": None}, False),
+        ({"slot": 18, "amount": -1}, False),
+        ({"slot": 18, "amount": ""}, False),
+        ({"slot": "", "amount": 200}, True),
+        ({"amount": 200}, False),
+        ({"slot": 18}, False),
+        ({"enabled": True}, False),
+        ({"shopId": None, "slot": 18, "amount": 200}, False),
+    ],
+    ids=[
+        "slot_zero_does_not_skip",
+        "amount_str_0dot0_skips",
+        "amount_padded_zero_skips",
+        "amount_none_does_not_skip",
+        "amount_negative_does_not_skip",
+        "amount_empty_str_does_not_skip",
+        "slot_empty_str_skips",
+        "slot_missing_does_not_skip",
+        "amount_missing_does_not_skip",
+        "both_missing_does_not_skip",
+        "shopid_none_does_not_skip",
+    ],
+)
+def test_is_shop_buy_skipped_presence_and_edge_cases(overrides, expected):
+    """存在チェックと境界値の仕様ロック。
+
+    - slot=0 は有効 slot 扱い → スキップしない
+    - amount="0.0"/" 0 " → スキップする
+    - amount=None/-1/"" → スキップしない
+    - slot/amount のキー欠損（{"enabled": True} 等）→ スキップしない
+    - shopId=None（正常 slot/amount）はスキップ判定と無関係 → しない
+    - amount=""→しない vs slot=""→する の非対称をロック
+    """
+    from hw_genie.commands.quests import _is_shop_buy_skipped
+
+    assert _is_shop_buy_skipped(overrides) is expected
+
+
+def test_quest_10028_skip_leaving_no_steps_records_failure(capsys, monkeypatch):
+    """shopBuy 除去で残り 0 ステップでも黙って落とさず failures に記録する。
+
+    dry-run でも print と返り値 failures の両方に残る（loud な扱い）。
+    """
+    import hw_genie.commands.quests as quests_mod
+
+    monkeypatch.setattr(
+        quests_mod,
+        "QUEST_OPERATIONS",
+        {
+            quests_mod.TITAN_ARTIFACT_QUEST_ID: {
+                "enabled": False,
+                "steps": [
+                    {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "amount": 200}},
+                ],
+            },
+        },
+    )
+    client = _make_client([_active(quests_mod.TITAN_ARTIFACT_QUEST_ID)])
+    _enable("Alex", quests_mod.TITAN_ARTIFACT_QUEST_ID)
+    set_quest_defaults("Alex", quests_mod.TITAN_ARTIFACT_QUEST_ID, "amount", 0)
+    client.quest_operation = MagicMock()
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["quest_id"] == quests_mod.TITAN_ARTIFACT_QUEST_ID
+    assert failed[0]["step"] == "shopBuy"
+    assert "all steps skipped" in failed[0]["error"]
+    assert "all steps skipped" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_quest_execute_empty_steps_records_failure(capsys, monkeypatch):
+    """レシピ自体にステップが無い場合も黙って落とさず failures に記録する。"""
+    import hw_genie.commands.quests as quests_mod
+
+    monkeypatch.setattr(
+        quests_mod,
+        "QUEST_OPERATIONS",
+        {10024: {"enabled": False, "steps": []}},
+    )
+    client = _make_client([_active(10024)])
+    _enable("Alex", 10024)
+    client.quest_operation = MagicMock()
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert failed[0]["quest_id"] == 10024
+    assert "no operation steps" in failed[0]["error"]
+    assert "no operation steps" in out
+    client.quest_operation.assert_not_called()
+
+
+def test_set_default_null_string_stored_as_none():
+    """--set-default 10028 slot null → None として保存されスキップ条件になる。"""
+    from hw_genie.commands.quests import _is_shop_buy_skipped
+
+    _register("Alex")
+    set_quest_defaults("Alex", 10028, "slot", "null")
+
+    defaults = get_quest_defaults("Alex")
+    assert defaults[10028]["slot"] is None
+    assert _is_shop_buy_skipped(defaults[10028]) is True
+
+
+def test_fmt_value_none_shows_null():
+    """ウィザード表示で None は素直に null と表示される（skip 扱いしない）。
+
+    amount=None は購入スキップ条件にならないのに "null (skip)" と出すのは
+    誤表示のため、10028/slot 専用分岐は作らず全キー一律 "null" に戻す。
+    """
+    from hw_genie.commands.quests import _fmt_value
+
+    assert _fmt_value(None) == "null"
+    assert _fmt_value(True) == "true"
+    assert _fmt_value(61) == "61"
