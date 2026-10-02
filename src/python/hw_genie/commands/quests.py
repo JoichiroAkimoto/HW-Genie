@@ -118,6 +118,11 @@ _FAMILY_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("100",), "daily"),
 )
 
+# Titan Artifact デイリークエスト ID。購入スキップ運用（_is_shop_buy_skipped）は
+# このクエスト専用。他の shopBuy ステップを持つクエストは通常経路
+# （実在庫解決 → 実行）を通り、スキップ判定の対象外とする。
+TITAN_ARTIFACT_QUEST_ID = 10028
+
 # --- クリア条件マップ（クエストID → クリアするための操作レシピ） ---
 # この定義は「実行方法のレシピ」と「初期値」を提供するだけ。実際に実行するか
 # どうかは account_configs の ``quest_defaults``（config_key="quest_defaults"）の
@@ -142,7 +147,7 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
             {"rpc": ApiAction.HERO_ARTIFACT_LEVEL_UP, "args": {"heroId": 61, "slotId": 1}},
         ],
     },
-    10028: {
+    TITAN_ARTIFACT_QUEST_ID: {
         "enabled": False,
         "steps": [
             # Elemental Tournament Shop でフラグメント 200 個購入 → レベルアップ
@@ -153,6 +158,13 @@ QUEST_OPERATIONS: dict[int, dict[str, Any]] = {
             # される。フラグメント ID は「タイタンアーティファクトの強化素材」として
             # 共通であり、購入後は quest_defaults で指定した titanId/slotId の
             # 対象に使う（docs/superpowers/titan-quests-ops.md 参照）。
+            # 購入スキップ運用: quest_defaults[TITAN_ARTIFACT_QUEST_ID] が
+            # enabled:true かつ slot キーありで null相当 または amount キーありで
+            # 0 のとき（OR）、1 段目 shopBuy をスキップし 2 段目
+            # titanArtifactLevelUp のみ実行する（キーが欠損している場合は
+            # スキップしない。_is_shop_buy_skipped 参照）
+            # （手持ちのフラグメントで強化だけ行う魔法値運用。amount=0 推奨、
+            # slot=null も可。enabled:false は両方止める）。
             {"rpc": ApiAction.SHOP_BUY, "args": {"shopId": 13, "slot": 18, "cost": {"coin": {"18": 12}}, "reward": {"fragmentTitanArtifact": {"2001": 1}}, "amount": 200}},
             {"rpc": ApiAction.TITAN_ARTIFACT_LEVEL_UP, "args": {"titanId": 4012, "slotId": 1}},
         ],
@@ -660,21 +672,33 @@ def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
 def _parse_config_value(value: str) -> Any:
     """set-default の値文字列を bool/int/float/dict/list/str に解釈する。
 
+    入力の前後空白は strip してから判定する（``" NULL "`` → None）。
     スカラー（bool/int/float）を最優先で解釈し、解釈できない場合は JSON として
-    解釈を試みる（10028 の cost/reward のような dict/list 引数を文字列に化け
-    させずに登録できるようにする）。どれにも該当しなければ文字列のまま返す。
+    解釈を試みる（TITAN_ARTIFACT_QUEST_ID の cost/reward のような dict/list
+    引数を文字列に化けさせずに登録できるようにする）。どれにも該当しなければ
+    文字列のまま返す。
+    ``"null"``/``"none"``/``"nil"``（前後空白除去後に大文字小文字無視）は
+    ``None`` に解釈する（購入スキップ運用 ``slot null`` 用。文字列
+    ``"null"`` のまま保存しない）。
+    非対称に注意: ``true``/``false`` は小文字完全一致のみ受け付ける一方、
+    ``null`` 系だけ大文字小文字を無視する（例: ``"True"`` は bool にならず
+    文字列のまま、``"NULL"`` は None になる）。この非対称は仕様であり、
+    挙動は変えず文書化のみとする。
     """
-    if value == "true":
+    s = value.strip()
+    if s == "true":
         return True
-    if value == "false":
+    if s == "false":
         return False
+    if s.lower() in ("null", "none", "nil"):
+        return None
     for parse in (int, float):
         try:
-            return parse(value)
+            return parse(s)
         except ValueError:
             pass
     try:
-        parsed = json.loads(value)
+        parsed = json.loads(s)
     except ValueError:
         return value
     # プリミティブ（int/float/str のみ）に戻るケースは上で処理済み。
@@ -813,6 +837,40 @@ def _resolve_shop_buy_reward(
     return resolved, problems
 
 
+def _is_shop_buy_skipped(overrides: dict[str, Any] | None) -> bool:
+    """TITAN_ARTIFACT_QUEST_ID の 1 段目 shopBuy をスキップすべきか（購入スキップ運用）。
+
+    ``quest_defaults[TITAN_ARTIFACT_QUEST_ID]`` の ``slot`` に null 相当値が
+    設定されているか、``amount`` が 0 であるかのどちらか片方でも成立したら
+    True（OR）。DB に文字列で残っている場合に備えて ``"null"/"none"/"nil"/""``
+    （slot、前後空白除去・大文字小文字無視）や ``"0"``（amount、前後空白許容）
+    も許容する。``amount`` の bool（True/False）は数値 1/0 とみなさず除外する。
+    キーが存在しない（欠損）場合はスキップしない: ``overrides.get("slot")``
+    だけでは「明示 null」と「キー欠損」がどちらも None に見えるため、``in``
+    で存在チェックして区別する（例: ``{"enabled": True}`` はスキップしない）。
+    """
+    if not overrides:
+        return False
+    if "slot" in overrides:
+        slot = overrides["slot"]
+        if slot is None:
+            return True
+        if isinstance(slot, str) and slot.strip().lower() in ("null", "none", "nil", ""):
+            return True
+    if "amount" in overrides:
+        amount = overrides["amount"]
+        if isinstance(amount, bool):
+            return False
+        if isinstance(amount, (int, float)):
+            return amount == 0
+        if isinstance(amount, str):
+            try:
+                return float(amount.strip()) == 0
+            except ValueError:
+                return False
+    return False
+
+
 def run_quest_execute(
     client: HWClient,
     account_alias: str | None = None,
@@ -885,7 +943,7 @@ def run_quest_execute(
     claimable: list[Quest] = []
     failures: list[dict[str, Any]] = []
     skipped: list[int] = []
-    targets: list[tuple[Quest, list[dict[str, Any]]]] = []
+    targets: list[tuple[Quest, list[dict[str, Any]], bool]] = []
     guild_claimable: list[Quest] = []
     guild_active: list[Quest] = []
     shop_cache = ShopInventory()
@@ -909,14 +967,34 @@ def run_quest_execute(
             continue
         steps = _resolve_operation_args(q.id, op, account_defaults)
         if not steps:
+            # レシピ自体に実行ステップが無い（通常は到達しない）。黙って落とさず
+            # failures に記録する（dry-run の計画表示にも print と返り値で残る）。
+            msg = "no operation steps defined"
+            failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "steps", "error": msg})
+            print(f"❌ [{account}] {q.id} {q.name} cannot execute (steps): {msg}")
             continue
-        steps, shop_problems = _resolve_shop_buy_reward(client, steps, shop_cache)
-        if shop_problems:
-            for step, message in shop_problems:
-                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": step, "error": message})
-                print(f"❌ [{account}] {q.id} {q.name} cannot execute ({step}): {message}")
-            continue
-        targets.append((q, steps))
+        shop_buy_skipped = q.id == TITAN_ARTIFACT_QUEST_ID and _is_shop_buy_skipped(account_defaults.get(q.id))
+        if shop_buy_skipped:
+            # 購入スキップ運用: 1 段目 shopBuy を除去し 2 段目
+            # titanArtifactLevelUp のみ残す。shop 側 candidates はスキップ時は
+            # 無視される（titan 側 candidates は _run_quest_step で活かす）。
+            # 手持ち不足でレベルアップが失敗したら購入フォールバックせず
+            # 失敗報告で止める（_run_quest_step のまま）。
+            steps = [st for st in steps if st["rpc"] != ApiAction.SHOP_BUY]
+            if not steps:
+                # 除去後に残りが無い場合も黙って落とさず failures に記録する。
+                msg = "all steps skipped (shopBuy skipped; no remaining steps)"
+                failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": "shopBuy", "error": msg})
+                print(f"❌ [{account}] {q.id} {q.name} cannot execute (shopBuy): {msg}")
+                continue
+        if any(st["rpc"] == ApiAction.SHOP_BUY for st in steps):
+            steps, shop_problems = _resolve_shop_buy_reward(client, steps, shop_cache)
+            if shop_problems:
+                for step, message in shop_problems:
+                    failures.append({"account": account, "quest_id": q.id, "quest_name": q.name, "step": step, "error": message})
+                    print(f"❌ [{account}] {q.id} {q.name} cannot execute ({step}): {message}")
+                continue
+        targets.append((q, steps, shop_buy_skipped))
 
     guild_defaults = ensure_quest_guild_defaults(account)
     guild_enabled = bool(guild_defaults.get("enabled"))
@@ -954,8 +1032,11 @@ def run_quest_execute(
                 print("    - SKIP (GUILD_QUEST_CLAIM_EXCLUDE)")
                 continue
             print("    - questFarm (claim reward, no operation needed)")
-        for q, steps in targets:
+        for q, steps, shop_buy_skipped in targets:
             print(f"\n🔹 {q.id} {q.name}")
+            if shop_buy_skipped:
+                overrides = account_defaults.get(q.id) or {}
+                print(f"    - skipped shopBuy (amount={overrides.get('amount')!r}/slot={overrides.get('slot')!r})")
             for st in steps:
                 print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
             candidates = _filter_candidates(
@@ -965,7 +1046,7 @@ def run_quest_execute(
             if candidates:
                 print(f"    (fallback candidates: {candidates})")
         if guild_active:
-            daily_covers_recipe = any(q.id == GUILD_QUEST_RECIPE_ID for q, _ in targets)
+            daily_covers_recipe = any(q.id == GUILD_QUEST_RECIPE_ID for q, _, _ in targets)
             if not guild_enabled:
                 print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
             elif daily_covers_recipe:
@@ -987,7 +1068,7 @@ def run_quest_execute(
 
     # 実行フェーズ
     recipe_executed_in_daily = False
-    for q, steps in targets:
+    for q, steps, _shop_buy_skipped in targets:
         print(f"\n🔹 Executing {q.id} {q.name} ...")
         all_steps_ok = True
         claim_attempted = False
@@ -1296,7 +1377,9 @@ def _prompt_input(prompt: str) -> str:
 
 
 def _fmt_value(value: Any) -> str:
-    """設定値の表示用文字列（bool は true/false、dict は JSON）。"""
+    """設定値の表示用文字列（bool は true/false、dict は JSON、None は null）。"""
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, dict):
