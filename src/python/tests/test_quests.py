@@ -111,6 +111,25 @@ def test_format_reward_nested_dict():
     assert format_reward({}) == "-"
 
 
+def test_format_reward_non_dict_returns_dash():
+    assert format_reward(["stamina", 200]) == "-"
+    assert format_reward("stamina") == "-"
+    assert format_reward(200) == "-"
+
+
+def test_parse_quests_normalizes_non_dict_reward():
+    quests = parse_quests(
+        [
+            {"id": 10004, "state": 2, "reward": ["stamina", 200]},
+            {"id": 10006, "state": 2, "reward": "stamina"},
+            {"id": 10007, "state": 2, "reward": None},
+        ]
+    )
+    assert [q.reward for q in quests] == [{}, {}, {}]
+    for q in quests:
+        assert format_reward(q.reward) == "-"
+
+
 def test_format_create_time(monkeypatch):
     # エポック秒を表示タイムゾーン（既定 UTC）の ISO に変換する
     monkeypatch.setenv("HWGENIE_TZ", "UTC")

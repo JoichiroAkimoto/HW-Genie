@@ -80,8 +80,26 @@ def _active(qid: int) -> dict:
     return {"id": qid, "state": 1, "progress": 0, "reward": {}, "createTime": 0, "farmCount": 0}
 
 
-def _claimable_guild(qid: int) -> dict:
-    return {"id": qid, "state": 2, "progress": 100, "reward": {"stamina": 200}, "createTime": 0, "farmCount": 0}
+def _claimable_guild(qid: int, reward: dict | None = None) -> dict:
+    if reward is None:
+        reward = {"clanActivity": 150}
+    return {"id": qid, "state": 2, "progress": 100, "reward": reward, "createTime": 0, "farmCount": 0}
+
+
+def _stamina_reward(amount: int = 200) -> dict:
+    return {"stamina": amount}
+
+
+def _portal_reward() -> dict:
+    return {"refillable": {"45": 1}}
+
+
+def _oracle_reward() -> dict:
+    return {"consumable": {"81": 5}}
+
+
+def _soul_reward() -> dict:
+    return {"coin": {"38": 1}}
 
 
 def _active_guild(qid: int) -> dict:
@@ -105,10 +123,17 @@ def test_guild_claimable_farmed_without_defaults(capsys):
     client.quest_farm.assert_called_once_with(20000082)
 
 
-@pytest.mark.parametrize("excluded_id", sorted(GUILD_QUEST_CLAIM_EXCLUDE))
-def test_guild_claimable_excluded_not_farmed(capsys, excluded_id):
-    """GUILD_QUEST_CLAIM_EXCLUDE の全クエスト（20010002-20010005）は claim されない。"""
-    client = _make_client([_claimable_guild(excluded_id), _claimable_guild(20000082)])
+@pytest.mark.parametrize(
+    ("excluded_id", "reward"),
+    [
+        (20010002, {"stamina": 200}),
+        (20010005, {"refillable": {"45": 1}}),
+    ],
+    ids=["old_stamina_id", "old_portal_id"],
+)
+def test_guild_claimable_excluded_not_farmed(capsys, excluded_id, reward):
+    """旧 ID は現実報酬（stamina/ポータル）の場合に claim されない（互換フォールバック）。"""
+    client = _make_client([_claimable_guild(excluded_id, reward), _claimable_guild(20000082)])
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
@@ -120,17 +145,93 @@ def test_guild_claimable_excluded_not_farmed(capsys, excluded_id):
     assert f"Skipping claim for {excluded_id}" in out
 
 
-def test_guild_claimable_exclude_boundary_still_farmed(capsys):
-    """除外セットの境界（20010000/20010001）は従来通り claim される。"""
-    client = _make_client([_claimable_guild(20010000), _claimable_guild(20010001), _claimable_guild(20010002)])
+def test_guild_old_id_with_other_reward_is_farmed(capsys):
+    """旧 ID でも明確な非対象報酬（clanActivity 等）は取得する（ローテーション再利用対応）。"""
+    client = _make_client(
+        [
+            _claimable_guild(20010002, {"clanActivity": 150}),
+            _claimable_guild(20010005, _oracle_reward()),
+        ]
+    )
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
     succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
     capsys.readouterr().out
 
-    assert [s["quest_id"] for s in succeeded] == [20010000, 20010001]
+    assert [s["quest_id"] for s in succeeded] == [20010002, 20010005]
     assert failed == []
     assert client.quest_farm.call_count == 2
+
+
+def test_guild_old_id_with_unknown_reward_stays_excluded(capsys):
+    """旧 ID + reward 不明（None/空）は安全側で除外を維持する。"""
+    from hw_genie.commands.quests import Quest, _is_claim_excluded
+
+    assert _is_claim_excluded(Quest(id=20010002, state=2, reward=None)) is True
+    assert _is_claim_excluded(Quest(id=20010002, state=2, reward={})) is True
+    assert _is_claim_excluded(Quest(id=20010005, state=2, reward=None)) is True
+    # 非旧 ID の reward 不明は fail-safe で取得する
+    assert _is_claim_excluded(Quest(id=20010008, state=2, reward=None)) is False
+    assert _is_claim_excluded(Quest(id=20010008, state=2, reward={})) is False
+
+
+def test_guild_claimable_stamina_portal_excluded_by_reward(capsys):
+    """新サイクル ID（20010008/20010011）でもスタミナ/ポータル報酬は claim されない。"""
+    client = _make_client(
+        [
+            _claimable_guild(20010008, _stamina_reward(200)),
+            _claimable_guild(20010011, _portal_reward()),
+            _claimable_guild(20010009, _oracle_reward()),
+            _claimable_guild(20010006, {"clanActivity": 150}),
+        ]
+    )
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20010009, 20010006]
+    assert failed == []
+    assert client.quest_farm.call_count == 2
+    assert "Skipping claim for 20010008" in out
+    assert "Skipping claim for 20010011" in out
+
+
+def test_guild_oracle_soul_now_farmed(capsys):
+    """オラクル/ SOUL は新方針で取得する（旧除外 ID でも報酬が対象外なら取得）。"""
+    client = _make_client(
+        [
+            _claimable_guild(20010009, _oracle_reward()),
+            _claimable_guild(20010010, _soul_reward()),
+        ]
+    )
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20010009, 20010010]
+    assert failed == []
+    assert client.quest_farm.call_count == 2
+
+
+def test_guild_claimable_exclude_boundary_still_farmed(capsys):
+    """旧 ID でも明確な非対象報酬（clanActivity 等）は従来通り claim される。"""
+    client = _make_client(
+        [
+            _claimable_guild(20010000, {"clanActivity": 150}),
+            _claimable_guild(20010001, {"dungeonActivity": 75}),
+            _claimable_guild(20010002, {"clanActivity": 150}),
+        ]
+    )
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20010000, 20010001, 20010002]
+    assert failed == []
+    assert client.quest_farm.call_count == 3
 
 
 def test_guild_active_skipped_when_disabled(capsys):
@@ -190,7 +291,7 @@ def test_guild_claimable_excluded_not_farmed_after_recipe(capsys):
 
     client.quest_operation = MagicMock(side_effect=_op)
     res_first = _ok_response({"response": [_active_guild(20000111)]})
-    res_after = _ok_response({"response": [_claimable_guild(20000111), _claimable_guild(20010002)]})
+    res_after = _ok_response({"response": [_claimable_guild(20000111), _claimable_guild(20010002, _stamina_reward(200))]})
     client.quest_get_all = MagicMock(side_effect=[res_first, res_after])
     client.quest_farm = MagicMock(return_value=_ok_response({}))
 
@@ -205,7 +306,7 @@ def test_guild_claimable_excluded_not_farmed_after_recipe(capsys):
 
 def test_guild_dry_run_plan(capsys):
     """dry-run では active/claimable のギルドクエストがプランに現れる。除外対象は SKIP 表示。"""
-    client = _make_client([_claimable_guild(20010002), _active_guild(20000111)])
+    client = _make_client([_claimable_guild(20010002, _stamina_reward(200)), _active_guild(20000111)])
     set_quest_guild_defaults("Alex", "enabled", True)
     _ = client
 
@@ -215,9 +316,103 @@ def test_guild_dry_run_plan(capsys):
     assert succeeded == []
     assert failed == []
     assert "20010002" in out
-    assert "SKIP (GUILD_QUEST_CLAIM_EXCLUDE)" in out
+    assert "SKIP (manual-keep:" in out
     assert "Guild quests (Sparks of Power)" in out
     assert "heroTitanGiftLevelUp" in out
+
+
+def test_guild_dry_run_plan_new_cycle_stamina_skip(capsys):
+    """dry-run で新サイクル ID のスタミナ報酬も SKIP 表示になる。"""
+    client = _make_client([_claimable_guild(20010008, _stamina_reward(200)), _active_guild(20000111)])
+    set_quest_guild_defaults("Alex", "enabled", True)
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", dry_run=True)
+    out = capsys.readouterr().out
+
+    assert succeeded == []
+    assert "20010008" in out
+    assert "SKIP (manual-keep:" in out
+
+
+def test_reward_helpers_unit():
+    """スタミナ/ポータル判定ヘルパーの単体検証（int/str キー混在対応）。"""
+    from hw_genie.commands.quests import (
+        _is_manual_keep_reward,
+        _reward_contains_portal,
+        _reward_contains_stamina,
+    )
+
+    assert _reward_contains_stamina({"stamina": 200})
+    assert _reward_contains_stamina({"stamina": "60"})
+    assert not _reward_contains_stamina({"clanActivity": 150})
+    assert not _reward_contains_stamina(None)
+    assert not _reward_contains_stamina({})
+    # 複合報酬（stamina + 他）は全体を manual-keep 扱い（all-or-nothing）
+    assert _reward_contains_stamina({"stamina": 200, "gold": 100})
+    # 非数値の非空文字はキーの存在自体を manual-keep とみなし skip（安全側）
+    assert _reward_contains_stamina({"stamina": "abc"})
+    # "0"/""/負数・0 は報酬なし扱い（取得側に回す）
+    assert not _reward_contains_stamina({"stamina": "0"})
+    assert not _reward_contains_stamina({"stamina": ""})
+    assert not _reward_contains_stamina({"stamina": "  "})
+    assert not _reward_contains_stamina({"stamina": 0})
+    assert not _reward_contains_stamina({"stamina": -1})
+    assert not _reward_contains_stamina({"stamina": "-5"})
+
+    assert _reward_contains_portal({"refillable": {"45": 1}})
+    assert _reward_contains_portal({"refillable": {45: 1}})
+    # str 値 "1" も正量として検出（int/str 混在対応）
+    assert _reward_contains_portal({"refillable": {"45": "1"}})
+    assert not _reward_contains_portal({"refillable": {"1": 5}})
+    assert not _reward_contains_portal({"consumable": {"45": 3}})
+    assert not _reward_contains_portal(None)
+    # ポータルの "0"/""/負数・0 は報酬なし扱い（取得側に回す）
+    assert not _reward_contains_portal({"refillable": {"45": 0}})
+    assert not _reward_contains_portal({"refillable": {"45": "0"}})
+    assert not _reward_contains_portal({"refillable": {"45": ""}})
+    assert not _reward_contains_portal({"refillable": {"45": -1}})
+    # 複合報酬（portal + 他）は全体を manual-keep 扱い
+    assert _reward_contains_portal({"refillable": {"45": 1}, "gold": 100})
+
+    assert _is_manual_keep_reward({"stamina": 200})
+    assert _is_manual_keep_reward({"refillable": {"45": 1}})
+    assert _is_manual_keep_reward({"stamina": 200, "gold": 100})
+    assert _is_manual_keep_reward({"stamina": "abc"})
+    assert not _is_manual_keep_reward({"consumable": {"81": 5}})
+    assert not _is_manual_keep_reward({"coin": {"38": 1}})
+    assert not _is_manual_keep_reward({"clanActivity": 150})
+
+
+def test_guild_claim_exclude_ids_pinned():
+    """GUILD_QUEST_CLAIM_EXCLUDE は旧サイクル ID のピン留め（変更時は意図確認）。"""
+    assert GUILD_QUEST_CLAIM_EXCLUDE == {20010002, 20010005}
+
+
+def test_daily_stamina_claim_excluded_unit():
+    """デイリー 10038 相当の stamina 報酬は _is_claim_excluded でスキップされる。
+
+    10038/10039 は現状 QUEST_OPERATIONS 未登録のため execute の claim 経路に
+    到達しないが、将来登録時の安全装置として Quest 直叩きで検証する。
+    falsy 量は除外しない（fail-safe で取得側に回す）。
+    """
+    from hw_genie.commands.quests import (
+        Quest,
+        _guild_claim_excluded,
+        _is_claim_excluded,
+        _is_manual_keep_reward,
+    )
+
+    q = Quest(id=10038, state=2, reward={"stamina": 60})
+    assert _is_claim_excluded(q) is True
+    # ギルド専用ラッパーはデイリーに反応しない
+    assert _guild_claim_excluded(q) is False
+    # falsy 量は除外しない（取得する）
+    assert _is_claim_excluded(Quest(id=10038, state=2, reward={"stamina": 0})) is False
+    assert _is_claim_excluded(Quest(id=10038, state=2, reward={"stamina": None})) is False
+    assert _is_claim_excluded(Quest(id=10038, state=2, reward=None)) is False
+    assert _is_claim_excluded(Quest(id=10038, state=2, reward={"refillable": {"45": 0}})) is False
+    assert _is_claim_excluded(Quest(id=10038, state=2, reward={"refillable": None})) is False
+    assert _is_manual_keep_reward(["stamina"]) is False  # type: ignore[arg-type]
 
 
 # --- ギルドレシピ 1 日 1 回ガード（nextDayTs 境界） ---

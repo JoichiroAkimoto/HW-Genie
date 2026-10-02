@@ -192,14 +192,17 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 # ID ファミリは 2 種:
 # ・2000xxxx … 日次のギルドクエスト。ID はアカウント・日次で動的に進む
 #              （例: 20000082 → 20000083）。
-# ・2001xxxx … ギルドアクティビティ到達報酬。20010000〜20010005 等の固定 ID
-#              で全アカウント共通・日次リセットで再出現する。
-#              claim 除外対象は下記 GUILD_QUEST_CLAIM_EXCLUDE 参照。
+# ・2001xxxx … ギルドアクティビティ到達報酬。ID はローテーションし
+#              （旧例 20010000〜20010005、新例 20010006〜20010011）、
+#              全アカウント共通・日次リセットで再出現する。
+#              claim 除外対象は下記 _is_claim_excluded（内部で
+#              _is_manual_keep_reward を使用）参照
+#              （スタミナ・ポータルは手動管理のため除外）。
 # ・enabled      … true のときのみギルドクエスト達成用の操作（heroTitanGift
 #                  LevelUp ×2 → Drop）を実行する。false / 未設定なら active
 #                  （state=1）のギルドクエストは操作せずスキップする
 #                  （claimable＝state=2 の報酬受領は enabled に関係なく常時行う。
-#                  ただし GUILD_QUEST_CLAIM_EXCLUDE に含まれる報酬は除外）。
+#                  ただしスタミナ・ポータル報酬は手動管理のため除外）。
 # ・heroId     … ギフト操作の対象ヒーロー（既定は QUEST_OPERATIONS[10023] と同一。
 #                 優先度は quest_defaults[10023].heroId が先、未設定なら本設定）。
 # ・last_recipe_at … 最後にギルドレシピを実行した Unix 秒。userGetInfo の
@@ -212,17 +215,45 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 # ・note       … 操作 RPC 名の連結メモ（可読性専用）
 QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
 
-# 自動受領しないギルドクエスト ID（questFarm の claim 対象から除外する）。
-# ギルドクエストの報酬は questGetAll では見えず、questFarm 応答の quests
-# 配列でのみ判明する。実測で確認済みの報酬（20010000-20010005）:
+# 自動受領しないギルドクエスト報酬（questFarm の claim 対象から除外する）。
+# 手動管理のため、スタミナとポータルは自動取得しない（他は取得する）。
+# ・stamina: エナジー回復（例: {"stamina": 200}, {"stamina": 60}）
+# ・refillable 45: ポータル（例: {"refillable": {"45": 1}}）
+# 報酬は questGetAll の各クエストの reward に含まれる。実測例:
+#   {"id": 20010008, "state": 2, "reward": {"stamina": 200}},
+#   {"id": 20010011, "state": 2, "reward": {"refillable": {"45": "1"}}}
+# 実測で確認済みの報酬（旧サイクル 20010000-20010005）:
 #   20010000: clanActivity 150（受領 OK）
 #   20010001: dungeonActivity 75（受領 OK）
 #   20010002: stamina 200（エナジー回復 → 自動取得しない）
-#   20010003: consumable 81 ×5（オラクルカード → 自動取得しない）
-#   20010004: coin 38 ×1（SOUL クリスタル → 自動取得しない）
+#   20010003: consumable 81 ×5（オラクルカード → 受領する）
+#   20010004: coin 38 ×1（SOUL クリスタル → 受領する）
 #   20010005: refillable 45 ×1（ポータル → 自動取得しない）
+# 新サイクル（20010006-20010011）でも同順でシフトすることが実測されている
+# （例: 20010008 が stamina 200）。ID はローテーションするため、除外判定は
+# 原則報酬内容で行う（_is_claim_excluded / _is_manual_keep_reward 参照）。
+# GUILD_QUEST_CLAIM_EXCLUDE は旧サイクル互換のフォールバック（旧 ID のみ保持）。
+# 旧 ID に manual-keep 報酬または reward 不明（None/空）が載っている場合のみ
+# ID で除外し、旧 ID でも明確な非対象報酬（例: clanActivity）が載っている
+# 場合は取得する（ローテーション再利用対応）。
+# 新規 ID は報酬判定で捕捉する。後方互換のため名前は維持する（テストが import）。
+# 旧 ID が将来別報酬に再利用された場合は見直す（サンセット条件）。
 # 2001xxxx は日次リセットで毎日再出現するため、除外は翌日以降も有効。
-GUILD_QUEST_CLAIM_EXCLUDE: set[int] = {20010002, 20010003, 20010004, 20010005}
+# fail-safe: reward が None/空（不明）の場合は取得する（現動作維持。欠落を
+#   除外扱いにして取りこぼすより、取得してしまう方を優先）。
+#   ただし旧 ID フォールバックに該当する場合は安全側で除外を維持する。
+# 値レベルとの区別: stamina/refillable のキーが存在し値がパース不能
+#   （非数値文字列等）の場合はキーの存在自体を manual-keep とみなし skip
+#   （安全側。_has_positive_amount 参照）。reward 全体が None/非dict の場合の
+#   取得（fail-safe）とは層が異なる。
+# 複合報酬（例: stamina + 他）は全体を manual-keep 扱いとする
+#   （questFarm は all-or-nothing のため部分受領できない）。
+# skip 記録: 除外は print のみで succeeded/failed/skipped には積まない
+#   （従来動作通り。multi の exit code に影響させない意図）。
+GUILD_QUEST_CLAIM_EXCLUDE: set[int] = {20010002, 20010005}
+
+# ポータルの refillable ID（{"refillable": {"45": 1}}）
+PORTAL_REFILLABLE_ID = "45"
 
 # ギルドクエスト達成レシピのテンプレート（10023 = heroTitanGift 3 連続操作）
 GUILD_QUEST_RECIPE_ID = 10023
@@ -297,9 +328,121 @@ class Quest:
         return self.state == STATE_DONE
 
 
+def _has_positive_amount(value: Any) -> bool:
+    """報酬量が「実際に付与される量」か（falsy 値は除外扱いにしない）。
+
+    - None / 空文字 / 数値 0 は「報酬なし」とみなし False（取得側に回す）。
+    - 数値（int/float）は >0 のときのみ True。bool は数値とみなさない。
+    - 文字列は数値化できれば >0 判定、非数値の非空文字（例: "abc"）は
+      キーの存在自体を manual-keep とみなし True（安全側で skip。
+      reward 全体が None/非dict の場合に取得する fail-safe とは層が異なる）。
+    - dict/list 等のその他型は truthiness で判定する。
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return False
+        try:
+            return float(s) > 0
+        except ValueError:
+            return True
+    return bool(value)
+
+
+def _reward_contains_stamina(reward: dict[str, Any] | None) -> bool:
+    """報酬にスタミナ（エナジー回復）が含まれるか。
+
+    例: ``{"stamina": 200}``。手動管理のため自動受領しない。
+    量が falsy（0/None/"" 等）の場合は含まない扱いとし、取得側に回す
+    （fail-safe。欠落を除外扱いにして取りこぼすより取得を優先）。
+    複合報酬（stamina + 他）は全体を manual-keep 扱いとする
+    （questFarm は all-or-nothing のため部分受領できない）。
+    """
+    if not isinstance(reward, dict):
+        return False
+    return _has_positive_amount(reward.get("stamina"))
+
+
+def _reward_contains_portal(reward: dict[str, Any] | None) -> bool:
+    """報酬にポータル（refillable 45）が含まれるか。
+
+    例: ``{"refillable": {"45": 1}}``。キー型 int/str 混在を吸収するため
+    str 比較する。手動管理のため自動受領しない。
+    量が falsy（0/None 等）の場合は含まない扱いとし、取得側に回す
+    （fail-safe）。複合報酬は全体を manual-keep 扱い
+    （questFarm は all-or-nothing のため）。
+    """
+    if not isinstance(reward, dict):
+        return False
+    refillable = reward.get("refillable")
+    if not isinstance(refillable, dict):
+        return False
+    return any(
+        str(k) == PORTAL_REFILLABLE_ID and _has_positive_amount(v)
+        for k, v in refillable.items()
+    )
+
+
+def _is_manual_keep_reward(reward: dict[str, Any] | None) -> bool:
+    """手動管理のため自動受領しない報酬か（スタミナまたはポータル）。
+
+    reward が None/空/不明の場合は False（取得する。fail-safe の現動作維持）。
+    """
+    return _reward_contains_stamina(reward) or _reward_contains_portal(reward)
+
+
+def _claim_excluded_inner(q: Quest, is_guild: bool) -> bool:
+    """除外判定の本体（``is_guild`` は呼び出し側で 1 回だけ評価済み）。
+
+    - 旧ギルド ID（GUILD_QUEST_CLAIM_EXCLUDE）は互換フォールバック
+      （サンセット条件付き）: manual-keep 報酬または reward 不明
+      （None/空/非dict）の場合は安全側で除外を維持し、明確な非対象報酬
+      （非空 dict かつ manual-keep でない）が載っている場合のみ取得する
+      （ローテーション再利用対応）。
+    - それ以外は報酬判定（_is_manual_keep_reward）のみで行う。
+      reward 不明（None/空）の場合は取得する（fail-safe）。
+    """
+    if is_guild and q.id in GUILD_QUEST_CLAIM_EXCLUDE:
+        if isinstance(q.reward, dict) and q.reward and not _is_manual_keep_reward(q.reward):
+            return False
+        return True
+    return _is_manual_keep_reward(q.reward)
+
+
 def _guild_claim_excluded(q: Quest) -> bool:
-    """報酬が不要なため claim（questFarm）対象から除外されたギルドクエストかどうか。"""
-    return is_guild_quest(q.id) and q.id in GUILD_QUEST_CLAIM_EXCLUDE
+    """手動管理のため claim（questFarm）対象から除外されたギルドクエストかどうか。
+
+    NOTE: 後方互換のために残す薄いラッパー（新規コードは _is_claim_excluded を
+    使用すること）。ギルド以外は False。``is_guild_quest`` の評価は
+    この関数内で 1 回のみ（本体は ``_claim_excluded_inner`` に委譲し、
+    内部で重複評価しない）。
+    """
+    if not is_guild_quest(q.id):
+        return False
+    return _claim_excluded_inner(q, True)
+
+
+def _is_claim_excluded(q: Quest) -> bool:
+    """claim 対象から除外すべきクエストか（デイリー/ギルド共通）。
+
+    スタミナ・ポータル報酬は手動管理のため自動受領しない。ギルド以外でも
+    報酬ベースで判定する。デイリー 10038/10039（stamina 60）は現状
+    QUEST_OPERATIONS 未登録のため execute の claim 経路に到達しないが、
+    将来登録時の安全装置としてここで捕捉する。
+    旧ギルド ID（GUILD_QUEST_CLAIM_EXCLUDE）は互換フォールバックとして
+    ``_claim_excluded_inner`` で条件付きに判定する（旧 ID + manual-keep 報酬
+    または reward 不明→除外、旧 ID + 明確な非対象報酬→取得）。
+    ``is_guild_quest`` の評価は 1 回だけ行う（二重評価しない）。
+    reward 不明（None/空）の場合は取得する（fail-safe。旧 ID フォールバック
+    該当時を除く）。
+    """
+    return _claim_excluded_inner(q, is_guild_quest(q.id))
 
 
 def parse_quests(raw: Any) -> list[Quest]:
@@ -315,12 +458,14 @@ def parse_quests(raw: Any) -> list[Quest]:
         if qid is None:
             continue
         category, name = classify_quest(qid)
+        raw_reward = item.get("reward")
+        reward = raw_reward if isinstance(raw_reward, dict) else {}
         quests.append(
             Quest(
                 id=qid,
                 state=_to_int(item.get("state")) or STATE_ACTIVE,
                 progress=_to_int(item.get("progress")) or 0,
-                reward=item.get("reward") or {},
+                reward=reward,
                 create_time=_to_int(item.get("createTime")) or 0,
                 farm_count=_to_int(item.get("farmCount")) or 0,
                 order=_to_int(item.get("order")),
@@ -332,9 +477,9 @@ def parse_quests(raw: Any) -> list[Quest]:
     return quests
 
 
-def format_reward(reward: dict[str, Any] | None) -> str:
+def format_reward(reward: Any) -> str:
     """報酬 dict を簡潔な文字列（``starmoney 50`` / ``consumable[56×1] + gold 6400``）にする。"""
-    if not reward:
+    if not isinstance(reward, dict) or not reward:
         return "-"
     parts = []
     for key, value in reward.items():
@@ -898,9 +1043,8 @@ def run_quest_execute(
       在庫取得失敗時（認証以外）は既定値をフォールバックする。
     - **報酬受取可能（state=2、または target 到達済み）のクエストは操作を
       実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
-      操作リソースを消費しないため）。ギルドクエストのうち
-      ``GUILD_QUEST_CLAIM_EXCLUDE`` に含まれる報酬（stamina 200 等）は
-      受領せずスキップする。
+      操作リソースを消費しないため）。ただしスタミナ・ポータル報酬は
+      手動管理のため受領せずスキップする（_is_claim_excluded / _is_manual_keep_reward）。
     - 失敗した項目は ``{account, quest_id, quest_name, step, error}`` として
       返り値と標準出力の両方に報告される。
 
@@ -936,7 +1080,7 @@ def run_quest_execute(
     #    ID ファミリは quest_guild_defaults のコメント参照）は QUEST_OPERATIONS
     #    と別扱い:
     #     - state=2（報酬受取可能）→ 無条件に claim 対象
-    #       （ただし GUILD_QUEST_CLAIM_EXCLUDE の報酬は claim しない）
+    #       （ただしスタミナ・ポータル報酬は手動管理のため claim しない）
     #     - state=1（進行中）→ quest_guild_defaults.enabled=true のとき
     #       heroTitanGift レシピ（10023 と同一）を実行して Sparks を稼ぐ。
     #       実行後 questGetAll を取り直し、達成（state=2）になったものを claim。
@@ -1025,11 +1169,14 @@ def run_quest_execute(
             return [], failures, skipped
         for q in claimable:
             print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+            if _is_claim_excluded(q):
+                print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
+                continue
             print("    - questFarm (claim reward, no operation needed)")
         for q in guild_claimable:
             print(f"\n🔹 {q.id} {q.name}: [claim already available]")
-            if _guild_claim_excluded(q):
-                print("    - SKIP (GUILD_QUEST_CLAIM_EXCLUDE)")
+            if _is_claim_excluded(q):
+                print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
                 continue
             print("    - questFarm (claim reward, no operation needed)")
         for q, steps, shop_buy_skipped in targets:
@@ -1080,6 +1227,13 @@ def run_quest_execute(
 
             # レスポンスに含まれる quests 配列から対象クエストの状態を確認
             if _quest_reached_claimable(resp, q.id) and not claim_attempted:
+                if _is_claim_excluded(q):
+                    print(f"   ℹ️  {q.id} {q.name} completed but reward is manual-keep ({format_reward(q.reward)}); skipping auto-claim.")
+                    claim_attempted = True
+                    if q.id != GUILD_QUEST_RECIPE_ID:
+                        break
+                    print("   ℹ️  Recipe quest reward skipped (manual-keep); continuing remaining recipe steps (Sparks grinding)...")
+                    continue
                 print(f"   ✅ {q.id} {q.name} completed (step: {_rpc_display(st['rpc'])}). Claiming reward...")
                 claim_res = client.quest_farm(q.id)
                 if claim_res.status == ResponseStatus.SUCCESS:
@@ -1145,10 +1299,17 @@ def _claim_quests(
     succeeded: list[dict[str, Any]],
     failures: list[dict[str, Any]],
 ) -> None:
-    """操作不要な claimable クエストをまとめて questFarm で受領する。"""
+    """操作不要な claimable クエストをまとめて questFarm で受領する。
+
+    スタミナ・ポータル報酬は手動管理のため自動受領せずスキップする
+    （デイリー/ギルド共通の報酬判定。ギルド旧 ID も _is_claim_excluded で
+    カバーされる）。
+    除外は print のみで succeeded/failed/skipped には積まない（従来動作通り。
+    multi の exit code に影響させない意図）。
+    """
     for q in quests:
-        if _guild_claim_excluded(q):
-            print(f"   ℹ️  Skipping claim for {q.id} {q.name} (GUILD_QUEST_CLAIM_EXCLUDE)")
+        if _is_claim_excluded(q):
+            print(f"   ℹ️  Skipping claim for {q.id} {q.name} (manual-keep: {format_reward(q.reward)})")
             continue
         print(f"\n🔹 {q.id} {q.name}: already claimable. Claiming reward...")
         claim_res = client.quest_farm(q.id)
