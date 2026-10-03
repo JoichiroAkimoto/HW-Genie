@@ -1392,7 +1392,7 @@ def main():
         dest="gold_buffs",
         action="store_true",
         default=None,
-        help="Buy gold buffs (slot 1-5; default: off for Osh week, on for Maestro week)",
+        help="Buy gold buffs (slot 1-5; default: Osh week buff 63/64 only, Maestro week all)",
     )
     gold_group.add_argument(
         "--no-gold",
@@ -1626,7 +1626,7 @@ def main():
         dest="gold_buffs",
         action="store_true",
         default=None,
-        help="Buy gold buffs (slot 1-5) in the 'asgard-shop' mode (default: off for Osh week, on for Maestro week)",
+        help="Buy gold buffs (slot 1-5) in the 'asgard-shop' mode (default: Osh week buff 63/64 only, Maestro week all)",
     )
     gold_group.add_argument(
         "--no-gold",
