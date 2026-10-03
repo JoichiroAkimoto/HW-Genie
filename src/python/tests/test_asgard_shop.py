@@ -486,24 +486,75 @@ def test_run_asgard_shop_gold_buffs_all_bought_out_skips_fetch(mock_client, mock
     client.fetch_player_status.assert_not_called()
 
 
-def test_run_asgard_shop_gold_buffs_osh_week_default_off(mock_client, mock_sleep, capsys):
-    """Osh 週デフォルト（gold_buffs=None）ではゴールドバフを購入しない。"""
+def test_run_asgard_shop_gold_buffs_osh_week_default_limited(mock_client, mock_sleep, capsys):
+    """Osh 週デフォルト（gold_buffs=None）では buffId 63/64 の 2 種のみ購入する。"""
     client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
 
     responses = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
-    for _ in range(13):
+    for _ in range(10):  # buff 63/64（slot 3/4）の 5 回ずつ
+        responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
+    for _ in range(13):  # Valor 商品（残高 1000）
         responses.append(_res_from(dummy.CLAN_RAID_SHOP_BUY_SUCCESS))
     mock_call.side_effect = responses
 
     result = run_asgard_shop(client)
 
-    assert result.gold_bought == 0
-    assert result.gold_spent == 0
+    assert result.gold_bought == 10
+    assert result.gold_spent == 10_000_000
     assert result.bought == 13
-    client.fetch_player_status.assert_not_called()
+    assert result.spent == 1000
+    # getInfo(1) + ゴールドバフ(10) + Valor(13) = 24 回
+    assert mock_call.call_count == 24
+    gold_success = [
+        item for item in result.items
+        if item.status == ResponseStatus.SUCCESS and "Gold" in item.action
+    ]
+    assert len(gold_success) == 10
+    assert all("buff 63" in item.action or "buff 64" in item.action for item in gold_success)
+    # ゴールド購入の slotId は 3/4 のみ（buffId ではなく slot で検証）
+    gold_slot_ids = {
+        call.args[0]["calls"][0]["args"]["slotId"]
+        for call in mock_call.call_args_list[1:11]
+    }
+    assert gold_slot_ids == {3, 4}
     out = capsys.readouterr().out
-    assert "Gold buffs: skipped (default off for Osh week" in out
-    assert "use --gold to enable" in out
+    assert "buff 63/64 only" in out
+
+
+def test_run_asgard_shop_gold_buffs_osh_week_default_limited_dry_run(mock_client, mock_sleep):
+    """Osh 週デフォルトの dry-run では buffId 63/64 の 2 種のみ計画表示する。"""
+    client, mock_call = mock_client
+    status = MagicMock()
+    status.gold = 15_000_000
+    client.fetch_player_status = MagicMock(return_value=status)
+
+    mock_call.side_effect = [_res_from(dummy.CLAN_RAID_GET_INFO_OSH)]
+
+    result = run_asgard_shop(client, dry_run=True)
+
+    assert result.gold_bought == 10  # 計画上の購入可能数（slot 3/4 の 5 回ずつ）
+    assert result.gold_spent == 10_000_000
+    assert result.bought == 13
+    assert mock_call.call_count == 1  # 購入は実行されない
+
+
+def test_gold_buff_slots_allowlist_filters_by_buff_id():
+    """_gold_buff_slots は allowlist 指定時に buffId で絞り込む（slot 判定ではない）。"""
+    from hw_genie.commands.asgard_shop import OSH_GOLD_BUFF_IDS, _gold_buff_slots
+
+    shop = dummy.CLAN_RAID_GET_INFO_OSH["results"][0]["result"]["response"]["shop"]
+    assert OSH_GOLD_BUFF_IDS == frozenset({63, 64})
+    # 絞りなし → slot 1〜5 の 5 種
+    assert len(_gold_buff_slots(shop)) == 5
+    # Osh デフォルト絞り → buff 63/64 の 2 種のみ
+    limited = _gold_buff_slots(shop, OSH_GOLD_BUFF_IDS)
+    assert {parsed.buff_id for parsed, _ in limited} == {63, 64}
+    assert {parsed.slot_id for parsed, _ in limited} == {3, 4}
+    # 空 allowlist → 0 種（購入なし）
+    assert _gold_buff_slots(shop, frozenset()) == []
 
 
 def test_run_asgard_shop_gold_buffs_maestro_week_default_on(mock_client, mock_sleep):

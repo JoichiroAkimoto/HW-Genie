@@ -2,9 +2,9 @@
 
 ``clanRaid_getInfo`` の ``response.shop``（slotId → 商品）から Valor Emblem
 （コイン ID 30）支払いの商品を読み、Osh / Maestro 週それぞれの購入ルールに
-従って ``clanRaid_shopBuy`` で購入する。ゴールドバフ（slot 1〜5）は週に応じて
-購入する（デフォルト: Osh 週は購入しない、Maestro 週は購入する。
-``gold_buffs=True`` / ``False`` で明示的に上書き）。
+従って ``clanRaid_shopBuy`` で購入する。ゴールドバフ（slot 1〜5）は週と
+フラグに応じて購入する（デフォルト: Osh 週は buffId 63/64 の 2 種のみ、
+Maestro 週は全部購入。``gold_buffs=True`` / ``False`` で明示的に上書き）。
 
 - **Osh 週**: ラインナップは固定（slot 1〜5 はゴールドバフ、slot 6〜21 が
   Valor Emblem 商品で buffId 61〜81）。``shop`` の buffId 集合がシグネチャ
@@ -25,9 +25,9 @@
 - **その他の週**: 判定不能（ラインナップ不明・空 shop）の場合は購入対象
   なしとしてスキップし正常完了する（購入は発生しないので実害なし）。
 - **ゴールドバフ**: ``gold_buffs=None``（デフォルト）のとき週依存で購入する
-  （Osh 週は購入しない、Maestro 週は購入する）。``gold_buffs=True`` で常に
-  購入、``False`` で常にスキップ。購入時は slot 1〜5 のゴールドバフ
-  （100 万ゴールド、buyLimit 5）を残り購入回数分購入する。購入前に
+  （Osh 週は buffId 63/64 の 2 種のみ、Maestro 週は全部購入）。
+  ``gold_buffs=True`` で常に全部購入、``False`` で常にスキップ。購入時は
+  対象のゴールドバフ（100 万ゴールド、buyLimit 5）を残り購入回数分購入する。購入前に
   ``fetch_player_status`` で最新のゴールド残高を取得し、不足時はスキップする
   （実際の購入失敗 NotEnough 時もスキップの安全策併用）。
 - **残高**: ``response.coins`` の Valor Emblem 残高を追跡し、残高不足の
@@ -85,6 +85,11 @@ MAESTRO_PRIORITY: dict[int, int] = {
 
 # ゴールドバフ（slot 1〜5）の価格は API レスポンスの cost.gold からパースする
 # （100 万ゴールドが通常だが、個別価格に追従する）。
+
+# Osh 週のゴールドバフのうち、デフォルト（gold_buffs=None）で購入する buffId。
+# Osh のゴールドバフは slot 1〜5 = buffId 61〜65 固定だが、将来の slot ずれに
+# 強くするため判定は buffId で行う（slot 番号では判定しない）。
+OSH_GOLD_BUFF_IDS: frozenset[int] = frozenset({63, 64})
 
 # Valor Emblem のコイン ID（cost["coin"] のキー）。
 VALOR_COIN_ID = 30
@@ -388,12 +393,17 @@ def _gold_buff_remaining(item: dict[str, Any]) -> int:
     return max(0, _safe_int(item.get("buyLimit"), 1) - _safe_int(item.get("boughtCount")))
 
 
-def _gold_buff_slots(shop: dict[str, Any]) -> list[tuple[AsgardItem, int]]:
+def _gold_buff_slots(
+    shop: dict[str, Any],
+    allowed_buff_ids: frozenset[int] | set[int] | None = None,
+) -> list[tuple[AsgardItem, int]]:
     """ゴールドバフ（cost.gold 支払い・未購入）の購入候補を slot 昇順で返す。
 
     現在の仕様では slot 1〜5 がゴールドバフ（それ以外は Valor Emblem 商品）
     だが、slot は限定せず ``cost.gold`` の有無で判定する（API のラインナップ
-    変更に追従するため）。
+    変更に追従するため）。``allowed_buff_ids`` を指定した場合は、その buffId
+    集合に含まれる商品のみを返す（Osh 週デフォルトの 63/64 絞り込み用。
+    判定は slot 番号ではなく buffId で行う）。
 
     Returns:
         ``(parse 済み商品, 残り購入回数)`` のリスト。
@@ -406,6 +416,8 @@ def _gold_buff_slots(shop: dict[str, Any]) -> list[tuple[AsgardItem, int]]:
         parsed = parse_gold_slot(slot_id, item)
         if parsed is None:
             continue
+        if allowed_buff_ids is not None and parsed.buff_id not in allowed_buff_ids:
+            continue
         remaining = _gold_buff_remaining(item)
         if remaining > 0:
             queue.append((parsed, remaining))
@@ -417,12 +429,14 @@ def _purchase_gold_buffs(
     shop: dict[str, Any],
     gold_budget: int,
     prefix: str,
+    allowed_buff_ids: frozenset[int] | set[int] | None = None,
 ) -> tuple[list[AsgardResult], int, int]:
-    """ゴールドバフ（slot 1〜5）を残り購入回数分購入する。
+    """ゴールドバフを残り購入回数分購入する。
 
     ``gold_budget`` が対象商品の最低価格未満の場合は何も購入しない。購入
     失敗（NotEnough）時は以降のゴールドバフ購入をすべて打ち切る（Valor 商品の
-    残高不足時と同じ安全策）。
+    残高不足時と同じ安全策）。``allowed_buff_ids`` 指定時はその buffId のみが
+    対象（Osh 週デフォルトの 63/64 絞り込み用）。
 
     Returns:
         ``(results, bought, spent)``。bought / spent はゴールドバフ分のみ。
@@ -430,7 +444,7 @@ def _purchase_gold_buffs(
     results: list[AsgardResult] = []
     bought = 0
     spent = 0
-    gold_slots = _gold_buff_slots(shop)
+    gold_slots = _gold_buff_slots(shop, allowed_buff_ids)
     if not gold_slots:
         return results, bought, spent
     if gold_budget < min(parsed.price for parsed, _ in gold_slots):
@@ -483,12 +497,17 @@ def _plan_gold_buffs(
     shop: dict[str, Any],
     gold_budget: int,
     prefix: str,
+    allowed_buff_ids: frozenset[int] | set[int] | None = None,
 ) -> tuple[list[AsgardResult], int, int]:
-    """ゴールドバフの購入計画（dry-run）を表示し、結果サマリを返す。"""
+    """ゴールドバフの購入計画（dry-run）を表示し、結果サマリを返す。
+
+    ``allowed_buff_ids`` 指定時はその buffId のみが対象（Osh 週デフォルトの
+    63/64 絞り込み用）。
+    """
     results: list[AsgardResult] = []
     bought = 0
     spent = 0
-    gold_slots = _gold_buff_slots(shop)
+    gold_slots = _gold_buff_slots(shop, allowed_buff_ids)
     if not gold_slots:
         return results, bought, spent
     print(f"\n{Emojis.STEP}{prefix}--- Gold Buff Plan (dry-run) ---", flush=True)
@@ -524,8 +543,9 @@ def run_asgard_shop(
         client: HWClient インスタンス。
         dry_run: True の場合は購入せず計画（購入順・合計コスト）のみ表示。
         account_alias: 表示用のアカウント名（None なら省略）。
-        gold_buffs: None（デフォルト）なら週依存（Osh 週は購入しない、
-            Maestro 週は購入する）。True で常に購入、False で常にスキップ。
+        gold_buffs: None（デフォルト）なら週依存（Osh 週は buffId 63/64 の
+            2 種のみ、Maestro 週は全部購入）。True で常に全部購入、False で
+            常にスキップ。
 
     Returns:
         AsgardRunResult。Osh / Maestro 以外のラインナップや空 shop の場合は
@@ -576,20 +596,23 @@ def run_asgard_shop(
           f"(total cost: {total_cost}).", flush=True)
 
     # ゴールドバフ（Valor 商品より先に購入。通貨が独立しているため順序は任意）。
-    # gold_buffs=None は週依存: Osh 週は購入しない、Maestro 週は購入する（デフォルト）。
+    # gold_buffs=None は週依存: Osh 週は buffId 63/64 の 2 種のみ、Maestro 週は
+    # 全部購入（デフォルト）。True で常に全部購入、False で常にスキップ。
     gold_enabled = gold_buffs
+    gold_allowlist: frozenset[int] | set[int] | None = None
     if gold_enabled is None:
-        gold_enabled = lineup == "Maestro"
-        if not gold_enabled:
+        gold_enabled = True
+        if lineup == "Osh":
+            gold_allowlist = OSH_GOLD_BUFF_IDS
             print(
-                f"{Emojis.INFO}{prefix}Gold buffs: skipped (default off for {lineup} week; "
-                "use --gold to enable).",
+                f"{Emojis.INFO}{prefix}Gold buffs: default for {lineup} week "
+                "(buff 63/64 only; use --gold for all, --no-gold to skip).",
                 flush=True,
             )
     gold_results: list[AsgardResult] = []
     gold_bought = 0
     gold_spent = 0
-    if gold_enabled and _gold_buff_slots(shop):
+    if gold_enabled and _gold_buff_slots(shop, gold_allowlist):
         try:
             gold_budget = _safe_int(client.fetch_player_status().gold)
         except HWAuthError:
@@ -601,9 +624,9 @@ def run_asgard_shop(
             )
         else:
             if dry_run:
-                gold_results, gold_bought, gold_spent = _plan_gold_buffs(shop, gold_budget, prefix)
+                gold_results, gold_bought, gold_spent = _plan_gold_buffs(shop, gold_budget, prefix, gold_allowlist)
             else:
-                gold_results, gold_bought, gold_spent = _purchase_gold_buffs(client, shop, gold_budget, prefix)
+                gold_results, gold_bought, gold_spent = _purchase_gold_buffs(client, shop, gold_budget, prefix, gold_allowlist)
 
     if dry_run:
         print(f"\n{Emojis.STEP}{prefix}--- Purchase Plan (dry-run) ---", flush=True)
