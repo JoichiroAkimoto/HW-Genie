@@ -374,7 +374,9 @@ def _reward_contains_portal(reward: dict[str, Any] | None) -> bool:
 
     例: ``{"refillable": {"45": 1}}``。キー型 int/str 混在を吸収するため
     str 比較する。手動管理のため自動受領しない。
-    量が falsy（0/None 等）の場合は含まない扱いとし、取得側に回す
+    NOTE: ``{"consumable": {"45": 3}}``（Artifact Chest Key）はポータルでは
+    ないため除外しない。ID 45 が衝突しているのでカテゴリ（refillable か）
+    まで見て判定すること。量が falsy（0/None 等）の場合は含まない扱いとし、取得側に回す
     （fail-safe）。複合報酬は全体を manual-keep 扱い
     （questFarm は all-or-nothing のため）。
     """

@@ -102,6 +102,10 @@ def _soul_reward() -> dict:
     return {"coin": {"38": 1}}
 
 
+def _artifact_key_reward(amount: int = 3) -> dict:
+    return {"consumable": {"45": amount}}
+
+
 def _active_guild(qid: int) -> dict:
     return {"id": qid, "state": 1, "progress": 0, "reward": {"clanQuestsPoints": 10, "prestige": 50}, "createTime": 0, "farmCount": 0, "order": 1}
 
@@ -213,6 +217,43 @@ def test_guild_oracle_soul_now_farmed(capsys):
     assert [s["quest_id"] for s in succeeded] == [20010009, 20010010]
     assert failed == []
     assert client.quest_farm.call_count == 2
+
+
+def test_guild_artifact_key_farmed_not_portal(capsys):
+    """Artifact Chest Key (consumable 45) は取得する。refillable 45（ポータル）とは別物。
+
+    実測: 20010010 の questFarm 応答が {"consumable": {"45": 3}}（ID 45 の衝突に注意）。
+    ポータル判定は refillable カテゴリのみを見るため、consumable 45 は除外されない。
+    """
+    from hw_genie.commands.quests import (
+        _is_claim_excluded,
+        _is_manual_keep_reward,
+        _reward_contains_portal,
+        Quest,
+    )
+
+    # カテゴリ混同の防止: consumable 45 はポータルではない
+    assert _reward_contains_portal({"consumable": {"45": 3}}) is False
+    assert _is_manual_keep_reward({"consumable": {"45": 3}}) is False
+    assert _is_claim_excluded(Quest(id=20010010, state=2, reward={"consumable": {"45": 3}})) is False
+    # 対照: refillable 45 は除外される
+    assert _is_claim_excluded(Quest(id=20010010, state=2, reward={"refillable": {"45": 1}})) is True
+
+    client = _make_client(
+        [
+            _claimable_guild(20010010, _artifact_key_reward(3)),
+            _claimable_guild(20010011, _portal_reward()),
+        ]
+    )
+    client.quest_farm = MagicMock(return_value=_ok_response({}))
+
+    succeeded, failed, skipped = run_quest_execute(client, account_alias="Alex", confirm=True)
+    out = capsys.readouterr().out
+
+    assert [s["quest_id"] for s in succeeded] == [20010010]
+    assert failed == []
+    client.quest_farm.assert_called_once_with(20010010)
+    assert "Skipping claim for 20010011" in out
 
 
 def test_guild_claimable_exclude_boundary_still_farmed(capsys):

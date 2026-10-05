@@ -73,8 +73,12 @@ title: Quest API Reference
   | 20010003 | consumable 81 ×5（オラクルカード） |
   | 20010004 | coin 38 ×1（SOUL クリスタル） |
   | 20010005 | refillable 45 ×1（ポータル） |
+  新サイクル実測（ID はローテーションし報酬も変動する。内容判定のため ID 表は目安）:
+  | 20010010 | consumable 45 ×3（Artifact Chest Key。`refillable 45` のポータルとは別物） |
+  注意: ポータル（`refillable 45`）と Artifact Chest Key（`consumable 45`）は
+  ID 45 が衝突しているがカテゴリが異なる。前者は自動受領しないが、後者は取得する。
 - `hw-genie` は **スタミナとポータル（`refillable 45`）の報酬を自動受領しない**
-  （手動管理のため。オラクルカード・SOUL クリスタル等は取得する）。
+  （手動管理のため。オラクルカード・SOUL クリスタル・Artifact Chest Key（`consumable 45`）等は取得する）。
   除外判定は原則報酬内容で行う（ID ローテーション対応）。旧 ID
   `{20010002, 20010005}` のみ互換フォールバックとして ID でも除外するが、
   旧 ID に明確な非対象報酬（例: clanActivity）が載っている場合は取得する。
