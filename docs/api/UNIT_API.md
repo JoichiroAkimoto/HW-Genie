@@ -207,6 +207,31 @@ Chest 等）は args に `playerRewardChoiceIndex` を追加して報酬を選�
 `4`）。`hw-genie` では `ConsumableInfo.player_reward_choice_index` で
 アイテムごとに固定し、消費時に自動で args へ含めます。
 
+マトリョーシカ系アイテム（開封で同種・下位ボックスが再出現するもの）は
+args に `recursive: True` を追加するとサーバー側で再帰開封され、開封
+リクエスト数・ラウンド数の削減が見込まれるが、定量比較は未実施
+（例: `{"libId":509,"amount":17,"recursive":true}`）。
+在庫発生時にラウンド数・リクエスト数を recursive あり/なしで比較する。
+`hw-genie` では `ConsumableInfo.recursive=True` で自動付与します（
+`consumableUseLootBox` 以外のメソッドには付与しません）。付与対象は本番確認済み
+3 件（478/509/513：2026-10-07 の multi consumable 本番実行で recursive 付き消費
+SUCCESS を確認）と、既知マトリョーシカ
+4 件（149/469/492/497：SKILL に libId ではなく名前で記載された既知マトリョーシカ
+（Ancient Titan Artifact Chest=149 / Adventure Chest=469 / Cosmic Titans Battle
+Chest=492 / Cosmic Battle Chest=497）に該当する libId。サーバー側再帰の実測は
+未実施。ユーザー要求により少なくとも
+マトリョーシカ系は True とするため保持。実測後に本番確認済みへ昇格）に限定します
+（他は実測待ちのため付与しません。同名のみでは不十分のため、508（492 と同名だが
+自体の証拠なし）・493（513 と同名）は対象外。tests の8種行
+（149/469/492/497＋Doll 系 176/185/187/190）はクライアント側ラウンドループの
+既存定義であり、サーバー側 recursive 対象はそのうち SKILL 名記載に該当する
+4 件のみ）。
+在庫 0 の libId（215・169・47）でのプローブは NotEnough 返却のため、サーバー側
+recursive 受容可否の検証としては判定不能（再現手順：在庫 0 確認後に use_consumable を
+method=consumableUseLootBox・amount=1・recursive=True で直接呼び出し。47 は
+playerRewardChoiceIndex=2 を併せて付与）。
+将来 unmeasured 品で recursive 起因の ERROR が出た場合、該当 libId の recursive を False に戻して再実行する（failed 扱いで取り残されるだけでサイレント消費なし）。
+
 他の consumable 種別（`consumableUseStamina` 等）はアイテムごとにメソッドが
 異なるため、実測で判明したものだけ `core/consumables.py` のレジストリに
 登録しています。未登録アイテムは `consumable run --method <method>` で

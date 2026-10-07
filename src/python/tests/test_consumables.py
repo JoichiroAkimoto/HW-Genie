@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import logging
+
 import pytest
 
 from . import dummy_responses as dummy
@@ -149,6 +151,89 @@ def test_use_consumable_includes_reward_choice_index(mock_client):
     assert result.status == ResponseStatus.SUCCESS
 
 
+def test_use_consumable_includes_recursive_when_true(mock_client):
+    """recursive=True は args に recursive: True を含めて送信する。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS)
+
+    result = use_consumable(
+        client, lib_id=509, amount=17, method="consumableUseLootBox", recursive=True
+    )
+
+    call_args = mock_call.call_args.args[0]
+    assert call_args["calls"][0]["args"] == {
+        "libId": 509,
+        "amount": 17,
+        "recursive": True,
+    }
+    assert result.status == ResponseStatus.SUCCESS
+
+
+def test_use_consumable_omits_recursive_when_false(mock_client):
+    """recursive=False の明示渡しは args に recursive を含めない。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS)
+
+    use_consumable(client, lib_id=215, amount=48, method="consumableUseLootBox", recursive=False)
+
+    call_args = mock_call.call_args.args[0]
+    assert call_args["calls"][0]["args"] == {"libId": 215, "amount": 48}
+
+
+def test_use_consumable_recursive_only_for_lootbox(mock_client, caplog):
+    """recursive=True でも lootbox 以外のメソッドには recursive を付与しない（警告あり）。
+
+    native 非 lootbox（17）と、recursive 登録 lib の --method 上書き経路（509）の
+    両方をカバーする。
+    """
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS)
+
+    with caplog.at_level(logging.WARNING):
+        use_consumable(client, lib_id=17, amount=1, method="consumableUseStamina", recursive=True)
+        use_consumable(client, lib_id=509, amount=17, method="consumableUseStamina", recursive=True)
+
+    sent = [c.args[0]["calls"][0]["args"] for c in mock_call.call_args_list]
+    assert sent == [{"libId": 17, "amount": 1}, {"libId": 509, "amount": 17}]
+    assert any(
+        "recursive" in r.getMessage() and "17" in r.getMessage() and "consumableUseStamina" in r.getMessage()
+        for r in caplog.records
+    )
+    assert any(
+        "recursive" in r.getMessage() and "509" in r.getMessage() and "consumableUseStamina" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_use_consumable_choice_only_for_lootbox(mock_client, caplog):
+    """choice 指定があっても lootbox 以外のメソッドには choice を付与しない（警告あり）。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res_from(dummy.CONSUMABLE_USE_LOOT_BOX_SUCCESS)
+
+    with caplog.at_level(logging.WARNING):
+        use_consumable(
+            client,
+            lib_id=47,
+            amount=3,
+            method="consumableUseStamina",
+            player_reward_choice_index=2,
+            recursive=True,
+        )
+
+    call_args = mock_call.call_args.args[0]
+    assert call_args["calls"][0]["args"] == {"libId": 47, "amount": 3}
+    assert any(
+        "recursive" in r.getMessage() and "47" in r.getMessage() and "consumableUseStamina" in r.getMessage()
+        for r in caplog.records
+    )
+    assert any(
+        "playerRewardChoiceIndex" in r.getMessage()
+        and "47" in r.getMessage()
+        and "consumableUseStamina" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_use_consumable_api_error(mock_client):
     """API エラー（limitReached 等）は status=ERROR で返す。"""
     client, mock_call = mock_client
@@ -204,7 +289,7 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 def test_registry_covers_all_use_targets():
     """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 59  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508
+    assert len(CONSUMABLE_USE_TARGETS) == 62  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508 + 478/509/513
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
@@ -230,9 +315,68 @@ def test_registry_covers_all_use_targets():
     # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
-    # マトリョーシカ（再帰開封）対象
+    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 7 件とは別概念）
     for lib_id in (149, 469, 492, 497, 176, 185, 187, 190):
         assert lib_id in CONSUMABLE_USE_TARGETS
+
+
+def test_registry_recursive_flags_confirmed():
+    """recursive=True（本番実測済み 3 件：478/509/513）。"""
+    confirmed = {478, 509, 513}
+    assert len(confirmed) == 3
+    for lib_id in confirmed:
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+
+
+def test_registry_recursive_flags_documented_unmeasured():
+    """recursive=True（既知マトリョーシカ 4 件：149/469/492/497）。
+
+    TODO: サーバー側 recursive の本番実測後に confirmed へ昇格させる。
+    """
+    documented = {149, 469, 492, 497}
+    assert len(documented) == 4
+    for lib_id in documented:
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+    # 同名のみでは不十分：508（492 と同名）・493（513 と同名）は False
+    assert CONSUMABLE_REGISTRY[508].recursive is False
+    assert CONSUMABLE_REGISTRY[493].recursive is False
+    # サーバー側 recursive 対象は計 7 件
+    recursive_true = {
+        lib_id for lib_id in CONSUMABLE_USE_TARGETS if CONSUMABLE_REGISTRY[lib_id].recursive
+    }
+    assert recursive_true == documented | {478, 509, 513}
+    assert len(recursive_true) == 7
+    for lib_id in CONSUMABLE_USE_TARGETS:
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is (lib_id in recursive_true)
+    assert CONSUMABLE_REGISTRY[17].recursive is False
+
+
+def test_registry_new_items_478_509_513():
+    """新規追加（478/509/513）の名前・対象登録・recursive=True。"""
+    assert CONSUMABLE_REGISTRY[478].name == "Titans Tesseract of Luck"
+    assert CONSUMABLE_REGISTRY[509].name == "Mead Festival Chest"
+    assert CONSUMABLE_REGISTRY[513].name == "Titan Upgrade Chest"
+    for lib_id in (478, 509, 513):
+        assert lib_id in CONSUMABLE_USE_TARGETS
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+
+
+def test_registry_recursive_rejects_non_lootbox_method():
+    """recursive=True かつ lootbox 以外のメソッドは登録時に拒否する。"""
+    from hw_genie.core.consumables import ConsumableInfo
+
+    with pytest.raises(ValueError):
+        ConsumableInfo(name="X", method="consumableUseStamina", recursive=True)
+
+
+def test_registry_choice_rejects_non_lootbox_method():
+    """choice 指定かつ lootbox 以外のメソッドは登録時に拒否する。"""
+    from hw_genie.core.consumables import ConsumableInfo
+
+    with pytest.raises(ValueError):
+        ConsumableInfo(
+            name="Y", method="consumableUseStamina", player_reward_choice_index=2
+        )
 
 
 def test_chunk_sizes_boundaries():
@@ -295,6 +439,131 @@ def test_run_consumable_use_passes_reward_choice_index(mock_client, mock_sleep):
     }
 
 
+def test_run_consumable_use_passes_recursive_for_other_chests(mock_client, mock_sleep):
+    """509（Other Chests）は recursive を付けて消費する。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"509": 17}}}
+    mock_call.side_effect = [
+        inv,  # ラウンド1: 在庫取得
+        _lootbox_success(17),  # 消費 17
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(client, lib_ids=[509])
+
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 17
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert len(use_calls) == 1
+    assert use_calls[0].args[0]["calls"][0]["args"] == {
+        "libId": 509,
+        "amount": 17,
+        "recursive": True,
+    }
+
+
+def test_run_consumable_use_omits_recursive_for_non_lootbox_override(
+    mock_client, mock_sleep
+):
+    """recursive=True の登録 lib でも非 lootbox の --method 上書き時は recursive を付与しない。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"509": 17}}}
+    mock_call.side_effect = [
+        inv,  # ラウンド1: 在庫取得
+        _lootbox_success(17),  # 消費 17
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(
+        client, lib_ids=[509], method_override="consumableUseStamina"
+    )
+
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 17
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseStamina"
+    ]
+    assert len(use_calls) == 1
+    assert use_calls[0].args[0]["calls"][0]["args"] == {"libId": 509, "amount": 17}
+
+
+def test_run_consumable_use_omits_choice_for_non_lootbox_override(
+    mock_client, mock_sleep
+):
+    """choice 付きの登録 lib でも非 lootbox の --method 上書き時は choice を付与しない。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"47": 3}}}
+    mock_call.side_effect = [
+        inv,  # ラウンド1: 在庫取得
+        _lootbox_success(3),  # 消費 3
+        _res_from(dummy.INVENTORY_GET_NO_STOCK),  # 検証: 残りなし
+    ]
+
+    results = run_consumable_use(
+        client, lib_ids=[47], method_override="consumableUseStamina"
+    )
+
+    assert results[0].status == ResponseStatus.SUCCESS
+    assert results[0].consumed == 3
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseStamina"
+    ]
+    assert len(use_calls) == 1
+    assert use_calls[0].args[0]["calls"][0]["args"] == {"libId": 47, "amount": 3}
+
+
+def test_run_consumable_use_dry_run_recursive_display_gate(mock_client, mock_sleep, capsys):
+    """dry-run 表示は lootbox 解決時のみ `(recursive)` を含める。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"509": 17, "47": 3}}}
+
+    mock_call.return_value = inv
+    run_consumable_use(client, lib_ids=[509], dry_run=True)
+    assert "(recursive)" in capsys.readouterr().out
+
+    mock_call.return_value = inv
+    run_consumable_use(client, lib_ids=[509], method_override="consumableUseStamina", dry_run=True)
+    assert "(recursive)" not in capsys.readouterr().out
+
+
+def test_run_consumable_use_dry_run_warns_on_dropped_args(mock_client, mock_sleep, capsys):
+    """dry-run でも非 lootbox 上書きで剥落される引数があれば dropped 警告を出す。"""
+    client, mock_call = mock_client
+    inv = MagicMock()
+    inv.is_success = True
+    inv.error_name = None
+    inv.detail = {"response": {"consumable": {"509": 17, "47": 3}}}
+
+    mock_call.return_value = inv
+    run_consumable_use(
+        client, lib_ids=[509, 47], method_override="consumableUseStamina", dry_run=True
+    )
+    out = capsys.readouterr().out
+    assert "dropped" in out
+    assert "recursive" in out
+    assert "playerRewardChoiceIndex" in out
+
+
 def test_run_consumable_use_loops_until_no_stock(mock_client, mock_sleep):
     """マトリョーシカ: 消費後に再出現した対象はラウンドを繰り返して全消費する。"""
     client, mock_call = mock_client
@@ -336,6 +605,8 @@ def test_run_consumable_use_chunks_at_max_amount(mock_client, mock_sleep):
         if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
     ]
     assert [c["calls"][0]["args"]["amount"] for c in use_calls] == [1000, 1000, 500]
+    # 169 は recursive=False のため recursive は付かない
+    assert all("recursive" not in c["calls"][0]["args"] for c in use_calls)
     assert mock_call.call_count == 5
 
 
@@ -525,6 +796,14 @@ def test_run_consumable_use_not_registered_needs_method(mock_client, mock_sleep)
     results = run_consumable_use(client, lib_ids=[201], method_override="consumableUseLootBox")
     assert results[0].status == ResponseStatus.SUCCESS
     assert results[0].consumed == 360
+    # 未登録 lib + --method では recursive は付与されない（登録後に有効化）
+    use_calls = [
+        c
+        for c in mock_call.call_args_list
+        if c.args[0]["calls"][0]["name"] == "consumableUseLootBox"
+    ]
+    assert len(use_calls) == 1
+    assert use_calls[0].args[0]["calls"][0]["args"] == {"libId": 201, "amount": 360}
 
 
 def test_run_consumable_use_dedupes_lib_ids(mock_client, mock_sleep):

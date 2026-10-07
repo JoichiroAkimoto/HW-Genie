@@ -11,8 +11,8 @@
 アイテムはスキップし、メソッドが解決できないアイテムはエラーとして
 報告する（レジストリ未登録時は ``--method`` で補える）。
 
-消費は以下のループで実行する（マトリョーシカ系アイテムの再帰開封と、
-サーバー側の消費量キャップによる取り残しに対応）。
+消費は以下のループで実行する（マトリョーシカ系アイテムの再出現に対する
+クライアント側ラウンドループと、サーバー側の消費量キャップによる取り残しに対応）。
 
 1. ``inventoryGet`` で在庫を取得し、在庫 > 0 の対象を全消費する
    （``max_amount`` 上限のアイテムは 1000 ずつ分割リクエスト）。
@@ -33,6 +33,7 @@ from hw_genie.core.consumables import (
     display_name,
     max_amount,
     player_reward_choice_index,
+    recursive_flag,
     resolve_use_method,
 )
 from hw_genie.core.inventory import (
@@ -43,7 +44,7 @@ from hw_genie.core.inventory import (
 
 logger = logging.getLogger(__name__)
 
-#: 消費ループの最大ラウンド数（マトリョーシカ系の無限再帰に対する安全弁）。
+#: 消費ループの最大ラウンド数（マトリョーシカ系の再出現に対するクライアント側ラウンドループの安全弁。サーバー側 recursive とは別）。
 MAX_USE_ROUNDS = 30
 
 
@@ -126,17 +127,33 @@ def _plan_consumable_use(
             )
             continue
 
+        if method and method_override and method != "consumableUseLootBox":
+            dropped = []
+            if recursive_flag(lib_id):
+                dropped.append("recursive")
+            if player_reward_choice_index(lib_id) is not None:
+                dropped.append("playerRewardChoiceIndex")
+            if dropped:
+                print(
+                    f"  [{index}/{len(targets)}] {Emojis.WARNING}{label}: --method override "
+                    f"to non-lootbox method ({method}); {', '.join(dropped)} arg(s) dropped.",
+                    flush=True,
+                )
+
         chunk_size = max_amount(lib_id)
         chunks = _chunk_sizes(stock, chunk_size)
+        recursive = recursive_flag(lib_id) and method == "consumableUseLootBox"
+        recursive_text = " (recursive)" if recursive else ""
         if len(chunks) > 1:
             print(
                 f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method} "
-                f"({len(chunks)} requests of up to {chunk_size}).",
+                f"({len(chunks)} requests of up to {chunk_size}{recursive_text}).",
                 flush=True,
             )
         else:
             print(
-                f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method}.",
+                f"  [{index}/{len(targets)}] {label}: would consume {stock} via {method}"
+                f"{' (recursive)' if recursive else ''}.",
                 flush=True,
             )
         results.append(
@@ -156,8 +173,9 @@ def run_consumable_use(
     """登録済み consumable を在庫が尽きるまで全消費する（アカウント 1 件分）。
 
     1 ラウンド = ``inventoryGet`` → 在庫 > 0 の対象を全消費 → 残り確認。
-    マトリョーシカ系アイテム（開封で同種が再出現するもの）はラウンドを
-    繰り返すことで再帰的に開封する。残りが無くなるか ``max_rounds`` に
+    マトリョーシカ系アイテム（開封で同種が再出現するもの）はクライアント側
+    ラウンドループ（在庫再確認の反復）で開封する（サーバー側 recursive とは
+    別概念。サーバー側 recursive は開封リクエスト数削減の補助）。残りが無くなるか ``max_rounds`` に
     達するまで続行する。恒久的な失敗（``limitReached`` 等の ERROR）は
     以降のラウンドで再試行しないが、一時的な失敗（UNEXPECTED）は
     次ラウンドで再試行する。
@@ -251,6 +269,18 @@ def run_consumable_use(
             name = display_name(lib_id)
 
             method = resolve_use_method(lib_id, method_override)
+            if method and method_override and method != "consumableUseLootBox":
+                dropped = []
+                if recursive_flag(lib_id):
+                    dropped.append("recursive")
+                if player_reward_choice_index(lib_id) is not None:
+                    dropped.append("playerRewardChoiceIndex")
+                if dropped:
+                    print(
+                        f"  [{index}/{len(pending)}] {Emojis.WARNING}{label}: --method override "
+                        f"to non-lootbox method ({method}); {', '.join(dropped)} arg(s) dropped.",
+                        flush=True,
+                    )
             if not method:
                 print(
                     f"  [{index}/{len(pending)}] {Emojis.ERROR}{label}: no registered use method. "
@@ -271,9 +301,10 @@ def run_consumable_use(
                 continue
 
             chunks = _chunk_sizes(stock, max_amount(lib_id))
+            show_recursive = recursive_flag(lib_id) and method == "consumableUseLootBox"
             print(
                 f"  [{index}/{len(pending)}] {label}: consuming {stock} via {method} "
-                f"({len(chunks)} request(s))...",
+                f"({len(chunks)} request(s)){' (recursive)' if show_recursive else ''}...",
                 flush=True,
             )
             item = ConsumableUseResult(
@@ -286,6 +317,7 @@ def run_consumable_use(
                     amount,
                     method,
                     player_reward_choice_index=player_reward_choice_index(lib_id),
+                    recursive=recursive_flag(lib_id),
                 )
                 client.sleep()
                 if result.status != ResponseStatus.SUCCESS:

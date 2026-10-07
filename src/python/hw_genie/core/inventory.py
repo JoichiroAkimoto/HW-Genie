@@ -14,7 +14,11 @@ status / error_name を載せる。
 from dataclasses import dataclass, field
 from typing import Any
 
+import logging
+
 from hw_genie.core.client import ApiAction, HWAuthError, HWClient, ResponseStatus, _safe_int
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryReadError(Exception):
@@ -146,6 +150,7 @@ def use_consumable(
     amount: int,
     method: str,
     player_reward_choice_index: int | None = None,
+    recursive: bool = False,
 ) -> ConsumableUseResult:
     """consumableUse* を 1 回呼び、その実行結果を返す。
 
@@ -155,14 +160,36 @@ def use_consumable(
         amount: 消費する数量（在庫全量を渡す想定）。
         method: 消費 RPC メソッド名（``consumableUseLootBox`` 等）。
         player_reward_choice_index: 選択式報酬ボックスの報酬選択インデックス。
-            ``playerRewardChoiceIndex`` として args に含める（``None`` なら含めない）。
+            解決後メソッドが ``consumableUseLootBox`` の場合のみ
+            ``playerRewardChoiceIndex`` として args に含める（``None`` なら含めない。
+            他メソッドには付与せず警告する）。
+        recursive: マトリョーシカ系の再帰開封フラグ。解決後メソッドが
+            ``consumableUseLootBox`` の場合のみ ``True`` なら args に
+            ``recursive: True`` を含める（他メソッドには付与せず警告する）。
 
     Raises:
         HWAuthError: 認証エラー（握りつぶさず再送出）
     """
     args: dict[str, Any] = {"libId": lib_id, "amount": amount}
-    if player_reward_choice_index is not None:
-        args["playerRewardChoiceIndex"] = player_reward_choice_index
+    if method == "consumableUseLootBox":
+        if player_reward_choice_index is not None:
+            args["playerRewardChoiceIndex"] = player_reward_choice_index
+        if recursive:
+            args["recursive"] = True
+    else:
+        if recursive:
+            logger.warning(
+                "recursive=True ignored for non-lootbox method (libId %d, method %s)",
+                lib_id,
+                method,
+            )
+        if player_reward_choice_index is not None:
+            logger.warning(
+                "playerRewardChoiceIndex %d ignored for non-lootbox method (libId %d, method %s)",
+                player_reward_choice_index,
+                lib_id,
+                method,
+            )
     try:
         res = client.call(
             {
