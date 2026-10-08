@@ -149,3 +149,134 @@ def test_seers_game_cli_registered(monkeypatch, capsys):
     assert e.value.code == 0
     out = capsys.readouterr().out
     assert "--dry-run" in out and "--pick" in out and "--max-games" in out
+
+
+def _seers_handler_args(pick=2, max_games=None, dry_run=False, account=None):
+    import argparse
+
+    return argparse.Namespace(
+        pick=pick, max_games=max_games, dry_run=dry_run, account=account
+    )
+
+
+def _patch_seers_handler(monkeypatch, run_fake):
+    """cmd_seers_game の外部依存（session / client / run）を差し替える。"""
+    import hw_genie.main as main_mod
+
+    monkeypatch.setattr(
+        main_mod, "_ensure_session", lambda args: {"x-auth-token": "test"}
+    )
+    monkeypatch.setattr(main_mod, "HWClient", lambda headers: MagicMock())
+    monkeypatch.setattr(
+        "hw_genie.commands.seers_game.run_seers_game", run_fake
+    )
+    return main_mod
+
+
+def test_cmd_seers_game_success_exit_0(monkeypatch):
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    seen = {}
+
+    def fake_run(client, pick=2, max_games=None, dry_run=False, account_alias=None):
+        seen.update(
+            pick=pick,
+            max_games=max_games,
+            dry_run=dry_run,
+            account_alias=account_alias,
+        )
+        # ≥1 ゲーム消化後のコイン枯渇 break は成功扱い（last_error 付きでも exit 0）。
+        return SeersGameResult(games_played=2, last_error="NotEnough")
+
+    _patch_seers_handler(monkeypatch, fake_run)
+    main_mod.cmd_seers_game(_seers_handler_args(pick=2, account="Alice"))
+    assert seen == {
+        "pick": 2,
+        "max_games": None,
+        "dry_run": False,
+        "account_alias": "Alice",
+    }
+
+
+def test_cmd_seers_game_clean_zero_games_exit_0(monkeypatch):
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    _patch_seers_handler(
+        monkeypatch, lambda *a, **k: SeersGameResult(games_played=0)
+    )
+    main_mod.cmd_seers_game(_seers_handler_args())
+
+
+def test_cmd_seers_game_failure_exit_1(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    # 1 ゲームも消化できず last_error が残った場合は失敗（exit 1）。
+    _patch_seers_handler(
+        monkeypatch,
+        lambda *a, **k: SeersGameResult(
+            games_played=0, games_failed=1, last_error="boom"
+        ),
+    )
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args())
+    assert e.value.code == 1
+    assert "Error" in capsys.readouterr().err
+
+
+def test_cmd_seers_game_read_error_exit_1(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameReadError
+
+    def fake_raise(*a, **k):
+        raise SeersGameReadError("eventPicker_getState failed (timeout)")
+
+    _patch_seers_handler(monkeypatch, fake_raise)
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args())
+    assert e.value.code == 1
+    assert "Error" in capsys.readouterr().err
+
+
+def test_cmd_seers_game_value_error_exit_1(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    def fake_raise(*a, **k):
+        raise ValueError("pick must be between 1 and 3, but got 5")
+
+    _patch_seers_handler(monkeypatch, fake_raise)
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args(pick=5))
+    assert e.value.code == 1
+    assert "Error" in capsys.readouterr().err
+
+
+def test_cmd_seers_game_invalid_pick_exit_2(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    # API 呼び出し前の検証のため session/client の mock は不要。
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args(pick=0))
+    assert e.value.code == 2
+    assert "--pick" in capsys.readouterr().err
+
+
+def test_cmd_seers_game_invalid_max_games_exit_2(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args(max_games=0))
+    assert e.value.code == 2
+    assert "--max-games" in capsys.readouterr().err

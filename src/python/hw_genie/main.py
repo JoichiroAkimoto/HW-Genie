@@ -492,18 +492,52 @@ def cmd_asgard_shop(args):
 
 def cmd_seers_game(args):
     """Seer's Game をコイン枯渇まで自動周回する"""
+    # argparse に choices= は付けない（live の event.size 上限は実行時に
+    # _check_pick が検証するため）。ここでは正の整数であることだけを、
+    # いかなる API 呼び出しよりも前に parser.error スタイル（stderr + exit 2）
+    # で検査する。
+    pick = getattr(args, "pick", 2)
+    if isinstance(pick, bool) or not isinstance(pick, int) or pick < 1:
+        print(
+            f"hw-genie seers-game: error: --pick must be >= 1 (got {pick!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    max_games = getattr(args, "max_games", None)
+    if max_games is not None and (
+        isinstance(max_games, bool) or not isinstance(max_games, int) or max_games < 1
+    ):
+        print(
+            f"hw-genie seers-game: error: --max-games must be >= 1 (got {max_games!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     headers = _ensure_session(args)
 
     client = HWClient(headers)
-    from hw_genie.commands.seers_game import run_seers_game
+    from hw_genie.commands.seers_game import SeersGameReadError, run_seers_game
 
-    run_seers_game(
-        client,
-        pick=args.pick,
-        max_games=args.max_games,
-        dry_run=bool(args.dry_run),
-        account_alias=args.account or None,
-    )
+    try:
+        result = run_seers_game(
+            client,
+            pick=pick,
+            max_games=max_games,
+            dry_run=bool(args.dry_run),
+            account_alias=args.account or None,
+        )
+    except (SeersGameReadError, ValueError) as e:
+        # 読み取り失敗・pick 範囲外はトレースバックなしで exit 1。
+        # HWAuthError / AccountResolutionError は main() の共通ハンドラに任せる。
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    # exit-code 判定（cmd_asgard_shop の `if result.error: sys.exit(1)` に対応）。
+    # ≥1 ゲーム消化後のコイン枯渇 break（last_error 付き）は正常終了 exit 0。
+    # 1 ゲームも消化できず last_error が残った場合（初回 startGame のコイン不足、
+    # getState 読み取り失敗等）は失敗として exit 1。
+    if result.games_played == 0 and result.last_error:
+        print(f"Error: Seer's Game failed: {result.last_error}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _resolve_toe_progress(args, default: str = "line") -> str:
