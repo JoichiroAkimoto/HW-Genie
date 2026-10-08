@@ -926,9 +926,17 @@ def summarize_seers_game(
     ok = 0
     failed: list[str] = []
     rows: list[list[str]] = []
+    totals: dict[str, int] = {}
     for account, (res, err) in results:
         if err is None and isinstance(res, SeersGameResult):
             note = res.last_error or res.last_state or "-"
+            if res.rewards:
+                rewards_str = ", ".join(
+                    f"{key} x{amount}" for key, amount in sorted(res.rewards.items())
+                )
+                note = f"{note} | 🎁 {rewards_str}"
+                for key, amount in res.rewards.items():
+                    totals[key] = totals.get(key, 0) + int(amount)
             rows.append(
                 [account, str(res.games_played), str(res.games_failed), note]
             )
@@ -951,6 +959,11 @@ def summarize_seers_game(
     print("📊 --- Multi seers-game summary ---")
     if rows:
         print(_render_seers_table(rows))
+    if totals:
+        totals_str = ", ".join(
+            f"{key} x{amount}" for key, amount in sorted(totals.items())
+        )
+        print(f"🎁 Total rewards: {totals_str}")
     if failed:
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")

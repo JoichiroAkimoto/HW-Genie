@@ -11,13 +11,11 @@
 認証エラー（HWAuthError）は握りつぶさず再送出する（上位で共通処理）。
 """
 
-import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
 from hw_genie.core.client import ApiAction, Emojis, HWAuthError, HWClient, ResponseStatus
-
-logger = logging.getLogger(__name__)
 
 # 1 ゲーム開始に消費する Seer's Coin。
 GAME_COST = 25
@@ -52,11 +50,43 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _merge_rewards(accum: dict[str, int], collected: Any) -> None:
-    """``collected_rewards`` を ``accum`` に加算する（flat key ``"{category}:{id}"``）。
+def validate_seers_args(
+    pick: int = 2, max_games: int | None = None
+) -> tuple[int, int | None]:
+    """``--pick`` / ``--max-games`` を API 呼び出し前に検証する。
 
-    ``collected_rewards`` は ``{"consumable": {"12": 20}, "coin": {"24": 500}}``
-    形式、または空リスト（未収集時）のいずれかで現れる。
+    不正値は ``stderr`` へのメッセージ + ``SystemExit(2)``（argparse の
+    ``parser.error`` と同等）で落とす。単体 ``seers-game`` ハンドラと
+    ``multi seers-game`` 分岐の両方から呼ぶ共有バリデータ。
+    """
+    if isinstance(pick, bool) or not isinstance(pick, int) or pick < 1:
+        print(
+            f"hw-genie seers-game: error: --pick must be >= 1 (got {pick!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if max_games is not None and (
+        isinstance(max_games, bool) or not isinstance(max_games, int) or max_games < 1
+    ):
+        print(
+            f"hw-genie seers-game: error: --max-games must be >= 1 (got {max_games!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return pick, max_games
+
+
+def _merge_rewards(accum: dict[str, int], collected: Any) -> None:
+    """``collected_rewards`` のスナップショット 1 件を ``accum`` に加算する。
+
+    注意: ``collected_rewards`` はゲーム内の累積スナップショット（各
+    ``playRound`` 応答がそれまでの合計を返す）なので、中間の全スナップ
+    ショットを合算してはならない（例: 各 play が ``12:20``、finish が
+    ``12:40`` の場合、合計は 40 が正しく 20+20+…+40 ではない）。
+    呼び出し側は 1 ゲームにつき finish 時の最終スナップショット 1 件だけ
+    をマージすること（失敗時は最後の成功スナップショット 1 件）。
+    ``collected_rewards`` は ``{"consumable": {"12": 20}, ...}`` 形式、
+    または空リスト（未収集時）のいずれかで現れる。
     """
     if not isinstance(collected, dict):
         return
@@ -120,6 +150,8 @@ def fetch_seers_state(client: HWClient) -> dict[str, Any]:
 def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
     """1 ゲーム（start → play ×4 → finish）を実行する。
 
+    実装は :func:`_start_new_game` に委譲する（``run_seers_game`` の新規
+    ゲームループと同一プロトコル実装を共有する）。
     ``pick`` は毎ラウンドの live ``event.size`` に対して検証する。
     いずれかの呼び出しが ERROR を返した場合は ``games_failed=1`` として
     早期リターンする（例外は投げない。HWAuthError を除く）。
@@ -128,56 +160,7 @@ def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
     HWAuthError は握りつぶさず再送出する。
     """
     result = SeersGameResult()
-
-    res = client.call(
-        {"calls": [{"name": ApiAction.EVENT_PICKER_START_GAME, "args": {}, "ident": "body"}]}
-    )
-    client.sleep()
-    _raise_if_unexpected(res, "eventPicker_startGame")
-    if not res.is_success:
-        result.games_failed = 1
-        result.last_error = res.error_name or "unknown"
-        return result
-    event = _event_from_detail(res.detail)
-    size = _safe_int(event.get("size"))
-    _check_pick(pick, size)
-    result.last_state = event.get("state") if isinstance(event.get("state"), str) else None
-    _merge_rewards(result.rewards, event.get("collected_rewards"))
-
-    for _ in range(ROUNDS_PER_GAME):
-        _check_pick(pick, size)
-        res = client.call(
-            {
-                "calls": [
-                    {"name": ApiAction.EVENT_PICKER_PLAY_ROUND, "args": {"num": pick}, "ident": "body"}
-                ]
-            }
-        )
-        client.sleep()
-        _raise_if_unexpected(res, "eventPicker_playRound")
-        if not res.is_success:
-            result.games_failed = 1
-            result.last_error = res.error_name or "unknown"
-            return result
-        event = _event_from_detail(res.detail)
-        size = _safe_int(event.get("size"))
-        result.last_state = event.get("state") if isinstance(event.get("state"), str) else None
-        _merge_rewards(result.rewards, event.get("collected_rewards"))
-
-    res = client.call(
-        {"calls": [{"name": ApiAction.EVENT_PICKER_FINISH_GAME, "args": {}, "ident": "body"}]}
-    )
-    client.sleep()
-    _raise_if_unexpected(res, "eventPicker_finishGame")
-    if not res.is_success:
-        result.games_failed = 1
-        result.last_error = res.error_name or "unknown"
-        return result
-    event = _event_from_detail(res.detail)
-    result.last_state = event.get("state") if isinstance(event.get("state"), str) else None
-    _merge_rewards(result.rewards, event.get("collected_rewards"))
-
-    result.games_played = 1
+    _start_new_game(client, pick, result)
     return result
 
 
@@ -187,8 +170,14 @@ def _play_remaining_and_finish(
     plays_remaining: int,
     size: int,
     result: SeersGameResult,
+    pending: Any = None,
 ) -> bool:
     """中断ゲームの残りラウンド + finish を実行する。成功時 True。
+
+    報酬は累積スナップショットなので中間マージせず、成功時は finish 時の
+    最終スナップショット 1 件だけをマージする。ERROR による失敗時は
+    最後の成功スナップショット（``pending`` / 各 play の最新 1 件）を
+    1 件だけマージして部分報酬とする。
 
     ERROR は ``games_failed`` 加算 + ``last_error`` 記録して False を返す。
     ``UNEXPECTED`` は ``SeersGameReadError`` を送出する（正常停止扱いしない）。
@@ -208,12 +197,14 @@ def _play_remaining_and_finish(
         if not res.is_success:
             result.games_failed += 1
             result.last_error = res.error_name or "unknown"
+            if pending is not None:
+                _merge_rewards(result.rewards, pending)
             return False
         event = _event_from_detail(res.detail)
         size = _safe_int(event.get("size"))
         if isinstance(event.get("state"), str):
             result.last_state = event.get("state")
-        _merge_rewards(result.rewards, event.get("collected_rewards"))
+        pending = event.get("collected_rewards")
 
     res = client.call(
         {"calls": [{"name": ApiAction.EVENT_PICKER_FINISH_GAME, "args": {}, "ident": "body"}]}
@@ -223,6 +214,8 @@ def _play_remaining_and_finish(
     if not res.is_success:
         result.games_failed += 1
         result.last_error = res.error_name or "unknown"
+        if pending is not None:
+            _merge_rewards(result.rewards, pending)
         return False
     event = _event_from_detail(res.detail)
     if isinstance(event.get("state"), str):
@@ -232,8 +225,50 @@ def _play_remaining_and_finish(
     return True
 
 
+def _start_new_game(
+    client: HWClient,
+    pick: int,
+    result: SeersGameResult,
+    count_start_error: bool = True,
+) -> bool:
+    """``startGame`` → 残り 4 play + finish の新規 1 ゲームを実行する。
+
+    ``run_single_game`` と ``run_seers_game`` の新規ゲームループで共有する
+    単一プロトコル実装。``startGame`` の ERROR は ``count_start_error`` が
+    True（``run_single_game``）なら ``games_failed`` 加算 + ``last_error``
+    記録で False を返す。False（``run_seers_game`` の周回ループ）の場合は
+    コイン枯渇等の正常停止として ``last_error`` のみ記録し ``games_failed``
+    は加算せず False を返す（呼び出し側が break する）。成功時は
+    ``_play_remaining_and_finish`` に委譲し、その戻り値を返す。
+    ``UNEXPECTED`` / ``ValueError`` / HWAuthError はそのまま送出する。
+    """
+    res = client.call(
+        {"calls": [{"name": ApiAction.EVENT_PICKER_START_GAME, "args": {}, "ident": "body"}]}
+    )
+    client.sleep()
+    _raise_if_unexpected(res, "eventPicker_startGame")
+    if not res.is_success:
+        if count_start_error:
+            result.games_failed += 1
+        result.last_error = res.error_name or "unknown"
+        return False
+    event = _event_from_detail(res.detail)
+    size = _safe_int(event.get("size"))
+    _check_pick(pick, size)
+    if isinstance(event.get("state"), str):
+        result.last_state = event.get("state")
+    pending = event.get("collected_rewards")
+    return _play_remaining_and_finish(client, pick, ROUNDS_PER_GAME, size, result, pending)
+
+
 def _coin_balance_from_inventory(detail: Any) -> int | None:
-    """``inventoryGet`` の detail から Seer's Coin 残高を取り出す（失敗時は None）。"""
+    """``inventoryGet`` の detail から Seer's Coin 残高を取り出す（失敗時は None）。
+
+    ``inventoryGet`` の応答形状は2通りある: トップレベル
+    ``response.coin``（他コマンドの live evidence にある形状）と、
+    ネストした ``response.inventory.coin``（旧形状）。どちらも試す。
+    ``str`` / ``int`` の coin ID キー両対応（JSON はキーが文字列化される）。
+    """
     try:
         if not isinstance(detail, dict):
             return None
@@ -331,9 +366,12 @@ def run_seers_game(
 
     if event.get("state") == "active":
         # 中断ゲームを新規開始せず再開する。round=1 開始で 4 play のため、
-        # 残り = (ROUNDS_PER_GAME + 1) - round（round=1→4、round=2→3、…）。
+        # 残り = (ROUNDS_PER_GAME + 1) - round（round=1→4、round=2→3、…、
+        # round=5（全 4 play 済み）→0 で finish のみ）。
+        # getState の collected_rewards は累積スナップショットなのでここでは
+        # マージせず、失敗時の部分報酬フォールバックとして渡すだけ。
         round_no = _safe_int(event.get("round"), 1)
-        remaining = max(1, (ROUNDS_PER_GAME + 1) - round_no)
+        remaining = max(0, (ROUNDS_PER_GAME + 1) - round_no)
         size = _safe_int(event.get("size"))
         print(
             f"{Emojis.RECOVERY}{prefix}Resuming interrupted game "
@@ -342,34 +380,33 @@ def run_seers_game(
         )
         if isinstance(event.get("state"), str):
             result.last_state = event.get("state")
-        _merge_rewards(result.rewards, event.get("collected_rewards"))
-        if not _play_remaining_and_finish(client, pick, remaining, size, result):
+        pending = event.get("collected_rewards")
+        if not _play_remaining_and_finish(client, pick, remaining, size, result, pending):
             return result
 
     while max_games is None or result.games_played < max_games:
         print(f"{Emojis.STEP}{prefix}Starting game #{result.games_played + 1}...", flush=True)
-        res = client.call(
-            {"calls": [{"name": ApiAction.EVENT_PICKER_START_GAME, "args": {}, "ident": "body"}]}
-        )
-        client.sleep()
-        _raise_if_unexpected(res, "eventPicker_startGame")
-        if not res.is_success:
-            error_name = res.error_name or "unknown"
-            print(f"  Result: {Emojis.ERROR}Cannot start ({error_name}) - stopping.", flush=True)
-            result.last_error = error_name
-            break
-        event = _event_from_detail(res.detail)
-        size = _safe_int(event.get("size"))
-        _check_pick(pick, size)
-        if isinstance(event.get("state"), str):
-            result.last_state = event.get("state")
-        _merge_rewards(result.rewards, event.get("collected_rewards"))
-        if not _play_remaining_and_finish(client, pick, ROUNDS_PER_GAME, size, result):
+        failed_before = result.games_failed
+        ok = _start_new_game(client, pick, result, count_start_error=False)
+        if not ok:
+            if result.games_failed == failed_before:
+                # startGame の ERROR（コイン不足等）は正常停止。
+                print(
+                    f"  Result: {Emojis.ERROR}Cannot start ({result.last_error}) - stopping.",
+                    flush=True,
+                )
             break
         print(f"  Result: {Emojis.SUCCESS}Game #{result.games_played} finished.", flush=True)
 
     print(f"\n{Emojis.FINISH}{prefix}--- Seer's Game Results Summary ---", flush=True)
     print(f"  {Emojis.SUCCESS}Played: {result.games_played} game(s)", flush=True)
+    if result.games_failed:
+        print(f"  {Emojis.ERROR}Failed: {result.games_failed} game(s)", flush=True)
+    if result.rewards:
+        rewards_str = ", ".join(
+            f"{key} x{amount}" for key, amount in sorted(result.rewards.items())
+        )
+        print(f"  {Emojis.INFO}Rewards: {rewards_str}", flush=True)
     if result.last_error:
         print(f"  {Emojis.INFO}Stopped: {result.last_error}", flush=True)
     return result

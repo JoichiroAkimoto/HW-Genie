@@ -495,23 +495,12 @@ def cmd_seers_game(args):
     # argparse に choices= は付けない（live の event.size 上限は実行時に
     # _check_pick が検証するため）。ここでは正の整数であることだけを、
     # いかなる API 呼び出しよりも前に parser.error スタイル（stderr + exit 2）
-    # で検査する。
-    pick = getattr(args, "pick", 2)
-    if isinstance(pick, bool) or not isinstance(pick, int) or pick < 1:
-        print(
-            f"hw-genie seers-game: error: --pick must be >= 1 (got {pick!r})",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    max_games = getattr(args, "max_games", None)
-    if max_games is not None and (
-        isinstance(max_games, bool) or not isinstance(max_games, int) or max_games < 1
-    ):
-        print(
-            f"hw-genie seers-game: error: --max-games must be >= 1 (got {max_games!r})",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    # で検査する（multi 分岐と共有の validate_seers_args を使用）。
+    from hw_genie.commands.seers_game import validate_seers_args
+
+    pick, max_games = validate_seers_args(
+        getattr(args, "pick", 2), getattr(args, "max_games", None)
+    )
 
     headers = _ensure_session(args)
 
@@ -969,10 +958,17 @@ def cmd_multi(args):
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "seers-game":
+        # 単体ハンドラと同じ共有バリデータで、最初の API 呼び出しより前に
+        # 検査する（不正値は stderr + exit 2）。
+        from hw_genie.commands.seers_game import validate_seers_args as _validate_seers
+
+        _pick, _max_games = _validate_seers(
+            getattr(args, "pick", 2), getattr(args, "max_games", None)
+        )
         routine = partial(
             seers_game_routine,
-            pick=getattr(args, "pick", 2),
-            max_games=getattr(args, "max_games", None),
+            pick=_pick,
+            max_games=_max_games,
             dry_run=dry_run,
         )
         # dry-run は read-only の計画表示のため逐次実行

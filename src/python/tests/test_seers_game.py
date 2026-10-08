@@ -298,3 +298,142 @@ def test_seers_game_routine_counts_games(mock_client, mock_sleep):
     ]
     result = seers_game_routine(client, "Alice")
     assert result.games_played >= 1
+
+
+def _names_of(mock_call):
+    return [c["calls"][0]["name"] for c, in (call.args for call in mock_call.call_args_list)]
+
+
+def test_run_seers_game_resume_round5_only_finish(mock_client, mock_sleep):
+    """round=5（4 play 済み）の中断再開は play なしで finish のみ送る。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    resume_event = dict(_START_EVENT, round=5, size=4)
+    mock_call.side_effect = [
+        _res_from(_event_envelope(resume_event)),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+        _err_res("NotEnough"),
+    ]
+    result = run_seers_game(client)
+    names = _names_of(mock_call)
+    assert names.count(ApiAction.EVENT_PICKER_PLAY_ROUND) == 0
+    assert names.count(ApiAction.EVENT_PICKER_FINISH_GAME) == 1
+    assert result.games_played == 1
+
+
+def test_run_seers_game_resume_round2_plays_3(mock_client, mock_sleep):
+    """round=2 の中断再開は残り 3 play + finish で 1 ゲーム扱い。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    resume_event = dict(_START_EVENT, round=2, size=3)
+    mock_call.side_effect = [
+        _res_from(_event_envelope(resume_event)),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+        _err_res("NotEnough"),
+    ]
+    result = run_seers_game(client)
+    names = _names_of(mock_call)
+    assert names.count(ApiAction.EVENT_PICKER_PLAY_ROUND) == 3
+    assert names.count(ApiAction.EVENT_PICKER_FINISH_GAME) == 1
+    assert result.games_played == 1
+
+
+def test_run_seers_game_max_games_1_inexhaustible(mock_client, mock_sleep):
+    """max_games=1 でコイン枯渇なしでもちょうど 1 ゲームで止まる。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),
+        _res_from(_event_envelope(_play_event(2), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+    ]
+    result = run_seers_game(client, max_games=1)
+    assert result.games_played == 1
+    assert result.games_failed == 0
+    # getState + start + 4 play + finish のみ（2 ゲーム目の start を送らない）。
+    assert mock_call.call_count == 7
+
+
+def test_run_seers_game_second_game_play_error(mock_client, mock_sleep):
+    """2 ゲーム目の playRound ERROR は clean return（例外なし）で失敗計上。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),
+        _res_from(_event_envelope(_play_event(2), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),
+        _err_res("SomePlayError"),
+    ]
+    result = run_seers_game(client)
+    assert result.games_played == 1
+    assert result.games_failed == 1
+    assert result.last_error is not None
+
+
+def test_run_seers_game_pick_out_of_range_raises(mock_client, mock_sleep):
+    """run 経路の pick 範囲外は ValueError を送出する（live size に対して検証）。"""
+    import pytest
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),  # size=3
+    ]
+    with pytest.raises(ValueError, match="pick must be between"):
+        run_seers_game(client, pick=9)
+
+
+def test_run_single_game_rewards_cumulative_not_summed(mock_client, mock_sleep):
+    """報酬は累積スナップショットの最終値のみ計上（play 12:20×4 + finish 12:40 → 40）。"""
+    from hw_genie.commands.seers_game import run_single_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_START_EVENT)),
+        _res_from(_event_envelope(_play_event(2), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+    ]
+    result = run_single_game(client, pick=2)
+    assert result.games_played == 1
+    assert result.rewards == {"consumable:12": 40}
+
+
+def test_multi_seers_game_invalid_pick_exit_2_no_api_call(monkeypatch, capsys):
+    """multi seers-game の事前検証: pick=0 は API 呼び出し前に stderr + exit 2。"""
+    import argparse
+
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    called = []
+    monkeypatch.setattr(
+        main_mod, "run_all_accounts", lambda *a, **k: called.append(1) or {}
+    )
+    args = argparse.Namespace(
+        mode="seers-game",
+        accounts=["Alice"],
+        pick=0,
+        max_games=None,
+        dry_run=False,
+        parallel=1,
+    )
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_multi(args)
+    assert e.value.code == 2
+    assert called == []
+    assert "--pick" in capsys.readouterr().err
