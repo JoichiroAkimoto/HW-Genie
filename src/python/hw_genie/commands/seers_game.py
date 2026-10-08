@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from hw_genie.core.client import ApiAction, Emojis, HWAuthError, HWClient
+from hw_genie.core.client import ApiAction, Emojis, HWAuthError, HWClient, ResponseStatus
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,13 @@ def _check_pick(pick: int, size: int) -> None:
         raise ValueError(f"pick must be between 1 and {size}, but got {pick}")
 
 
+def _raise_if_unexpected(res: Any, action: str) -> None:
+    """``UNEXPECTED``（通信・パース失敗等）はコイン枯渇と混同せず大声で失敗させる。"""
+    if getattr(res, "status", None) == ResponseStatus.UNEXPECTED:
+        error_name = getattr(res, "error_name", None) or "unexpected"
+        raise SeersGameReadError(f"{action} failed ({error_name})")
+
+
 def fetch_seers_state(client: HWClient) -> dict[str, Any]:
     """``eventPicker_getState`` を呼び、現在の ``event`` を返す。
 
@@ -116,6 +123,9 @@ def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
     ``pick`` は毎ラウンドの live ``event.size`` に対して検証する。
     いずれかの呼び出しが ERROR を返した場合は ``games_failed=1`` として
     早期リターンする（例外は投げない。HWAuthError を除く）。
+    ただし ``UNEXPECTED``（通信・パース失敗等）はコイン枯渇とみなさず
+    ``SeersGameReadError`` を送出し、``pick`` 範囲外は ``ValueError`` を送出する。
+    HWAuthError は握りつぶさず再送出する。
     """
     result = SeersGameResult()
 
@@ -123,6 +133,7 @@ def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
         {"calls": [{"name": ApiAction.EVENT_PICKER_START_GAME, "args": {}, "ident": "body"}]}
     )
     client.sleep()
+    _raise_if_unexpected(res, "eventPicker_startGame")
     if not res.is_success:
         result.games_failed = 1
         result.last_error = res.error_name or "unknown"
@@ -143,6 +154,7 @@ def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
             }
         )
         client.sleep()
+        _raise_if_unexpected(res, "eventPicker_playRound")
         if not res.is_success:
             result.games_failed = 1
             result.last_error = res.error_name or "unknown"
@@ -156,6 +168,7 @@ def run_single_game(client: HWClient, pick: int = 2) -> SeersGameResult:
         {"calls": [{"name": ApiAction.EVENT_PICKER_FINISH_GAME, "args": {}, "ident": "body"}]}
     )
     client.sleep()
+    _raise_if_unexpected(res, "eventPicker_finishGame")
     if not res.is_success:
         result.games_failed = 1
         result.last_error = res.error_name or "unknown"
@@ -175,7 +188,12 @@ def _play_remaining_and_finish(
     size: int,
     result: SeersGameResult,
 ) -> bool:
-    """中断ゲームの残りラウンド + finish を実行する。成功時 True。"""
+    """中断ゲームの残りラウンド + finish を実行する。成功時 True。
+
+    ERROR は ``games_failed`` 加算 + ``last_error`` 記録して False を返す。
+    ``UNEXPECTED`` は ``SeersGameReadError`` を送出する（正常停止扱いしない）。
+    ``ValueError``（pick 範囲外）・HWAuthError はそのまま送出する。
+    """
     for _ in range(plays_remaining):
         _check_pick(pick, size)
         res = client.call(
@@ -186,6 +204,7 @@ def _play_remaining_and_finish(
             }
         )
         client.sleep()
+        _raise_if_unexpected(res, "eventPicker_playRound")
         if not res.is_success:
             result.games_failed += 1
             result.last_error = res.error_name or "unknown"
@@ -200,6 +219,7 @@ def _play_remaining_and_finish(
         {"calls": [{"name": ApiAction.EVENT_PICKER_FINISH_GAME, "args": {}, "ident": "body"}]}
     )
     client.sleep()
+    _raise_if_unexpected(res, "eventPicker_finishGame")
     if not res.is_success:
         result.games_failed += 1
         result.last_error = res.error_name or "unknown"
@@ -253,6 +273,12 @@ def run_seers_game(
       以後は ``startGame`` の ERROR（コイン不足・回数上限など全種）を
       正常終了として ``last_error`` に記録し break する。
       無料/有料の区別はしない（枯渇まで回す）。
+
+    Raises:
+        SeersGameReadError: ``UNEXPECTED``（通信・パース失敗等。コイン枯渇とは
+            区別し正常停止扱いにしない）。
+        ValueError: ``pick`` が live ``event.size`` の範囲外。
+        HWAuthError: 認証エラー（握りつぶさず再送出）。
     """
     prefix = f"[{account_alias}] " if account_alias else ""
     result = SeersGameResult()
@@ -326,6 +352,7 @@ def run_seers_game(
             {"calls": [{"name": ApiAction.EVENT_PICKER_START_GAME, "args": {}, "ident": "body"}]}
         )
         client.sleep()
+        _raise_if_unexpected(res, "eventPicker_startGame")
         if not res.is_success:
             error_name = res.error_name or "unknown"
             print(f"  Result: {Emojis.ERROR}Cannot start ({error_name}) - stopping.", flush=True)

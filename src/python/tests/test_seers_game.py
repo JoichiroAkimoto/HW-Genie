@@ -25,6 +25,15 @@ def _err_res(name: str = "NotEnough") -> MagicMock:
     return res
 
 
+def _unexpected_res(name: str = "network_or_parse_error") -> MagicMock:
+    from hw_genie.core.client import ResponseStatus as _RS
+    res = MagicMock()
+    res.is_success = False
+    res.status = _RS.UNEXPECTED
+    res.error_name = name
+    return res
+
+
 def _event_envelope(event: dict, extra: dict | None = None) -> dict:
     response = {"event": event}
     if extra:
@@ -100,3 +109,28 @@ def test_run_seers_game_dry_run_sends_only_reads(mock_client, mock_sleep):
     assert sent <= allowed
     assert sent  # at least the state read was sent
     assert result.games_played == 0
+
+
+def test_run_seers_game_unexpected_on_start_raises_not_clean_stop(mock_client, mock_sleep):
+    """UNEXPECTED はコイン枯渇と区別し、正常停止ではなく SeersGameReadError を送出する。"""
+    import pytest
+    from hw_genie.commands.seers_game import SeersGameReadError, run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _unexpected_res("network_or_parse_error"),
+    ]
+    with pytest.raises(SeersGameReadError):
+        run_seers_game(client)
+    # 正常停止（ERROR/コイン枯渇）なら例外なく last_error 記録で戻るため、
+    # 例外送出そのものが枯渇との区別になる。games_played は 0 のまま。
+    assert mock_call.call_count == 2
+
+
+def test_run_single_game_unexpected_raises(mock_client, mock_sleep):
+    import pytest
+    from hw_genie.commands.seers_game import SeersGameReadError, run_single_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [_unexpected_res("network_or_parse_error")]
+    with pytest.raises(SeersGameReadError):
+        run_single_game(client, pick=2)
