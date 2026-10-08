@@ -134,3 +134,18 @@ def test_run_single_game_unexpected_raises(mock_client, mock_sleep):
     mock_call.side_effect = [_unexpected_res("network_or_parse_error")]
     with pytest.raises(SeersGameReadError):
         run_single_game(client, pick=2)
+
+
+def test_seers_game_cli_registered(monkeypatch, capsys):
+    import sys
+
+    import pytest
+
+    import hw_genie.main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["hw-genie", "seers-game", "--help"])
+    with pytest.raises(SystemExit) as e:
+        main_mod.main()
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "--dry-run" in out and "--pick" in out and "--max-games" in out

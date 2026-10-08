@@ -490,6 +490,22 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def cmd_seers_game(args):
+    """Seer's Game をコイン枯渇まで自動周回する"""
+    headers = _ensure_session(args)
+
+    client = HWClient(headers)
+    from hw_genie.commands.seers_game import run_seers_game
+
+    run_seers_game(
+        client,
+        pick=args.pick,
+        max_games=args.max_games,
+        dry_run=bool(args.dry_run),
+        account_alias=args.account or None,
+    )
+
+
 def _resolve_toe_progress(args, default: str = "line") -> str:
     """Return a valid ``--progress`` mode for ToE commands.
 
@@ -1401,6 +1417,29 @@ def main():
         help="Skip gold buff purchases (slot 1-5)",
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
+
+    # Seer's Game (start -> play x4 -> finish until coins run out)
+    p_seers = subparsers.add_parser(
+        "seers-game",
+        parents=[parent_parser],
+        help="Play Seer's Game until coins run out",
+    )
+    p_seers.add_argument(
+        "--dry-run", action="store_true", help="Show state/coin balance without playing"
+    )
+    p_seers.add_argument(
+        "--pick",
+        type=int,
+        default=2,
+        help="Card to pick each round (default: 2; validated against live event.size)",
+    )
+    p_seers.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Max games to play (default: until coins run out)",
+    )
+    p_seers.set_defaults(func=cmd_seers_game)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
