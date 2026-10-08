@@ -939,9 +939,11 @@ def cmd_multi(args):
         quests_routine,
         request_cancel,
         reset_cancel,
+        seers_game_routine,
         summarize_asgard_shop,
         summarize_consumable,
         summarize_quests,
+        summarize_seers_game,
         summarize_toe,
         toe_routine,
     )
@@ -954,9 +956,9 @@ def cmd_multi(args):
         accounts = list_account_aliases()
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game") and dry_run:
         print(
-            "Error: --dry-run is only supported with the 'quests' and 'consumable' modes "
+            "Error: --dry-run is only supported with the 'quests', 'consumable' and 'seers-game' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
@@ -965,6 +967,15 @@ def cmd_multi(args):
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "seers-game":
+        routine = partial(
+            seers_game_routine,
+            pick=getattr(args, "pick", 2),
+            max_games=getattr(args, "max_games", None),
+            dry_run=dry_run,
+        )
+        # dry-run は read-only の計画表示のため逐次実行
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
@@ -1058,6 +1069,8 @@ def cmd_multi(args):
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
                     failed = summarize_asgard_shop(results.items())
+                elif mode == "seers-game":
+                    failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
                 elif mode == "toe":
@@ -1206,9 +1219,9 @@ def _run_log_account_failure(
 
     Mirrors the per-account failure judgement of the runner's ``summarize_*``
     functions so ``run_logs`` rows stay consistent with the printed summary:
-    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
-    and unavailable statuses all count as failures, matching the ``failed``
-    counter returned by ``summarize``. A cooperative user cancel counts as
+    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors,
+    Seer's Game failures and unavailable statuses all count as failures,
+    matching the ``failed`` counter returned by ``summarize``. A cooperative user cancel counts as
     COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
     ``interrupted=True`` tier summaries without real bridge/API errors map
     to None. Exceptions are reported by their first message line.
@@ -1245,6 +1258,16 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "seers-game":
+        from hw_genie.commands.seers_game import SeersGameResult
+
+        if isinstance(result, SeersGameResult):
+            if result.games_failed:
+                return f"{result.games_failed} seers-game(s) failed"
+            if result.games_played == 0 and result.last_error:
+                return f"seers-game failed: {result.last_error}"
+            return None
+        return "seers-game result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
             real_errors = _toe_real_errors(result.get("errors", []))
@@ -1649,10 +1672,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), or 'seers-game' (play Seer's Game until coins run out)",
     )
     p_multi.add_argument(
         "--engine",
@@ -1718,6 +1741,18 @@ def main():
         help="Override the RPC method for the 'consumable' mode (e.g. consumableUseLootBox)",
     )
     p_multi.add_argument(
+        "--pick",
+        type=int,
+        default=2,
+        help="Card to pick each round for the 'seers-game' mode (default: 2; validated against live event.size)",
+    )
+    p_multi.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Max games to play for the 'seers-game' mode (default: until coins run out)",
+    )
+    p_multi.add_argument(
         "accounts",
         nargs="*",
         help="Optional account aliases to limit the run (default: all)",
@@ -1732,7 +1767,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game modes only)",
     )
     p_multi.add_argument(
         "--iterations",

@@ -280,3 +280,21 @@ def test_cmd_seers_game_invalid_max_games_exit_2(monkeypatch, capsys):
         main_mod.cmd_seers_game(_seers_handler_args(max_games=0))
     assert e.value.code == 2
     assert "--max-games" in capsys.readouterr().err
+
+
+def test_seers_game_routine_counts_games(mock_client, mock_sleep):
+    from hw_genie.runner import seers_game_routine
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),
+        _res_from(_event_envelope(_play_event(2), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+        _err_res("NotEnough"),
+    ]
+    result = seers_game_routine(client, "Alice")
+    assert result.games_played >= 1
