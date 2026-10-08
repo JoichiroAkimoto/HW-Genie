@@ -176,6 +176,108 @@ title: Quest API Reference
 
 ---
 
+### eventPicker_getState / startGame / playRound / finishGame - Seer's Game
+Seer's Game（開始→カード選択×4→終了）の状態確認・プレイを行います。
+1ゲームの開始に Seer's Coin を 25 枚消費します（毎日1回は無料開始可能、JST 11:00 リセット）。
+ツールは無料/有料を区別せず、Coin 枯渇まで周回します（`hw-genie seers-game` / `multi seers-game`）。
+`stashClient` は不要のため送りません。
+
+*   **Endpoint**: POST /api/
+*   **Seer's Coin**: `inventoryGet` の `coin` 枠、ID **2824001094**（`SEERS_COIN_ID`）。
+*   **報酬で観測される ID**: coin `14` / `18` / `24`、consumable `11` / `12` / `17` / `51` / `53`
+    （`playRound` / `finishGame` 応答の `event.collected_rewards` に
+    `{"consumable": {"12": 20}, "coin": {"24": 500}}` 形式で累積される）。
+    `playRound` 応答には `2824402359-2367`（coin 18 + consumable 53 系）・
+    `2824402326-2334`（consumable 51 系）の `quests` が同梱されることがあるが、
+    ツールは `questFarm` せず無視する。
+
+#### eventPicker_getState
+*   **Request Args**: `{}`
+*   **Response** (`results[0].result.response.event`):
+```json
+{
+  "id": 2824000007,
+  "round": 5,
+  "size": 4,
+  "state": "new_game",
+  "win_streak": 14,
+  "mark_history": [],
+  "collected_rewards": {"consumable": {"12": 40, "17": 3}, "coin": {"24": 500}}
+}
+```
+
+*   **Tips**: `state` は `new_game`（待機中）/ `active`（round 途中）。
+    `state == "active"` の中断ゲームがあればツールは新規開始せず `playRound` から再開する。
+    `collected_rewards` は未収集時に `[]`（空リスト）で現れることがある。
+
+#### eventPicker_startGame
+*   **Request Args**: `{}`
+*   **Response** (`results[0].result.response.event`):
+```json
+{
+  "id": 2824000007,
+  "round": 1,
+  "size": 3,
+  "state": "active",
+  "win_streak": 10,
+  "mark_history": [],
+  "collected_rewards": []
+}
+```
+
+*   **Tips**: Coin 不足・回数上限など ERROR 応答時はツールは正常終了として停止する
+    （`last_error` に記録）。通信・パース失敗（`UNEXPECTED`）は枯渇とみなさず例外送出。
+
+#### eventPicker_playRound
+*   **Request Args**: `{"num": 2}`（引くカード番号。ツール既定は 2）
+*   **Response** (`results[0].result.response`):
+```json
+{
+  "event": {
+    "id": 2824000007,
+    "round": 2,
+    "size": 3,
+    "state": "active",
+    "win_streak": 11,
+    "mark_history": [],
+    "collected_rewards": {"consumable": {"12": 20}}
+  },
+  "rollResult": {
+    "mark": false,
+    "cards": {
+      "1": {"num": 1, "isUserCard": false, "type": "reward", "reward": {"consumable": {"11": 30}}},
+      "2": {"num": 2, "isUserCard": true, "type": "reward", "reward": {"consumable": {"12": 20}}},
+      "3": {"num": 3, "isUserCard": false, "type": "reward", "reward": {"consumable": {"53": 1500}}}
+    },
+    "result": "win"
+  },
+  "quests": []
+}
+```
+
+*   **Tips**: `num` は live の `event.size` に対して `1 <= num <= size` で検証する
+    （範囲外は `ValueError`）。`size` は 3/4 で変動するため固定 `choices` にしない。
+    1ゲームあたり `playRound` は 4 回（round 1→2→3→4→finish）。
+
+#### eventPicker_finishGame
+*   **Request Args**: `{}`
+*   **Response** (`results[0].result.response.event`):
+```json
+{
+  "id": 2824000007,
+  "round": 5,
+  "size": 4,
+  "state": "new_game",
+  "win_streak": 14,
+  "mark_history": [],
+  "collected_rewards": {"consumable": {"12": 40, "17": 3}, "coin": {"24": 500}}
+}
+```
+
+*   **Tips**: 成功で `state` が `new_game` に戻る。finish 時の `collected_rewards` がそのゲームの確定報酬。
+
+---
+
 ## 補足メソッド
 (現時点で未実装またはテスト不可能なメソッド)
 *   `dailyBonusGetInfo`
