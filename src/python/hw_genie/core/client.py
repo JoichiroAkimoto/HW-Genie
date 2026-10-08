@@ -196,6 +196,10 @@ class ApiAction(str, Enum):
     TITAN_ARENA_END_RAID = "titanArenaEndRaid"
     TITAN_ARENA_COMPLETE_TIER = "titanArenaCompleteTier"
     TITAN_ARENA_FARM_DAILY_REWARD = "titanArenaFarmDailyReward"
+    EVENT_PICKER_GET_STATE = "eventPicker_getState"
+    EVENT_PICKER_START_GAME = "eventPicker_startGame"
+    EVENT_PICKER_PLAY_ROUND = "eventPicker_playRound"
+    EVENT_PICKER_FINISH_GAME = "eventPicker_finishGame"
 
 
 class ErrorName(str, Enum):
