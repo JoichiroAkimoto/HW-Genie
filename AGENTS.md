@@ -14,6 +14,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-raid**: 指定ミッションのヒーローレイド。
 *   **hero-shopping**: ヒーローソウルとソウルショップの一括購入。
 *   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh / Maestro 週）で Valor Emblem を使ったバフとゴールドバフの自動購入。
+*   **seers-game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`--dry-run` / `--pick` / `--max-games`、`multi seers-game` 対応）。
 *   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認。1000 上限アイテムは分割消費、マトリョーシカ系は残りが無くなるまでラウンドを自動繰り返し）。
 *   **guild-chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表形式と要約表示（`--type` / `--count` / `--last-id` / `--raw` / `--json`）。
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
@@ -29,6 +30,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **アイテムレイド**: `uv run hw-genie raid item --curl '...' --iterations N`（`--times` は `--iterations` のエイリアス。反復回数 = 1 リクエストあたり `times:10` × N。デフォルトはスタミナ限界まで）
 *   **ショップ購入**: `uv run hw-genie shop`
 *   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh / Maestro 週を自動判定。`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on）。詳細は `.agents/skills/asgard-shop/SKILL.md`）
+*   **Seer's Game**: `uv run hw-genie seers-game`（開始→カード4択×4→終了を Seer's Coin 枯渇まで自動周回。`--dry-run` で状態・残高表示のみ、`--pick N` で毎ラウンド引くカード指定（デフォルト 2、live の `event.size` に対して検証）、`--max-games N` で打ち切り。`multi seers-game` で全アカウント一括（`--dry-run` 可）。詳細は `.agents/skills/seers-game/SKILL.md`）
 *   **デイリールーチン**: `uv run hw-genie daily`（`--iterations N` でアイテムレイドの反復回数を指定可能 = 1 リクエストあたり `times:10` × N。ヒーローレイドは固定 3 回、デフォルトはスタミナ限界まで）
 *   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
 *   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）
@@ -36,7 +38,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **ギルドチャット**: `uv run hw-genie chat`（`chatGetAll` / `chatType=clan` の履歴を表形式と要約で表示。`--type` / `--count` / `--last-id` / `--raw` / `--json`。詳細は `.agents/skills/guild-chat/SKILL.md`）
 *   **Titan Arena**: `uv run hw-genie toe status -a <account>` / `toe attack -a <account> [--rival ID] [--titans 5個] [--dry-run]`（省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250）/ `toe run -a <account> [--titans 5個] [--threshold 250]`（詳細は `docs/api/GUILD_API.md#titan-arena-toe`）
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
-*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--no-end-on-loss` / `--no-bank-best-loss` 対応）、`--dry-run` でプラン表示のみ（quests / consumable のみ。toe を含む他モードではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable 失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
+*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--no-end-on-loss` / `--no-bank-best-loss` 対応）、`seers-game` で Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応）、`--dry-run` でプラン表示のみ（quests / consumable / seers-game のみ。toe を含む他モードではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable 失敗アカウントがあると exit 1。詳細は README.md の「Docker での実行」セクションを参照。
 *   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
 *   **認証状態確認**: `uv run hw-genie auth --info`
 *   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）

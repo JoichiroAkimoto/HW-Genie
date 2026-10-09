@@ -90,6 +90,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 
 ### 7. イベント・その他
 *   **`eventPicker_getInfo`**: 現在開催中のスペシャルイベント一覧。
+*   **`eventPicker_getState` / `eventPicker_startGame` / `eventPicker_playRound` / `eventPicker_finishGame`**: Seer's Game の状態確認・開始・カード引き・終了（詳細は QUEST_API.md の `eventPicker_getState` 節）。
 *   **`newYear_getInfo`**: （季節イベント）新年イベント等の特定イベント情報。
 *   **`gacha_getInfo`**: 英雄の宝箱（ガチャ）の状態。
 *   **`rewardedVideo_boxyGetInfo`**: 広告視聴ボーナス（Boxy）の状態。

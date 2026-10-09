@@ -490,6 +490,50 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def cmd_seers_game(args):
+    """Seer's Game をコイン枯渇まで自動周回する"""
+    # argparse に choices= は付けない（live の event.size 上限は実行時に
+    # _check_pick が検証するため）。ここでは正の整数であることだけを、
+    # いかなる API 呼び出しよりも前に parser.error スタイル（stderr + exit 2）
+    # で検査する（multi 分岐と共有の validate_seers_args を使用）。
+    from hw_genie.commands.seers_game import validate_seers_args
+
+    pick, max_games = validate_seers_args(
+        getattr(args, "pick", 2), getattr(args, "max_games", None)
+    )
+
+    headers = _ensure_session(args)
+
+    client = HWClient(headers)
+    from hw_genie.commands.seers_game import SeersGameReadError, run_seers_game
+
+    try:
+        result = run_seers_game(
+            client,
+            pick=pick,
+            max_games=max_games,
+            dry_run=bool(args.dry_run),
+            account_alias=args.account or None,
+        )
+    except (SeersGameReadError, ValueError) as e:
+        # 読み取り失敗・pick 範囲外はトレースバックなしで exit 1。
+        # HWAuthError / AccountResolutionError は main() の共通ハンドラに任せる。
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    # exit-code 判定（cmd_asgard_shop の `if result.error: sys.exit(1)` に対応）。
+    # 枯渇 break（NotEnough。0 ゲームでも含む）は正常終了 exit 0。
+    # 枯渇以外の last_error が残った場合（getState 読み取り失敗等）は失敗として exit 1。
+    from hw_genie.commands.seers_game import is_clean_depletion
+
+    if result.games_failed or (
+        result.games_played == 0
+        and result.last_error
+        and not is_clean_depletion(result.last_error)
+    ):
+        print(f"Error: Seer's Game failed: {result.last_error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _resolve_toe_progress(args, default: str = "line") -> str:
     """Return a valid ``--progress`` mode for ToE commands.
 
@@ -889,9 +933,11 @@ def cmd_multi(args):
         quests_routine,
         request_cancel,
         reset_cancel,
+        seers_game_routine,
         summarize_asgard_shop,
         summarize_consumable,
         summarize_quests,
+        summarize_seers_game,
         summarize_toe,
         toe_routine,
     )
@@ -904,9 +950,9 @@ def cmd_multi(args):
         accounts = list_account_aliases()
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game") and dry_run:
         print(
-            "Error: --dry-run is only supported with the 'quests' and 'consumable' modes "
+            "Error: --dry-run is only supported with the 'quests', 'consumable' and 'seers-game' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
@@ -915,6 +961,22 @@ def cmd_multi(args):
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
         # dry-run は計画表示のため逐次実行（出力がアカウント順に並び、確認しやすい）
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "seers-game":
+        # 単体ハンドラと同じ共有バリデータで、最初の API 呼び出しより前に
+        # 検査する（不正値は stderr + exit 2）。
+        from hw_genie.commands.seers_game import validate_seers_args as _validate_seers
+
+        _pick, _max_games = _validate_seers(
+            getattr(args, "pick", 2), getattr(args, "max_games", None)
+        )
+        routine = partial(
+            seers_game_routine,
+            pick=_pick,
+            max_games=_max_games,
+            dry_run=dry_run,
+        )
+        # dry-run は read-only の計画表示のため逐次実行
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
@@ -1008,6 +1070,8 @@ def cmd_multi(args):
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
                     failed = summarize_asgard_shop(results.items())
+                elif mode == "seers-game":
+                    failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
                 elif mode == "toe":
@@ -1156,9 +1220,9 @@ def _run_log_account_failure(
 
     Mirrors the per-account failure judgement of the runner's ``summarize_*``
     functions so ``run_logs`` rows stay consistent with the printed summary:
-    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors
-    and unavailable statuses all count as failures, matching the ``failed``
-    counter returned by ``summarize``. A cooperative user cancel counts as
+    quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors,
+    Seer's Game failures and unavailable statuses all count as failures,
+    matching the ``failed`` counter returned by ``summarize``. A cooperative user cancel counts as
     COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
     ``interrupted=True`` tier summaries without real bridge/API errors map
     to None. Exceptions are reported by their first message line.
@@ -1195,6 +1259,20 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "seers-game":
+        from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
+
+        if isinstance(result, SeersGameResult):
+            if result.games_failed:
+                return f"{result.games_failed} seers-game(s) failed"
+            if (
+                result.games_played == 0
+                and result.last_error
+                and not is_clean_depletion(result.last_error)
+            ):
+                return f"seers-game failed: {result.last_error}"
+            return None
+        return "seers-game result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
             real_errors = _toe_real_errors(result.get("errors", []))
@@ -1402,6 +1480,29 @@ def main():
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
 
+    # Seer's Game (start -> play x4 -> finish until coins run out)
+    p_seers = subparsers.add_parser(
+        "seers-game",
+        parents=[parent_parser],
+        help="Play Seer's Game until coins run out",
+    )
+    p_seers.add_argument(
+        "--dry-run", action="store_true", help="Show state/coin balance without playing"
+    )
+    p_seers.add_argument(
+        "--pick",
+        type=int,
+        default=2,
+        help="Card to pick each round (default: 2; validated against live event.size)",
+    )
+    p_seers.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Max games to play (default: until coins run out)",
+    )
+    p_seers.set_defaults(func=cmd_seers_game)
+
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
@@ -1576,10 +1677,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), or 'toe' (Titan Arena tier clear)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), or 'seers-game' (play Seer's Game until coins run out)",
     )
     p_multi.add_argument(
         "--engine",
@@ -1645,6 +1746,18 @@ def main():
         help="Override the RPC method for the 'consumable' mode (e.g. consumableUseLootBox)",
     )
     p_multi.add_argument(
+        "--pick",
+        type=int,
+        default=2,
+        help="Card to pick each round for the 'seers-game' mode (default: 2; validated against live event.size)",
+    )
+    p_multi.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Max games to play for the 'seers-game' mode (default: until coins run out)",
+    )
+    p_multi.add_argument(
         "accounts",
         nargs="*",
         help="Optional account aliases to limit the run (default: all)",
@@ -1659,7 +1772,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game modes only)",
     )
     p_multi.add_argument(
         "--iterations",

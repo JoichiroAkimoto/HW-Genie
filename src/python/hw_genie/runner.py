@@ -376,6 +376,33 @@ def asgard_shop_routine(gold_buffs: bool | None = None) -> Callable[[HWClient, s
     return run
 
 
+def seers_game_routine(
+    client: HWClient,
+    account: str,
+    pick: int = 2,
+    max_games: int | None = None,
+    dry_run: bool = False,
+) -> object:
+    """Run the Seer's Game loop for ``account`` until the coins run out.
+
+    Thin wrapper over :func:`hw_genie.commands.seers_game.run_seers_game`
+    so it can be used directly as a ``run_all_accounts`` routine (the
+    ``multi`` command binds the extra args with :func:`functools.partial`).
+
+    Returns:
+        The ``SeersGameResult`` returned by ``run_seers_game``.
+    """
+    from hw_genie.commands.seers_game import run_seers_game
+
+    return run_seers_game(
+        client,
+        pick=pick,
+        max_games=max_games,
+        dry_run=dry_run,
+        account_alias=account,
+    )
+
+
 def full_routine(
     client: HWClient, account: str, item_max_iterations: int = 9999
 ) -> object:
@@ -864,6 +891,91 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+# Seer's Game summary table (per-account games played / failed / note).
+_SEERS_HEADERS = ["Account", "🎮 Played", "❌ Failed", "ℹ️ Note"]
+
+
+def _seers_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the Seer's Game summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_seers_table(rows: list[list[str]]) -> str:
+    """Render the per-account Seer's Game summary table."""
+    return _render_table(_SEERS_HEADERS, rows, _seers_cell_styler)
+
+
+def summarize_seers_game(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account Seer's Game table and return the failed count.
+
+    Results come from :func:`seers_game_routine`: per account a
+    ``SeersGameResult``. Accounts whose routine errored, whose result is
+    unavailable, or that failed any game (``games_failed``) count as failed.
+    枯渇 (``NotEnough``) による停止は 0 ゲームでも正常扱いとし失敗に数えない
+    （単体 ``seers-game`` の exit-0 規則と同一）。With ``dry_run=True`` the
+    footer says "planned" instead of "completed" since nothing was played.
+    """
+    from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    totals: dict[str, int] = {}
+    for account, (res, err) in results:
+        if err is None and isinstance(res, SeersGameResult):
+            note = res.last_error or res.last_state or "-"
+            if res.rewards:
+                rewards_str = ", ".join(
+                    f"{key} x{amount}" for key, amount in sorted(res.rewards.items())
+                )
+                note = f"{note} | 🎁 {rewards_str}"
+                for key, amount in res.rewards.items():
+                    totals[key] = totals.get(key, 0) + int(amount)
+            rows.append(
+                [account, str(res.games_played), str(res.games_failed), note]
+            )
+            if res.games_failed:
+                failed.append(
+                    f"{account} ({res.games_failed} game(s) failed)"
+                )
+            elif (
+                res.games_played == 0
+                and res.last_error
+                and not is_clean_depletion(res.last_error)
+            ):
+                failed.append(f"{account} (failed: {res.last_error})")
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (seers-game result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_SEERS_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print("📊 --- Multi seers-game summary ---")
+    if rows:
+        print(_render_seers_table(rows))
+    if totals:
+        totals_str = ", ".join(
+            f"{key} x{amount}" for key, amount in sorted(totals.items())
+        )
+        print(f"🎁 Total rewards: {totals_str}")
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
     """True when ``err`` is a cooperative user cancel (not a real failure)."""
     if err is None:
@@ -1003,11 +1115,13 @@ __all__ = [
     "full_routine",
     "quests_routine",
     "asgard_shop_routine",
+    "seers_game_routine",
     "consumable_routine",
     "toe_routine",
     "summarize_toe",
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",
+    "summarize_seers_game",
     "summarize_consumable",
 ]
