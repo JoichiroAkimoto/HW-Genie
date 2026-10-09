@@ -294,7 +294,7 @@ def _coin_balance_from_inventory(detail: Any) -> int | None:
             return 0
         inventory = response.get("inventory")
         if isinstance(inventory, dict):
-            coins = inventory.get("coin", inventory)
+            coins = inventory.get("coin")
             if isinstance(coins, dict):
                 for key in (str(SEERS_COIN_ID), SEERS_COIN_ID):
                     if key in coins:
@@ -318,8 +318,9 @@ def run_seers_game(
       表示だけして何も進行させない。
     - 通常時: 初回 ``getState`` で ``state == "active"`` の中断ゲームがあれば
       新規開始せず ``playRound`` から再開して ``finishGame`` で閉じる。
-      以後は ``startGame`` の ERROR（コイン不足・回数上限など全種）を
-      正常終了として ``last_error`` に記録し break する。
+      以後は ``startGame`` の ERROR を ``last_error`` に記録し break する。
+      ``NotEnough`` のみ正常停止とし、それ以外は ``games_failed`` 加算の
+      失敗扱いとする。
       無料/有料の区別はしない（枯渇まで回す）。
 
     Raises:
@@ -403,7 +404,9 @@ def run_seers_game(
         ok = _start_new_game(client, pick, result, count_start_error=False)
         if not ok:
             if result.games_failed == failed_before:
-                # startGame の ERROR（コイン不足等）は正常停止。
+                # startGame の ERROR: NotEnough のみ正常停止、それ以外は失敗計上。
+                if not is_clean_depletion(result.last_error):
+                    result.games_failed += 1
                 print(
                     f"  Result: {Emojis.ERROR}Cannot start ({result.last_error}) - stopping.",
                     flush=True,

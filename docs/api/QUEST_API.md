@@ -233,8 +233,8 @@ Seer's Game（開始→カード選択×4→終了）の状態確認・プレイ
 }
 ```
 
-*   **Tips**: Coin 不足・回数上限など ERROR 応答時はツールは正常終了として停止する
-    （`last_error` に記録）。通信・パース失敗（`UNEXPECTED`）は枯渇とみなさず例外送出。
+*   **Tips**: `NotEnough` のみ正常停止とし、それ以外は失敗として停止する
+    （`last_error` に記録し `games_failed` 加算）。通信・パース失敗（`UNEXPECTED`）は枯渇とみなさず例外送出。
 
 #### eventPicker_playRound
 *   **Request Args**: `{"num": 2}`（引くカード番号。ツール既定は 2）

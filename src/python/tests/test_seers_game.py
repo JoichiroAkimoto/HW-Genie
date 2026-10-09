@@ -488,3 +488,42 @@ def test_dry_run_shows_zero_balance(mock_client, mock_sleep, capsys):
     ]
     run_seers_game(client, dry_run=True)
     assert "Seer's Coin balance: 0 (~0 game(s))" in capsys.readouterr().out
+
+
+def test_run_seers_game_non_depletion_start_error_after_success_fails(mock_client, mock_sleep):
+    """1 成功後の非枯渇 start ERROR は games_failed=1 で失敗扱い（NotEnough は除く）。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from(_event_envelope(_START_EVENT)),
+        _res_from(_event_envelope(_play_event(2), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(3), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(4), {"result": "win"})),
+        _res_from(_event_envelope(_play_event(5), {"result": "win"})),
+        _res_from(_event_envelope(_FINISH_EVENT)),
+        _err_res("LimitReached"),
+    ]
+    result = run_seers_game(client)
+    assert result.games_played == 1
+    assert result.games_failed == 1
+    assert result.last_error == "LimitReached"
+
+
+def test_summarize_seers_game_non_depletion_start_error_after_success_fails():
+    """≥1 成功後の非枯渇停止も summarize では失敗に数える。"""
+    from hw_genie.runner import summarize_seers_game
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    failed = summarize_seers_game(
+        [("Alice", (SeersGameResult(games_played=1, games_failed=1, last_error="LimitReached"), None))]
+    )
+    assert failed == 1
+
+
+def test_coin_balance_nested_inventory_strict():
+    """ネスト inventory は coin 枠のみ参照し、それ以外は None（不明）。"""
+    from hw_genie.commands.seers_game import _coin_balance_from_inventory
+    assert _coin_balance_from_inventory({"response": {"inventory": {"consumable": {"1": 5}}}}) is None
+    assert _coin_balance_from_inventory({"response": {"inventory": {"coin": {"2824001094": 50}}}}) == 50
+    assert _coin_balance_from_inventory({"response": {"inventory": {"coin": {"1": 999}}}}) == 0
