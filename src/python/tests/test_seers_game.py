@@ -229,6 +229,25 @@ def test_cmd_seers_game_failure_exit_1(monkeypatch, capsys):
     assert "Error" in capsys.readouterr().err
 
 
+def test_cmd_seers_game_played_with_failure_exit_1(monkeypatch, capsys):
+    import pytest
+
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    # ≥1 ゲーム消化後も games_failed>=1 は失敗（exit 1）。
+    _patch_seers_handler(
+        monkeypatch,
+        lambda *a, **k: SeersGameResult(
+            games_played=1, games_failed=1, last_error="LimitReached"
+        ),
+    )
+    with pytest.raises(SystemExit) as e:
+        main_mod.cmd_seers_game(_seers_handler_args())
+    assert e.value.code == 1
+    assert "Error" in capsys.readouterr().err
+
+
 def test_cmd_seers_game_depletion_zero_games_exit_0(monkeypatch, capsys):
     import hw_genie.main as main_mod
     from hw_genie.commands.seers_game import SeersGameResult

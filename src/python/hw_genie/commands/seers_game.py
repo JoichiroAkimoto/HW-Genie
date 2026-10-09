@@ -3,7 +3,8 @@
 1 ゲーム = ``eventPicker_startGame`` → ``eventPicker_playRound`` ×4 →
 ``eventPicker_finishGame``。引いたカードの報酬はランダムで何が出ても
 気にしないため、毎ラウンド ``pick``（デフォルト 2）を引き続ける。
-``Seer's Coin`` がなくなり ``startGame`` がエラーを返したら正常終了する。
+``Seer's Coin`` がなくなり ``startGame`` が ``NotEnough`` を返したら正常終了する
+（``is_clean_depletion`` 判定。``NotEnough`` 以外の ERROR は失敗扱い）。
 
 ``stashClient`` は Spec で不要と明記のため送らない。``quests`` 同梱は
 無視する（live evidence なし、docs-only）。
@@ -242,11 +243,12 @@ def _start_new_game(
     """``startGame`` → 残り 4 play + finish の新規 1 ゲームを実行する。
 
     ``run_single_game`` と ``run_seers_game`` の新規ゲームループで共有する
-    単一プロトコル実装。``startGame`` の ERROR は ``count_start_error`` が
-    True（``run_single_game``）なら ``games_failed`` 加算 + ``last_error``
-    記録で False を返す。False（``run_seers_game`` の周回ループ）の場合は
-    コイン枯渇等の正常停止として ``last_error`` のみ記録し ``games_failed``
-    は加算せず False を返す（呼び出し側が break する）。成功時は
+    単一プロトコル実装。``startGame`` の ERROR は ``last_error`` に記録し
+    False を返す。``games_failed`` の加算は ``count_start_error`` が True
+    （``run_single_game``）の場合のみ行い、False（``run_seers_game`` の周回
+    ループ）の場合は加算しない。周回ループ側の呼び出し元が戻り値 False を
+    受けた後に ``is_clean_depletion``（NotEnough のみ正常）で枯渇か失敗か
+    を判定し、break / 失敗計上を決める。成功時は
     ``_play_remaining_and_finish`` に委譲し、その戻り値を返す。
     ``UNEXPECTED`` / ``ValueError`` / HWAuthError はそのまま送出する。
     """

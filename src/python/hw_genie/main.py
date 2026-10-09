@@ -525,7 +525,7 @@ def cmd_seers_game(args):
     # 枯渇以外の last_error が残った場合（getState 読み取り失敗等）は失敗として exit 1。
     from hw_genie.commands.seers_game import is_clean_depletion
 
-    if (
+    if result.games_failed or (
         result.games_played == 0
         and result.last_error
         and not is_clean_depletion(result.last_error)
