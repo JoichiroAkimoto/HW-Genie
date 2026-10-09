@@ -209,6 +209,14 @@ Seer's Game（開始→カード選択×4→終了）の状態確認・プレイ
 *   **Tips**: `state` は `new_game`（待機中）/ `active`（round 途中）。
     `state == "active"` の中断ゲームがあればツールは新規開始せず `playRound` から再開する。
     `collected_rewards` は未収集時に `[]`（空リスト）で現れることがある。
+    残高0のアイテムは `inventoryGet` の `coin` 枠からキー自体が省略される
+    （枯渇後は `2824001094` が消滅する。ツールは枠あり・ID なしを 0 枚とみなす）。
+*   **Live 検証済み (2026-10-09)**: 開始直後の `active (round 1, size 3)` を実機で観測。
+    枯渇時の `startGame` 失敗は `error_name: NotEnough`。残高0からの開始で
+    無料分1ゲームが完走しコイン残高不変を確認（無料分はコインを消費しない）。
+    無料枠の有無は `getState` / `getInfo` に現れない（枠あり・使用済みで応答同一）。
+    枠判定は試行のみ: コイン≥25枚なら開始可能、不足時は `startGame` を試し
+    `NotEnough` なら終了する。
 
 #### eventPicker_startGame
 *   **Request Args**: `{}`

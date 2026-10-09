@@ -437,3 +437,24 @@ def test_multi_seers_game_invalid_pick_exit_2_no_api_call(monkeypatch, capsys):
     assert e.value.code == 2
     assert called == []
     assert "--pick" in capsys.readouterr().err
+
+
+def test_coin_balance_zero_when_id_missing_from_coin():
+    """残高0のアイテムは API がキーを省略するため、coin 枠自体があれば 0 とみなす。"""
+    from hw_genie.commands.seers_game import _coin_balance_from_inventory
+    assert _coin_balance_from_inventory({"response": {"coin": {"1": 999}}}) == 0
+    assert _coin_balance_from_inventory({"response": {}}) is None
+    assert _coin_balance_from_inventory({"response": {"coin": {"2824001094": 0}}}) == 0
+    assert _coin_balance_from_inventory({"response": {"coin": {"2824001094": 125}}}) == 125
+
+
+def test_dry_run_shows_zero_balance(mock_client, mock_sleep, capsys):
+    """残高0でも dry-run で Balance: 0 と表示する。"""
+    from hw_genie.commands.seers_game import run_seers_game
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res_from(_event_envelope(_NEW_GAME_EVENT)),
+        _res_from({"results": [{"ident": "body", "result": {"response": {"coin": {"1": 999}}}}]}),
+    ]
+    run_seers_game(client, dry_run=True)
+    assert "Seer's Coin balance: 0 (~0 game(s))" in capsys.readouterr().out

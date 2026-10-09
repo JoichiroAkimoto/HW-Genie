@@ -268,6 +268,9 @@ def _coin_balance_from_inventory(detail: Any) -> int | None:
     ``response.coin``（他コマンドの live evidence にある形状）と、
     ネストした ``response.inventory.coin``（旧形状）。どちらも試す。
     ``str`` / ``int`` の coin ID キー両対応（JSON はキーが文字列化される）。
+    残高0のアイテムは API がキーを省略するため、``coin`` 枠自体が存在して
+    ID キーが無い場合は 0 とみなす（live 確認: 枯渇後はキーが消滅する）。
+    ``coin`` 枠自体が無い場合のみ None（不明）を返す。
     """
     try:
         if not isinstance(detail, dict):
@@ -280,6 +283,7 @@ def _coin_balance_from_inventory(detail: Any) -> int | None:
             for key in (str(SEERS_COIN_ID), SEERS_COIN_ID):
                 if key in coins:
                     return _safe_int(coins[key])
+            return 0
         inventory = response.get("inventory")
         if isinstance(inventory, dict):
             coins = inventory.get("coin", inventory)
@@ -287,6 +291,7 @@ def _coin_balance_from_inventory(detail: Any) -> int | None:
                 for key in (str(SEERS_COIN_ID), SEERS_COIN_ID):
                     if key in coins:
                         return _safe_int(coins[key])
+                return 0
     except Exception:  # noqa: BLE001
         return None
     return None
