@@ -216,6 +216,7 @@ def test_cmd_seers_game_failure_exit_1(monkeypatch, capsys):
     from hw_genie.commands.seers_game import SeersGameResult
 
     # 1 ゲームも消化できず last_error が残った場合は失敗（exit 1）。
+    # ただし枯渇 (NotEnough) は正常終了のため別テストで確認する。
     _patch_seers_handler(
         monkeypatch,
         lambda *a, **k: SeersGameResult(
@@ -226,6 +227,35 @@ def test_cmd_seers_game_failure_exit_1(monkeypatch, capsys):
         main_mod.cmd_seers_game(_seers_handler_args())
     assert e.value.code == 1
     assert "Error" in capsys.readouterr().err
+
+
+def test_cmd_seers_game_depletion_zero_games_exit_0(monkeypatch, capsys):
+    import hw_genie.main as main_mod
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    # 枯渇 (NotEnough) は 0 ゲームでも正常終了（exit 0、失敗にしない）。
+    _patch_seers_handler(
+        monkeypatch,
+        lambda *a, **k: SeersGameResult(games_played=0, last_error="NotEnough"),
+    )
+    main_mod.cmd_seers_game(_seers_handler_args())
+    assert "Error" not in capsys.readouterr().err
+
+
+def test_summarize_seers_game_depletion_zero_games_ok(capsys):
+    from hw_genie.runner import summarize_seers_game
+    from hw_genie.commands.seers_game import SeersGameResult
+
+    # 枯渇のみのアカウントは失敗に数えない。
+    failed = summarize_seers_game(
+        [("Alice", (SeersGameResult(games_played=0, last_error="NotEnough"), None))]
+    )
+    assert failed == 0
+    # 枯渇以外の error は従来通り失敗。
+    failed = summarize_seers_game(
+        [("Alice", (SeersGameResult(games_played=0, last_error="boom"), None))]
+    )
+    assert failed == 1
 
 
 def test_cmd_seers_game_read_error_exit_1(monkeypatch, capsys):

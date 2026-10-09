@@ -521,10 +521,15 @@ def cmd_seers_game(args):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     # exit-code 判定（cmd_asgard_shop の `if result.error: sys.exit(1)` に対応）。
-    # ≥1 ゲーム消化後のコイン枯渇 break（last_error 付き）は正常終了 exit 0。
-    # 1 ゲームも消化できず last_error が残った場合（初回 startGame のコイン不足、
-    # getState 読み取り失敗等）は失敗として exit 1。
-    if result.games_played == 0 and result.last_error:
+    # 枯渇 break（NotEnough。0 ゲームでも含む）は正常終了 exit 0。
+    # 枯渇以外の last_error が残った場合（getState 読み取り失敗等）は失敗として exit 1。
+    from hw_genie.commands.seers_game import is_clean_depletion
+
+    if (
+        result.games_played == 0
+        and result.last_error
+        and not is_clean_depletion(result.last_error)
+    ):
         print(f"Error: Seer's Game failed: {result.last_error}", file=sys.stderr)
         sys.exit(1)
 
@@ -1255,12 +1260,16 @@ def _run_log_account_failure(
             )
         return "asgard-shop result unavailable"
     if mode == "seers-game":
-        from hw_genie.commands.seers_game import SeersGameResult
+        from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
 
         if isinstance(result, SeersGameResult):
             if result.games_failed:
                 return f"{result.games_failed} seers-game(s) failed"
-            if result.games_played == 0 and result.last_error:
+            if (
+                result.games_played == 0
+                and result.last_error
+                and not is_clean_depletion(result.last_error)
+            ):
                 return f"seers-game failed: {result.last_error}"
             return None
         return "seers-game result unavailable"

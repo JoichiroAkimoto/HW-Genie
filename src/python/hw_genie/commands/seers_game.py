@@ -23,6 +23,14 @@ GAME_COST = 25
 ROUNDS_PER_GAME = 4
 # Seer's Coin の coin ID（inventoryGet の coin 枠）。
 SEERS_COIN_ID: int = 2824001094
+# 枯渇（正常終了）として扱う startGame 失敗の error_name 集合。
+# live 検証済み (2026-10-09): コイン不足・無料分なしの開始失敗は NotEnough。
+CLEAN_DEPLETION_ERRORS: frozenset = frozenset({"NotEnough"})
+
+
+def is_clean_depletion(error_name: str | None) -> bool:
+    """枯渇による正常停止かどうかを判定する（0 ゲームでも失敗にしない）。"""
+    return error_name in CLEAN_DEPLETION_ERRORS
 
 
 class SeersGameReadError(Exception):

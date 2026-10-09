@@ -915,13 +915,12 @@ def summarize_seers_game(
 
     Results come from :func:`seers_game_routine`: per account a
     ``SeersGameResult``. Accounts whose routine errored, whose result is
-    unavailable, that failed any game (``games_failed``), or that played
-    zero games with a recorded error (mirroring the single-command
-    ``seers-game`` exit-1 rule) count as failed; a clean coin-depletion
-    stop after ``>= 1`` game counts as ok. With ``dry_run=True`` the
+    unavailable, or that failed any game (``games_failed``) count as failed.
+    枯渇 (``NotEnough``) による停止は 0 ゲームでも正常扱いとし失敗に数えない
+    （単体 ``seers-game`` の exit-0 規則と同一）。With ``dry_run=True`` the
     footer says "planned" instead of "completed" since nothing was played.
     """
-    from hw_genie.commands.seers_game import SeersGameResult
+    from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
 
     ok = 0
     failed: list[str] = []
@@ -944,7 +943,11 @@ def summarize_seers_game(
                 failed.append(
                     f"{account} ({res.games_failed} game(s) failed)"
                 )
-            elif res.games_played == 0 and res.last_error:
+            elif (
+                res.games_played == 0
+                and res.last_error
+                and not is_clean_depletion(res.last_error)
+            ):
                 failed.append(f"{account} (failed: {res.last_error})")
             else:
                 ok += 1
