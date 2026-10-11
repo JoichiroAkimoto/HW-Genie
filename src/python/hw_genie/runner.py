@@ -16,10 +16,13 @@ import logging
 import re
 import threading
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence
 
-from hw_genie.core.client import HWClient, load_session_headers
+from hw_genie.core.client import HWAuthError, HWClient, load_session_headers
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import display_width, pad, rank_color, style
 
@@ -51,6 +54,60 @@ def list_account_aliases() -> list[str]:
     and hwda/hwsa execute accounts in the order they were registered.
     """
     return SessionManager.list_accounts()
+
+
+_MULTI_REQUIRED_HEADER_PREFIX = "x-auth-"
+
+
+def multi_headers_ready(headers: object) -> bool:
+    """True when stored headers exist and carry at least one ``x-auth-*`` key.
+
+    Presence gate only (not validity): the full contract lives in
+    ``auth_server.REQUIRED_HEADER_KEYS`` and expiry surfaces later as
+    :class:`HWAuthError` at the first API call (see :func:`run_for_account`).
+    Non-dict / empty-dict headers are never ready.
+    """
+    if not isinstance(headers, dict) or not headers:
+        return False
+    return any(str(k).lower().startswith(_MULTI_REQUIRED_HEADER_PREFIX) for k in headers)
+
+
+def preflight_multi_accounts(
+    accounts: Sequence[str] | Iterable[str] | None,
+) -> tuple[list[str], dict[str, tuple[object | None, BaseException | None]]]:
+    """Split ``accounts`` into ``(ready, prefailed)`` without any network I/O.
+
+    Only the presence of stored session headers (via
+    :func:`load_session_headers`) and of required ``x-auth-*`` keys is
+    checked; no API call is made, so no extra rate-limit cost or worker is
+    spent on accounts that cannot run. Missing accounts become failure
+    entries with the same message the per-account runner reports
+    (``Session not found for account '<acc>'.``) so summaries and run-logs
+    stay consistent. A stored-but-expired session (dead signature) is
+    *not* detectable here — expiry only surfaces at the first API call as
+    :class:`HWAuthError` (see :func:`run_for_account`).
+
+    Duplicate aliases collapse to first-seen order (dict result semantics);
+    callers should dedupe before spawning workers.
+    """
+    ready: list[str] = []
+    prefailed: dict[str, tuple[object | None, BaseException | None]] = {}
+    for acc in accounts or []:
+        if acc in ready or acc in prefailed:
+            continue
+        try:
+            headers = load_session_headers(acc)
+        except Exception as exc:  # noqa: BLE001 - unresolvable alias counts as missing
+            logger.warning("Preflight: cannot load session for '%s': %s", acc, type(exc).__name__)
+            headers = None
+        if multi_headers_ready(headers):
+            ready.append(acc)
+        else:
+            prefailed[acc] = (
+                None,
+                RuntimeError(f"Session not found for account '{acc}'."),
+            )
+    return ready, prefailed
 
 
 def resolve_max_parallel(
@@ -171,7 +228,7 @@ def run_for_account(
     other accounts running.
     """
     headers = load_session_headers(account)
-    if not headers:
+    if not multi_headers_ready(headers):
         err = RuntimeError(f"Session not found for account '{account}'.")
         logger.error("%s: %s", account, err)
         return account, None, err
@@ -180,6 +237,27 @@ def run_for_account(
         client = HWClient(headers)
         result = routine(client, account)
         return account, result, None
+    except HWAuthError as exc:
+        # Auth expiry surfaces only at the first API call (a stored session
+        # may look present but carry a dead signature). Reshape to one line
+        # (first line only; multi-line server detail is truncated deliberately
+        # so summaries/run-logs stay single-line) so the account, the cause
+        # and the remediation are visible at a glance; the type stays
+        # HWAuthError so handlers keep routing it.
+        first_line = str(exc).strip().splitlines()
+        detail = first_line[0].strip() if first_line and first_line[0].strip() else type(exc).__name__
+        reshaped = (
+            f"Session expired for '{account}': {detail}. "
+            "Re-sync via auth-server/curl, then retry"
+        )
+        logger.error("%s: %s", account, reshaped)
+        new_err = HWAuthError(reshaped)
+        # Preserve the original chain (handlers/logging can inspect cause).
+        try:
+            new_err.__cause__ = exc
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return account, None, new_err
     except Exception as exc:  # noqa: BLE001 - isolate per-account failures
         logger.error(
             "Account '%s' failed: %s\n%s",
@@ -418,6 +496,106 @@ def full_routine(
     return daily_routine(client, account, item_max_iterations=item_max_iterations)
 
 
+def _probe_host_label(auth_server_url: str) -> str:
+    """Host[:port] of ``auth_server_url`` without path/query (for warnings)."""
+    try:
+        parsed = urllib.parse.urlparse(auth_server_url or "")
+        if parsed.hostname:
+            port = f":{parsed.port}" if parsed.port else ""
+            return f"{parsed.hostname}{port}"
+    except Exception:  # pragma: no cover - defensive
+        pass
+    fallback = (auth_server_url or "").split("?", 1)[0].split("#", 1)[0].strip().rstrip("/")
+    if not fallback:
+        return "auth-server"
+    try:
+        reparsed = urllib.parse.urlparse(
+            fallback if "://" in fallback else f"http://{fallback}"
+        )
+        if reparsed.hostname:
+            try:
+                port = f":{reparsed.port}" if reparsed.port else ""
+            except ValueError:  # pragma: no cover - defensive (out-of-range port)
+                port = ""
+            return f"{reparsed.hostname}{port}"
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if "://" in fallback:
+        fallback = fallback.split("://", 1)[1]
+    if "@" in fallback:  # strip userinfo like _probe_health_url rebuilds netloc
+        fallback = fallback.rsplit("@", 1)[1]
+    return fallback.split("/", 1)[0].strip() or "auth-server"
+
+
+def _probe_health_url(auth_server_url: str) -> str:
+    """Build the ``/health`` probe URL from ``auth_server_url``.
+
+    Only scheme + host[:port] + path survive: any query/fragment (which
+    may carry secrets such as ``?token=...``) is dropped, and userinfo is
+    stripped by rebuilding the netloc from hostname/port. A path that
+    already ends in ``/health`` is kept as-is (no doubling).
+    """
+    base = (auth_server_url or "").strip()
+    if not base:
+        return "/health"
+    try:
+        parsed = urllib.parse.urlparse(base if "://" in base else f"http://{base}")
+    except Exception:  # pragma: no cover - defensive
+        parsed = None
+    if parsed is None or not parsed.hostname:
+        clean = base.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        if clean.endswith("/health"):
+            return clean
+        return clean + "/health"
+    try:
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError:  # pragma: no cover - defensive (out-of-range port)
+        port = ""
+    path = (parsed.path or "").rstrip("/")
+    health_path = path if path.endswith("/health") else path + "/health"
+    return urllib.parse.urlunparse(
+        (parsed.scheme or "http", f"{parsed.hostname}{port}", health_path, "", "", "")
+    )
+
+
+def _warn_if_bridge_unreachable(auth_server_url: str) -> None:
+    """Probe the auth server once with a lightweight GET (warning only).
+
+    Called once per :func:`toe_routine` factory invocation (i.e. once per
+    ``multi toe`` run, not per account/worker) when the hybrid engine is
+    selected. Runs synchronously with a 2s timeout *before* workers/signal
+    handlers start, so worst case it delays startup by ~2s; it never aborts
+    the run — any failure only prints a warning and hybrid battles still
+    start, falling back to estimate-only per attempt if the bridge is down.
+    ``/health`` proves connectivity only (the server is reachable), not that
+    a userscript job will succeed. An HTTP error response still proves the
+    server is up, so only connection-level failures warn. The warning names
+    the exception *type* (not its full text, which may embed URLs/queries).
+    """
+    url = _probe_health_url(auth_server_url)
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=2):
+            return
+    except Exception as exc:  # noqa: BLE001 - probe must never abort the run
+        try:
+            if isinstance(exc, urllib.error.HTTPError):
+                return
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            print(
+                "⚠️  auth-server unreachable at "
+                f"{_probe_host_label(auth_server_url)} ({type(exc).__name__}). "
+                "Hybrid battles will fall back to estimate-only per attempt; "
+                "ensure `hw-genie auth-server` is running and the browser has "
+                "the game open with the userscript active.",
+                flush=True,
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
 def toe_routine(
     engine: str = "hybrid",
     seeds_per_team: int = 10,
@@ -427,6 +605,7 @@ def toe_routine(
     end_on_loss: bool = True,
     bank_best_loss: bool = True,
     progress: str = "verbose",
+    probe_bridge: bool = True,
 ) -> Callable[[HWClient, str], object]:
     """Build a routine that clears the Titan Arena tier for any account.
 
@@ -446,6 +625,11 @@ def toe_routine(
     share one :class:`ToeProgressDashboard` so per-account status lines
     stay lock-guarded without affecting API parallelism or result order.
 
+    ``probe_bridge`` gates the one-shot startup ``/health`` probe (hybrid
+    only): ``cmd_multi`` passes ``False`` and probes explicitly *after*
+    preflight so an all-missing/empty run never blocks ~2s on a socket;
+    direct callers keep the default ``True`` (probe once at build time).
+
     Returns:
         A routine whose result per account is the tier summary dict
         returned by ``run_titan_arena_tier``.
@@ -455,6 +639,8 @@ def toe_routine(
 
     _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
     _dashboard = ToeProgressDashboard() if _mode == "line" else None
+    if engine == "hybrid" and probe_bridge:
+        _warn_if_bridge_unreachable(auth_server_url)
 
     def run(client: HWClient, account: str) -> object:
         headers = getattr(client, "headers", {}) or {}
@@ -1016,28 +1202,43 @@ def summarize_toe(
     """Print a per-account Titan Arena table and return the failed count.
 
     Results come from :func:`toe_routine`: per account the tier summary
-    dict from ``run_titan_arena_tier``. An account fails when its routine
-    errored (other than a cooperative user cancel), when the summary
-    carries real ``errors``, or when rivals were attempted but none was
-    won and the tier did not complete. A user-aborted account/tier
-    (``InterruptedError`` entry or ``interrupted=True`` summary without
-    real errors) counts as COMPLETE (ok): the interrupt marker itself in
-    ``errors`` never fails the account; only real bridge/API errors do.
-    A summary with ``remaining_rivals == 0`` means fully cleared and
-    counts as ok even without wins/completion flags; an empty
-    ``rival_results`` with no errors is idle (nothing to do) and also
-    counts as ok so cleared accounts don't page every cron run. Columns
-    show wins / attempted rivals / completed flag / final tier /
-    remaining rivals. Column widths use display width (emoji/CJK aware)
-    so rows never shift.
+    dict from ``run_titan_arena_tier``. Accounts land in three buckets:
+
+    * ``ok`` — completed (wins / cleared tier / idle with nothing to do);
+    * ``interrupted`` — stopped by a cooperative user cancel
+      (``InterruptedError`` entry or ``interrupted=True`` summary without
+      real ``errors``); shown with an explicit ``interrupted`` marker,
+      never counted as failed;
+    * ``failed`` — routine errored (other than a cooperative cancel), the
+      summary carries real ``errors``, or rivals were attempted but none
+      was won and the tier did not complete.
+
+    The interrupt marker itself in ``errors`` never fails the account;
+    only real bridge/API errors do. A summary with ``remaining_rivals
+    == 0`` means fully cleared and counts as ok even without
+    wins/completion flags; an empty ``rival_results`` with no errors is
+    idle (nothing to do) and also counts as ok so cleared accounts don't
+    page every cron run. Columns show wins / attempted rivals / completed
+    flag / final tier / remaining rivals. Interrupted accounts keep ``-``
+    in every numeric column (the ``Won`` column is never reused for text);
+    the ``⏸ Interrupted`` line is the explicit marker. The footer keeps
+    the legacy ``account(s) completed`` substring (``✅ N account(s)
+    completed, ⏸ M interrupted, ❌ K failed``) so existing grep/monitors
+    keep matching; only the middle ``interrupted`` segment is new.
+
+    Returns:
+        The number of *failed* accounts only (interrupted accounts are
+        excluded), so the exit-code contract (``0`` = no real failure) is
+        unchanged.
     """
     ok = 0
+    interrupted: list[str] = []
     failed: list[str] = []
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is not None and _is_toe_interrupt_exc(err):
             rows.append([account, "-", "-", "-", "-", "-"])
-            ok += 1
+            interrupted.append(account)
             continue
         if err is None and isinstance(res, dict):
             wins = sum(1 for r in res.get("rival_results", []) if r.get("win"))
@@ -1059,7 +1260,7 @@ def summarize_toe(
                 if real_errors:
                     failed.append(f"{account} ({len(real_errors)} error(s))")
                 else:
-                    ok += 1
+                    interrupted.append(account)
             elif real_errors:
                 failed.append(f"{account} ({len(real_errors)} error(s))")
             elif remaining == 0:
@@ -1094,10 +1295,12 @@ def summarize_toe(
         print(plain_header)
         for r in rows:
             print(" | ".join(_pad(c, widths[i]) for i, c in enumerate(r)))
+    if interrupted:
+        print(f"⏸ Interrupted ({len(interrupted)}): {', '.join(interrupted)}")
     if failed:
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
     print(rule)
-    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    print(f"✅ {ok} account(s) completed, ⏸ {len(interrupted)} interrupted, ❌ {len(failed)} failed.\n")
     return len(failed)
 
 
@@ -1111,6 +1314,11 @@ __all__ = [
     "ToeProgressDashboard",
     "sanitize_progress_log",
     "TOE_PROGRESS_THROTTLE_SECS",
+    "multi_headers_ready",
+    "preflight_multi_accounts",
+    "_is_toe_interrupt_exc",
+    "_is_toe_interrupt_entry",
+    "_toe_real_errors",
     "daily_routine",
     "full_routine",
     "quests_routine",

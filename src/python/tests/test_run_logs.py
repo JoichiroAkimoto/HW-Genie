@@ -185,9 +185,9 @@ def test_build_run_log_summary_quests_failure():
     }
     entries, error_summary = _build_run_log_summary("quests", results)
     assert entries == [
-        {"account": "Alice", "ok": False, "error": "1 quest(s) failed"},
-        {"account": "Ace", "ok": True, "error": None},
-        {"account": "Bug", "ok": False, "error": "auth failed"},
+        {"account": "Alice", "ok": False, "error": "1 quest(s) failed", "interrupted": False},
+        {"account": "Ace", "ok": True, "error": None, "interrupted": False},
+        {"account": "Bug", "ok": False, "error": "auth failed", "interrupted": False},
     ]
     assert error_summary == (
         "2 account(s) failed: Alice (1 quest(s) failed), Bug (auth failed)"
@@ -210,11 +210,13 @@ def test_build_run_log_summary_consumable_failure():
         "account": "Ace",
         "ok": False,
         "error": "1 consumable use(s) failed",
+        "interrupted": False,
     }
     assert entries[2] == {
         "account": "Bug",
         "ok": False,
         "error": "1 consumable use(s) failed",
+        "interrupted": False,
     }
     assert error_summary == (
         "2 account(s) failed: Ace (1 consumable use(s) failed), "
@@ -241,8 +243,8 @@ def test_build_run_log_summary_asgard_failure():
     results = {"Alice": (ok, None), "Ace": (fetch_err, None), "Bug": (purchase_err, None)}
     entries, error_summary = _build_run_log_summary("asgard-shop", results)
     assert entries[0]["ok"] is True
-    assert entries[1] == {"account": "Ace", "ok": False, "error": "shop fetch failed: fetch boom"}
-    assert entries[2] == {"account": "Bug", "ok": False, "error": "1 purchase error(s)"}
+    assert entries[1] == {"account": "Ace", "ok": False, "error": "shop fetch failed: fetch boom", "interrupted": False}
+    assert entries[2] == {"account": "Bug", "ok": False, "error": "1 purchase error(s)", "interrupted": False}
     assert error_summary == (
         "2 account(s) failed: Ace (shop fetch failed: fetch boom), "
         "Bug (1 purchase error(s))"
@@ -260,8 +262,8 @@ def test_build_run_log_summary_daily_status_unavailable():
     }
     entries, error_summary = _build_run_log_summary("daily", results)
     assert entries[0]["ok"] is True
-    assert entries[1] == {"account": "Ace", "ok": False, "error": "status unavailable"}
-    assert entries[2] == {"account": "Bug", "ok": False, "error": "status unavailable"}
+    assert entries[1] == {"account": "Ace", "ok": False, "error": "status unavailable", "interrupted": False}
+    assert entries[2] == {"account": "Bug", "ok": False, "error": "status unavailable", "interrupted": False}
     assert error_summary == (
         "2 account(s) failed: Ace (status unavailable), Bug (status unavailable)"
     )

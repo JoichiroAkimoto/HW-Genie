@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import sys
+import threading
 import time
 from typing import Any
 
@@ -264,6 +265,105 @@ MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
 # (canRaid=False) tiers do not use this counter: they stop after exactly 1
 # zero-win pass via the early return in the tier loop below.
 MAX_CONSECUTIVE_NO_PROGRESS_PASSES = 3
+
+# --- Lightweight bridge warnings (display only; battle logic untouched) ---
+# The userscript hint below prints once per process so multi-account runs do
+# not repeat it per worker/attempt; the Invalid-battle streak warns once per
+# account when a hybrid engine keeps getting server-rejected progress (bridge
+# likely disconnected and silently falling back to estimate-only). Polling
+# intervals and timeouts are intentionally left unchanged.
+_BRIDGE_WARN_LOCK = threading.Lock()
+_BRIDGE_USERSCRIPT_HINT_SHOWN = False
+# Per-account consecutive "Invalid battle" count / warned set. Process-wide
+# state is only an approximation under multi-account parallelism: workers
+# interleave, so counts are keyed by account label to avoid one account's
+# streak tripping (or resetting) another's. Labels come from
+# ``run_titan_arena(..., account_label=...)``; unlabelled calls share the ""
+# bucket. ``estimate_only`` / ``abandoned`` outcomes never reach
+# :func:`_track_invalid_battle` (no EndBattle was sent) and explicitly reset
+# their account's streak via :func:`_reset_invalid_battle` so a planned
+# non-submit never inherits a stale count.
+_INVALID_BATTLE_STREAKS: dict[str, int] = {}
+_INVALID_BATTLE_WARNED_ACCOUNTS: set[str] = set()
+# Legacy process-wide aliases kept for backward-compatible tests/callers:
+# they are the "" (unlabelled) bucket itself; labelled accounts use the dicts.
+_INVALID_BATTLE_STREAK = 0
+_INVALID_BATTLE_WARNED = False
+INVALID_BATTLE_STREAK_WARN_AT = 3
+
+
+def _warn_userscript_hint_once() -> None:
+    """Print the userscript setup hint only for the first bridge failure."""
+    global _BRIDGE_USERSCRIPT_HINT_SHOWN
+    with _BRIDGE_WARN_LOCK:
+        if _BRIDGE_USERSCRIPT_HINT_SHOWN:
+            return
+        _BRIDGE_USERSCRIPT_HINT_SHOWN = True
+    print(
+        f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser has the game open with the userscript active (any game page works; the Titan Arena screen is not required). Falling back to estimate-only.",
+        flush=True,
+    )
+
+
+def _reset_invalid_battle(account: str | None = None) -> None:
+    """Clear one account's Invalid-battle streak (planned non-submit)."""
+    global _INVALID_BATTLE_STREAK
+    key = str(account or "")
+    with _BRIDGE_WARN_LOCK:
+        if key == "":
+            _INVALID_BATTLE_STREAK = 0
+        else:
+            _INVALID_BATTLE_STREAKS.pop(key, None)
+
+
+def _track_invalid_battle(
+    outcome: dict[str, Any], engine: Any, account: str | None = None
+) -> None:
+    """Warn once per account when a hybrid engine keeps hitting ``Invalid battle``.
+
+    The server re-simulates estimate-only progress, so consecutive
+    rejections under a bridge engine mean the bridge is likely
+    disconnected (results silently unverified). Pure display logic:
+    counters and prints only, no polling/timeout changes. Streaks are
+    keyed by ``account`` (see module comment); callers that omit it share
+    the "" bucket (the legacy ``_INVALID_BATTLE_STREAK`` globals).
+    """
+    global _INVALID_BATTLE_STREAK, _INVALID_BATTLE_WARNED
+    if not isinstance(engine, JsBridgeBattleEngine):
+        return
+    key = str(account or "")
+    if isinstance(outcome, dict) and outcome.get("end_error") == "Invalid battle":
+        with _BRIDGE_WARN_LOCK:
+            if key == "":
+                _INVALID_BATTLE_STREAK += 1
+                streak = _INVALID_BATTLE_STREAK
+                already_warned = _INVALID_BATTLE_WARNED
+                if streak >= INVALID_BATTLE_STREAK_WARN_AT and not already_warned:
+                    _INVALID_BATTLE_WARNED = True
+                else:
+                    return
+            else:
+                streak = _INVALID_BATTLE_STREAKS.get(key, 0) + 1
+                _INVALID_BATTLE_STREAKS[key] = streak
+                already_warned = key in _INVALID_BATTLE_WARNED_ACCOUNTS
+                if streak >= INVALID_BATTLE_STREAK_WARN_AT and not already_warned:
+                    _INVALID_BATTLE_WARNED_ACCOUNTS.add(key)
+                else:
+                    return
+        print(
+            f"{Emojis.WARNING}Invalid battle x{streak} with the hybrid engine: "
+            "the bridge may be disconnected (progress falls back to "
+            "estimate-only and the server rejects it). Ensure "
+            "`hw-genie auth-server` is running with the userscript active, "
+            "then re-run.",
+            flush=True,
+        )
+        return
+    with _BRIDGE_WARN_LOCK:
+        if key == "":
+            _INVALID_BATTLE_STREAK = 0
+        else:
+            _INVALID_BATTLE_STREAKS.pop(key, None)
 
 
 def _is_bridge_timeout(res: dict[str, Any]) -> bool:
@@ -550,10 +650,7 @@ def run_titan_arena(
                 flush=True,
             )
         else:
-            print(
-                f"{Emojis.INFO}Hint: ensure `hw-genie auth-server` is running and the browser has the game open with the userscript active (any game page works; the Titan Arena screen is not required). Falling back to estimate-only.",
-                flush=True,
-            )
+            _warn_userscript_hint_once()
         # Return estimate-only style so the caller can decide; do not call EndBattle with invalid progress.
         # bridge_timeout is the structured signal for _is_bridge_timeout (the
         # message-substring check there is only a legacy fallback).
@@ -569,13 +666,17 @@ def run_titan_arena(
     _vprint(progress, f"{Emojis.STEP}Engine: win={est.win} stars={est.stars} ({type(engine).__name__})")
     if estimate_only:
         _vprint(progress, f"{Emojis.INFO}Estimate-only: not calling titanArenaEndBattle.")
+        _reset_invalid_battle(account_label)
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "estimate_only": True}
 
     if not est.win and not end_on_loss:
         _vprint(progress, f"{Emojis.INFO}Loss — abandoning battle without EndBattle (no score banking).")
+        _reset_invalid_battle(account_label)
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "abandoned": True}
 
-    return _end_battle(client, rival_id_str, est, progress)
+    outcome = _end_battle(client, rival_id_str, est, progress)
+    _track_invalid_battle(outcome, engine, account_label)
+    return outcome
 
 
 def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: str = "verbose") -> dict[str, Any]:
