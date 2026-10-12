@@ -15,6 +15,23 @@ from hw_genie.runner import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_bridge_probe(monkeypatch):
+    """toe開始時プローブの実ソケット踏みを封じる（hermetic化）。
+
+    成功スタブなので警告も出ず即時復帰する。hybrid のまま検証すること
+    （engine=estimate への逃げは不可）。
+    """
+    import contextlib
+    import io
+    import urllib.request
+
+    def _ok(req, timeout=None):
+        return contextlib.nullcontext(io.BytesIO(b"ok"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _ok)
+
+
 @pytest.fixture
 def fake_accounts(monkeypatch):
     accounts = ["alpha", "beta", "gamma"]
@@ -22,6 +39,24 @@ def fake_accounts(monkeypatch):
         "hw_genie.runner.SessionManager.list_accounts", lambda: list(accounts)
     )
     return accounts
+
+
+@pytest.fixture
+def bypass_multi_preflight(monkeypatch):
+    """旧cmd_multiテスト用の明示的なpreflight迂回.
+
+    DBセッションを持たない仮アカウント名で ``cmd_multi`` を駆動する
+    旧テストが使う。各テスト側で ``@pytest.mark.usefixtures`` により
+    明示要求すること（autouse＋テスト名sniffingはしない）。
+    """
+    import hw_genie.main as _main
+
+    if hasattr(_main, "_preflight_multi_accounts"):
+        monkeypatch.setattr(
+            _main,
+            "_preflight_multi_accounts",
+            lambda accounts: (list(dict.fromkeys(accounts or [])), {}),
+        )
 
 
 def test_resolve_max_parallel_unbounded():
@@ -199,6 +234,7 @@ def test_summarize_heading_width_matches_table(capsys, monkeypatch):
     assert display_width(header_line) == rule_width
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_dispatch_daily(monkeypatch):
     from hw_genie import main
 
@@ -227,6 +263,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
     assert captured["max_parallel"] == 2
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_default_all_accounts(monkeypatch):
     from hw_genie import main
 
@@ -380,6 +417,7 @@ def test_summarize_quests_dry_run_uses_planned(capsys):
     assert "completed" not in out
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_quests_success_exits_zero(monkeypatch):
     """multi quests with no failed quests exits 0."""
     from hw_genie import main
@@ -391,6 +429,7 @@ def test_cmd_multi_quests_success_exits_zero(monkeypatch):
     main.cmd_multi(args)  # must not raise SystemExit
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_dry_run_rejected_outside_quests(monkeypatch):
     """--dry-run with daily/full is rejected: those modes always execute."""
     from hw_genie import main
@@ -402,6 +441,7 @@ def test_cmd_multi_dry_run_rejected_outside_quests(monkeypatch):
         assert exc.value.code == 2
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
     """multi quests routes to quests_routine + summarize_quests and exits 1."""
     from hw_genie import main
@@ -424,6 +464,7 @@ def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
     assert callable(captured["routine"])
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_records_run_log_ok(monkeypatch):
     """cmd_multi は成功時に status=ok / error_summary=None で run_logs に記録する。"""
     from hw_genie import main
@@ -451,11 +492,12 @@ def test_cmd_multi_records_run_log_ok(monkeypatch):
     assert records["mode"] == "daily"
     assert records["status"] == "ok"
     assert records["exit_code"] == 0
-    assert records["accounts"] == [{"account": "a", "ok": True, "error": None}]
+    assert records["accounts"] == [{"account": "a", "ok": True, "error": None, "interrupted": False}]
     assert records["error_summary"] is None
     assert "progress line" in records["log_text"]
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_records_run_log_business_failure(monkeypatch):
     """quests の失敗は例外なしでも failed として per-account に記録される。"""
     from hw_genie import main
@@ -483,11 +525,12 @@ def test_cmd_multi_records_run_log_business_failure(monkeypatch):
     assert records["status"] == "failed"
     assert records["exit_code"] == 1
     assert records["accounts"] == [
-        {"account": "a", "ok": False, "error": "1 quest(s) failed"}
+        {"account": "a", "ok": False, "error": "1 quest(s) failed", "interrupted": False}
     ]
     assert records["error_summary"] == "1 account(s) failed: a (1 quest(s) failed)"
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_records_run_log_on_exception(monkeypatch):
     """run_all_accounts が例外を投げたら failed で記録し、例外は再送出される。"""
     from hw_genie import main
@@ -514,6 +557,7 @@ def test_cmd_multi_records_run_log_on_exception(monkeypatch):
     assert "Traceback" in records["log_text"]
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_records_run_log_on_interrupt(monkeypatch):
     """KeyboardInterrupt は exit_code=130 で failed 記録され、再送出される。"""
     from hw_genie import main
@@ -538,6 +582,7 @@ def test_cmd_multi_records_run_log_on_interrupt(monkeypatch):
     assert records["exit_code"] == 130
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
     """--dry-run is forwarded to quests_routine (getattr keeps old args safe)."""
 
@@ -564,6 +609,7 @@ def test_cmd_multi_quests_reads_dry_run_flag(monkeypatch):
     assert captured["dry_run"] is True
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_quests_dry_run_runs_sequentially(monkeypatch):
     """multi quests --dry-run runs accounts sequentially to keep the plan order readable."""
     from hw_genie import main
@@ -794,6 +840,7 @@ def test_full_routine_runs_hero_raid_twice(monkeypatch):
     assert hero_calls[1][0] == HERO_MISSION_IDS
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_limits_to_named_account(monkeypatch):
     """`hw-genie multi daily account1` forwards exactly that account (6a)."""
     from hw_genie import main
@@ -1348,6 +1395,7 @@ def test_cmd_daily_passes_iterations(monkeypatch):
     assert captured["account_alias"] == "acc"
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_daily_threads_iterations(monkeypatch):
     from hw_genie import main
     from hw_genie import runner
@@ -1437,6 +1485,7 @@ def test_run_log_toe_empty_without_errors_is_ok():
     assert _run_log_account_failure("toe", with_err, None) is not None
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_passes_parallel_through(monkeypatch):
     """multi toe honors --parallel like the other modes (no forced sequential)."""
     from hw_genie import main
@@ -1460,6 +1509,7 @@ def test_cmd_multi_toe_passes_parallel_through(monkeypatch):
     assert captured["max_parallel"] == 4
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_parallel_defaults_to_env(monkeypatch):
     """multi toe without --parallel passes None so HW_MAX_PARALLEL applies downstream."""
     from hw_genie import main
@@ -1482,6 +1532,7 @@ def test_cmd_multi_toe_parallel_defaults_to_env(monkeypatch):
     assert captured["max_parallel"] is None
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
     """multi toe --max-attempts reaches toe_routine as max_total_attempts."""
     from hw_genie import main
@@ -1527,6 +1578,7 @@ def test_toe_routine_threads_max_total_attempts(monkeypatch):
     assert seen["cap"] == 7
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_env_parallel_resolved_downstream(monkeypatch):
     """HW_MAX_PARALLEL applies to multi toe via resolve_max_parallel."""
     from hw_genie.runner import resolve_max_parallel
@@ -1563,6 +1615,7 @@ def test_toe_routine_threads_auth_server_url(monkeypatch):
     assert seen == {"url": "http://127.0.0.1:9999", "user": "99"}
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
     """multi toe --auth-server-url reaches toe_routine."""
     from hw_genie import main
@@ -1594,6 +1647,7 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
     assert captured["url"] == "http://127.0.0.1:9999"
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_failed_logging_does_not_mask_original_error(monkeypatch, capsys):
     """記録自体の失敗（2回目の Ctrl+C 等）が元のエラーを隠さない。"""
     from hw_genie import main
@@ -1809,6 +1863,7 @@ def test_run_all_accounts_cancels_pending_futures(monkeypatch):
         runner.reset_cancel()
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_sigint_first_cooperative_second_forces(monkeypatch):
     """1st Ctrl+C is cooperative (KI); 2nd forces SystemExit(130), restoring handler."""
     import signal
@@ -1856,6 +1911,7 @@ def test_cmd_multi_sigint_first_cooperative_second_forces(monkeypatch):
         runner.reset_cancel()
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_finally_restores_dfl_when_no_orig(monkeypatch):
     """Non-main-thread / no-signal edge: never leave the custom handler installed."""
     import signal
@@ -1888,6 +1944,7 @@ def test_cmd_multi_finally_restores_dfl_when_no_orig(monkeypatch):
         runner.reset_cancel()
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_signal_install_failure_still_runs(monkeypatch):
     """signal.signal raising (non-main thread) must not break the run."""
     import signal
@@ -1911,6 +1968,7 @@ def test_cmd_multi_signal_install_failure_still_runs(monkeypatch):
         runner.reset_cancel()
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_interrupted_log_failure_still_exits_130(monkeypatch, capsys):
     """2nd Ctrl+C during interrupted-path DB write cannot mask exit 130."""
     import pytest
@@ -1947,7 +2005,8 @@ def test_summarize_toe_interrupted_error_counts_ok(capsys):
 
     assert summarize_toe([("a", (None, InterruptedError("interrupted by user")))]) == 0
     out = capsys.readouterr().out
-    assert "1 account(s) completed, ❌ 0 failed." in out
+    assert "⏸ 1 interrupted, ❌ 0 failed" in out
+    assert "interrupted" in out
     assert "a" in out
 
 
@@ -1966,7 +2025,7 @@ def test_summarize_toe_interrupted_flag_counts_ok(capsys):
     }
     assert summarize_toe([("a", (summary, None))]) == 0
     out = capsys.readouterr().out
-    assert "1 account(s) completed, ❌ 0 failed." in out
+    assert "⏸ 1 interrupted, ❌ 0 failed" in out
 
 
 def test_summarize_toe_interrupted_with_real_errors_still_fails(capsys):
@@ -1997,7 +2056,7 @@ def test_run_log_toe_interrupted_error_counts_ok():
 
     assert _run_log_account_failure("toe", None, InterruptedError("interrupted by user")) is None
     entries, summary = _build_run_log_summary("toe", {"a": (None, InterruptedError("interrupted by user"))})
-    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert entries == [{"account": "a", "ok": True, "error": None, "interrupted": True}]
     assert summary is None
 
 
@@ -2014,7 +2073,7 @@ def test_run_log_toe_interrupted_flag_counts_ok():
     }
     assert _run_log_account_failure("toe", summary, None) is None
     entries, err_summary = _build_run_log_summary("toe", {"a": (summary, None)})
-    assert entries == [{"account": "a", "ok": True, "error": None}]
+    assert entries == [{"account": "a", "ok": True, "error": None, "interrupted": True}]
     assert err_summary is None
 
 
@@ -2039,6 +2098,7 @@ def test_run_log_toe_interrupted_with_real_errors_still_fails():
     assert err_summary is not None and "a" in err_summary
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_pure_interrupt_exits_zero(monkeypatch):
     """Cooperative cancel with no real failures is a clean complete (exit 0)."""
     from hw_genie import main, runner
@@ -2063,12 +2123,13 @@ def test_cmd_multi_toe_pure_interrupt_exits_zero(monkeypatch):
         main.cmd_multi(args)  # must not raise SystemExit
         assert records["status"] == "ok"
         assert records["exit_code"] == 0
-        assert records["accounts"] == [{"account": "a", "ok": True, "error": None}]
+        assert records["accounts"] == [{"account": "a", "ok": True, "error": None, "interrupted": True}]
         assert records["error_summary"] is None
     finally:
         runner.reset_cancel()
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_interrupt_with_real_failures_exits_1(monkeypatch):
     """Cancel with real failures alongside still exits 1 (not 130)."""
     import pytest
@@ -2224,6 +2285,7 @@ def test_cmd_toe_run_forwards_progress(mocker):
     assert mock_run.call_args.kwargs.get("progress") == "line"
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_forwards_progress(monkeypatch):
     """multi toe threads --progress through to toe_routine."""
     from hw_genie import main
@@ -2335,6 +2397,7 @@ def test_sanitize_progress_log_collapses_carriage_returns():
     assert sanitize_progress_log("\r[alpha] rival -1 [2/4] wins 1") == "[alpha] rival -1 [2/4] wins 1"
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_stored_log_contains_no_cr(monkeypatch):
     """multi run-log text is sanitized even when workers emit \\r updates."""
     from hw_genie import main
@@ -2405,6 +2468,7 @@ def test_toe_routine_defaults_seeds_10_and_end_on_loss(monkeypatch):
     assert seen == {"seeds": 3, "bank": False}
 
 
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_toe_threads_no_end_on_loss(monkeypatch):
     """multi toe --no-end-on-loss reaches toe_routine (default banking on)."""
     from hw_genie import main

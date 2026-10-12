@@ -19,6 +19,12 @@ from hw_genie.commands.hero_shopping import run_hero_shopping
 from hw_genie.commands.daily_raid import run_daily_raid
 from hw_genie.commands.auth_server import run_server
 from hw_genie.commands.titan_arena import AUTO_RIVAL_SCORE_THRESHOLD
+from hw_genie.runner import (
+    _is_toe_interrupt_exc,
+    _toe_real_errors,
+    multi_headers_ready as _runner_headers_ready,
+    preflight_multi_accounts as _runner_preflight,
+)
 from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
@@ -916,6 +922,61 @@ def cmd_db_check(args):
     sys.exit(1)
 
 
+def _multi_headers_ready(headers: object) -> bool:
+    """True when stored headers exist and carry at least one ``x-auth-*`` key.
+
+    Thin wrapper over :func:`runner.multi_headers_ready` (the canonical
+    implementation). Presence gate only: the full header contract lives in
+    ``auth_server.REQUIRED_HEADER_KEYS`` (all six keys required for bridge
+    calls); preflight deliberately accepts any single ``x-auth-*`` key so a
+    partially-synced session still reaches a worker and fails loudly at the
+    first API call instead of being misreported as missing. Non-dict /
+    empty-dict headers are never ready (boundary: ``None``, ``{}``,
+    ``{"content-type": ...}`` → ``False``).
+    """
+    return bool(_runner_headers_ready(headers))
+
+
+def _preflight_multi_accounts(
+    accounts: list[str],
+) -> tuple[list[str], dict[str, tuple[object | None, BaseException | None]]]:
+    """Split ``accounts`` into ``(ready, prefailed)`` without any network I/O.
+
+    Thin wrapper over :func:`runner.preflight_multi_accounts` (the
+    canonical implementation; kept here so existing ``main.*`` references
+    and patches keep working). See the runner docstring for the contract:
+    presence-only check of ``x-auth-*`` keys, missing accounts become
+    ``Session not found`` failures, and a stored-but-expired session is
+    *not* detectable here — expiry only surfaces at the first API call as
+    :class:`HWAuthError`.
+    """
+    return _runner_preflight(accounts)
+
+
+def _is_interrupted_account(mode: str, result: object | None, err: BaseException | None) -> bool:
+    """True when the account's outcome was shaped by a cooperative user cancel.
+
+    This is the run-log ``interrupted`` *flag* (per-entry marker), not the
+    ``summarize_toe`` display *bucket*: the flag is set for any
+    interrupt-shaped outcome (interrupt exception in toe mode, or a tier
+    summary with ``interrupted=True``), even when real errors ride along
+    (flag=True + ok=False). The summarize bucket instead shows
+    ``interrupted=True`` summaries *with* real errors as failed. A
+    non-toe ``InterruptedError`` (e.g. Ctrl+C during a daily run) is a real
+    failure there, so the exception branch is mode-gated to ``"toe"`` and
+    never leaks toe semantics into other modes.
+    """
+    if mode == "toe" and _is_toe_interrupt_exc(err):
+        return True
+    if (
+        mode == "toe"
+        and isinstance(result, dict)
+        and bool(result.get("interrupted"))
+    ):
+        return True
+    return False
+
+
 def cmd_multi(args):
     """Run a routine against all accounts inside a single process (parallel)."""
     import signal
@@ -948,6 +1009,17 @@ def cmd_multi(args):
         accounts = list(accounts)
     else:
         accounts = list_account_aliases()
+    # Duplicate aliases collapse to first-seen order (spec: no double-run of
+    # the same account; the results dict below could not hold two entries
+    # for one key anyway). Empty input is an explicit no-op: no worker is
+    # spawned and the run records an ok run-log with zero entries.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for acc in accounts:
+        if acc not in seen:
+            seen.add(acc)
+            deduped.append(acc)
+    accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
     if mode not in ("quests", "consumable", "seers-game") and dry_run:
@@ -988,6 +1060,9 @@ def cmd_multi(args):
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "toe":
         _max_attempts = getattr(args, "max_attempts", None)
+        # Factory probe is suppressed here: the explicit post-preflight
+        # probe below runs only when at least one account is ready, so an
+        # all-missing/empty run never blocks ~2s on a socket.
         routine = toe_routine(
             engine=getattr(args, "engine", "hybrid") or "hybrid",
             seeds_per_team=int(getattr(args, "seeds", 10) or 10),
@@ -997,6 +1072,7 @@ def cmd_multi(args):
             end_on_loss=_resolve_toe_end_on_loss(args),
             bank_best_loss=_resolve_toe_bank_best_loss(args),
             progress=_resolve_toe_progress(args),
+            probe_bridge=False,
         )
         # daily 等と同様 --parallel 未指定時は HW_MAX_PARALLEL 環境変数に
         # フォールバックする（run_all_accounts 内の resolve_max_parallel が
@@ -1009,6 +1085,34 @@ def cmd_multi(args):
             item_max_iterations=getattr(args, "iterations", 9999),
         )
         max_parallel = args.parallel
+
+    # Preflight (network-free): drop accounts without stored sessions before
+    # spawning workers; their failure entries merge into the results below so
+    # summaries and run-logs report them like any other failure. When every
+    # account is missing, no worker is spawned and the run records a failed
+    # run-log via the normal path (exit 1). Empty input skips everything and
+    # records ok with zero entries (explicit guard below).
+    ready_accounts, prefailed_results = _preflight_multi_accounts(accounts or [])
+
+    if mode == "toe":
+        # Post-preflight bridge probe (exactly once, warning-only, never
+        # aborts): runs only when at least one account is ready, so empty /
+        # all-missing runs skip the ~2s socket probe entirely.
+        try:
+            _toe_engine = getattr(args, "engine", "hybrid") or "hybrid"
+        except Exception:
+            _toe_engine = "hybrid"
+        if _toe_engine == "hybrid" and ready_accounts:
+            try:
+                _toe_url = getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765"
+            except Exception:
+                _toe_url = "http://127.0.0.1:8765"
+            try:
+                from hw_genie.runner import _warn_if_bridge_unreachable as _probe_bridge
+            except Exception:
+                _probe_bridge = None
+            if _probe_bridge is not None:
+                _probe_bridge(_toe_url)
 
     # 実行ログ（run_logs）記録: 実行中の出力をキャプチャし、終了時に 1 レコード
     # 書き込む（best-effort: DB 失敗でも実行自体は落とさない）。
@@ -1063,9 +1167,25 @@ def cmd_multi(args):
     try:
         try:
             with capture:
-                results = run_all_accounts(
-                    routine, accounts=accounts, max_parallel=max_parallel
-                )
+                results = dict(prefailed_results)
+                for acc, (_res, _err) in prefailed_results.items():
+                    print(
+                        f"⚠️  Session not found for account '{acc}'. "
+                        "Skipping (re-sync via auth-server/curl, then retry).",
+                        flush=True,
+                    )
+                if not accounts and not prefailed_results:
+                    # Explicit empty-accounts guard (message only): the
+                    # worker call below still runs with [] and returns {}
+                    # (run_all_accounts warns), so the run records ok/0.
+                    print("No accounts found; nothing to run.", flush=True)
+                if ready_accounts or not prefailed_results:
+                    worker_results = run_all_accounts(
+                        routine, accounts=ready_accounts, max_parallel=max_parallel
+                    )
+                    results.update(worker_results)
+                # Preserve the original (registration/request) account order.
+                results = {acc: results[acc] for acc in accounts if acc in results}
                 if mode == "quests":
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
@@ -1122,19 +1242,30 @@ def cmd_multi(args):
         # Cooperative 1st-press stop: the mid-run summary was already
         # printed inside the capture above. A user-aborted account/tier
         # counts as COMPLETE (ok); only real failures fail the run.
+        # error_summary covers real failures only — the interrupt itself is
+        # never merged into it (no "; interrupted by user" synthesis), and a
+        # cancel with zero real failures stays a clean complete. Real
+        # failures are derived from the structured (res, err) outcome via a
+        # single _build_run_log_summary call (entries with ok=False are
+        # exactly the real failures: toe interrupts already map to ok=True
+        # there); no error-text substring matching is used, and non-toe
+        # InterruptedError stays a real failure via the mode gate.
         try:
-            account_logs, error_summary = _build_run_log_summary(mode, results)
+            account_logs, _ = _build_run_log_summary(mode, results)
         except Exception:  # pragma: no cover - defensive
-            account_logs, error_summary = [], None
-        has_failures = bool(error_summary) or any(
-            isinstance(e, dict) and not e.get("ok", True) for e in account_logs
-        )
-        if has_failures:
+            account_logs, _ = [], None
+        real_failed_entries = [
+            e for e in account_logs
+            if isinstance(e, dict) and not e.get("ok", True)
+        ]
+        if real_failed_entries:
             status, exit_code = "failed", 1
-            if error_summary and "interrupt" not in error_summary.lower():
-                error_summary = f"{error_summary}; interrupted by user"
-            elif not error_summary:
-                error_summary = "interrupted by user"
+            error_summary = (
+                f"{len(real_failed_entries)} account(s) failed: "
+                + ", ".join(
+                    f"{e['account']} ({e.get('error')})" for e in real_failed_entries
+                )
+            )
         else:
             status, exit_code = "ok", 0
             error_summary = None
@@ -1179,38 +1310,9 @@ def cmd_multi(args):
         sys.exit(1)
 
 
-def _is_toe_interrupt_exc(err: BaseException | None) -> bool:
-    """True when ``err`` is a cooperative user cancel (counts as ok for toe)."""
-    if err is None:
-        return False
-    if isinstance(err, (InterruptedError, KeyboardInterrupt)):
-        return True
-    try:
-        return "interrupted by user" in str(err).lower()
-    except Exception:  # pragma: no cover - defensive
-        return False
-
-
-def _is_toe_interrupt_entry(entry: object) -> bool:
-    """True for the ``interrupted by user`` marker in a tier ``errors`` list."""
-    if isinstance(entry, dict):
-        if entry.get("stage") == "interrupted":
-            return True
-        try:
-            return "interrupted by user" in str(entry.get("message", "")).lower()
-        except Exception:  # pragma: no cover - defensive
-            return False
-    try:
-        return "interrupted by user" in str(entry).lower()
-    except Exception:  # pragma: no cover - defensive
-        return False
-
-
-def _toe_real_errors(errors: object) -> list:
-    """Return tier ``errors`` without the cooperative-interrupt marker."""
-    if not isinstance(errors, list):
-        return list(errors) if errors else []
-    return [e for e in errors if not _is_toe_interrupt_entry(e)]
+# NOTE: ``_is_toe_interrupt_exc`` / ``_is_toe_interrupt_entry`` /
+# ``_toe_real_errors`` live canonically in :mod:`hw_genie.runner` and are
+# imported at module top; ``main`` keeps no duplicate implementation.
 
 
 def _run_log_account_failure(
@@ -1306,16 +1408,26 @@ def _build_run_log_summary(
     An entry with ``ok: false`` carries the failure reason (exception message,
     quest/consumable/Asgard failure count, or unavailable status). Returns
     ``(entries, error_summary)``; ``error_summary`` is ``None`` when no account
-    failed.
+    failed. Each entry also carries an ``interrupted`` flag marking outcomes
+    shaped by a cooperative user cancel (no schema migration: it is just an
+    extra JSON key in the stored ``accounts`` payload). The ``N`` in ``"N
+    account(s) failed"`` counts entries with ``ok: false`` (one per failed
+    account in ``results`` order); ``ok: true`` entries — including clean
+    cooperative cancels — are excluded.
     """
     entries: list[dict] = []
     failed_accounts: list[str] = []
     for account, (res, err) in results.items():
         reason = _run_log_account_failure(mode, res, err)
+        interrupted = _is_interrupted_account(mode, res, err)
         if reason is None:
-            entries.append({"account": account, "ok": True, "error": None})
+            entries.append(
+                {"account": account, "ok": True, "error": None, "interrupted": interrupted}
+            )
             continue
-        entries.append({"account": account, "ok": False, "error": reason})
+        entries.append(
+            {"account": account, "ok": False, "error": reason, "interrupted": interrupted}
+        )
         failed_accounts.append(f"{account} ({reason})")
     error_summary = None
     if failed_accounts:
