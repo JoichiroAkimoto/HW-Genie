@@ -489,8 +489,11 @@ def full_routine(
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS, run_hero_shopping
 
     hero_res, _, _ = run_hero_raid(client, None, times=3, allow_recovery=True)
+    # NOTE: full は直下と daily_routine 経由（daily 内の run_hero_shopping 呼び出し）で
+    # Town 買いを2回行う。2回目は bought 判定で空振り想定（shopGetAll 1回分のコストのみ）。
+    # 重複購入は発生しないため動作は変えない。
     run_hero_shopping(
-        client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS
+        client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS, buy_town_shop_items=True
     )
     client.exchange_stones()
     return daily_routine(client, account, item_max_iterations=item_max_iterations)

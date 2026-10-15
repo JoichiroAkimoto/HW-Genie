@@ -61,9 +61,15 @@ def run_daily_raid(
                 client, item_payload, account=account, max_iterations=item_max_iterations
             )
 
-    # 3. Soul Shop Items (Non-Hero)
+    # 3. Soul Shop Items (Non-Hero) + Town Shop (slots 2,4,5,6) + Pet Potion
     client.sleep()
-    shop_res, shop_ex_info = run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True)
+    shop_res, shop_ex_info = run_hero_shopping(
+        client,
+        buy_soul_shop_items=True,
+        hero_shop_ids=None,
+        buy_pet_potions=True,
+        buy_town_shop_items=True,
+    )
 
     # Status
     status = client.fetch_player_status()

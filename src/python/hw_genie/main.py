@@ -443,7 +443,7 @@ def cmd_shop(args):
     client = HWClient(headers)
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
 
-    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
+    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS, buy_town_shop_items=True)
     client.exchange_stones()
 
 

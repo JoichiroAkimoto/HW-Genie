@@ -32,7 +32,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行（`--times` で回数指定、デフォルト 3）。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
 - **Quest Status**: 現在のクエスト（デイリー・週次・ギルド・メイン・イベント etc.）の状態をカテゴリ別に取得・表示。`--execute` でデイリーの自動完了も可能（実行可否はアカウントごとの `quest_defaults` enabled フラグで制御、`--edit-defaults` の対話的ウィザードで設定、`hw-genie quests`）。`multi quests` で全アカウント一括自動完了（`--dry-run` 予行可）、daily / full ルーチンにも統合済み。
-- **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテムの一括購入（余剰ソウルの自動換金対応）。
+- **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテム・タウンショップの固定スロット（2,4,5,6）の一括購入（余剰ソウルの自動換金対応）。ペットポーションは `hw-genie shop` では買わず、`daily` / `full` ルーチンでのみ購入する。タウン購入はゴールドを消費するため残高に注意。
 - **Asgard Shop**: Asgard（ギルドレイド）の Realm Traveler ショップで Valor Emblem を使ったバフとゴールドバフを自動購入（`hw-genie asgard-shop` / `multi asgard-shop`。Osh 週は固定優先度、Maestro 週は優先度 S→A→B の組み合わせ最適化で購入。判定不能な週はスキップ、`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on））。
 - **Seer's Game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`hw-genie seers-game` / `multi seers-game`。1ゲーム 25 コイン、毎日1回無料（JST 11:00 リセット）。ツールは無料/有料を区別せず枯渇まで回す。`--dry-run` で状態・残高表示のみ、`--pick N`（デフォルト 2、live の `event.size` に対して検証）/ `--max-games N` 対応）。
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。

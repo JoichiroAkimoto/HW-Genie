@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 from dataclasses import dataclass
 from enum import Enum
@@ -7,9 +8,12 @@ from hw_genie.core.client import (
     ErrorName,
     ResponseStatus,
 )
-from hw_genie.core.shop import ShopReadError, fetch_shops, get_shop_slots, is_bought
+from hw_genie.core.shop import ShopNotFoundError, ShopReadError, fetch_shops, get_shop_slots, is_bought
+
+logger = logging.getLogger(__name__)
 
 class ShopId(Enum):
+    TOWN = "1"
     ARENA = "4"
     GRAND_ARENA = "5"
     TOWER = "6"
@@ -33,8 +37,12 @@ class BuyItem:
     label: str
 
 # 購入対象とするショップ設定
+# NOTE: TOWN は含めない。hero_shop_ids はヒーローソウル枠（fragmentHero のある
+# スロットを買う枠）であり、Town は固定スロット枠（buy_town_shop_items 制御の
+# 別枠）のため。混同防止のため定義を分けている。
 TARGET_SHOP_IDS = [ShopId.ARENA, ShopId.GRAND_ARENA, ShopId.TOWER, ShopId.SOUL, ShopId.FRIEND]
 SHOP_NAMES = {
+    ShopId.TOWN: "Town",
     ShopId.ARENA: "Arena",
     ShopId.GRAND_ARENA: "Grand Arena",
     ShopId.TOWER: "Tower",
@@ -45,6 +53,19 @@ SHOP_NAMES = {
 
 # ショップ固有の特定スロットID
 PET_POTION_SLOT_ID = "3"
+# Town ショップで購入するスロットID（ゴールド品の定番枠）
+TOWN_SHOP_SLOT_IDS = frozenset({"2", "4", "5", "6"})
+
+def _shop_sort_key(shop_id: ShopId) -> tuple[int, str]:
+    """ショップIDの数値順ソートキー（1,4,5,6,8,9,17）。
+
+    ShopId.value は数字文字列を想定するが、将来の非数値 value が
+    追加されてもソートで落ちないよう、数値化失敗時は末尾に回す。
+    """
+    try:
+        return (int(shop_id.value), "")
+    except (TypeError, ValueError):
+        return (10**9, str(shop_id.value))
 
 def format_reward_desc(reward_dict: dict[str, Any]) -> str:
     if not reward_dict:
@@ -63,6 +84,7 @@ def run_hero_shopping(
     buy_soul_shop_items: bool = True,
     hero_shop_ids: list[ShopId] | None = None,
     buy_pet_potions: bool = False,
+    buy_town_shop_items: bool = True,
 ):
     """
     ヒーローソウルおよび特定アイテムをショップで購入する。
@@ -72,7 +94,10 @@ def run_hero_shopping(
         buy_soul_shop_items: ソウルショップの全アイテムを購入するかどうか。
         hero_shop_ids: ヒーローソウルを購入する対象ショップのリスト。
         buy_pet_potions: ペットソウルショップでペットポーションを購入するかどうか。
+        buy_town_shop_items: タウンショップの固定スロット（2,4,5,6）を購入するかどうか。
+            デフォルト True（ゴールド消費あり）。
     """
+    # TODO: 購入対象の on/off を CLI フラグ化する場合はここの引数を公開する（現状は呼出側の固定値）。
     if isinstance(client_or_headers, dict):
         from hw_genie.core.client import HWClient
 
@@ -102,40 +127,66 @@ def run_hero_shopping(
         shop_ids_to_check.add(ShopId.SOUL)
     if buy_pet_potions:
         shop_ids_to_check.add(ShopId.PET_SOUL)
+    if buy_town_shop_items:
+        shop_ids_to_check.add(ShopId.TOWN)
 
-    # ソートして順番を安定させる（ShopIdの定義順など）
-    # 元々の TARGET_SHOP_IDS の順序を尊重したい場合は工夫が必要だが、一旦セットからリスト化
-    sorted_shop_ids = sorted(list(shop_ids_to_check), key=lambda x: x.value)
+    # ショップIDの数値順（1,4,5,6,8,9,17）に安定ソートする。
+    sorted_shop_ids = sorted(shop_ids_to_check, key=_shop_sort_key)
+
+    # shops_data のキーは通常 str だが、int 型で返る実装差異に備えて
+    # str キーに正規化する（fetch_shops は dict を保証するが防御的に確認）。
+    normalized_shops = (
+        {str(k): v for k, v in shops_data.items()} if isinstance(shops_data, dict) else {}
+    )
 
     for shop_id_enum in sorted_shop_ids:
         shop_id_str = shop_id_enum.value
-        if shop_id_str not in shops_data:
+        try:
+            slots = get_shop_slots(normalized_shops, shop_id_str)
+        except ShopNotFoundError:
             continue
-
-        slots = get_shop_slots(shops_data, shop_id_str)
         shop_name = SHOP_NAMES.get(shop_id_enum, f"Shop {shop_id_str}")
 
         for slot_id, item in slots.items():
             if is_bought(item):
                 continue
 
+            if not isinstance(item, dict):
+                logger.warning("Skipping [%s] slot %r: slot data is not a dict.", shop_name, slot_id)
+                continue
             reward = item.get("reward", {})
             cost = item.get("cost", {})
+            if not isinstance(cost, dict):
+                cost = {}
+            # reward 空（falsy）のスロットはゴミ購入防止のためスキップ。
+            # cost 空は購入対象に含める（Soul 系テストで cost={} の正規ケースがあるため）。
+            if not isinstance(reward, dict) or not reward:
+                logger.warning("Skipping [%s] slot %r: empty reward.", shop_name, slot_id)
+                continue
+            try:
+                slot_int = int(slot_id)
+            except (TypeError, ValueError):
+                logger.warning("Skipping [%s] slot %r: non-numeric slot id.", shop_name, slot_id)
+                continue
             is_hero = "fragmentHero" in reward
 
             # 購入判定
             should_buy = False
-            
+
             # 1. ヒーロー購入判定
             if is_hero and hero_shop_ids and shop_id_enum in hero_shop_ids:
                 should_buy = True
-            
+
             # 2. ソウルショップ非ヒーローアイテム判定
             if not is_hero and shop_id_enum == ShopId.SOUL and buy_soul_shop_items:
                 should_buy = True
-            
+
             # 3. ペットポーション購入判定 (PET_SOUL ショップのスロット 3 はペットポーション固定)
-            if shop_id_enum == ShopId.PET_SOUL and slot_id == PET_POTION_SLOT_ID and buy_pet_potions:
+            if shop_id_enum == ShopId.PET_SOUL and str(slot_id) == PET_POTION_SLOT_ID and buy_pet_potions:
+                should_buy = True
+
+            # 4. タウンショップ購入判定（固定スロット 2,4,5,6。購入済みは上部 is_bought で除外済み）
+            if shop_id_enum == ShopId.TOWN and str(slot_id) in TOWN_SHOP_SLOT_IDS and buy_town_shop_items:
                 should_buy = True
 
             if should_buy:
@@ -143,7 +194,7 @@ def run_hero_shopping(
                     BuyItem(
                         shopId=shop_id_enum,
                         shopName=shop_name,
-                        slot=int(slot_id),
+                        slot=slot_int,
                         reward=reward,
                         cost=cost,
                         label=f"[{shop_name}] Slot:{slot_id} -> {format_reward_desc(reward)}",

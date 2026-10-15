@@ -699,8 +699,8 @@ def test_full_routine_threads_item_max_iterations(monkeypatch):
     def fake_hero_raid(client, mission_ids, times=3, allow_recovery=True):
         return ("hero_res", 0, None)
 
-    def fake_shop(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True):
-        pass
+    def fake_shop(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True, buy_town_shop_items=True):
+        captured["shop"] = (client, buy_soul_shop_items, hero_shop_ids, buy_town_shop_items)
 
     captured = {}
 
@@ -720,6 +720,8 @@ def test_full_routine_threads_item_max_iterations(monkeypatch):
 
     runner.full_routine(fake_client, "acc", item_max_iterations=3)
     assert captured["item_max_iterations"] == 3
+    # full 直下の Town 買いは有効で渡ること
+    assert captured["shop"][3] is True
 
 
 def test_daily_routine_skips_item_raid_without_mission_id(monkeypatch):
@@ -776,8 +778,8 @@ def test_full_routine_invokes_subroutines(monkeypatch):
         captured["hero"] = (client, mission_ids, times, allow_recovery)
         return ("hero_res", 0, None)
 
-    def fake_shop(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True):
-        captured["shop"] = (client, hero_shop_ids)
+    def fake_shop(client, buy_soul_shop_items=True, hero_shop_ids=None, buy_pet_potions=True, buy_town_shop_items=True):
+        captured["shop"] = (client, hero_shop_ids, buy_town_shop_items)
 
     monkeypatch.setattr("hw_genie.commands.hero_raid.run_hero_raid", fake_hero_raid)
     monkeypatch.setattr("hw_genie.commands.hero_shopping.run_hero_shopping", fake_shop)
@@ -797,6 +799,8 @@ def test_full_routine_invokes_subroutines(monkeypatch):
     assert captured["hero"] == (fake_client, None, 3, True)
     assert captured["shop"][0] is fake_client
     assert captured["shop"][1] == ["SHOP1"]
+    # full 直下の Town 買いは有効で渡ること
+    assert captured["shop"][2] is True
     fake_client.exchange_stones.assert_called_once()
 
 
