@@ -443,7 +443,7 @@ def cmd_shop(args):
     client = HWClient(headers)
     from hw_genie.commands.hero_shopping import TARGET_SHOP_IDS
 
-    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS)
+    run_hero_shopping(client, buy_soul_shop_items=True, hero_shop_ids=TARGET_SHOP_IDS, buy_town_shop_items=True)
     client.exchange_stones()
 
 
@@ -1181,7 +1181,10 @@ def cmd_multi(args):
                     print("No accounts found; nothing to run.", flush=True)
                 if ready_accounts or not prefailed_results:
                     worker_results = run_all_accounts(
-                        routine, accounts=ready_accounts, max_parallel=max_parallel
+                        routine,
+                        accounts=ready_accounts,
+                        max_parallel=max_parallel,
+                        cooperative_wait=(mode == "toe"),
                     )
                     results.update(worker_results)
                 # Preserve the original (registration/request) account order.

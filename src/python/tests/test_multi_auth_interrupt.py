@@ -83,7 +83,7 @@ def test_preflight_excludes_missing_without_workers(monkeypatch):
     )
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["accounts"] = list(accounts or [])
         return {"Alice": (_idle_toe(), None)}
 
@@ -108,7 +108,7 @@ def test_preflight_all_missing_skips_workers_and_logs_failed(monkeypatch):
     monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: None)
     called = []
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         called.append(1)
         return {}
 
@@ -201,7 +201,7 @@ def test_cancel_error_summary_excludes_interrupt(monkeypatch):
             "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
         )
 
-        def fake_run(routine, accounts=None, max_parallel=None):
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
             runner.request_cancel()
             return {
                 "Alice": (None, InterruptedError("interrupted by user")),
@@ -356,7 +356,7 @@ def test_cmd_multi_empty_accounts_records_ok(monkeypatch, capsys):
     )
     called = []
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         called.append(list(accounts or []))
         return {}
 
@@ -387,7 +387,7 @@ def test_cmd_multi_duplicate_accounts_deduped(monkeypatch):
     )
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["accounts"] = list(accounts or [])
         return {acc: (_idle_toe(), None) for acc in (accounts or [])}
 
@@ -453,7 +453,7 @@ def test_cmd_multi_quests_dry_run_with_missing(monkeypatch):
     )
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["accounts"] = list(accounts or [])
         return {"Alice": (([], [], []), None)}
 
@@ -653,7 +653,7 @@ def test_cmd_multi_toe_ready_probes_exactly_once(monkeypatch):
     )
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {
             acc: (_idle_toe(), None) for acc in (accounts or [])
         },
     )
@@ -678,3 +678,46 @@ def test_toe_routine_probe_bridge_false_skips_probe(monkeypatch):
     run = runner.toe_routine(engine="hybrid", auth_server_url="http://127.0.0.1:9", probe_bridge=False)
     assert callable(run)
     assert calls == []
+
+
+def test_cmd_multi_toe_passes_cooperative_wait(monkeypatch):
+    """toe モードは run_all_accounts に cooperative_wait=True を渡す。"""
+    from hw_genie import main
+
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+    )
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+        captured["cooperative_wait"] = cooperative_wait
+        return {acc: (_idle_toe(), None) for acc in (accounts or [])}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+    main.cmd_multi(_toe_args("Alice"))
+    assert captured["cooperative_wait"] is True
+
+
+def test_cmd_multi_non_toe_omits_cooperative_wait(monkeypatch):
+    """非 toe モードは cooperative_wait=False（既定）で実行する。"""
+    from hw_genie import main
+
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+    )
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+        captured["cooperative_wait"] = cooperative_wait
+        return {}
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+    args = type(
+        "A",
+        (),
+        {"mode": "daily", "accounts": ["Alice"], "parallel": 1, "debug": False},
+    )()
+    main.cmd_multi(args)
+    assert captured["cooperative_wait"] is False

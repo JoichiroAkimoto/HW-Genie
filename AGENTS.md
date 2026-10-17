@@ -12,7 +12,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 
 *   **daily-raid**: レイド＋ショッピングの連続実行（アイテムのスタミナ限界収集対応）。
 *   **hero-raid**: 指定ミッションのヒーローレイド。
-*   **hero-shopping**: ヒーローソウルとソウルショップの一括購入。
+*   **hero-shopping**: ヒーローソウルとソウルショップ・タウンショップ（slot 2,4,5,6）の一括購入。
 *   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh / Maestro 週）で Valor Emblem を使ったバフとゴールドバフの自動購入。
 *   **seers-game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`--dry-run` / `--pick` / `--max-games`、`multi seers-game` 対応）。
 *   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認。1000 上限アイテムは分割消費、マトリョーシカ系は残りが無くなるまでラウンドを自動繰り返し）。
