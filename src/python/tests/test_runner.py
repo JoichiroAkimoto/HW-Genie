@@ -240,7 +240,7 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["routine"] = routine
         captured["accounts"] = accounts
         captured["max_parallel"] = max_parallel
@@ -272,7 +272,7 @@ def test_cmd_multi_default_all_accounts(monkeypatch):
     )
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["accounts"] = accounts
         return {}
 
@@ -448,7 +448,7 @@ def test_cmd_multi_quests_mode_exits_on_failure(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["routine"] = routine
         return {"a": ((1, 2), None)}
 
@@ -476,7 +476,7 @@ def test_cmd_multi_records_run_log_ok(monkeypatch):
         records.update(kwargs)
         return 1
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         print("progress line")
         return {"a": (PlayerStatus(name="Alpha", level=130), None)}
 
@@ -510,7 +510,7 @@ def test_cmd_multi_records_run_log_business_failure(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {
             "a": ((["q1"], ["q10024"], []), None)
         },
     )
@@ -541,7 +541,7 @@ def test_cmd_multi_records_run_log_on_exception(monkeypatch):
         records.update(kwargs)
         return None
 
-    def boom(routine, accounts=None, max_parallel=None):
+    def boom(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         raise RuntimeError("boom")
 
     monkeypatch.setattr("hw_genie.main.run_all_accounts", boom)
@@ -568,7 +568,7 @@ def test_cmd_multi_records_run_log_on_interrupt(monkeypatch):
         records.update(kwargs)
         return None
 
-    def interrupt(routine, accounts=None, max_parallel=None):
+    def interrupt(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("hw_genie.main.run_all_accounts", interrupt)
@@ -616,7 +616,7 @@ def test_cmd_multi_quests_dry_run_runs_sequentially(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["max_parallels"].append(max_parallel)
         return {}
 
@@ -851,7 +851,7 @@ def test_cmd_multi_limits_to_named_account(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["accounts"] = accounts
         return {}
 
@@ -1406,7 +1406,7 @@ def test_cmd_multi_daily_threads_iterations(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["routine"] = routine
         return {}
 
@@ -1496,7 +1496,7 @@ def test_cmd_multi_toe_passes_parallel_through(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["max_parallel"] = max_parallel
         return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
 
@@ -1520,7 +1520,7 @@ def test_cmd_multi_toe_parallel_defaults_to_env(monkeypatch):
 
     captured = {}
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["max_parallel"] = max_parallel
         return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
 
@@ -1551,7 +1551,7 @@ def test_cmd_multi_toe_threads_max_attempts(monkeypatch):
     monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
     )
     args = type(
         "A",
@@ -1635,7 +1635,7 @@ def test_cmd_multi_toe_threads_auth_server_url(monkeypatch):
     monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
     )
     args = type(
         "A",
@@ -1656,7 +1656,7 @@ def test_cmd_multi_failed_logging_does_not_mask_original_error(monkeypatch, caps
     """記録自体の失敗（2回目の Ctrl+C 等）が元のエラーを隠さない。"""
     from hw_genie import main
 
-    def boom(routine, accounts=None, max_parallel=None):
+    def boom(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         raise RuntimeError("boom")
 
     def log_boom(**kwargs):
@@ -1867,6 +1867,241 @@ def test_run_all_accounts_cancels_pending_futures(monkeypatch):
         runner.reset_cancel()
 
 
+def test_run_all_accounts_waits_for_running_future_on_keyboard_interrupt(monkeypatch, capsys):
+    """Ctrl+C waits for a running worker so its partial summary is kept."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self, acc, *, done, result=None, running=False):
+                self._acc = acc
+                self._done = done
+                self._result = result
+                self._running = running
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                if self._running:
+                    # Already executing: cannot cancel (real executor
+                    # returns False here), the worker keeps running.
+                    return False
+                if not self._done:
+                    self._cancelled = True
+                    return True
+                return False
+
+            def result(self):
+                assert self._result is not None
+                return self._result
+
+        partial = {
+            "rival_results": [{"win": True}, {"win": False}],
+            "completed_tier": False,
+            "errors": [{"stage": "interrupted", "message": "interrupted by user"}],
+            "final_tier": 8,
+            "remaining_rivals": 10,
+            "interrupted": True,
+            "daily_reward": None,
+        }
+        fut_a = _FakeFuture("a", done=True, result=("a", "ok-a", None))
+        fut_b = _FakeFuture(
+            "b", done=False, result=("b", partial, None), running=True
+        )
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return {"a": fut_a, "b": fut_b}[acc]
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        results = runner.run_all_accounts(
+            lambda c, a: None, accounts=["a", "b"], max_parallel=2, cooperative_wait=True
+        )
+        assert list(results) == ["a", "b"]
+        assert results["a"] == ("ok-a", None)
+        # The running worker must NOT be cancelled: cancel() returns False
+        # while executing, and the cooperative wait keeps its partial dict.
+        assert fut_b._cancelled is False
+        # Running worker's partial dict is preserved (not replaced by
+        # a dashes-only InterruptedError).
+        assert results["b"][1] is None
+        assert results["b"][0] is partial
+        # Cooperative wait is announced once.
+        assert "waiting for running account(s)" in capsys.readouterr().out
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_waits_for_real_running_worker(monkeypatch):
+    """Ctrl+C waits for a real worker that stops on request_cancel()."""
+    import threading as _threading
+
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    started = _threading.Event()
+    try:
+
+        def routine(client, acc):
+            started.set()
+            # Cooperative worker: stop only after request_cancel().
+            for _ in range(200):
+                if runner.is_cancelled():
+                    return {
+                        "rival_results": [{"win": True}],
+                        "interrupted": True,
+                        "errors": [],
+                        "final_tier": 8,
+                        "remaining_rivals": 3,
+                        "completed_tier": False,
+                        "daily_reward": None,
+                    }
+                _threading.Event().wait(0.01)
+            return {
+                "rival_results": [],
+                "interrupted": False,
+                "errors": [],
+                "final_tier": 8,
+                "remaining_rivals": 0,
+                "completed_tier": False,
+            }
+
+        def fake_run_for_account(acc, rout):
+            return acc, rout(None, acc), None
+
+        monkeypatch.setattr(runner, "run_for_account", fake_run_for_account)
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+
+        def canceller():
+            started.wait(2)
+            runner.request_cancel()
+
+        _threading.Thread(target=canceller, daemon=True).start()
+        results = runner.run_all_accounts(
+            routine, accounts=["a"], max_parallel=1, cooperative_wait=True
+        )
+        assert results["a"][1] is None
+        assert results["a"][0]["interrupted"] is True
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_no_cooperative_wait_by_default(monkeypatch):
+    """Non-toe modes do not block on running workers after Ctrl+C."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+
+        class _FakeFuture:
+            def __init__(self):
+                self.cancel_called = False
+                self._cancelled = False
+
+            def done(self):
+                return False
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self.cancel_called = True
+                # Already running: a real executor cannot cancel it.
+                return False
+
+            def result(self):
+                raise AssertionError("must not wait for a running worker")
+
+        fut = _FakeFuture()
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return fut
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        results = runner.run_all_accounts(
+            lambda c, a: None, accounts=["b"], max_parallel=1, cooperative_wait=False
+        )
+        assert results["b"][0] is None
+        assert isinstance(results["b"][1], InterruptedError)
+    finally:
+        runner.reset_cancel()
+
+
+def test_run_all_accounts_systemexit_propagates_from_cooperative_wait(monkeypatch):
+    """2nd Ctrl+C during the wait force-aborts and shuts the pool down."""
+    from hw_genie import runner
+
+    runner.reset_cancel()
+    try:
+        shutdown_calls: list = []
+
+        class _FakeFuture:
+            def done(self):
+                return False
+
+            def cancelled(self):
+                return False
+
+            def cancel(self):
+                return False
+
+            def result(self):
+                raise SystemExit(130)
+
+        class _FakePool:
+            def submit(self, fn, acc, routine):
+                return _FakeFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                shutdown_calls.append((wait, cancel_futures))
+                return None
+
+        monkeypatch.setattr(runner, "ThreadPoolExecutor", lambda max_workers=None: _FakePool())
+        monkeypatch.setattr(
+            runner,
+            "as_completed",
+            lambda futures: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(SystemExit) as exc:
+            runner.run_all_accounts(
+                lambda c, a: None, accounts=["a"], max_parallel=1, cooperative_wait=True
+            )
+        assert exc.value.code == 130
+        assert (False, True) in shutdown_calls
+    finally:
+        runner.reset_cancel()
+
+
 @pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_sigint_first_cooperative_second_forces(monkeypatch):
     """1st Ctrl+C is cooperative (KI); 2nd forces SystemExit(130), restoring handler."""
@@ -1981,7 +2216,7 @@ def test_cmd_multi_interrupted_log_failure_still_exits_130(monkeypatch, capsys):
 
     runner.reset_cancel()
     try:
-        def fake_run(routine, accounts=None, max_parallel=None):
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
             runner.request_cancel()
             return {"a": (None, InterruptedError("interrupted by user"))}
 
@@ -2111,7 +2346,7 @@ def test_cmd_multi_toe_pure_interrupt_exits_zero(monkeypatch):
     try:
         records = {}
 
-        def fake_run(routine, accounts=None, max_parallel=None):
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
             runner.request_cancel()
             return {"a": (None, InterruptedError("interrupted by user"))}
 
@@ -2142,7 +2377,7 @@ def test_cmd_multi_toe_interrupt_with_real_failures_exits_1(monkeypatch):
 
     runner.reset_cancel()
     try:
-        def fake_run(routine, accounts=None, max_parallel=None):
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
             runner.request_cancel()
             return {
                 "a": (None, InterruptedError("interrupted by user")),
@@ -2303,7 +2538,7 @@ def test_cmd_multi_toe_forwards_progress(monkeypatch):
     monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
     )
     args = type(
         "A",
@@ -2412,7 +2647,7 @@ def test_cmd_multi_stored_log_contains_no_cr(monkeypatch):
         records.update(kwargs)
         return 1
 
-    def fake_run(routine, accounts=None, max_parallel=None):
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         print("before\rafter line")
         return {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)}
 
@@ -2487,7 +2722,7 @@ def test_cmd_multi_toe_threads_no_end_on_loss(monkeypatch):
     monkeypatch.setattr("hw_genie.runner.toe_routine", fake_toe_routine)
     monkeypatch.setattr(
         "hw_genie.main.run_all_accounts",
-        lambda routine, accounts=None, max_parallel=None: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
     )
 
     def make_args(no_end):

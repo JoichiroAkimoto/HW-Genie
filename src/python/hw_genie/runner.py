@@ -268,10 +268,53 @@ def run_for_account(
         return account, None, exc
 
 
+def _record_future_result(
+    fut,
+    account: str,
+    results: dict[str, tuple[object | None, BaseException | None]],
+    pool=None,
+) -> None:
+    """Store one future's ``(result, error)`` under ``account``.
+
+    Shared by the done / cooperative-wait paths of the Ctrl+C handler so
+    cancel/interrupt handling cannot drift between them. A ``CancelledError``
+    maps to ``Interrupted``; other exceptions are preserved for reporting.
+    ``SystemExit`` (2nd Ctrl+C from the main signal handler) force-aborts:
+    the pool is shut down and the exit propagates. On the 2nd press the main
+    SIGINT handler restores the original handler (``SIG_DFL`` only when none
+    was captured), so subsequent Ctrl+C presses terminate immediately; worker
+    threads are still joined at interpreter shutdown (atexit), so a long
+    in-flight API call is not abandoned instantly.
+    """
+    from concurrent.futures import CancelledError as _CancelledError
+
+    try:
+        _res_acc, res, err = fut.result()
+    except KeyboardInterrupt:
+        # The worker itself raised (no summary produced): record Interrupted.
+        results[account] = (None, InterruptedError("interrupted by user"))
+        return
+    except SystemExit:
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:  # pragma: no cover - Python < 3.9
+                pool.shutdown(wait=False)
+        raise
+    except _CancelledError:
+        results[account] = (None, InterruptedError("interrupted by user"))
+        return
+    except Exception as exc:  # noqa: BLE001 - preserve per-account failure
+        results[account] = (None, exc)
+        return
+    results[account] = (res, err)
+
+
 def run_all_accounts(
     routine: Callable[[HWClient, str], object],
     accounts: Sequence[str] | None = None,
     max_parallel: int | None = None,
+    cooperative_wait: bool = False,
 ) -> dict[str, tuple[object | None, BaseException | None]]:
     """Run ``routine`` for every registered account inside one process.
 
@@ -281,6 +324,11 @@ def run_all_accounts(
             is used.
         max_parallel: Concurrency limit. Defaults to ``HW_MAX_PARALLEL`` /
             unbounded.
+        cooperative_wait: When True, a still-running worker is awaited after
+            a user cancel so its partial result is preserved. Only enable for
+            routines that poll the cooperative cancel flag (ToE tier loop /
+            hybrid engine); other routines would block until they finish.
+            Ignored for pending futures, which stay ``Interrupted``.
 
     Returns:
         Mapping of ``account -> (result, error)``. Entries with an error are the
@@ -319,32 +367,37 @@ def run_all_accounts(
                     fut.cancel()
                 except Exception:  # pragma: no cover - defensive
                     pass
+        # Cooperative wait: a still-running worker was signalled via
+        # request_cancel() and, when it polls the cancel flag (ToE tier loop),
+        # returns its partial summary after the current attempt. Waiting keeps
+        # that progress (wins/total) instead of a dashes-only row; pending
+        # and non-cooperative routines stay Interrupted. A 2nd Ctrl+C raises
+        # SystemExit here and force-aborts.
+        waiting_printed = False
         for fut, acc in futures.items():
             if acc in results:
                 continue
-            if fut.done() and not fut.cancelled():
-                try:
-                    _acc, res, err = fut.result()
-                    results[_acc] = (res, err)
-                except KeyboardInterrupt:
-                    results[acc] = (None, InterruptedError("interrupted by user"))
-                except Exception as exc:  # noqa: BLE001 - preserve failure (SystemExit from 2nd Ctrl+C must propagate, not be stored)
-                    try:
-                        from concurrent.futures import CancelledError as _CE
-
-                        if isinstance(exc, _CE):
-                            results[acc] = (
-                                None,
-                                InterruptedError("interrupted by user"),
-                            )
-                            continue
-                    except Exception:  # pragma: no cover - defensive
-                        pass
-                    results[acc] = (None, exc)
-            else:
+            if fut.cancelled():
                 results.setdefault(
                     acc, (None, InterruptedError("interrupted by user"))
                 )
+                continue
+            if fut.done():
+                _record_future_result(fut, acc, results, pool)
+                continue
+            if not cooperative_wait:
+                results.setdefault(
+                    acc, (None, InterruptedError("interrupted by user"))
+                )
+                continue
+            if not waiting_printed:
+                print(
+                    "waiting for running account(s) to stop "
+                    "after the current attempt...",
+                    flush=True,
+                )
+                waiting_printed = True
+            _record_future_result(fut, acc, results, pool)
         try:
             pool.shutdown(wait=False, cancel_futures=True)
         except TypeError:  # pragma: no cover - Python < 3.9
@@ -1222,9 +1275,12 @@ def summarize_toe(
     wins/completion flags; an empty ``rival_results`` with no errors is
     idle (nothing to do) and also counts as ok so cleared accounts don't
     page every cron run. Columns show wins / attempted rivals / completed
-    flag / final tier / remaining rivals. Interrupted accounts keep ``-``
-    in every numeric column (the ``Won`` column is never reused for text);
-    the ``⏸ Interrupted`` line is the explicit marker. The footer keeps
+    flag / final tier / remaining rivals / daily reward. A cooperative
+    cancel arrives as an ``interrupted=True`` summary dict (the runner waits
+    for the running worker after Ctrl+C), so wins/attempted/tier/remaining
+    stay visible; a bare ``InterruptedError`` without a summary keeps ``-``
+    placeholders. The ``⏸ Interrupted`` line is the explicit
+    marker. The footer keeps
     the legacy ``account(s) completed`` substring (``✅ N account(s)
     completed, ⏸ M interrupted, ❌ K failed``) so existing grep/monitors
     keep matching; only the middle ``interrupted`` segment is new.
