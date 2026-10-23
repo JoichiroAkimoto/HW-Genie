@@ -296,6 +296,46 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 `progress` / `result` を組み立て、`titanArenaEndRaid(results={rivalId: {progress, result}})`
 でまとめて送信する。
 
+レイドのシミュレーションに渡す battle は、実際の `titanArenaStartBattle`
+battle（`hw-genie toe attack --debug` で取得）と `battleGetReplay` の両方で
+形を確認している。`battleGetReplay` は ToE 専用ではなく汎用的な battle RPC
+で、replay では `seed` / `startTime` が文字列に再シリアライズされるが、
+live の battle payload は数値である:
+
+| フィールド | 値 |
+|-----------|-----|
+| `attackers` | StartRaid レスポンスの `attackers`（`{titanId: hero}`）。なければ `response["team"]`、さらに `status["defenders"]`。要求した 5 体の titan ID 集合と一致しない場合はレイドを中止する |
+| `defenders` | `[{titanId: hero}]`（1 要素の配列）。StartRaid の rival は `rivals[rivalId].team` にロスターを持つ。GetStatus の rival ロスターと titan ID 集合が一致し、かつ要求した 5 体（`len(titans)`）であること |
+| `seed` | rival ごとの `seed`（数値。replay では文字列。例 `1991754172`）。`0` や範囲外は欠落扱いで GetStatus にフォールバック |
+| `startTime` | 数値 epoch。StartRaid レスポンスに値があればそれを使い、無ければシミュレーション時のクライアント時刻を使う（live の StartBattle battle と同じ慣習） |
+| `typeId` | rivalId（文字列） |
+| `userId` | StartRaid レスポンスの `userId`。なければ `titanArenaGetStatus` の `userId`、さらに認証ヘッダーの `x-auth-user-id`、どれも無ければ `""` |
+
+`titanArenaGetStatus.rivals[rivalId].seed` と replay の `seed` は一致し、
+`progress[].seed` は同じ値の符号付き 32bit 表現になる。rival の
+`titans` は replay の `defenders[0]` と `state` キー以外一致するため、
+`state`（現在 HP / energy / isDead）は battle から除去する。
+ロスターの一貫性も検証する。`attackers` は要求した 5 体の titan ID
+集合と一致し、`defenders` は GetStatus の rival ロスターと ID 集合が
+一致する（GetStatus 側にロスターが無い場合は 5 体である）必要がある。
+食い違い・切り詰められたロスターは推測せずにスキップし、個別バトルで
+再試行する。
+
+`seed: 0` や推測形状の defenders を渡すとページ内エンジンの計算が失敗し、
+userscript は全滅（dummy loss）を返す。`seed` が欠落・無効、または
+ロスターが不整合な rival は battle を組み立てずスキップし、スキップ件数を
+警告として 1 行で報告する（該当 rival は個別バトルで再試行される）。
+dummy loss は EndRaid に含めない（サーバーがレイド全体を無効化し得るため）。
+
+`hw-genie toe run` はこの形で Raid をステージ開始時に実行し、レイドで
+検証済み結果が 1 件も得られなかった場合は同一 Tier 内ではレイド再試行を
+打ち切り、Tier が変われば再試行する（抑止は Tier 単位）。残りの rival は
+個別バトル（`titanArenaStartBattle`）で継続する。
+レイドで負けた rival は `attackScore < threshold` のまま残るため、続く
+個別バトルの対象になる。抑止理由は Tier サマリーの `raid_fallback` に
+文字列で記録する（アカウント失敗を表す `errors` には入れないため、
+`multi toe` の成否には影響しない。スキップ件数の警告は実行ログにのみ出る）。
+
 ### titanArenaCompleteTier - ティアクリア宣言
 
 tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか、`titanArenaEndRaid`
@@ -321,7 +361,11 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
   レイド、なければ `attackScore < threshold`（既定 250）の rivals を
   自動選択して個別バトル → `CompleteTier` → 日次報酬受け取り）。
   新 Tier に進むと次の周回で改めて `canRaid` を確認するため、
-  Raid 可能 Tier は常に Raid から開始される。
+  Raid 可能 Tier は常に Raid から開始される。レイドが検証済み結果を
+  1 件も返せなかった場合は **その Tier 内でのみ** レイド再試行を打ち切り、
+  残りの rival を個別バトルで継続する（Tier が変われば Raid を再試行。
+  レイドで負けた rival は `attackScore < threshold` のまま残るため、
+  そのまま個別バトルの対象になる）。
   明示編成: `hw-genie toe run -a Dave --titans 4003 4023 4004 4001 4000`
   - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
   - 各試行の負けも `EndBattle` で部分スコアをバンクするのが既定

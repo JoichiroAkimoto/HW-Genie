@@ -18,7 +18,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認。1000 上限アイテムは分割消費、マトリョーシカ系は残りが無くなるまでラウンドを自動繰り返し）。
 *   **guild-chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表形式と要約表示（`--type` / `--count` / `--last-id` / `--raw` / `--json`）。
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
-*   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid 優先、全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
+*   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
 *   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`）。
 *   **db-inspect**: データベース（Turso クラウド / ローカルレプリカ）の確認。
