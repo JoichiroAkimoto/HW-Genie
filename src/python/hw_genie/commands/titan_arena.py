@@ -253,6 +253,10 @@ def fetch_titan_arena_status(client: HWClient) -> dict[str, Any]:
 
 AUTO_RIVAL_SCORE_THRESHOLD = 250
 
+# Sentinel for "no tier has suppressed the raid yet". ``None`` is a valid tier
+# value, so a plain ``None`` cannot encode "unset" (it would never reset).
+_NO_TIER = object()
+
 # Static team rotation tried in order after the saved team when --titans is
 # omitted. Entries are 5 titan IDs; the saved team (teamGetAll.titan_arena)
 # always goes first and duplicates are skipped.
@@ -386,6 +390,20 @@ def _loss_stars(est: Any) -> int:
     """
     try:
         return int(getattr(est, "stars", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _attack_score(value: Any) -> int:
+    """Best-effort integer ``attackScore`` from an EndRaid result entry.
+
+    The server may echo the score as a string; non-dict or unparseable
+    entries rank as 0 so completion checks never raise.
+    """
+    if not isinstance(value, dict):
+        return 0
+    try:
+        return int(value.get("attackScore") or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -631,6 +649,7 @@ def run_titan_arena(
     battle: dict[str, Any] = {}
     if isinstance(start_res.detail, dict):
         battle = start_res.detail.get("response", {}).get("battle", {})
+    logger.debug("StartBattle battle: %s", json.dumps(battle, ensure_ascii=False, default=str)[:8000])
     _vprint(progress, f"{Emojis.SUCCESS}StartBattle accepted (type={battle.get('type')} seed={battle.get('seed')})")
     if dry_run:
         _vprint(progress, f"{Emojis.INFO}Dry-run: not calling titanArenaEndBattle.")
@@ -742,9 +761,12 @@ def run_titan_arena_tier(
     1. ``titanArenaGetStatus`` to read ``status``/``canRaid``/``tier``/``rivals``.
     2. ``canRaid`` → ``titanArenaStartRaid`` (one per remaining un-touched rival),
        each via the engine, then ``titanArenaEndRaid`` to submit results.
-    3. otherwise loop ``rivals`` whose ``attackScore < threshold`` and finish
-       each via the engine. After every successful finish, recurse into
-       ``titanArenaCompleteTier``.
+       The raid runs first; if it yields no verifiable result, that tier falls
+       back to individual battles and skips further raid attempts for that
+       tier only — a new tier retries the raid.
+    3. otherwise (or after a fallback) loop ``rivals`` whose
+       ``attackScore < threshold`` and finish each via the engine. After every
+       successful finish, recurse into ``titanArenaCompleteTier``.
     4. Best-effort ``titanArenaFarmDailyReward`` for the daily chest after
        each pass; early returns (disabled/peace_time, no targets, no
        progress, bridge dead) skip the remaining steps and report via
@@ -777,7 +799,8 @@ def run_titan_arena_tier(
     status instead of stopping early.
 
     The function returns a dict summarising the tier outcome (rival results,
-    raid results, errors, completed_tier, daily_reward).
+    raid results, errors, completed_tier, daily_reward, and ``raid_fallback``
+    when the raid was suppressed for the current tier).
 
     ``progress`` selects output compactness (see :func:`run_titan_arena`).
     ``dashboard`` is the shared multi-account status display (see
@@ -806,6 +829,7 @@ def run_titan_arena_tier(
         "daily_reward": None,
         "final_tier": None,
         "remaining_rivals": None,
+        "raid_fallback": None,
         "interrupted": False,
     }
 
@@ -827,6 +851,12 @@ def run_titan_arena_tier(
     max_passes = 30
     passes = 0
     no_progress_passes = 0
+    # Set when a raid attempt produced nothing the server could verify. Retrying
+    # within the same tier would just replay the same broken path, so the
+    # remaining rivals are fought individually; the suppression is scoped to
+    # ``raid_disabled_tier`` so a new tier retries the raid.
+    raid_disabled_reason: str | None = None
+    raid_disabled_tier: Any = _NO_TIER
     while True:
         if _cancel_requested():
             return _mark_interrupted(summary)
@@ -849,10 +879,16 @@ def run_titan_arena_tier(
             return summary
 
         tier = status.get("tier")
+        if raid_disabled_tier is not _NO_TIER and tier != raid_disabled_tier:
+            # New tier: the previous tier's broken raid says nothing about this
+            # one, so allow another raid attempt. The sentinel keeps this
+            # working when the suppressing tier was missing (``None``).
+            raid_disabled_reason = None
+            raid_disabled_tier = _NO_TIER
         print(f"{Emojis.STEP}Tier: {tier} (canRaid={status.get('canRaid')})", flush=True)
 
         raid_won = False
-        if status.get("canRaid"):
+        if status.get("canRaid") and raid_disabled_tier is _NO_TIER:
             try:
                 raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold, progress, dashboard)
             except BridgeDeadError as exc:
@@ -869,6 +905,19 @@ def run_titan_arena_tier(
                 summary["errors"].append({"stage": "raid", "message": raid_summary.get("error", "bridge dead")})
                 print(f"{Emojis.WARNING}Bridge dead during raid; stopping tier loop.", flush=True)
                 return summary
+            if raid_summary.get("no_verified"):
+                raid_disabled_reason = str(
+                    raid_summary.get("error") or "no verified raid results"
+                )
+                raid_disabled_tier = tier
+                # Expected fallback, not a failure: keep it out of
+                # summary["errors"] so summarize_toe does not fail the account.
+                summary["raid_fallback"] = raid_disabled_reason
+                print(
+                    f"{Emojis.INFO}Raid unavailable for tier {tier} ({raid_disabled_reason}); "
+                    "continuing with individual battles.",
+                    flush=True,
+                )
             if not raid_summary.get("completed", False):
                 # If raid didn't clear the threshold we still try the per-rival
                 # path in case the user reconnected mid-tier. Banked raid wins
@@ -963,6 +1012,159 @@ def _has_any_heroes(progress: Any) -> bool:
     return False
 
 
+_TITAN_TEAM_CONTAINER_KEYS = ("titans", "heroes", "defenders", "team")
+
+
+def _is_titan_team(value: Any) -> bool:
+    """True when ``value`` looks like a real ``{titanId: heroDict}`` roster.
+
+    Every key must be numeric and every value a dict. When a hero carries an
+    ``id`` it must match its key, but ``id`` itself is optional: a live roster
+    may omit it. Each hero must still expose at least one battle-stat key
+    (``id`` / ``level`` / ``power`` / ``hp`` / ``type``) so numeric-keyed
+    non-rosters such as ``{"1": {"attackScore": 0}}`` are rejected.
+    """
+    if not isinstance(value, dict) or not value:
+        return False
+    plausibility_keys = {"id", "level", "power", "hp", "type"}
+    for key, hero in value.items():
+        if not str(key).lstrip("-").isdigit() or not isinstance(hero, dict):
+            return False
+        hero_id = hero.get("id")
+        if hero_id is not None and str(hero_id) != str(key):
+            return False
+        if not plausibility_keys & set(hero):
+            return False
+    return True
+
+
+def _strip_hero_state(team: dict[str, Any]) -> dict[str, Any]:
+    """Copy a titan team, dropping each hero's ``state`` block.
+
+    ``titanArenaGetStatus`` decorates roster entries with ``state`` (current
+    hp / energy / isDead). A real ``titanArenaStartRaid`` battle as recorded
+    by ``battleGetReplay`` carries the roster *without* ``state``, and stale
+    state would leak earlier fights into the simulation.
+    """
+    return {
+        str(titan_id): {k: v for k, v in hero.items() if k != "state"}
+        for titan_id, hero in team.items()
+    }
+
+
+def _extract_titan_team(value: Any) -> dict[str, Any] | None:
+    """Normalize a payload fragment into ``{titanId: hero}``.
+
+    Accepts the plain shape and the wrappers the Titan Arena API uses
+    elsewhere (``{titans: {...}}`` / ``{heroes: {...}}`` /
+    ``{defenders: [{...}]}``, plus a list of hero dicts). Returns ``None``
+    when no team is found so callers can fall back to another source
+    instead of simulating a malformed battle.
+    """
+    if isinstance(value, list):
+        if value and all(isinstance(item, dict) and item.get("id") is not None for item in value):
+            team = {str(item["id"]): dict(item) for item in value}
+            return _strip_hero_state(team)
+        # Only a single-element list wrapping one team (``defenders: [team]``)
+        # is unwrapped; a mixed/multi-element list must not yield its first
+        # team, which would simulate a different battle than the server.
+        if len(value) == 1 and isinstance(value[0], dict):
+            return _extract_titan_team(value[0])
+        return None
+    if not isinstance(value, dict):
+        return None
+    for key in _TITAN_TEAM_CONTAINER_KEYS:
+        if key in value:
+            team = _extract_titan_team(value.get(key))
+            if team is not None:
+                return team
+    if _is_titan_team(value):
+        return _strip_hero_state(value)
+    return None
+
+
+def _normalize_raid_seed(value: Any) -> int | None:
+    """Return a usable raid seed as an int, or ``None``.
+
+    A live ``titanArenaStartBattle`` battle carries ``seed`` as a JSON
+    *number* (e.g. ``2245015540``); ``battleGetReplay`` re-serializes it as
+    a string, which is why both forms are accepted. Seeds are 32-bit:
+    ``titanArenaGetStatus.rivals[].seed`` may be reported unsigned
+    (``> 2**31``) while ``progress[].seed`` shows the signed view.
+
+    Unusable seeds are treated as missing (``None``) so callers fall back to
+    ``titanArenaGetStatus``: booleans, non-integers, ``0`` (the StartRaid
+    stub behind the original bug), and values outside
+    ``[-2**31, 0xFFFFFFFF]``.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if n == 0 or n < -(2**31) or n > 0xFFFFFFFF:
+        return None
+    return n
+
+
+def _raid_start_time(*sources: Any) -> int | None:
+    """Return a usable raid ``startTime`` epoch from any source.
+
+    A live ``titanArenaStartBattle`` battle carries ``startTime`` as the
+    client-clock epoch *number* at request time; ``battleGetReplay``
+    re-serializes it as a string. ``titanArenaStartRaid`` omits the field
+    entirely, so the caller fills in the current epoch (mirroring what the
+    game client does for StartBattle).
+    """
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("startTime")
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0:
+            continue
+        return n
+    return None
+
+
+def _build_raid_battle(
+    rival_id: str,
+    attackers: dict[str, Any],
+    defenders: dict[str, Any],
+    *,
+    seed: int,
+    start_time: int,
+    user_id: Any,
+) -> dict[str, Any]:
+    """Build the battle object the in-page engine expects for one rival.
+
+    The shape mirrors a live ``titanArenaStartBattle`` battle (captured via
+    ``toe attack --debug``): ``seed`` / ``startTime`` are numbers,
+    ``defenders`` is a single-element list of team dicts, and the per-rival
+    seed is the rival's own ``seed`` from ``titanArenaStartRaid`` /
+    ``titanArenaGetStatus``. Raise-style payloads (``seed: 0``, guessed
+    defenders) make the in-page calc fail, which the userscript reports as
+    a dummy loss.
+    """
+    return {
+        "userId": str(user_id or ""),
+        "typeId": str(rival_id),
+        "attackers": attackers,
+        "defenders": [defenders],
+        "effects": [],
+        "reward": [],
+        "startTime": start_time,
+        "seed": seed,
+        "type": "titan_arena",
+    }
+
+
 def _run_raid(
     client: HWClient,
     status: dict[str, Any],
@@ -981,33 +1183,113 @@ def _run_raid(
     )
     if not start.is_success:
         raid_summary["error"] = f"StartRaid failed: {start.error_name}"
+        raid_summary["no_verified"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
         return raid_summary
     detail = start.detail if isinstance(start.detail, dict) else {}
     response = detail.get("response", detail) if isinstance(detail, dict) else {}
-    attackers = response.get("attackers") if isinstance(response, dict) else None
-    raid_rivals = response.get("rivals") if isinstance(response, dict) else None
-    if not isinstance(attackers, dict) or not isinstance(raid_rivals, dict):
-        raid_summary["error"] = "StartRaid returned unexpected payload"
+    if not isinstance(response, dict):
+        response = {}
+    # Keep the raw payload reachable via ``--debug``: the successful shape is
+    # not documented and StartRaid carries no ``startTime``, unlike a
+    # StartBattle battle or a battle replay.
+    logger.debug(
+        "StartRaid response: %s",
+        json.dumps(response, ensure_ascii=False, default=str)[:4000],
+    )
+    raid_rivals = response.get("rivals")
+    attackers = _extract_titan_team(response.get("attackers"))
+    if attackers is None:
+        # Some payloads wrap the roster under a different key.
+        attackers = _extract_titan_team(response.get("team"))
+    if attackers is None:
+        # Last resort: our own defense team; validated against the requested
+        # lineup below before it is ever simulated.
+        attackers = _extract_titan_team(status.get("defenders"))
+    expected_attackers = {str(t) for t in titans}
+    if attackers is not None and set(attackers) != expected_attackers:
+        # A truncated/different roster cannot reproduce the raid battle the
+        # server started, so never simulate it or report it to EndRaid.
+        raid_summary["error"] = (
+            "StartRaid attackers do not match the requested titans "
+            f"({sorted(attackers)} != {sorted(expected_attackers)})"
+        )
+        raid_summary["no_verified"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
+        logger.debug(
+            "StartRaid payload: %s",
+            json.dumps(response, ensure_ascii=False, default=str)[:2000],
+        )
+        return raid_summary
+    if attackers is None or not isinstance(raid_rivals, dict) or not raid_rivals:
+        raid_summary["error"] = "StartRaid returned unexpected payload"
+        raid_summary["no_verified"] = True
+        print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
+        logger.debug(
+            "StartRaid payload: %s",
+            json.dumps(response, ensure_ascii=False, default=str)[:2000],
+        )
         return raid_summary
 
+    # A live StartBattle battle stamps ``startTime`` with the client clock;
+    # StartRaid omits it, so mirror that convention. The per-rival battle
+    # uses the rival's own seed, never a constant.
+    start_time = _raid_start_time(response) or int(time.time())
+    user_id = (
+        response.get("userId")
+        or status.get("userId")
+        or client.headers.get("x-auth-user-id")
+        or ""
+    )
     results: dict[str, dict[str, Any]] = {}
     bridge_errors = 0
-    for rival_id, rival_defenders in raid_rivals.items():
+    for rival_id, raw_rival in raid_rivals.items():
         if _cancel_requested():
             raise _interrupted_error([])
-        battle = {
-            "userId": str(status.get("userId") or rival_id),
-            "typeId": str(rival_id),
-            "attackers": attackers,
-            "defenders": [rival_defenders] if isinstance(rival_defenders, dict) else [],
-            "effects": [],
-            "reward": [],
-            "startTime": 0,
-            "seed": 0,
-            "type": "titan_arena",
-        }
+        rid = str(rival_id)
+        status_rival = rivals.get(rid) if isinstance(rivals, dict) else None
+        expected_defenders = _extract_titan_team(status_rival)
+        defender_team = _extract_titan_team(raw_rival)
+        if defender_team is None:
+            # StartRaid may echo only a stub; GetStatus has the full roster.
+            defender_team = expected_defenders
+        elif expected_defenders is not None and set(defender_team) != set(expected_defenders):
+            # Stale/truncated echo: never simulate a roster the server did not
+            # start. The per-rival path retries this rival with StartBattle.
+            defender_team = None
+        if defender_team is not None and len(defender_team) != len(titans):
+            # Refuse a truncated roster outright, even when the raid echo and
+            # GetStatus agree on the same (short) id set.
+            defender_team = None
+        seed = _normalize_raid_seed(
+            raw_rival.get("seed") if isinstance(raw_rival, dict) else None
+        )
+        if seed is None and isinstance(status_rival, dict):
+            seed = _normalize_raid_seed(status_rival.get("seed"))
+        # ``startTime`` is not part of StartRaid's payload; it is filled from
+        # the client clock above, exactly like a live StartBattle battle.
+        missing = [
+            name
+            for name, value in (("defenders", defender_team), ("seed", seed))
+            if value is None
+        ]
+        if missing:
+            # Without the real roster + seed the in-page calc can only fail
+            # (dummy loss), so keep it out of EndRaid and let the per-rival
+            # path retry this rival with StartBattle.
+            raid_summary["battles"].append(
+                {"rivalId": rid, "error": f"missing {'/'.join(missing)}"}
+            )
+            _vprint(progress, f"  - raid rival {rid}: skipped (missing {'/'.join(missing)})")
+            continue
+        battle = _build_raid_battle(
+            rid,
+            attackers,
+            defender_team,
+            seed=seed,
+            start_time=start_time,
+            user_id=user_id,
+        )
         try:
             est = _engine_calc(engine, battle, progress)
             if not _has_any_heroes(est.progress):
@@ -1016,21 +1298,21 @@ def _run_raid(
                 # A dummy proves the bridge answered, so it resets the
                 # consecutive-error count like any successful contact.
                 bridge_errors = 0
-                raid_summary["battles"].append({"rivalId": str(rival_id), "win": False, "dummy": True})
-                _vprint(progress, f"  - raid rival {rival_id}: dummy loss skipped (unverified calc)")
+                raid_summary["battles"].append({"rivalId": rid, "win": False, "dummy": True})
+                _vprint(progress, f"  - raid rival {rid}: dummy loss skipped (unverified calc)")
                 continue
             bridge_errors = 0
-            results[str(rival_id)] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
-            raid_summary["battles"].append({"rivalId": str(rival_id), "win": est.win})
-            _vprint(progress, f"  - raid rival {rival_id}: win={est.win}")
+            results[rid] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
+            raid_summary["battles"].append({"rivalId": rid, "win": est.win})
+            _vprint(progress, f"  - raid rival {rid}: win={est.win}")
         except (KeyboardInterrupt, InterruptedError):
             raise
         except (BridgeError, Exception) as exc:
             if isinstance(engine, PythonBattleEngine):
                 raise
             bridge_errors += 1
-            raid_summary["battles"].append({"rivalId": str(rival_id), "error": str(exc)})
-            _vprint(progress, f"  - raid rival {rival_id}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
+            raid_summary["battles"].append({"rivalId": rid, "error": str(exc)})
+            _vprint(progress, f"  - raid rival {rid}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
             if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
                 raise BridgeDeadError(
                     f"userscript not answering during raid ({bridge_errors} consecutive bridge errors)",
@@ -1041,10 +1323,35 @@ def _run_raid(
             # out of the results so the server scores only verified battles.
             continue
 
+    missing_skips = [
+        b
+        for b in raid_summary["battles"]
+        if str(b.get("error", "")).startswith("missing ")
+    ]
+    error_skips = [
+        b
+        for b in raid_summary["battles"]
+        if b.get("error") and not str(b.get("error", "")).startswith("missing ")
+    ]
+    raid_summary["skipped"] = len(missing_skips)
+    if missing_skips:
+        _aprint(
+            progress,
+            f"{Emojis.WARNING}Raid skipped {len(missing_skips)} rival(s) "
+            "(missing/invalid battle data); individual battles will retry them.",
+        )
+    if error_skips:
+        _aprint(
+            progress,
+            f"{Emojis.WARNING}Raid engine/bridge errors for {len(error_skips)} "
+            "rival(s); individual battles will retry them.",
+        )
+
     if _cancel_requested():
         raise _interrupted_error([])
     if not results:
         raid_summary["error"] = "no verified raid results; EndRaid skipped"
+        raid_summary["no_verified"] = True
         print(f"{Emojis.WARNING}{raid_summary['error']}", flush=True)
         return raid_summary
 
@@ -1061,17 +1368,31 @@ def _run_raid(
     )
     if not end.is_success:
         raid_summary["error"] = f"EndRaid failed: {end.error_name}"
+        # Nothing was banked, and a same-tier retry would replay the same
+        # request, so the caller switches to individual battles.
+        raid_summary["no_verified"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
         return raid_summary
     end_detail = end.detail if isinstance(end.detail, dict) else {}
     end_response = end_detail.get("response", {}) if isinstance(end_detail, dict) else {}
     end_results = end_response.get("results") if isinstance(end_response, dict) else None
-    if isinstance(end_results, dict):
-        raid_summary["completed"] = all(
-            (v.get("attackScore") or 0) >= threshold for v in end_results.values() if isinstance(v, dict)
-        )
+    # A raid only counts as completed when every rival was submitted and the
+    # server scored each one at/above the threshold: a partial raid (skipped
+    # or unverified rival) leaves targets behind.
+    scored = (
+        {str(k): v for k, v in end_results.items() if isinstance(v, dict)}
+        if isinstance(end_results, dict)
+        else {}
+    )
+    raid_summary["completed"] = (
+        len(results) == len(raid_rivals)
+        and set(results) <= set(scored)
+        and all(_attack_score(scored[rid]) >= threshold for rid in results)
+    )
     print(
-        f"{Emojis.STEP}Raid results completed={raid_summary['completed']}", flush=True,
+        f"{Emojis.STEP}Raid results completed={raid_summary['completed']} "
+        f"(verified {len(results)}/{len(raid_rivals)})",
+        flush=True,
     )
     return raid_summary
 

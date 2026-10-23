@@ -21,6 +21,53 @@ def _err(name: str, detail: dict | None = None) -> MagicMock:
     return res
 
 
+def _titan_team(base: int = 4100) -> dict:
+    """Minimal GetStatus-style roster (``state`` is stripped before battle)."""
+    return {
+        str(base + i): {
+            "id": base + i,
+            "type": "titan",
+            "level": 120,
+            "power": 50000,
+            "state": {"hp": 1, "energy": 0, "isDead": False},
+        }
+        for i in range(5)
+    }
+
+
+def _raid_start_payload(
+    rival_ids: list[str],
+    *,
+    seed: int = 1234567,
+    defender_base: int = 4200,
+    attacker_ids: list[int] | None = None,
+    start_time: int | None = None,
+) -> dict:
+    """Realistic StartRaid response: rival ``team``/``seed``, no ``startTime``.
+
+    A live StartRaid response has no ``startTime`` (the raid path fills it from
+    the client clock), so it is opt-in here to mirror the wire.
+    """
+    attackers = (
+        {
+            str(t): {"id": t, "type": "titan", "level": 120, "power": 50000}
+            for t in attacker_ids
+        }
+        if attacker_ids is not None
+        else _titan_team()
+    )
+    payload: dict = {
+        "attackers": attackers,
+        "rivals": {
+            rid: {"team": _titan_team(defender_base + i * 10), "seed": seed + i}
+            for i, rid in enumerate(rival_ids)
+        },
+    }
+    if start_time is not None:
+        payload["startTime"] = start_time
+    return payload
+
+
 def test_run_titan_arena_dry_run_does_not_call_end_battle(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
@@ -759,10 +806,7 @@ def test_run_raid_bridge_breaker_skips_fake_and_raises(mock_client, mock_sleep):
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {"a": {"attackScore": 0}}}
-    start_payload = {
-        "attackers": {"4003": {"id": 4003}},
-        "rivals": {"r1": {"t": 1}, "r2": {"t": 2}, "r3": {"t": 3}},
-    }
+    start_payload = _raid_start_payload(["r1", "r2", "r3"], attacker_ids=[1, 2, 3, 4, 5])
     mock_call.side_effect = [_ok({"response": start_payload})]
     with pytest.raises(BridgeDeadError):
         _run_raid(client, status, [1, 2, 3, 4, 5], FlakyEngine(), 250)
@@ -792,7 +836,7 @@ def test_run_raid_partial_bridge_errors_skip_only_failed(mock_client, mock_sleep
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
-    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}}}
+    start_payload = _raid_start_payload(["r1", "r2"], attacker_ids=[1, 2, 3, 4, 5])
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
@@ -1301,7 +1345,9 @@ def test_run_raid_bridge_breaker_resets_on_success(mock_client, mock_sleep):
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
-    start_payload = {"attackers": {"4003": {}}, "rivals": {f"r{i}": {"t": i} for i in range(1, 6)}}
+    start_payload = _raid_start_payload(
+        [f"r{i}" for i in range(1, 6)], attacker_ids=[1, 2, 3, 4, 5]
+    )
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {}}}),
@@ -1345,7 +1391,7 @@ def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
-    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}}}
+    start_payload = _raid_start_payload(["r1", "r2"], attacker_ids=[1, 2, 3, 4, 5])
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
@@ -1401,12 +1447,682 @@ def test_run_raid_dummy_resets_breaker(mock_client, mock_sleep):
 
     client, mock_call = mock_client
     status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
-    start_payload = {"attackers": {"4003": {}}, "rivals": {"r1": {"t": 1}, "r2": {"t": 2}, "r3": {"t": 3}, "r4": {"t": 4}}}
+    start_payload = _raid_start_payload(
+        ["r1", "r2", "r3", "r4"], attacker_ids=[1, 2, 3, 4, 5]
+    )
     mock_call.side_effect = [_ok({"response": start_payload})]
     # error,error,dummy(reset),error → must NOT raise (would raise at 3 without reset).
     summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
     assert len(summary["battles"]) == 4
     assert summary["battles"][2] == {"rivalId": "r3", "win": False, "dummy": True}
+
+
+def test_extract_titan_team_variants():
+    """Plain / wrapped / list rosters normalize; junk returns None."""
+    from hw_genie.commands.titan_arena import _extract_titan_team
+
+    plain = {"4003": {"id": 4003, "state": {"hp": 1}}}
+    stripped = {"4003": {"id": 4003}}
+    assert _extract_titan_team(plain) == stripped
+    assert _extract_titan_team({"titans": plain}) == stripped
+    assert _extract_titan_team({"heroes": plain}) == stripped
+    assert _extract_titan_team({"team": plain}) == stripped
+    assert _extract_titan_team({"defenders": [plain]}) == stripped
+    assert _extract_titan_team([{"id": 4003, "state": {"hp": 1}}]) == stripped
+    # Count validation happens at consumption, not extraction.
+    one_hero = {"4003": {"id": 4003, "level": 120}}
+    assert _extract_titan_team(one_hero) == one_hero
+    # ``id`` is optional; a plausibility key (here ``level``) is enough.
+    no_id = {"4003": {"level": 120}}
+    assert _extract_titan_team(no_id) == no_id
+    assert _extract_titan_team({"t": 1}) is None
+    assert _extract_titan_team({"attackScore": 0}) is None
+    assert _extract_titan_team({"1": {"attackScore": 0}}) is None
+    assert _extract_titan_team([{"id": 1, "level": 2}, {"4003": {"id": 4003}}]) is None
+    assert _extract_titan_team(None) is None
+
+
+def test_normalize_raid_seed_unsigned():
+    """Numeric and replay-string seeds normalize to the raw int seed."""
+    from hw_genie.commands.titan_arena import _normalize_raid_seed
+
+    assert _normalize_raid_seed(2518497778) == 2518497778
+    assert _normalize_raid_seed(-1776469518) == -1776469518
+    assert _normalize_raid_seed("284058320") == 284058320
+    # Unusable seeds are treated as missing (0 is the StartRaid stub bug).
+    assert _normalize_raid_seed(0) is None
+    assert _normalize_raid_seed(2**32) is None
+    assert _normalize_raid_seed(-2**31 - 1) is None
+    assert _normalize_raid_seed(None) is None
+    assert _normalize_raid_seed("nope") is None
+    assert _normalize_raid_seed(True) is None
+
+
+def test_raid_start_time_rejects_zero_and_missing():
+    """A stub/non-positive startTime is unusable; positive epochs survive."""
+    from hw_genie.commands.titan_arena import _raid_start_time
+
+    assert _raid_start_time({"startTime": 0}) is None
+    assert _raid_start_time({"startTime": "0"}) is None
+    assert _raid_start_time({"startTime": -1}) is None
+    assert _raid_start_time({"startTime": True}) is None
+    assert _raid_start_time({"startTime": "nope"}) is None
+    assert _raid_start_time({}) is None
+    assert _raid_start_time({"startTime": "1700000000"}) == 1700000000
+    assert _raid_start_time({}, {"startTime": 1700000001}) == 1700000001
+
+
+def test_run_raid_battle_uses_live_start_battle_shape(mock_client, mock_sleep):
+    """Raid battle mirrors a live StartBattle: numeric seed/startTime, roster list."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    seen: dict = {}
+
+    class CaptureEngine:
+        def calc(self, battle):
+            seen.update(battle)
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(
+        ["r1"], seed=-1776469518, start_time=1700000000
+    )
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250
+    )
+    assert seen["seed"] == -1776469518
+    assert seen["startTime"] == 1700000000
+    assert seen["typeId"] == "r1"
+    assert seen["type"] == "titan_arena"
+    assert isinstance(seen["defenders"], list) and len(seen["defenders"]) == 1
+    assert "state" not in seen["defenders"][0]["4200"]
+    assert "state" not in seen["attackers"]["4100"]
+    end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
+    assert end_args["r1"]["result"]["win"] is True
+    assert summary["completed"] is True
+
+
+def test_run_raid_falls_back_to_status_roster_and_seed(mock_client, mock_sleep):
+    """A stub StartRaid rival entry is filled from titanArenaGetStatus."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    seen: list[dict] = []
+
+    class CaptureEngine:
+        def calc(self, battle):
+            seen.append(battle)
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "userId": "42",
+        "rivals": {"r1": {"titans": _titan_team(4300), "seed": 99}},
+    }
+    # startTime comes from the StartRaid response, not GetStatus.
+    start_payload = {
+        "attackers": _titan_team(),
+        "startTime": 1700000000,
+        "rivals": {"r1": {"attackScore": 0}},
+    }
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    _run_raid(client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250)
+    assert seen[0]["seed"] == 99
+    assert seen[0]["startTime"] == 1700000000
+    assert seen[0]["defenders"][0]["4300"]["id"] == 4300
+    assert "state" not in seen[0]["defenders"][0]["4300"]
+    assert seen[0]["userId"] == "42"
+
+
+def test_run_raid_skips_rival_without_seed(mock_client, mock_sleep):
+    """A rival without a usable seed is left to the per-rival path."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    calls: list[str] = []
+
+    class CaptureEngine:
+        def calc(self, battle):
+            calls.append(battle["typeId"])
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1", "r2"])
+    del start_payload["rivals"]["r1"]["seed"]
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250
+    )
+    assert calls == ["r2"]
+    assert summary["battles"][0]["rivalId"] == "r1"
+    assert "seed" in summary["battles"][0]["error"]
+    end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
+    assert set(end_args) == {"r2"}
+
+
+def test_run_raid_unexpected_payload_marks_no_verified(mock_client, mock_sleep):
+    """A malformed StartRaid response must not be retried as a raid."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    mock_call.side_effect = [_ok({"response": {"rivals": {"r1": {"seed": 1}}}})]
+    summary = _run_raid(client, status, [4100, 4101, 4102, 4103, 4104], PythonBattleEngine(), 250)
+    assert summary["no_verified"] is True
+    assert "unexpected payload" in summary["error"]
+    assert mock_call.call_count == 1
+
+
+def _verified_engine(seen: dict | None = None):
+    """Engine stub returning a verified win (usable progress)."""
+    from hw_genie.battle.engine import BattleEstimate
+
+    class VerifiedEngine:
+        def calc(self, battle):
+            if seen is not None:
+                seen.update(battle)
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    return VerifiedEngine()
+
+
+def test_run_raid_seed_zero_stub_falls_back_to_status(mock_client, mock_sleep):
+    """A ``seed: 0`` StartRaid stub uses the rival seed from GetStatus."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    seen: dict = {}
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {"r1": {"seed": -1776469518}}}
+    start_payload = _raid_start_payload(["r1"])
+    start_payload["rivals"]["r1"]["seed"] = 0
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(seen), 250
+    )
+    assert seen["seed"] == -1776469518
+    assert summary["completed"] is True
+
+
+def test_run_raid_start_failure_marks_no_verified(mock_client, mock_sleep):
+    """A rejected StartRaid banks nothing and disables the raid."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    mock_call.side_effect = [_err("NotAvailable")]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], PythonBattleEngine(), 250
+    )
+    assert summary["no_verified"] is True
+    assert summary["completed"] is False
+    assert mock_call.call_count == 1  # no EndRaid
+
+
+def test_run_raid_end_failure_marks_no_verified(mock_client, mock_sleep):
+    """A failed EndRaid banks nothing, so the tier must fall back."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _err("Invalid battle"),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["no_verified"] is True
+    assert summary["completed"] is False
+    assert "EndRaid failed" in summary["error"]
+
+
+def test_run_raid_fills_missing_start_time(mock_client, mock_sleep, mocker):
+    """StartRaid omits startTime; the battle gets the client-clock epoch."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    mocker.patch("hw_genie.commands.titan_arena.time.time", return_value=1800000000)
+    seen: list[dict] = []
+
+    class CaptureEngine:
+        def calc(self, battle):
+            seen.append(battle)
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1", "r2"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}, "r2": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250
+    )
+    assert [b["typeId"] for b in seen] == ["r1", "r2"]
+    assert all(b["startTime"] == 1800000000 for b in seen)
+    assert summary["completed"] is True
+
+
+def test_run_raid_partial_is_not_completed(mock_client, mock_sleep):
+    """A partial raid (one rival skipped) must not report completed."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1", "r2"])
+    del start_payload["rivals"]["r2"]["seed"]
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["completed"] is False
+    assert "no_verified" not in summary
+
+
+@pytest.mark.parametrize(
+    ("status_rivals", "defender_count"),
+    [
+        ({"r1": {"titans": _titan_team(4300), "seed": 99}}, 1),
+        ({}, 4),
+    ],
+)
+def test_run_raid_skips_truncated_defender_roster(
+    mock_client, mock_sleep, status_rivals, defender_count
+):
+    """Truncated/inconsistent defender rosters are skipped, never simulated."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    calls: list[str] = []
+
+    class CaptureEngine:
+        def calc(self, battle):
+            calls.append(battle["typeId"])
+            raise AssertionError("engine must not be called for a skipped rival")
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": status_rivals}
+    defenders = dict(list(_titan_team(4400).items())[:defender_count])
+    start_payload = {
+        "attackers": _titan_team(),
+        "startTime": "1700000000",
+        "rivals": {"r1": {"titans": defenders, "seed": "1234567"}},
+    }
+    mock_call.side_effect = [_ok({"response": start_payload})]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250
+    )
+    assert calls == []
+    assert summary["skipped"] == 1
+    assert summary["no_verified"] is True
+    assert summary["battles"][0]["rivalId"] == "r1"
+    assert "defenders" in summary["battles"][0]["error"]
+    assert mock_call.call_count == 1  # no EndRaid
+
+
+def test_run_raid_completed_requires_threshold_for_submitted(mock_client, mock_sleep):
+    """A submitted rival scored below the threshold keeps the raid incomplete."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1", "r2"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok(
+            {
+                "response": {
+                    "results": {
+                        "r1": {"attackScore": "250"},
+                        "r2": {"attackScore": "100"},
+                        "extra": {"attackScore": 0},
+                    }
+                }
+            }
+        ),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["completed"] is False
+
+
+def test_run_raid_rejects_attackers_mismatching_requested_titans(
+    mock_client, mock_sleep
+):
+    """Status defenders from another titan set must not become attackers."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "defenders": _titan_team(4300),
+        "rivals": {"r1": {"titans": _titan_team(4400), "seed": 99}},
+    }
+    start_payload = {
+        "startTime": "1700000000",
+        "rivals": {"r1": {"titans": _titan_team(4400), "seed": "1234567"}},
+    }
+    mock_call.side_effect = [_ok({"response": start_payload})]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["no_verified"] is True
+    assert "attackers" in summary["error"]
+    assert summary["completed"] is False
+    assert mock_call.call_count == 1  # no EndRaid
+
+
+def test_run_raid_ignores_status_start_time(mock_client, mock_sleep, mocker):
+    """A GetStatus startTime is not a raid battle timestamp; use the clock."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    mocker.patch("hw_genie.commands.titan_arena.time.time", return_value=1800000000)
+    seen: list[dict] = []
+
+    class CaptureEngine:
+        def calc(self, battle):
+            seen.append(battle)
+            return BattleEstimate(
+                win=True,
+                stars=3,
+                progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+            )
+
+    client, mock_call = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "startTime": 1700000000,
+        "rivals": {"r1": {"titans": _titan_team(4300), "seed": 99}},
+    }
+    start_payload = {
+        "attackers": _titan_team(),
+        "rivals": {"r1": {"attackScore": 0}},
+    }
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], CaptureEngine(), 250
+    )
+    assert len(seen) == 1
+    assert seen[0]["startTime"] == 1800000000
+    assert seen[0]["seed"] == 99
+    assert summary["completed"] is True
+
+
+def test_run_raid_skip_warning_at_line_progress(
+    capsys, mock_client, mock_sleep
+):
+    """Skipped rivals are reported once even in compact line progress."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1", "r2"])
+    del start_payload["rivals"]["r1"]["seed"]
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+    ]
+    _run_raid(
+        client,
+        status,
+        [4100, 4101, 4102, 4103, 4104],
+        _verified_engine(),
+        250,
+        progress="line",
+    )
+    out = capsys.readouterr().out
+    assert "Raid skipped 1 rival(s)" in out
+
+
+def test_tier_partial_raid_falls_through_to_rivals(mock_client, mock_sleep, mocker):
+    """A partial raid must not take the completed branch: rivals still run."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "canRaid": True,
+        "rivals": {"r1": {"attackScore": 0}, "r2": {"attackScore": 0}},
+    }
+    start_payload = _raid_start_payload(["r1", "r2"], attacker_ids=[1, 2, 3, 4, 5])
+    del start_payload["rivals"]["r2"]["seed"]
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+    ]
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status", return_value=status
+    )
+    spy_rivals = mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals", return_value=[]
+    )
+    spy_complete = mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=_verified_engine()
+    )
+    spy_rivals.assert_called_once()
+    spy_complete.assert_not_called()
+    assert summary["raid_results"][0]["completed"] is False
+
+
+def test_tier_suppresses_raid_retry_after_no_verified(mock_client, mock_sleep, mocker):
+    """Once a raid yields nothing verifiable, later passes skip it."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[status, dict(status)],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 1
+    assert any(r.get("win") for r in summary["rival_results"])
+    assert summary["raid_fallback"]
+    assert not any(e.get("stage") == "raid" for e in summary["errors"])
+
+
+def test_tier_advance_retries_raid_after_no_verified(mock_client, mock_sleep, mocker):
+    """A no-verified raid suppresses only its own tier; a new tier retries."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    tier8 = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    tier9 = {
+        "status": "battle",
+        "tier": 9,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[tier8, tier9],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 2
+    assert summary["raid_fallback"]
+    assert not any(e.get("stage") == "raid" for e in summary["errors"])
+
+
+def test_tier_string_tier_retries_on_new_tier(mock_client, mock_sleep, mocker):
+    """Live GetStatus reports ``tier`` as a string; suppression keys on it."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    tier5 = {
+        "status": "battle",
+        "tier": "5",
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    tier6 = {**tier5, "tier": "6"}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[tier5, tier6],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 2
+    assert summary["raid_fallback"]
+
+
+def test_tier_without_tier_resets_raid_suppression(mock_client, mock_sleep, mocker):
+    """A missing tier must not leave a stale suppression marker behind."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    no_tier = {
+        "status": "battle",
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    tier9 = {
+        "status": "battle",
+        "tier": 9,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[no_tier, tier9],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 2
+    assert summary["raid_fallback"]
+    assert not any(e.get("stage") == "raid" for e in summary["errors"])
 
 
 def test_run_rivals_non_timeout_bridge_errors_raise_dead(mock_client, mock_sleep, mocker):
