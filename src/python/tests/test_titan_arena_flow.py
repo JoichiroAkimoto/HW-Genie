@@ -171,8 +171,9 @@ def test_run_titan_arena_tier_runs_rivals_then_completes(mock_client, mock_sleep
         "101": {"userId": "101", "power": "100", "titans": {}, "attackScore": 100, "seed": "0", "defenceScore": "0"},
     }
     # Sequence: getStatus -> StartBattle -> EndBattle (per rival x2) ->
-    # CompleteTier -> FarmDailyReward -> getStatus (all cleared) -> Farm -> return.
-    # The loop keeps going across passes until no rival is left to attack.
+    # CompleteTier -> FarmDailyReward -> getStatus (all cleared) ->
+    # getStatus (post-pass recheck, same tier) -> return without a duplicate
+    # CompleteTier/Farm.
     cleared = {
         "100": {"userId": "100", "power": "100", "titans": {}, "attackScore": 250, "seed": "0", "defenceScore": "0"},
         "101": {"userId": "101", "power": "100", "titans": {}, "attackScore": 250, "seed": "0", "defenceScore": "0"},
@@ -186,7 +187,7 @@ def test_run_titan_arena_tier_runs_rivals_then_completes(mock_client, mock_sleep
         _ok({"response": {}}),  # CompleteTier
         _ok({"response": {}}),  # FarmDailyReward
         _ok({"response": {"status": "battle", "tier": 7, "rivals": cleared, "canRaid": False}}),
-        _ok({"response": {}}),  # FarmDailyReward (nothing left)
+        _ok({"response": {"status": "battle", "tier": 7, "rivals": cleared, "canRaid": False}}),
     ]
     summary = run_titan_arena_tier(
         client,
@@ -840,12 +841,28 @@ def test_run_raid_partial_bridge_errors_skip_only_failed(mock_client, mock_sleep
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+        # The skipped rival was already cleared: the post-raid status is
+        # authoritative and the tier is complete despite the partial echo.
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 1,
+                    "rivals": {
+                        "r1": {"attackScore": 250},
+                        "r2": {"attackScore": 250},
+                    },
+                }
+            }
+        ),
     ]
     summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
     assert len(summary["battles"]) == 2
-    assert mock_call.call_count == 2
+    assert mock_call.call_count == 3
     end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
     assert set(end_args) == {"r2"}
+    assert summary["completed"] is True
+    assert summary["completed_basis"] == "status"
 
 
 def test_is_beaten_already_negative_and_log(mock_client, mock_sleep, capsys):
@@ -1351,10 +1368,21 @@ def test_run_raid_bridge_breaker_resets_on_success(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {}}}),
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 1,
+                    "rivals": {f"r{i}": {"attackScore": 250} for i in range(1, 6)},
+                }
+            }
+        ),
     ]
     summary = _run_raid(client, status, [1, 2, 3, 4, 5], FlakyEngine(), 250)
     assert len(summary["battles"]) == 5
     assert "error" not in summary
+    assert summary["completed"] is True
+    assert summary["completed_basis"] == "status"
 
 
 def test_has_any_heroes():
@@ -1395,10 +1423,24 @@ def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r2": {"attackScore": 250}}}}),
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 1,
+                    "rivals": {
+                        "r1": {"attackScore": 0},
+                        "r2": {"attackScore": 250},
+                    },
+                }
+            }
+        ),
     ]
     summary = _run_raid(client, status, [1, 2, 3, 4, 5], DummyEngine(), 250)
     end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
     assert set(end_args) == {"r2"}
+    assert summary["completed"] is False
+    assert summary["completed_basis"] == "status"
     assert summary["battles"][0] == {"rivalId": "r1", "win": False, "dummy": True}
 
 
@@ -1622,7 +1664,8 @@ def test_run_raid_skips_rival_without_seed(mock_client, mock_sleep):
     )
     assert calls == ["r2"]
     assert summary["battles"][0]["rivalId"] == "r1"
-    assert "seed" in summary["battles"][0]["error"]
+    assert "seed" in summary["battles"][0]["reason"]
+    assert summary["battles"][0]["skipped"] is True
     end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
     assert set(end_args) == {"r2"}
 
@@ -1689,6 +1732,8 @@ def test_run_raid_start_failure_marks_no_verified(mock_client, mock_sleep):
     )
     assert summary["no_verified"] is True
     assert summary["completed"] is False
+    assert summary["completed_basis"] is None
+    assert summary["api_error"] is True
     assert mock_call.call_count == 1  # no EndRaid
 
 
@@ -1708,6 +1753,7 @@ def test_run_raid_end_failure_marks_no_verified(mock_client, mock_sleep):
     )
     assert summary["no_verified"] is True
     assert summary["completed"] is False
+    assert summary["api_error"] is True
     assert "EndRaid failed" in summary["error"]
 
 
@@ -1754,12 +1800,66 @@ def test_run_raid_partial_is_not_completed(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 8,
+                    "rivals": {
+                        "r1": {"attackScore": 250},
+                        "r2": {"attackScore": 0},
+                    },
+                }
+            }
+        ),
     ]
     summary = _run_raid(
         client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
     )
     assert summary["completed"] is False
-    assert "no_verified" not in summary
+    assert summary["completed_basis"] == "status"
+    assert summary["no_verified"] is False
+
+
+def test_run_raid_non_battle_status_is_unverified(mock_client, mock_sleep):
+    """A post-raid peace_time/disabled status is not proof of completion."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {}}}),
+        _ok({"response": {"status": "peace_time", "rivals": {}}}),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["completed"] is False
+    assert summary["completed_basis"] == "unverified"
+    assert summary["no_verified"] is True
+
+
+def test_run_raid_unverified_completion_falls_back(mock_client, mock_sleep):
+    """No echo and no status must not guess completion; fall back safely."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {}}}),
+        _err("status unavailable"),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["completed"] is False
+    assert summary["completed_basis"] == "unverified"
+    assert summary["no_verified"] is True
+    assert "completion unverified" in summary["error"]
 
 
 @pytest.mark.parametrize(
@@ -1798,7 +1898,8 @@ def test_run_raid_skips_truncated_defender_roster(
     assert summary["skipped"] == 1
     assert summary["no_verified"] is True
     assert summary["battles"][0]["rivalId"] == "r1"
-    assert "defenders" in summary["battles"][0]["error"]
+    assert "defenders" in summary["battles"][0]["reason"]
+    assert summary["battles"][0]["skipped"] is True
     assert mock_call.call_count == 1  # no EndRaid
 
 
@@ -1940,11 +2041,23 @@ def test_tier_partial_raid_falls_through_to_rivals(mock_client, mock_sleep, mock
         _ok({"response": start_payload}),
         _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
     ]
+    post_raid = {
+        "status": "battle",
+        "tier": 8,
+        "canRaid": False,
+        "rivals": {"r1": {"attackScore": 250}, "r2": {"attackScore": 0}},
+    }
     mocker.patch(
-        "hw_genie.commands.titan_arena.fetch_titan_arena_status", return_value=status
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            status,
+            post_raid,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
     )
     spy_rivals = mocker.patch(
-        "hw_genie.commands.titan_arena._run_rivals", return_value=[]
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "r2", "win": True}],
     )
     spy_complete = mocker.patch("hw_genie.commands.titan_arena._complete_tier")
     mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
@@ -1953,7 +2066,7 @@ def test_tier_partial_raid_falls_through_to_rivals(mock_client, mock_sleep, mock
         client, titans=[1, 2, 3, 4, 5], engine=_verified_engine()
     )
     spy_rivals.assert_called_once()
-    spy_complete.assert_not_called()
+    spy_complete.assert_called_once()
     assert summary["raid_results"][0]["completed"] is False
 
 
@@ -1970,7 +2083,11 @@ def test_tier_suppresses_raid_retry_after_no_verified(mock_client, mock_sleep, m
     }
     mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[status, dict(status)],
+        side_effect=[
+            status,
+            dict(status),
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
     )
     spy_raid = mocker.patch(
         "hw_genie.commands.titan_arena._run_raid",
@@ -2016,7 +2133,11 @@ def test_tier_advance_retries_raid_after_no_verified(mock_client, mock_sleep, mo
     }
     mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[tier8, tier9],
+        side_effect=[
+            tier8,
+            tier9,
+            {"status": "peace_time", "tier": 9, "rivals": {}},
+        ],
     )
     spy_raid = mocker.patch(
         "hw_genie.commands.titan_arena._run_raid",
@@ -2056,7 +2177,11 @@ def test_tier_string_tier_retries_on_new_tier(mock_client, mock_sleep, mocker):
     tier6 = {**tier5, "tier": "6"}
     mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[tier5, tier6],
+        side_effect=[
+            tier5,
+            tier6,
+            {"status": "peace_time", "tier": 6, "rivals": {}},
+        ],
     )
     spy_raid = mocker.patch(
         "hw_genie.commands.titan_arena._run_raid",
@@ -2081,6 +2206,608 @@ def test_tier_string_tier_retries_on_new_tier(mock_client, mock_sleep, mocker):
     assert summary["raid_fallback"]
 
 
+def test_tier_mixed_tier_types_do_not_retry_raid(mock_client, mock_sleep, mocker):
+    """A ``8`` → ``"8"`` type flip inside one tier must not lift suppression."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    int_tier = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    str_tier = {**int_tier, "tier": "8"}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            int_tier,
+            str_tier,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 1
+
+
+def test_tier_new_tier_clears_stale_raid_fallback(mock_client, mock_sleep, mocker):
+    """A new tier must not leave the previous tier's fallback reason behind."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    tier8 = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    tier9 = {**tier8, "tier": 9}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            tier8,
+            tier9,
+            {"status": "peace_time", "tier": 9, "rivals": {}},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        side_effect=[
+            {
+                "stage": "raid",
+                "battles": [],
+                "completed": False,
+                "no_verified": True,
+                "error": "no verified raid results; EndRaid skipped",
+            },
+            {
+                "stage": "raid",
+                "battles": [{"rivalId": "-1", "win": True}],
+                "completed": True,
+            },
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}]],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._complete_tier")
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert summary["raid_fallback"] is None
+
+
+def test_run_raid_ignores_echo_without_attack_score(mock_client, mock_sleep):
+    """A complete-looking echo without scores is not trusted; status decides."""
+    from hw_genie.commands.titan_arena import _run_raid
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 8, "rivals": {}}
+    start_payload = _raid_start_payload(["r1"])
+    mock_call.side_effect = [
+        _ok({"response": start_payload}),
+        _ok({"response": {"results": {"r1": {"stars": 3}}}}),
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 8,
+                    "rivals": {"r1": {"attackScore": 250}},
+                }
+            }
+        ),
+    ]
+    summary = _run_raid(
+        client, status, [4100, 4101, 4102, 4103, 4104], _verified_engine(), 250
+    )
+    assert summary["completed"] is True
+    assert summary["completed_basis"] == "status"
+    assert mock_call.call_count == 3
+
+
+def test_tier_at_max_stops_after_one_raid(mock_client, mock_sleep, mocker):
+    """At the top tier a completed raid must not loop StartRaid/CompleteTier."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    spy_fetch = mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            status,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [{"rivalId": "-1", "win": True}],
+            "completed": True,
+            "completed_basis": "status",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 1
+    assert spy_fetch.call_count == 1
+
+
+def test_tier_at_max_non_authoritative_basis_verifies(
+    mock_client, mock_sleep, mocker
+):
+    """At max tier an echo-only completion is verified before stopping."""
+    from hw_genie.commands.titan_arena import _tier_key, run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    cleared = {**status, "rivals": {"-1": {"attackScore": 250}}}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[status, cleared, cleared],
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [{"rivalId": "-1", "win": True}],
+            "completed": True,
+            "completed_basis": "endraid",
+        },
+    )
+
+    def complete(client, summary, tier=None):
+        summary["completed_tier_key"] = _tier_key(tier)
+        return True
+
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", side_effect=complete
+    )
+    spy_rivals = mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals", return_value=[]
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 1
+    assert spy_complete.call_count == 1
+    assert spy_rivals.call_count == 1
+
+
+def test_tier_change_clears_fallback_without_raid(mock_client, mock_sleep, mocker):
+    """A new canRaid=false tier still invalidates the previous fallback reason."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    tier8 = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    tier9 = {**tier8, "tier": 9, "canRaid": False}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            tier8,
+            tier9,
+            {"status": "peace_time", "tier": 9, "rivals": {}},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            "error": "no verified raid results; EndRaid skipped",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "-1", "win": True}],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert summary["raid_fallback"] is None
+
+
+@pytest.mark.parametrize(
+    ("flag", "kind"), [("api_error", "API"), ("payload_error", "payload")]
+)
+def test_tier_raid_error_is_surfaced(
+    mock_client, mock_sleep, mocker, capsys, flag, kind
+):
+    """API/payload failures stay non-fatal but are recorded and warned about."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[status, {"status": "peace_time", "tier": 8, "rivals": {}}],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [],
+            "completed": False,
+            "no_verified": True,
+            flag: True,
+            "error": "StartRaid failed: NotAvailable",
+        },
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "-1", "win": True}],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert summary["raid_errors"] == [
+        {
+            "stage": "raid",
+            "tier": 8,
+            "message": "StartRaid failed: NotAvailable",
+        }
+    ]
+    assert f"Raid {kind} error for tier 8" in capsys.readouterr().out
+
+
+def test_tier_no_rivals_refetches_and_completes(mock_client, mock_sleep, mocker):
+    """An empty target list re-checks status before skipping CompleteTier."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    initial = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    cleared = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 250}},
+        "canRaid": False,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            initial,
+            cleared,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
+    )
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", return_value=[])
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_complete.call_count == 1
+
+
+def test_tier_recheck_complete_failure_stops(mock_client, mock_sleep, mocker):
+    """A failed recheck CompleteTier returns instead of retrying every pass."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    cleared = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 9,
+        "rivals": {"-1": {"attackScore": 250}},
+        "canRaid": False,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=lambda client: cleared,
+    )
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", return_value=[])
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=False
+    )
+    spy_farm = mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_complete.call_count == 1
+    assert spy_farm.call_count == 1
+    assert summary["completed_tier"] is False
+
+
+def test_tier_same_tier_recheck_does_not_recomplete(
+    mock_client, mock_sleep, mocker
+):
+    """A tier completed in pass 1 must not be completed again in the recheck."""
+    from hw_genie.commands.titan_arena import _tier_key, run_titan_arena_tier
+
+    client, _ = mock_client
+    tier8 = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 9,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    cleared = {**tier8, "rivals": {"-1": {"attackScore": 250}}}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            tier8,
+            cleared,
+            cleared,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+
+    def complete(client, summary, tier=None):
+        summary["completed_tier_key"] = _tier_key(tier)
+        return True
+
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", side_effect=complete
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_complete.call_count == 1
+
+
+def test_tier_missing_tier_recheck_does_not_recomplete(
+    mock_client, mock_sleep, mocker
+):
+    """A missing tier still deduplicates a completed recheck via the sentinel."""
+    from hw_genie.commands.titan_arena import _tier_key, run_titan_arena_tier
+
+    client, _ = mock_client
+    no_tier = {
+        "status": "battle",
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    cleared = {**no_tier, "rivals": {"-1": {"attackScore": 250}}}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            no_tier,
+            cleared,
+            cleared,
+            {"status": "peace_time", "rivals": {}},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[[{"rivalId": "-1", "win": True}], []],
+    )
+
+    def complete(client, summary, tier=None):
+        summary["completed_tier_key"] = _tier_key(tier)
+        return True
+
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", side_effect=complete
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_complete.call_count == 1
+
+
+def test_tier_raid_complete_failure_does_not_loop(mock_client, mock_sleep, mocker):
+    """A raid-claimed tier whose CompleteTier fails must not replay the raid."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": True,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=lambda client: status,
+    )
+    spy_raid = mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [{"rivalId": "-1", "win": True}],
+            "completed": True,
+            "completed_basis": "status",
+        },
+    )
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=False
+    )
+    mocker.patch("hw_genie.commands.titan_arena._run_rivals", return_value=[])
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_raid.call_count == 1
+    assert spy_complete.call_count == 1
+
+
+def test_tier_new_tier_still_completes(mock_client, mock_sleep, mocker):
+    """The same-tier dedupe must not block completing a genuinely new tier."""
+    from hw_genie.commands.titan_arena import _tier_key, run_titan_arena_tier
+
+    client, _ = mock_client
+    tier8 = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 9,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    tier9 = {**tier8, "tier": 9}
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            tier8,
+            tier9,
+            {"status": "peace_time", "tier": 9, "rivals": {}},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=[
+            [{"rivalId": "-1", "win": True}],
+            [{"rivalId": "-1", "win": True}],
+        ],
+    )
+
+    def complete(client, summary, tier=None):
+        summary["completed_tier_key"] = _tier_key(tier)
+        return True
+
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", side_effect=complete
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_complete.call_count == 2
+
+
+def test_tier_at_max_normal_win_stops(mock_client, mock_sleep, mocker):
+    """A normal win at the top tier returns instead of fetching another pass."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    spy_fetch = mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[
+            status,
+            {"status": "peace_time", "tier": 8, "rivals": {}},
+        ],
+    )
+    spy_rivals = mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "-1", "win": True}],
+    )
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_rivals.call_count == 1
+    assert spy_complete.call_count == 1
+    assert spy_fetch.call_count == 1
+
+
+def test_tier_stale_status_retry_is_bounded(mock_client, mock_sleep, mocker):
+    """A fresh status that keeps showing targets is retried only up to the cap."""
+    from hw_genie.commands.titan_arena import (
+        MAX_CONSECUTIVE_NO_PROGRESS_PASSES,
+        run_titan_arena_tier,
+    )
+
+    client, _ = mock_client
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0}},
+        "canRaid": False,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=lambda client: status,
+    )
+    spy_rivals = mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals", return_value=[]
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_rivals.call_count == MAX_CONSECUTIVE_NO_PROGRESS_PASSES
+
+
+def test_tier_key_normalizes_numeric_tiers():
+    from hw_genie.commands.titan_arena import _TIER_KEY_NONE, _tier_key
+
+    assert _tier_key(8) == _tier_key("8") == _tier_key(8.0) == "8"
+    assert _tier_key(None) == _TIER_KEY_NONE
+    assert _tier_key("9") != _tier_key(8)
+
+
 def test_tier_without_tier_resets_raid_suppression(mock_client, mock_sleep, mocker):
     """A missing tier must not leave a stale suppression marker behind."""
     from hw_genie.commands.titan_arena import run_titan_arena_tier
@@ -2099,7 +2826,11 @@ def test_tier_without_tier_resets_raid_suppression(mock_client, mock_sleep, mock
     }
     mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[no_tier, tier9],
+        side_effect=[
+            no_tier,
+            tier9,
+            {"status": "peace_time", "tier": 9, "rivals": {}},
+        ],
     )
     spy_raid = mocker.patch(
         "hw_genie.commands.titan_arena._run_raid",
@@ -2742,7 +3473,8 @@ def test_tier_threads_bank_best_loss_to_rivals(mock_client, mock_sleep, mocker):
     client, mock_call = mock_client
     seen = []
     status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
-    mock_call.side_effect = [_ok({"response": status}), _ok({"response": status})]
+    mock_call.side_effect = None
+    mock_call.return_value = _ok({"response": status})
 
     def spy(client, status, titans, engine, threshold, stop, **kw):
         seen.append(kw.get("bank_best_loss"))
@@ -2750,9 +3482,16 @@ def test_tier_threads_bank_best_loss_to_rivals(mock_client, mock_sleep, mocker):
 
     mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=spy)
     mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+    before = len(seen)
     run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    first = seen[before:]
+    before = len(seen)
     run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), bank_best_loss=False)
-    assert seen == [True, False]
+    second = seen[before:]
+    # The stale-snapshot retry can call _run_rivals more than once; every call
+    # in a run must still forward that run's flag.
+    assert first and all(v is True for v in first)
+    assert second and all(v is False for v in second)
 
 
 def test_cmd_toe_run_bank_best_loss_default_and_opt_out(mocker):
@@ -3070,7 +3809,8 @@ def test_tier_threads_end_on_loss_to_rivals(mock_client, mock_sleep, mocker):
     client, mock_call = mock_client
     seen = []
     status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
-    mock_call.side_effect = [_ok({"response": status}), _ok({"response": status})]
+    mock_call.side_effect = None
+    mock_call.return_value = _ok({"response": status})
 
     def spy(client, status, titans, engine, threshold, stop, **kw):
         seen.append(kw.get("end_on_loss"))
@@ -3078,6 +3818,11 @@ def test_tier_threads_end_on_loss_to_rivals(mock_client, mock_sleep, mocker):
 
     mocker.patch("hw_genie.commands.titan_arena._run_rivals", side_effect=spy)
     mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward", return_value=True)
+    before = len(seen)
     run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
+    first = seen[before:]
+    before = len(seen)
     run_titan_arena_tier(client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(), end_on_loss=False)
-    assert seen == [True, False]
+    second = seen[before:]
+    assert first and all(v is True for v in first)
+    assert second and all(v is False for v in second)

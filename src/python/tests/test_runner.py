@@ -1468,6 +1468,29 @@ def test_summarize_toe_empty_without_errors_is_ok():
     assert summarize_toe(results) == 0
 
 
+def test_summarize_toe_raid_errors_visible_but_not_failed(capsys):
+    """Raid API/payload errors are shown in the footer without failing."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        (
+            "acc",
+            (
+                {
+                    "rival_results": [{"win": True}],
+                    "errors": [],
+                    "completed_tier": True,
+                    "daily_reward": None,
+                    "raid_errors": [{"stage": "raid", "message": "x"}],
+                },
+                None,
+            ),
+        ),
+    ]
+    assert summarize_toe(results) == 0
+    assert "⚠️ Raid errors (1): acc (1)" in capsys.readouterr().out
+
+
 def test_summarize_toe_empty_with_errors_still_fails():
     from hw_genie.runner import summarize_toe
 

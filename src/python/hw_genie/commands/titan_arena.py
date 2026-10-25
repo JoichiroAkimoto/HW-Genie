@@ -257,6 +257,25 @@ AUTO_RIVAL_SCORE_THRESHOLD = 250
 # value, so a plain ``None`` cannot encode "unset" (it would never reset).
 _NO_TIER = object()
 
+# ``completed_tier_key`` uses a string key so a successful CompleteTier with a
+# missing tier is still distinguishable from "not completed yet" (``None``).
+_TIER_KEY_NONE = "<none>"
+
+
+def _tier_key(tier: Any) -> str:
+    """Normalize a tier for comparison (``8`` / ``"8"`` / ``8.0`` → ``"8"``).
+
+    A missing tier maps to :data:`_TIER_KEY_NONE`, never ``None``, so a
+    completed tier without a tier value is still deduplicated.
+    """
+    if tier is None:
+        return _TIER_KEY_NONE
+    text = str(tier)
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError, OverflowError):
+        return text
+
 # Static team rotation tried in order after the saved team when --titans is
 # omitted. Entries are 5 titan IDs; the saved team (teamGetAll.titan_arena)
 # always goes first and duplicates are skipped.
@@ -406,6 +425,22 @@ def _attack_score(value: Any) -> int:
         return int(value.get("attackScore") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _has_attack_score(value: Any) -> bool:
+    """True when ``value`` carries a parseable ``attackScore``.
+
+    A complete-looking EndRaid echo must not be trusted on key presence
+    alone: a stub entry without the score would read as 0 and silently mark
+    the tier incomplete (or, worse, complete once the threshold is 0).
+    """
+    if not isinstance(value, dict) or "attackScore" not in value:
+        return False
+    try:
+        int(value.get("attackScore"))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 STATIC_TEAM_ROTATION: list[list[int]] = [
@@ -649,7 +684,11 @@ def run_titan_arena(
     battle: dict[str, Any] = {}
     if isinstance(start_res.detail, dict):
         battle = start_res.detail.get("response", {}).get("battle", {})
-    logger.debug("StartBattle battle: %s", json.dumps(battle, ensure_ascii=False, default=str)[:8000])
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "StartBattle battle: %s",
+            json.dumps(battle, ensure_ascii=False, default=str)[:8000],
+        )
     _vprint(progress, f"{Emojis.SUCCESS}StartBattle accepted (type={battle.get('type')} seed={battle.get('seed')})")
     if dry_run:
         _vprint(progress, f"{Emojis.INFO}Dry-run: not calling titanArenaEndBattle.")
@@ -725,10 +764,12 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: 
         )
         return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_error": "Invalid battle"}
     if not end_res.is_success:
-        logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
         print(f"{Emojis.ERROR}EndBattle failed ({end_res.error_name}): {_shorten_response(response)}", flush=True)
         return {"status": end_res.status, "estimate": est, "end_detail": response}
-    logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
     end_emoji = Emojis.VICTORY if est.win else Emojis.SUCCESS
     _aprint(progress, f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}")
     return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
@@ -765,8 +806,8 @@ def run_titan_arena_tier(
        back to individual battles and skips further raid attempts for that
        tier only — a new tier retries the raid.
     3. otherwise (or after a fallback) loop ``rivals`` whose
-       ``attackScore < threshold`` and finish each via the engine. After every
-       successful finish, recurse into ``titanArenaCompleteTier``.
+       ``attackScore < threshold`` and finish each via the engine. After a
+       pass with wins, attempt ``titanArenaCompleteTier`` once.
     4. Best-effort ``titanArenaFarmDailyReward`` for the daily chest after
        each pass; early returns (disabled/peace_time, no targets, no
        progress, bridge dead) skip the remaining steps and report via
@@ -799,8 +840,12 @@ def run_titan_arena_tier(
     status instead of stopping early.
 
     The function returns a dict summarising the tier outcome (rival results,
-    raid results, errors, completed_tier, daily_reward, and ``raid_fallback``
-    when the raid was suppressed for the current tier).
+    raid results, errors, ``raid_errors`` for API/payload failures,
+    completed_tier, daily_reward, and ``raid_fallback`` when the raid was
+    suppressed for the latest tier). ``raid_fallback`` is cleared whenever the
+    tier changes (and set again only if the new tier's raid is suppressed).
+    Tier changes are compared by a numeric key (``8`` / ``"8"`` / ``8.0``) so
+    an API type flip does not lift the suppression.
 
     ``progress`` selects output compactness (see :func:`run_titan_arena`).
     ``dashboard`` is the shared multi-account status display (see
@@ -825,13 +870,20 @@ def run_titan_arena_tier(
         "rival_results": [],
         "raid_results": [],
         "errors": [],
+        "raid_errors": [],
         "completed_tier": False,
+        "completed_tier_key": None,
         "daily_reward": None,
         "final_tier": None,
         "remaining_rivals": None,
         "raid_fallback": None,
         "interrupted": False,
     }
+
+    def _at_max(status_snapshot: dict[str, Any], tier_value: Any) -> bool:
+        """True when ``tier_value`` is the account's top tier (no next tier)."""
+        max_tier = status_snapshot.get("maxTier")
+        return max_tier is not None and _tier_key(tier_value) == _tier_key(max_tier)
 
     def _mark_interrupted(
         summary: dict[str, Any], partial: list | None = None
@@ -879,16 +931,30 @@ def run_titan_arena_tier(
             return summary
 
         tier = status.get("tier")
-        if raid_disabled_tier is not _NO_TIER and tier != raid_disabled_tier:
+        if (
+            raid_disabled_tier is not _NO_TIER
+            and _tier_key(tier) != _tier_key(raid_disabled_tier)
+        ):
             # New tier: the previous tier's broken raid says nothing about this
-            # one, so allow another raid attempt. The sentinel keeps this
-            # working when the suppressing tier was missing (``None``).
+            # one, so allow another raid attempt. Compare as strings because
+            # the API has reported ``tier`` as both ``8`` and ``"8"``; a type
+            # flip inside one tier must not lift the suppression. The sentinel
+            # keeps this working when the suppressing tier was missing.
             raid_disabled_reason = None
             raid_disabled_tier = _NO_TIER
+            summary["raid_fallback"] = None
         print(f"{Emojis.STEP}Tier: {tier} (canRaid={status.get('canRaid')})", flush=True)
 
+        tier_completed = (
+            summary.get("completed_tier_key") is not None
+            and summary.get("completed_tier_key") == _tier_key(tier)
+        )
         raid_won = False
-        if status.get("canRaid") and raid_disabled_tier is _NO_TIER:
+        if (
+            status.get("canRaid")
+            and raid_disabled_tier is _NO_TIER
+            and not tier_completed
+        ):
             try:
                 raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold, progress, dashboard)
             except BridgeDeadError as exc:
@@ -905,6 +971,25 @@ def run_titan_arena_tier(
                 summary["errors"].append({"stage": "raid", "message": raid_summary.get("error", "bridge dead")})
                 print(f"{Emojis.WARNING}Bridge dead during raid; stopping tier loop.", flush=True)
                 return summary
+            if raid_summary.get("api_error") or raid_summary.get("payload_error"):
+                # A broken raid must stay visible even though the run continues
+                # with individual battles. Keep it out of ``errors`` so a
+                # working fallback does not fail the account, but surface a
+                # WARNING and keep a machine-readable record.
+                kind = "API" if raid_summary.get("api_error") else "payload"
+                summary["raid_errors"].append(
+                    {
+                        "stage": "raid",
+                        "tier": tier,
+                        "message": raid_summary.get("error", f"raid {kind} error"),
+                    }
+                )
+                _aprint(
+                    progress,
+                    f"{Emojis.WARNING}Raid {kind} error for tier {tier}: "
+                    f"{raid_summary.get('error', 'unknown')}; "
+                    "continuing with individual battles.",
+                )
             if raid_summary.get("no_verified"):
                 raid_disabled_reason = str(
                     raid_summary.get("error") or "no verified raid results"
@@ -913,11 +998,19 @@ def run_titan_arena_tier(
                 # Expected fallback, not a failure: keep it out of
                 # summary["errors"] so summarize_toe does not fail the account.
                 summary["raid_fallback"] = raid_disabled_reason
-                print(
-                    f"{Emojis.INFO}Raid unavailable for tier {tier} ({raid_disabled_reason}); "
-                    "continuing with individual battles.",
-                    flush=True,
-                )
+                if not (
+                    raid_summary.get("api_error") or raid_summary.get("payload_error")
+                ):
+                    # Avoid a second near-identical line after the WARNING above.
+                    print(
+                        f"{Emojis.INFO}Raid unavailable for tier {tier} ({raid_disabled_reason}); "
+                        "continuing with individual battles.",
+                        flush=True,
+                    )
+            else:
+                # The latest tier's raid was not suppressed, so a reason from
+                # an earlier tier is stale. ``summary`` describes the run.
+                summary["raid_fallback"] = None
             if not raid_summary.get("completed", False):
                 # If raid didn't clear the threshold we still try the per-rival
                 # path in case the user reconnected mid-tier. Banked raid wins
@@ -926,12 +1019,35 @@ def run_titan_arena_tier(
             else:
                 if _cancel_requested():
                     return _mark_interrupted(summary)
-                _complete_tier(client, summary, tier=tier)
+                completed = _complete_tier(client, summary, tier=tier)
                 # Best-effort daily chest, mirroring the per-rival path: a
                 # raid-only final-tier clear must not skip the reward.
                 _farm_daily_reward(client, summary)
-                no_progress_passes = 0
-                continue
+                if completed:
+                    if _at_max(status, tier):
+                        if raid_summary.get("completed_basis") == "status":
+                            # The authoritative status showed no remaining
+                            # rivals; there is no next tier to advance to.
+                            summary["final_tier"] = raid_summary.get(
+                                "final_tier", tier
+                            )
+                            summary["remaining_rivals"] = raid_summary.get(
+                                "remaining_rivals", 0
+                            )
+                            return summary
+                        # Non-authoritative EndRaid echo: let the next pass
+                        # verify the fresh status instead of
+                        # stopping on a subset of the status rivals. The
+                        # completed_tier_key guard prevents a re-raid.
+                        continue
+                    no_progress_passes = 0
+                    continue
+                # CompleteTier failed despite a raid that claimed completion.
+                # Suppress the raid for this tier and fall through to the
+                # individual path instead of replaying StartRaid/EndRaid.
+                raid_disabled_tier = tier
+                raid_disabled_reason = "CompleteTier failed after raid"
+                summary["raid_fallback"] = raid_disabled_reason
 
         try:
             rival_results = _run_rivals(
@@ -957,6 +1073,52 @@ def run_titan_arena_tier(
         if _cancel_requested():
             return _mark_interrupted(summary)
         if not rival_results:
+            # The snapshot may predate a partial raid (or a concurrent clear).
+            # Re-check before concluding there is nothing to do: all rivals
+            # can already be at/above the threshold while ``completed`` stayed
+            # False because EndRaid omitted/partially echoed ``results``.
+            fresh = None
+            try:
+                fresh = fetch_titan_arena_status(client)
+            except Exception as exc:  # best-effort: the stale snapshot stands
+                logger.debug("Post-pass status fetch failed: %s", exc)
+            if isinstance(fresh, dict) and fresh.get("status") == "battle":
+                fresh_tier = fresh.get("tier", tier)
+                summary["final_tier"] = fresh_tier
+                summary["remaining_rivals"] = len(
+                    _select_auto_rivals(fresh, attack_score_threshold)
+                )
+                if not summary["remaining_rivals"]:
+                    same_tier = (
+                        summary.get("completed_tier_key") is not None
+                        and summary.get("completed_tier_key") == _tier_key(fresh_tier)
+                    )
+                    if same_tier:
+                        # This tier was already completed successfully in an
+                        # earlier pass; do not send CompleteTier/Farm twice.
+                        return summary
+                    completed = _complete_tier(
+                        client, summary, tier=fresh_tier
+                    )
+                    _farm_daily_reward(client, summary)
+                    if not completed or _at_max(fresh, fresh_tier):
+                        # A failed CompleteTier (or the top tier) has no next
+                        # state to advance to; returning avoids a re-complete
+                        # loop on every pass.
+                        return summary
+                    no_progress_passes = 0
+                    continue
+                # The snapshot was stale: targets exist after all. Let the
+                # next pass attack them, with a bounded no-progress guard.
+                no_progress_passes += 1
+                if no_progress_passes >= MAX_CONSECUTIVE_NO_PROGRESS_PASSES:
+                    print(
+                        f"{Emojis.INFO}Status kept changing without targets cleared "
+                        f"in {no_progress_passes} passes; stopping tier loop.",
+                        flush=True,
+                    )
+                    return summary
+                continue
             print(f"{Emojis.INFO}No rivals to attack (threshold={attack_score_threshold})", flush=True)
             _farm_daily_reward(client, summary)
             return summary
@@ -966,16 +1128,20 @@ def run_titan_arena_tier(
                 # touched, so attempt completion and continue with fresh
                 # status (bounded by max_passes; a later pass with no wins
                 # and no banked entries still stops).
-                _complete_tier(client, summary, tier=tier)
+                completed = _complete_tier(client, summary, tier=tier)
                 _farm_daily_reward(client, summary)
+                if completed and _at_max(status, tier):
+                    return summary
                 no_progress_passes = 0
                 continue
             print(f"{Emojis.WARNING}No rival cleared; stopping tier loop.", flush=True)
             return summary
-        _complete_tier(client, summary, tier=tier)
+        completed = _complete_tier(client, summary, tier=tier)
         # Best-effort daily chest; the return value no longer ends the run so
         # remaining rivals (or the next tier) are attacked in the next pass.
         _farm_daily_reward(client, summary)
+        if completed and _at_max(status, tier):
+            return summary
         if any(r.get("win") for r in rival_results) or raid_won:
             no_progress_passes = 0
         else:
@@ -1174,15 +1340,36 @@ def _run_raid(
     progress: str = "verbose",
     dashboard: Any = None,
 ) -> dict[str, Any]:
+    """Simulate every raid rival and submit only verified results.
+
+    Completion is judged from the EndRaid echo when it covers every rival; a
+    missing/partial echo falls back to a fresh ``titanArenaGetStatus`` (the
+    authoritative remaining-rival view). If neither is usable, completion is
+    left unverified (``completed_basis="unverified"``, ``no_verified=True``) so
+    the caller retries with individual battles instead of guessing a
+    CompleteTier. API failures set ``api_error`` and payload mismatches
+    ``payload_error`` so the caller can surface them without treating the
+    fallback as an account failure.
+    """
     progress = _normalize_progress(progress)
     rivals = (status.get("rivals") or {}) if isinstance(status.get("rivals"), dict) else {}
-    raid_summary: dict[str, Any] = {"stage": "raid", "battles": [], "completed": False}
+    raid_summary: dict[str, Any] = {
+        "stage": "raid",
+        "battles": [],
+        "completed": False,
+        "completed_basis": None,
+        "skipped": 0,
+        "no_verified": False,
+        "api_error": False,
+        "payload_error": False,
+    }
     _vprint(progress, f"{Emojis.STEP}Raid phase: {len(rivals)} rival(s)")
     start = client.call(
         {"calls": [{"name": ApiAction.TITAN_ARENA_START_RAID, "args": {"titans": titans}, "ident": "body"}]}
     )
     if not start.is_success:
         raid_summary["error"] = f"StartRaid failed: {start.error_name}"
+        raid_summary["api_error"] = True
         raid_summary["no_verified"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
         return raid_summary
@@ -1193,10 +1380,11 @@ def _run_raid(
     # Keep the raw payload reachable via ``--debug``: the successful shape is
     # not documented and StartRaid carries no ``startTime``, unlike a
     # StartBattle battle or a battle replay.
-    logger.debug(
-        "StartRaid response: %s",
-        json.dumps(response, ensure_ascii=False, default=str)[:4000],
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "StartRaid response: %s",
+            json.dumps(response, ensure_ascii=False, default=str)[:4000],
+        )
     raid_rivals = response.get("rivals")
     attackers = _extract_titan_team(response.get("attackers"))
     if attackers is None:
@@ -1215,20 +1403,24 @@ def _run_raid(
             f"({sorted(attackers)} != {sorted(expected_attackers)})"
         )
         raid_summary["no_verified"] = True
+        raid_summary["payload_error"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
-        logger.debug(
-            "StartRaid payload: %s",
-            json.dumps(response, ensure_ascii=False, default=str)[:2000],
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "StartRaid payload: %s",
+                json.dumps(response, ensure_ascii=False, default=str)[:2000],
+            )
         return raid_summary
     if attackers is None or not isinstance(raid_rivals, dict) or not raid_rivals:
         raid_summary["error"] = "StartRaid returned unexpected payload"
         raid_summary["no_verified"] = True
+        raid_summary["payload_error"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
-        logger.debug(
-            "StartRaid payload: %s",
-            json.dumps(response, ensure_ascii=False, default=str)[:2000],
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "StartRaid payload: %s",
+                json.dumps(response, ensure_ascii=False, default=str)[:2000],
+            )
         return raid_summary
 
     # A live StartBattle battle stamps ``startTime`` with the client clock;
@@ -1278,7 +1470,11 @@ def _run_raid(
             # (dummy loss), so keep it out of EndRaid and let the per-rival
             # path retry this rival with StartBattle.
             raid_summary["battles"].append(
-                {"rivalId": rid, "error": f"missing {'/'.join(missing)}"}
+                {
+                    "rivalId": rid,
+                    "skipped": True,
+                    "reason": f"missing {'/'.join(missing)}",
+                }
             )
             _vprint(progress, f"  - raid rival {rid}: skipped (missing {'/'.join(missing)})")
             continue
@@ -1323,15 +1519,11 @@ def _run_raid(
             # out of the results so the server scores only verified battles.
             continue
 
-    missing_skips = [
-        b
-        for b in raid_summary["battles"]
-        if str(b.get("error", "")).startswith("missing ")
-    ]
+    missing_skips = [b for b in raid_summary["battles"] if b.get("skipped")]
     error_skips = [
         b
         for b in raid_summary["battles"]
-        if b.get("error") and not str(b.get("error", "")).startswith("missing ")
+        if b.get("error") and not b.get("skipped")
     ]
     raid_summary["skipped"] = len(missing_skips)
     if missing_skips:
@@ -1370,28 +1562,70 @@ def _run_raid(
         raid_summary["error"] = f"EndRaid failed: {end.error_name}"
         # Nothing was banked, and a same-tier retry would replay the same
         # request, so the caller switches to individual battles.
+        raid_summary["api_error"] = True
         raid_summary["no_verified"] = True
         print(f"{Emojis.ERROR}{raid_summary['error']}", flush=True)
         return raid_summary
     end_detail = end.detail if isinstance(end.detail, dict) else {}
     end_response = end_detail.get("response", {}) if isinstance(end_detail, dict) else {}
     end_results = end_response.get("results") if isinstance(end_response, dict) else None
-    # A raid only counts as completed when every rival was submitted and the
-    # server scored each one at/above the threshold: a partial raid (skipped
-    # or unverified rival) leaves targets behind.
     scored = (
         {str(k): v for k, v in end_results.items() if isinstance(v, dict)}
         if isinstance(end_results, dict)
         else {}
     )
-    raid_summary["completed"] = (
-        len(results) == len(raid_rivals)
+    # The live EndRaid echo shape is not verified yet (no canRaid tier has been
+    # available since the raid path shipped). Trust a complete echo, but when
+    # it is missing/partial ask GetStatus for the authoritative remaining
+    # rivals: a skipped rival may already be at/above the threshold, and a
+    # fully-cleared tier must still reach CompleteTier.
+    echo_full = (
+        bool(scored)
+        and len(results) == len(raid_rivals)
         and set(results) <= set(scored)
-        and all(_attack_score(scored[rid]) >= threshold for rid in results)
+        and all(_has_attack_score(scored[rid]) for rid in results)
     )
+    if echo_full:
+        completed = all(_attack_score(scored[rid]) >= threshold for rid in results)
+        basis = "endraid"
+    else:
+        fresh = None
+        try:
+            fresh = fetch_titan_arena_status(client)
+        except Exception as exc:  # best-effort: fall back to unverified
+            logger.debug("Post-raid status fetch failed: %s", exc)
+        fresh_rivals = fresh.get("rivals") if isinstance(fresh, dict) else None
+        if (
+            isinstance(fresh, dict)
+            and fresh.get("status") == "battle"
+            and isinstance(fresh_rivals, dict)
+        ):
+            completed = all(
+                _attack_score(info) >= threshold for info in fresh_rivals.values()
+            )
+            basis = "status"
+            raid_summary["final_tier"] = fresh.get("tier", status.get("tier"))
+            raid_summary["remaining_rivals"] = sum(
+                1
+                for info in fresh_rivals.values()
+                if _attack_score(info) < threshold
+            )
+        else:
+            # No authoritative view: do not guess that the tier is complete.
+            # The next pass's status/recheck decides; suppress a same-tier
+            # raid retry and let individual battles handle any leftovers.
+            completed = False
+            basis = "unverified"
+            raid_summary["no_verified"] = True
+            raid_summary["error"] = (
+                "raid completion unverified: no usable EndRaid echo and "
+                "titanArenaGetStatus unavailable; falling back to individual battles"
+            )
+    raid_summary["completed"] = completed
+    raid_summary["completed_basis"] = basis
     print(
-        f"{Emojis.STEP}Raid results completed={raid_summary['completed']} "
-        f"(verified {len(results)}/{len(raid_rivals)})",
+        f"{Emojis.STEP}Raid results completed={completed} "
+        f"(basis={basis}, verified {len(results)}/{len(raid_rivals)})",
         flush=True,
     )
     return raid_summary
@@ -1752,14 +1986,15 @@ def _run_rivals(
     return results
 
 
-def _complete_tier(client: HWClient, summary: dict[str, Any], tier: Any = None) -> None:
+def _complete_tier(client: HWClient, summary: dict[str, Any], tier: Any = None) -> bool:
     res = client.call(
         {"calls": [{"name": ApiAction.TITAN_ARENA_COMPLETE_TIER, "args": {}, "ident": "body"}]}
     )
     if res.is_success:
         summary["completed_tier"] = True
+        summary["completed_tier_key"] = _tier_key(tier)
         print(f"{Emojis.SUCCESS}Tier completed.", flush=True)
-        return
+        return True
     if res.error_name == "NotAvailable":
         # Normal mid-run state: rivals remain, so there is nothing to
         # complete yet. Not an error — the loop continues with them.
@@ -1781,9 +2016,10 @@ def _complete_tier(client: HWClient, summary: dict[str, Any], tier: Any = None) 
                 f"{Emojis.INFO}Tier not yet completeable (rivals remain){tier_label}: {detail_preview}",
                 flush=True,
             )
-        return
+        return False
     summary["errors"].append({"stage": "complete_tier", "error": res.error_name, "detail": res.detail})
     print(f"{Emojis.WARNING}titanArenaCompleteTier failed ({res.error_name}).", flush=True)
+    return False
 
 
 def _farm_daily_reward(client: HWClient, summary: dict[str, Any]) -> bool:

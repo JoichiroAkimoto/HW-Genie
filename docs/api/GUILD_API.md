@@ -307,7 +307,7 @@ live の battle payload は数値である:
 | `attackers` | StartRaid レスポンスの `attackers`（`{titanId: hero}`）。なければ `response["team"]`、さらに `status["defenders"]`。要求した 5 体の titan ID 集合と一致しない場合はレイドを中止する |
 | `defenders` | `[{titanId: hero}]`（1 要素の配列）。StartRaid の rival は `rivals[rivalId].team` にロスターを持つ。GetStatus の rival ロスターと titan ID 集合が一致し、かつ要求した 5 体（`len(titans)`）であること |
 | `seed` | rival ごとの `seed`（数値。replay では文字列。例 `1991754172`）。`0` や範囲外は欠落扱いで GetStatus にフォールバック |
-| `startTime` | 数値 epoch。StartRaid レスポンスに値があればそれを使い、無ければシミュレーション時のクライアント時刻を使う（live の StartBattle battle と同じ慣習） |
+| `startTime` | 数値 epoch（秒。実測例 `1792726404`、`date +%s` と数秒差）。StartRaid レスポンスに値があればそれを使い、無ければシミュレーション時のクライアント時刻を使う（live の StartBattle battle と同じ慣習） |
 | `typeId` | rivalId（文字列） |
 | `userId` | StartRaid レスポンスの `userId`。なければ `titanArenaGetStatus` の `userId`、さらに認証ヘッダーの `x-auth-user-id`、どれも無ければ `""` |
 
@@ -329,12 +329,34 @@ dummy loss は EndRaid に含めない（サーバーがレイド全体を無効
 
 `hw-genie toe run` はこの形で Raid をステージ開始時に実行し、レイドで
 検証済み結果が 1 件も得られなかった場合は同一 Tier 内ではレイド再試行を
-打ち切り、Tier が変われば再試行する（抑止は Tier 単位）。残りの rival は
-個別バトル（`titanArenaStartBattle`）で継続する。
+打ち切り、Tier が変われば再試行する（抑止は Tier 単位。Tier の同一判定は
+数値正規化したキーで行い、API が `8` / `"8"` / `8.0` を揺らしても抑止を
+維持する）。`tier` を欠落した status は別 Tier 扱いで抑止をリセットする
+（不明な状態で古い抑止を引き継がないため）。残りの rival は個別バトル
+（`titanArenaStartBattle`）で継続する。
 レイドで負けた rival は `attackScore < threshold` のまま残るため、続く
-個別バトルの対象になる。抑止理由は Tier サマリーの `raid_fallback` に
-文字列で記録する（アカウント失敗を表す `errors` には入れないため、
-`multi toe` の成否には影響しない。スキップ件数の警告は実行ログにのみ出る）。
+個別バトルの対象になる。
+
+レイドの完了判定は、EndRaid の `results` が全 rival 分そろい、各エントリに
+parse 可能な `attackScore` がある場合にそれを使う。欠落・部分エコー・
+スコア欠落時は `titanArenaGetStatus` を再取得し、`status == "battle"` かつ
+残 rival がすべて閾値以上かを確認する（スキップした rival が既にクリア済み
+でも `CompleteTier` に到達できる）。どちらも得られない場合は完了を推測せず
+`completed=False` / `no_verified=True` として個別バトルへフォールバックし、
+次パスの status で判定する。根拠は raid サマリーの `completed_basis`
+（`endraid` / `status` / `unverified`）に残す。EndRaid が成功していない
+場合（StartRaid/EndRaid 失敗を含む）は `completed_basis` は `None`。
+
+`StartRaid` / `EndRaid` の API 失敗は `api_error`、payload 不整合は
+`payload_error` として区別し、Tier サマリーの `raid_errors` と WARNING で
+可視化する（`multi toe` のサマリー表の後に `⚠️ Raid errors` フッター行を
+出す）。どちらも個別バトルへフォールバックするため `errors` には入れず、
+アカウント失敗にはしない。抑止理由 `raid_fallback` は最新 Tier の状態を
+表し、Tier が変わるたびにクリアされる（新しい Tier のレイドも抑止された
+場合のみ再設定）。スキップした rival は battle エントリの `skipped` /
+`reason` で区別し、件数の警告は実行ログ（stdout）に出す。`raid_fallback` /
+`completed_basis` / `skipped` はプログラム・テスト向けの記録で、サマリー
+表には表示しない。
 
 ### titanArenaCompleteTier - ティアクリア宣言
 

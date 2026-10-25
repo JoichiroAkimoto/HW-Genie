@@ -1269,6 +1269,10 @@ def summarize_toe(
       summary carries real ``errors``, or rivals were attempted but none
       was won and the tier did not complete.
 
+    A non-fatal ``⚠️ Raid errors (N)`` footer lists accounts whose raid
+    API/payload failed but whose per-rival fallback continued; those accounts
+    stay in the ``ok``/``interrupted``/``failed`` buckets above.
+
     The interrupt marker itself in ``errors`` never fails the account;
     only real bridge/API errors do. A summary with ``remaining_rivals
     == 0`` means fully cleared and counts as ok even without
@@ -1293,6 +1297,7 @@ def summarize_toe(
     ok = 0
     interrupted: list[str] = []
     failed: list[str] = []
+    raid_warn: list[str] = []
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is not None and _is_toe_interrupt_exc(err):
@@ -1305,6 +1310,11 @@ def summarize_toe(
             completed = "✅" if res.get("completed_tier") else "-"
             errors = res.get("errors", [])
             real_errors = _toe_real_errors(errors)
+            raid_errors = res.get("raid_errors") or []
+            if raid_errors:
+                # Raid API/payload failures are surfaced, but a working
+                # per-rival fallback must not fail the account.
+                raid_warn.append(f"{account} ({len(raid_errors)})")
             tier = res.get("final_tier")
             remaining = res.get("remaining_rivals")
             rows.append([
@@ -1356,6 +1366,8 @@ def summarize_toe(
             print(" | ".join(_pad(c, widths[i]) for i, c in enumerate(r)))
     if interrupted:
         print(f"⏸ Interrupted ({len(interrupted)}): {', '.join(interrupted)}")
+    if raid_warn:
+        print(f"⚠️ Raid errors ({len(raid_warn)}): {', '.join(raid_warn)}")
     if failed:
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
     print(rule)
