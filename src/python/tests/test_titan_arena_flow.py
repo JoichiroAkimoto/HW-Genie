@@ -2805,9 +2805,19 @@ def test_tier_partial_raid_refreshes_status_before_rivals(
         },
         "canRaid": False,
     }
+    final = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 250},
+            "-2": {"attackScore": 250},
+        },
+        "canRaid": False,
+    }
     spy_fetch = mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[initial, fresh],
+        side_effect=[initial, fresh, final],
     )
     mocker.patch(
         "hw_genie.commands.titan_arena._run_raid",
@@ -2829,9 +2839,144 @@ def test_tier_partial_raid_refreshes_status_before_rivals(
     run_titan_arena_tier(
         client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
     )
-    assert spy_fetch.call_count == 2
+    assert spy_fetch.call_count == 3
     assert spy_rivals.call_args.args[1] == fresh
     assert spy_complete.call_count == 1
+
+
+def test_tier_max_final_refresh_updates_remaining(
+    mock_client, mock_sleep, mocker
+):
+    """At max tier, refresh the summary after the final winning pass."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    initial = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 0},
+            "-2": {"attackScore": 0},
+            "-3": {"attackScore": 0},
+        },
+        "canRaid": False,
+    }
+    final = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 250},
+            "-2": {"attackScore": 250},
+            "-3": {"attackScore": 250},
+        },
+        "canRaid": False,
+    }
+    spy_fetch = mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[initial, final],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[
+            {"rivalId": "-1", "win": True},
+            {"rivalId": "-2", "win": True},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_fetch.call_count == 2
+    assert summary["remaining_rivals"] == 0
+    assert summary["final_tier"] == 8
+
+
+def test_tier_max_final_refresh_falls_back_to_wins(
+    mock_client, mock_sleep, mocker
+):
+    """A failed final fetch subtracts this pass's wins from the last count."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    initial = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 0},
+            "-2": {"attackScore": 0},
+            "-3": {"attackScore": 0},
+        },
+        "canRaid": False,
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[initial, RuntimeError("status unavailable")],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[
+            {"rivalId": "-1", "win": True},
+            {"rivalId": "-2", "win": True},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert summary["remaining_rivals"] == 1
+    assert summary["final_tier"] == 8
+
+
+def test_tier_max_final_refresh_peace_time(mock_client, mock_sleep, mocker):
+    """When the final status transitions to peace_time, remaining is 0."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    initial = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 0},
+            "-2": {"attackScore": 0},
+        },
+        "canRaid": False,
+    }
+    final = {
+        "status": "peace_time",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {},
+    }
+    mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[initial, final],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[
+            {"rivalId": "-1", "win": True},
+            {"rivalId": "-2", "win": True},
+        ],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    summary = run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert summary["remaining_rivals"] == 0
+    assert summary["final_tier"] == 8
 
 
 def test_tier_new_tier_still_completes(mock_client, mock_sleep, mocker):
@@ -2878,7 +3023,7 @@ def test_tier_new_tier_still_completes(mock_client, mock_sleep, mocker):
 
 
 def test_tier_at_max_normal_win_stops(mock_client, mock_sleep, mocker):
-    """A normal win at the top tier returns instead of fetching another pass."""
+    """A normal win at the top tier returns after a final summary refresh."""
     from hw_genie.commands.titan_arena import run_titan_arena_tier
 
     client, _ = mock_client
@@ -2889,12 +3034,16 @@ def test_tier_at_max_normal_win_stops(mock_client, mock_sleep, mocker):
         "rivals": {"-1": {"attackScore": 0}},
         "canRaid": False,
     }
+    final = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {"-1": {"attackScore": 250}},
+        "canRaid": False,
+    }
     spy_fetch = mocker.patch(
         "hw_genie.commands.titan_arena.fetch_titan_arena_status",
-        side_effect=[
-            status,
-            {"status": "peace_time", "tier": 8, "rivals": {}},
-        ],
+        side_effect=[status, final],
     )
     spy_rivals = mocker.patch(
         "hw_genie.commands.titan_arena._run_rivals",
@@ -2909,7 +3058,7 @@ def test_tier_at_max_normal_win_stops(mock_client, mock_sleep, mocker):
     )
     assert spy_rivals.call_count == 1
     assert spy_complete.call_count == 1
-    assert spy_fetch.call_count == 1
+    assert spy_fetch.call_count == 2
 
 
 def test_tier_stale_status_retry_is_bounded(mock_client, mock_sleep, mocker):

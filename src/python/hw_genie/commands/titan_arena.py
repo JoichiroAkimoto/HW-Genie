@@ -941,6 +941,43 @@ def run_titan_arena_tier(
         print(f"{Emojis.WARNING}Interrupted by user; stopping tier loop.", flush=True)
         return summary
 
+    def _refresh_final_remaining(
+        summary: dict[str, Any],
+        tier_value: Any,
+        rival_results: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Refresh the final ``Left`` count after a winning pass.
+
+        ``remaining_rivals`` is set from the status fetched at the top of the
+        pass, before any battles. At the max tier the loop returns right
+        after ``CompleteTier``, so without this refresh the summary can show
+        rivals that this pass just cleared (e.g. ``Left 3`` when everything
+        is actually done). Best-effort: a failed fetch falls back to
+        subtracting this pass's wins from the last known count.
+        """
+        fresh = None
+        try:
+            fresh = fetch_titan_arena_status(client)
+        except Exception as exc:  # best-effort: keep the last known count
+            logger.debug("Final status fetch failed: %s", exc)
+        if isinstance(fresh, dict):
+            status_val = fresh.get("status")
+            if status_val == "battle":
+                summary["final_tier"] = fresh.get("tier", tier_value)
+                summary["remaining_rivals"] = len(
+                    _select_auto_rivals(fresh, attack_score_threshold)
+                )
+                return
+            if status_val == "peace_time":
+                summary["final_tier"] = fresh.get("tier", tier_value)
+                summary["remaining_rivals"] = 0
+                return
+        if rival_results and summary.get("remaining_rivals") is not None:
+            cleared = sum(1 for r in rival_results if r.get("win"))
+            summary["remaining_rivals"] = max(
+                0, summary["remaining_rivals"] - cleared
+            )
+
     # Safety cap: each winning pass strictly shrinks the remaining target
     # set (cleared rivals hit 250), so the loop terminates naturally. The cap
     # only guards against pathological server states.
@@ -1202,6 +1239,7 @@ def run_titan_arena_tier(
                 completed = _complete_tier(client, summary, tier=tier)
                 _farm_daily_reward(client, summary)
                 if completed and _at_max(status, tier):
+                    _refresh_final_remaining(summary, tier, rival_results)
                     return summary
                 no_progress_passes = 0
                 continue
@@ -1212,6 +1250,7 @@ def run_titan_arena_tier(
         # remaining rivals (or the next tier) are attacked in the next pass.
         _farm_daily_reward(client, summary)
         if completed and _at_max(status, tier):
+            _refresh_final_remaining(summary, tier, rival_results)
             return summary
         if any(r.get("win") for r in rival_results) or raid_won:
             no_progress_passes = 0
