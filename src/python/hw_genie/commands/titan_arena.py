@@ -792,8 +792,26 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: 
     if not end_res.is_success:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
-        print(f"{Emojis.ERROR}EndBattle failed ({end_res.error_name}): {_shorten_response(response)}", flush=True)
-        return {"status": end_res.status, "estimate": est, "end_detail": response}
+        # A failed EndBattle banked nothing: never let the local estimate turn
+        # it into a win. NotFound/NotAvailable are often transient (the server
+        # already closed the battle, or a retry raced the first response), so
+        # surface them as a warning rather than an account failure.
+        emoji = (
+            Emojis.WARNING
+            if end_res.error_name in ("NotFound", "NotAvailable")
+            else Emojis.ERROR
+        )
+        print(
+            f"{emoji}EndBattle failed ({end_res.error_name}): "
+            f"{_shorten_response(response)}",
+            flush=True,
+        )
+        return {
+            "status": end_res.status,
+            "estimate": est,
+            "end_error": end_res.error_name or "EndBattle failed",
+            "end_detail": response,
+        }
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
     end_emoji = Emojis.VICTORY if est.win else Emojis.INFO
@@ -1752,16 +1770,17 @@ def _decide_attempt_action(
         return {"action": "bridge_error", "timeout": _is_bridge_timeout(res)}
     if _is_beaten_already(res):
         return {"action": "beaten_already"}
-    if res.get("end_error") == "Invalid battle" and attempt_no < plan_len:
+    end_error = res.get("end_error")
+    if end_error == "Invalid battle" and attempt_no < plan_len:
         return {"action": "retry"}
     est = res.get("estimate")
-    # An "Invalid battle" EndBattle banked nothing server-side, so it must
-    # not count as a win even when the local estimate says win (estimate
-    # engine) — likewise estimate-only fallbacks (no EndBattle was sent).
-    unverified = bool(res.get("estimate_only"))
+    # A failed EndBattle (Invalid battle, NotFound, NotAvailable, ...) banked
+    # nothing server-side, so it must not count as a win even when the local
+    # estimate says win. Estimate-only fallbacks also never send EndBattle.
+    unverified = bool(res.get("estimate_only") or end_error)
     win = (
         bool(est and getattr(est, "win", False))
-        and res.get("end_error") != "Invalid battle"
+        and not end_error
         and not unverified
     )
     return {

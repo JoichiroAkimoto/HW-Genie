@@ -968,6 +968,66 @@ def test_run_rivals_last_attempt_invalid_battle_is_not_win(mock_client, mock_sle
     assert not any(r.get("win") for r in results)
 
 
+def test_run_rivals_endbattle_notfound_is_unverified_not_win(
+    mock_client, mock_sleep, mocker
+):
+    """A failed EndBattle (NotFound) must never become a win from the estimate."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0, "power": "1"}},
+    }
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {
+            "estimate": MagicMock(win=True),
+            "end_error": "NotFound",
+            "end_detail": {"description": "Battle not found"},
+        }
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client,
+        status,
+        titans=[1, 2, 3, 4, 5],
+        engine=PythonBattleEngine(),
+        threshold=250,
+        stop_on_first_loss=False,
+        max_attempts_per_rival=1,
+        bank_best_loss=False,
+    )
+    assert len(results) == 1
+    assert results[0]["win"] is False
+    assert results[0]["unverified"] is True
+    assert results[0]["end_error"] == "NotFound"
+
+
+def test_end_battle_notfound_is_warning_and_sets_end_error(
+    capsys, mock_client, mock_sleep
+):
+    """NotFound is surfaced as a warning and marked unverified for callers."""
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _end_battle
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _err(
+            "NotFound",
+            {"description": "Battle with type titan_arena and typeId #-1"},
+        )
+    ]
+    outcome = _end_battle(
+        client, "-1", BattleEstimate(win=True, stars=1, progress=[])
+    )
+    assert outcome["end_error"] == "NotFound"
+    out = capsys.readouterr().out
+    assert "EndBattle failed (NotFound)" in out
+    assert "⚠️" in out
+
+
 def test_summarize_end_battle_none_safe():
     """None score/earned/stars fall back instead of printing None."""
     from hw_genie.battle.engine import BattleEstimate

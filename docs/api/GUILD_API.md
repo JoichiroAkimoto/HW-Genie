@@ -288,6 +288,12 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 すると、auth server の `/toe/job` キュー経由で userscript が本物の
 `BattleCalc` を呼び出し、その結果を `EndBattle` に利用する。
 
+EndBattle が失敗した場合（`Invalid battle` に限らず `NotFound` /
+`NotAvailable` を含む）は、ローカルの estimate が win でも勝利扱いに
+せず `unverified` として記録する。`NotFound` / `NotAvailable` は
+サーバー側で既にバトルが閉じられた、または再送が競合した可能性がある
+ため WARNING 表示で継続し、次の試行に進む。
+
 ### titanArenaStartRaid / titanArenaEndRaid - 一括レイド（canRaid=true）
 
 `canRaid` が `true` のとき、ライバルを 1 リクエストで全滅させるレイドが
