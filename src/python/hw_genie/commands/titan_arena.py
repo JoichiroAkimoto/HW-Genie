@@ -1231,7 +1231,10 @@ def run_titan_arena_tier(
             _farm_daily_reward(client, summary)
             return summary
         if not any(r.get("win") for r in rival_results) and not status.get("canRaid"):
-            if any(r.get("banked_loss") for r in rival_results):
+            if any(
+                r.get("banked_loss") and not r.get("unverified")
+                for r in rival_results
+            ):
                 # Banked partial score counts as progress: the rival is
                 # touched, so attempt completion and continue with fresh
                 # status (bounded by max_passes; a later pass with no wins
@@ -1810,16 +1813,19 @@ def _decide_attempt_action(
     if _is_beaten_already(res):
         return {"action": "beaten_already"}
     end_error = res.get("end_error")
+    start_error = res.get("error")
     if end_error == "Invalid battle" and attempt_no < plan_len:
         return {"action": "retry"}
     est = res.get("estimate")
     # A failed EndBattle (Invalid battle, NotFound, NotAvailable, ...) banked
     # nothing server-side, so it must not count as a win even when the local
-    # estimate says win. Estimate-only fallbacks also never send EndBattle.
-    unverified = bool(res.get("estimate_only") or end_error)
+    # estimate says win. Estimate-only fallbacks and StartBattle errors also
+    # never bank a score.
+    unverified = bool(res.get("estimate_only") or end_error or start_error)
     win = (
         bool(est and getattr(est, "win", False))
         and not end_error
+        and not start_error
         and not unverified
     )
     return {
@@ -2007,6 +2013,8 @@ def _run_rivals(
             entry: dict[str, Any] = {"rivalId": str(rival_id), "win": win, "team": team}
             if unverified:
                 entry["unverified"] = True
+            if res.get("error"):
+                entry["start_error"] = res.get("error")
             if res.get("end_error"):
                 entry["end_error"] = res.get("end_error")
             if res.get("abandoned"):

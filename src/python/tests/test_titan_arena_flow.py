@@ -1005,6 +1005,42 @@ def test_run_rivals_endbattle_notfound_is_unverified_not_win(
     assert results[0]["end_error"] == "NotFound"
 
 
+def test_run_rivals_start_error_is_unverified_not_win(
+    mock_client, mock_sleep, mocker
+):
+    """A StartBattle error must be treated as unverified and not win."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {
+        "status": "battle",
+        "tier": 8,
+        "rivals": {"-1": {"attackScore": 0, "power": "1"}},
+    }
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {
+            "error": "ServerError",
+            "estimate": MagicMock(win=True),
+        }
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client,
+        status,
+        titans=[1, 2, 3, 4, 5],
+        engine=PythonBattleEngine(),
+        threshold=250,
+        stop_on_first_loss=True,
+        max_attempts_per_rival=1,
+        bank_best_loss=False,
+    )
+    assert len(results) == 1
+    assert results[0]["win"] is False
+    assert results[0]["unverified"] is True
+    assert results[0]["start_error"] == "ServerError"
+
+
 def test_end_battle_notfound_is_warning_and_sets_end_error(
     capsys, mock_client, mock_sleep
 ):
