@@ -335,7 +335,11 @@ dummy loss は EndRaid に含めない（サーバーがレイド全体を無効
 （不明な状態で古い抑止を引き継がないため）。残りの rival は個別バトル
 （`titanArenaStartBattle`）で継続する。
 レイドで負けた rival は `attackScore < threshold` のまま残るため、続く
-個別バトルの対象になる。
+個別バトルの対象になる。レイドが一部の rival だけを落とした場合は、
+個別バトルの前に `titanArenaGetStatus` を再取得し、レイドで既にクリア
+した rival を攻撃対象から除外する（古い snapshot による
+`beaten up already` の空打ちを避ける）。`--progress line` の進捗行は
+Tier 内の rival 位置（例: `T7 3/9 rival ...`）を表示する。
 
 レイドの完了判定は、EndRaid の `results` が全 rival 分そろい、各エントリに
 parse 可能な `attackScore` がある場合にそれを使う。欠落・部分エコー・

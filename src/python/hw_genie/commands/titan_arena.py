@@ -175,12 +175,26 @@ def _build_status_text(
     wins: int,
     last: str,
     elapsed: float,
+    *,
+    tier: Any | None = None,
+    rival_no: int | None = None,
+    rival_total: int | None = None,
 ) -> str:
-    """Build the per-account status body (caller adds ``[account]``)."""
+    """Build the per-account status body (caller adds ``[account]``).
+
+    The tier and rival position are included when the caller provides them,
+    so a long tier run shows where it is (``T7 3/9 rival``) rather than only
+    the rival ID and attempt counter.
+    """
     pace = elapsed / attempt_no if attempt_no > 0 else 0.0
     suffix = f" last={last}" if last else ""
+    stage = ""
+    if tier is not None:
+        stage = f"T{tier} "
+        if rival_no is not None and rival_total:
+            stage += f"{rival_no}/{rival_total} "
     return (
-        f"rival {rival_id} [{attempt_no}/{total}] "
+        f"{stage}rival {rival_id} [{attempt_no}/{total}] "
         f"wins {wins}{suffix} "
         f"pace {_fmt_duration(pace)}/attempt elapsed {_fmt_duration(elapsed)}"
     )
@@ -660,8 +674,20 @@ def run_titan_arena(
     }
     start_res = client.call(start_payload)
     if not start_res.is_success:
-        print(f"{Emojis.ERROR}Start failed ({start_res.error_name}): {start_res.detail}", flush=True)
-        if start_res.error_name == "NotFound":
+        beaten_already = _is_beaten_up_detail(
+            start_res.error_name, start_res.detail
+        )
+        if beaten_already:
+            # Expected stale snapshot: the caller (_run_rivals) reports it as
+            # a win after confirming the current status. Do not print it as an
+            # error; a busy tier run would otherwise look like it is failing.
+            _vprint(
+                progress,
+                f"{Emojis.INFO}Rival {rival_id_str} already cleared; skipping StartBattle.",
+            )
+        else:
+            print(f"{Emojis.ERROR}Start failed ({start_res.error_name}): {start_res.detail}", flush=True)
+        if not beaten_already and start_res.error_name == "NotFound":
             try:
                 status = fetch_titan_arena_status(client)
                 rivals = status.get("rivals") or {}
@@ -770,7 +796,7 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: 
         return {"status": end_res.status, "estimate": est, "end_detail": response}
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
-    end_emoji = Emojis.VICTORY if est.win else Emojis.SUCCESS
+    end_emoji = Emojis.VICTORY if est.win else Emojis.INFO
     _aprint(progress, f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}")
     return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
 
@@ -1016,6 +1042,32 @@ def run_titan_arena_tier(
                 # path in case the user reconnected mid-tier. Banked raid wins
                 # count as progress for the no-progress counter below.
                 raid_won = any(b.get("win") for b in raid_summary.get("battles", []) or [])
+                if raid_won:
+                    # The pre-raid snapshot still lists the rivals the raid
+                    # just cleared. Refresh once so the fallback does not
+                    # StartBattle every already-beaten rival (the server
+                    # answers "beaten up already" and each one costs a
+                    # wasted call plus a confirmation fetch).
+                    fresh = None
+                    try:
+                        fresh = fetch_titan_arena_status(client)
+                    except Exception as exc:  # best-effort: stale snapshot stands
+                        logger.debug("Post-raid status fetch failed: %s", exc)
+                    if isinstance(fresh, dict):
+                        if fresh.get("status") != "battle":
+                            # The tier ended (peace_time/disabled); the next
+                            # pass handles it instead of attacking stale IDs.
+                            continue
+                        fresh_tier = fresh.get("tier", tier)
+                        if _tier_key(fresh_tier) != _tier_key(tier):
+                            # A concurrent clear advanced the tier; process
+                            # the new tier on the next pass.
+                            continue
+                        status = fresh
+                        summary["final_tier"] = fresh_tier
+                        summary["remaining_rivals"] = len(
+                            _select_auto_rivals(fresh, attack_score_threshold)
+                        )
             else:
                 if _cancel_requested():
                     return _mark_interrupted(summary)
@@ -1058,6 +1110,7 @@ def run_titan_arena_tier(
                 account_label=account_label,
                 progress=progress,
                 dashboard=dashboard,
+                tier=tier,
             )
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
@@ -1623,12 +1676,29 @@ def _run_raid(
             )
     raid_summary["completed"] = completed
     raid_summary["completed_basis"] = basis
+    below = (
+        sum(1 for rid in results if _attack_score(scored[rid]) < threshold)
+        if basis == "endraid"
+        else None
+    )
+    below_text = f", below_threshold={below}" if below is not None else ""
     print(
         f"{Emojis.STEP}Raid results completed={completed} "
-        f"(basis={basis}, verified {len(results)}/{len(raid_rivals)})",
+        f"(basis={basis}, verified {len(results)}/{len(raid_rivals)}{below_text})",
         flush=True,
     )
     return raid_summary
+
+
+def _is_beaten_up_detail(error_name: Any, detail: Any) -> bool:
+    """True for the server's "beaten up already" NotAvailable/NotFound reply."""
+    if error_name not in ("NotAvailable", "NotFound"):
+        return False
+    try:
+        text = json.dumps(detail, default=str).lower()
+    except Exception:
+        text = str(detail).lower()
+    return "beaten up already" in text
 
 
 def _is_beaten_already(res: dict[str, Any]) -> bool:
@@ -1642,16 +1712,14 @@ def _is_beaten_already(res: dict[str, Any]) -> bool:
     """
     if res.get("error") not in ("NotAvailable", "NotFound"):
         return False
-    import json as _json
-
+    if _is_beaten_up_detail(res.get("error"), res.get("detail")):
+        return True
     try:
-        detail = _json.dumps(res.get("detail"), default=str).lower()
+        detail = json.dumps(res.get("detail"), default=str).lower()
     except Exception:
         detail = str(res.get("detail")).lower()
-    matched = "beaten up already" in detail
-    if not matched:
-        print(f"{Emojis.WARNING}StartBattle {res.get('error')} with unexpected detail: {detail[:200]}", flush=True)
-    return matched
+    print(f"{Emojis.WARNING}StartBattle {res.get('error')} with unexpected detail: {detail[:200]}", flush=True)
+    return False
 
 
 def _is_already_cleared(client: HWClient, rival_id: str, threshold: int) -> bool:
@@ -1720,11 +1788,18 @@ def _run_rivals(
     account_label: str | None = None,
     progress: str = "verbose",
     dashboard: Any = None,
+    tier: Any | None = None,
 ) -> list[dict[str, Any]]:
     progress = _normalize_progress(progress)
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
         return []
+    status_rivals = status.get("rivals")
+    all_rivals = (
+        [str(rid) for rid in status_rivals]
+        if isinstance(status_rivals, dict)
+        else []
+    )
     # Attempt plan per rival: explicit/single-team callers repeat the one team
     # up to max_attempts_per_rival (legacy Invalid retry); a rotation does
     # exactly one full pass (each team × seeds_per_team) so proven winners
@@ -1763,14 +1838,30 @@ def _run_rivals(
         elapsed = time.monotonic() - rival_start
         # The banking attempt is one extra StartBattle outside the plan cap,
         # so its updates pass total=len+1 explicitly; plan attempts use the default.
-        body = _build_status_text(str(rival_id), attempt_no, len(attempt_plan) if total is None else total, wins, last, elapsed)
+        body = _build_status_text(
+            str(rival_id),
+            attempt_no,
+            len(attempt_plan) if total is None else total,
+            wins,
+            last,
+            elapsed,
+            tier=tier,
+            rival_no=display_no,
+            rival_total=display_total,
+        )
         _emit_status_line(acc_key, body, dashboard, line_state, progress)
 
     for rival_no, rival_id in enumerate(finish_targets, start=1):
         if _cancel_requested():
             raise _interrupted_error(results)
+        try:
+            display_no = all_rivals.index(str(rival_id)) + 1
+        except ValueError:
+            display_no = rival_no
+        display_total = len(all_rivals) or len(finish_targets)
         rival_start = time.monotonic()
-        _vprint(progress, f"{Emojis.STEP}Rival {rival_id} ({rival_no}/{len(finish_targets)}, {len(attempt_plan)} attempts planned)")
+        tier_prefix = f"Tier {tier} " if tier is not None else ""
+        _vprint(progress, f"{Emojis.STEP}{tier_prefix}Rival {rival_id} ({display_no}/{display_total}, {len(attempt_plan)} attempts planned)")
         rival_reported = False
         # Verified losing estimates, ranked for the best-loss fallback:
         # (stars, first_seen_order, team). Abandoned battles cannot be

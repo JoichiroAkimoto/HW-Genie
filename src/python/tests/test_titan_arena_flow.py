@@ -1029,6 +1029,28 @@ def test_run_titan_arena_shows_attempt_label(capsys, mock_client, mock_sleep):
     assert "Titan Arena: [3/48]" in out
 
 
+def test_run_titan_arena_beaten_already_not_reported_as_error(
+    capsys, mock_client, mock_sleep
+):
+    """A stale-snapshot 'beaten up already' is expected, not an error line."""
+    from hw_genie.commands.titan_arena import run_titan_arena
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _err("NotAvailable", {"description": "beaten up already"})
+    ]
+    res = run_titan_arena(
+        client,
+        rival_id="-1",
+        titans=[1, 2, 3, 4, 5],
+        engine=PythonBattleEngine(),
+    )
+    out = capsys.readouterr().out
+    assert "❌" not in out
+    assert "already cleared" in out
+    assert res["error"] == "NotAvailable"
+
+
 def test_run_titan_arena_header_keeps_colon_without_label(capsys, mock_client, mock_sleep):
     """No-label header keeps the legacy `Titan Arena: rivalId=` form (log parsers)."""
     from hw_genie.commands.titan_arena import run_titan_arena
@@ -1237,8 +1259,8 @@ def test_run_titan_arena_shows_account_label(capsys, mock_client, mock_sleep):
     assert "Titan Arena: [Alice] rivalId=-1" in out
 
 
-def test_end_battle_win_uses_victory_emoji_loss_keeps_success(capsys, mock_client, mock_sleep):
-    """Wins print 🏆, losses keep ✅ so they are visually distinct from Start."""
+def test_end_battle_win_uses_victory_emoji_loss_keeps_info(capsys, mock_client, mock_sleep):
+    """Wins print 🏆, losses print ℹ️ so they are visually distinct from wins."""
     from hw_genie.commands.titan_arena import run_titan_arena
 
     client, mock_call = mock_client
@@ -1262,7 +1284,7 @@ def test_end_battle_win_uses_victory_emoji_loss_keeps_success(capsys, mock_clien
     run_titan_arena(client, rival_id="-2", titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine())
     out = capsys.readouterr().out
     assert len([line for line in out.splitlines() if line.startswith("🏆 EndBattle")]) == 1
-    assert len([line for line in out.splitlines() if line.startswith("✅ EndBattle")]) == 1
+    assert len([line for line in out.splitlines() if line.startswith("ℹ️") and "EndBattle" in line]) == 1
     # Start lines keep ✅ and stay distinct from wins.
     assert len([line for line in out.splitlines() if "StartBattle accepted" in line]) == 2
 
@@ -2052,6 +2074,8 @@ def test_tier_partial_raid_falls_through_to_rivals(mock_client, mock_sleep, mock
         side_effect=[
             status,
             post_raid,
+            # The post-raid refresh before individual battles.
+            post_raid,
             {"status": "peace_time", "tier": 8, "rivals": {}},
         ],
     )
@@ -2694,6 +2718,62 @@ def test_tier_raid_complete_failure_does_not_loop(mock_client, mock_sleep, mocke
     assert spy_complete.call_count == 1
 
 
+def test_tier_partial_raid_refreshes_status_before_rivals(
+    mock_client, mock_sleep, mocker
+):
+    """A partial raid refresh avoids StartBattle on rivals it just cleared."""
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, _ = mock_client
+    initial = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 0},
+            "-2": {"attackScore": 0},
+        },
+        "canRaid": True,
+    }
+    fresh = {
+        "status": "battle",
+        "tier": 8,
+        "maxTier": 8,
+        "rivals": {
+            "-1": {"attackScore": 250},
+            "-2": {"attackScore": 0},
+        },
+        "canRaid": False,
+    }
+    spy_fetch = mocker.patch(
+        "hw_genie.commands.titan_arena.fetch_titan_arena_status",
+        side_effect=[initial, fresh],
+    )
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        return_value={
+            "stage": "raid",
+            "battles": [{"rivalId": "-1", "win": True}],
+            "completed": False,
+            "completed_basis": "endraid",
+        },
+    )
+    spy_rivals = mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        return_value=[{"rivalId": "-2", "win": True}],
+    )
+    spy_complete = mocker.patch(
+        "hw_genie.commands.titan_arena._complete_tier", return_value=True
+    )
+    mocker.patch("hw_genie.commands.titan_arena._farm_daily_reward")
+    run_titan_arena_tier(
+        client, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine()
+    )
+    assert spy_fetch.call_count == 2
+    assert spy_rivals.call_args.args[1] == fresh
+    assert spy_complete.call_count == 1
+
+
 def test_tier_new_tier_still_completes(mock_client, mock_sleep, mocker):
     """The same-tier dedupe must not block completing a genuinely new tier."""
     from hw_genie.commands.titan_arena import _tier_key, run_titan_arena_tier
@@ -3215,6 +3295,58 @@ def test_quiet_rivals_keep_decided_lines_but_drop_plan(capsys, mock_client, mock
     assert "rival -1: WIN" in out
 
 
+def test_build_status_text_includes_tier_and_rival_position():
+    """Status lines show the tier and the rival's position in the target list."""
+    from hw_genie.commands.titan_arena import _build_status_text
+
+    text = _build_status_text(
+        "123", 2, 10, 1, "loss", 4.0, tier=7, rival_no=3, rival_total=9
+    )
+    assert text.startswith("T7 3/9 rival 123 [2/10]")
+    assert "wins 1" in text
+    # Direct _run_rivals callers without a tier keep the legacy shape.
+    legacy = _build_status_text("123", 1, 2, 0, "", 0.0)
+    assert legacy.startswith("rival 123 [1/2]")
+
+
+def test_run_rivals_verbose_shows_tier_position(
+    capsys, mock_client, mock_sleep, mocker
+):
+    """Rival position is relative to the whole tier, not just the target subset."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {
+        "status": "battle",
+        "tier": 7,
+        "rivals": {
+            "-1": {"attackScore": 250, "power": "1"},
+            "-2": {"attackScore": 0, "power": "1"},
+            "-3": {"attackScore": 0, "power": "1"},
+        },
+    }
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, end_on_loss=False, **kw):
+        return {"estimate": MagicMock(win=True)}
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    _run_rivals(
+        client,
+        status,
+        titans=[1, 2, 3, 4, 5],
+        engine=PythonBattleEngine(),
+        threshold=250,
+        stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]],
+        seeds_per_team=1,
+        progress="verbose",
+        tier=7,
+    )
+    out = capsys.readouterr().out
+    assert "Tier 7 Rival -2 (2/3," in out
+    assert "Tier 7 Rival -3 (3/3," in out
+
+
 def test_line_mode_non_tty_throttles_status_lines(capsys, mock_client, mock_sleep, mocker, monkeypatch):
     """Non-TTY line mode emits throttled plain lines with [a/b] and pace."""
     from hw_genie.commands.titan_arena import _run_rivals
@@ -3233,12 +3365,12 @@ def test_line_mode_non_tty_throttles_status_lines(capsys, mock_client, mock_slee
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=[[1, 2, 3, 4, 5], [9, 9, 9, 9, 9]], seeds_per_team=2,
-        progress="line", account_label="Alice",
+        progress="line", account_label="Alice", tier=8,
     )
     out = capsys.readouterr().out
     assert len(results) == 4
     assert "\r" not in out
-    status_lines = [line for line in out.splitlines() if line.startswith("[Alice] rival -1 [")]
+    status_lines = [line for line in out.splitlines() if line.startswith("[Alice] T8 1/1 rival -1 [")]
     assert len(status_lines) == 1, f"expected 1 throttled line, got {status_lines}"
     assert "[1/4]" in status_lines[0]
     assert "wins 0" in status_lines[0]
@@ -3264,10 +3396,10 @@ def test_line_mode_tty_uses_carriage_return(capsys, mock_client, mock_sleep, moc
         client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
         threshold=250, stop_on_first_loss=False,
         team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=1,
-        progress="line", account_label="Alice",
+        progress="line", account_label="Alice", tier=8,
     )
     out = capsys.readouterr().out
-    assert "\r[Alice] rival -1 [1/1]" in out
+    assert "\r[Alice] T8 1/1 rival -1 [1/1]" in out
     assert "rival -1: WIN" in out
 
 
