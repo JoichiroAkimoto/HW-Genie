@@ -38,6 +38,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。
 - **Guild Chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`、`docs/api/CHAT_API.md` 参照）。
 - **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid 優先、全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
+- **Arena (targeted attack)**: 自分より上位の指定プレイヤーをチーム指定で攻撃（`hw-genie arena status` / `top` / `team` / `attack`。`--rank` または `--user-id`、`--team` プリセット / `--heroes`・`--pet`・`--banner`・`--favor` の直接指定、`--dry-run` で攻撃なしの範囲確認。`topGet` はトップ50のみ、範囲チェックは1リクエスト3件・攻撃可能範囲は自分の順位 ±21。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
@@ -62,6 +63,34 @@ uv run hw-genie --help
 # デバッグログを表示する場合 (--debug はサブコマンドの前に配置)
 uv run hw-genie --debug auth --list
 ```
+
+### Arena（上位プレイヤーへの指定攻撃）
+
+Arena の順位・攻撃回数・保存チームを確認し、名前付きチームプリセットで **自分より上位** のプレイヤーを攻撃します。同順位・下位・順位不明の相手は拒否されます。
+
+```bash
+# 状態・トップ50ランキング（読み取りのみ）
+uv run hw-genie arena status -a Alice
+uv run hw-genie arena top -a Alice --limit 20
+
+# チームプリセット（ゲーム保存チームの取り込み / 直接指定 / 一覧 / 削除）
+uv run hw-genie arena team set atk1 -a Alice --from-saved
+uv run hw-genie arena team set atk1 -a Alice \
+  --heroes 29 13 73 71 35 --pet 6008 --banner 2 --favor 13=6003
+uv run hw-genie arena team list -a Alice
+uv run hw-genie arena team remove atk1 -a Alice
+
+# 攻撃（--dry-run は arenaAttack を送りません）
+uv run hw-genie arena attack -a Alice --rank 10 --team atk1 --dry-run
+uv run hw-genie arena attack -a Alice --rank 10 --team atk1
+uv run hw-genie arena attack -a Alice --user-id 11111111 --dry-run
+```
+
+- `--heroes` はちょうど5体（重複なし・ID < 6000）、`--pet` は任意（>= 6000）、`--banner` は任意、`--favor HERO=PATRON` は繰り返し可。
+- 優先順位: 直接指定 > `--team` プリセット > ゲーム保存チーム。favor は明示指定 > プリセット > 同モードの保存 favor（選択ヒーロー一致分のみ、欠落は警告）。
+- `topGet` はトップ50のみ（ページングなし）。それ以外の相手は `--user-id` を使います（上位と確認できる場合のみ）。
+- `arenaCheckTargetRange` は1リクエスト最大3件、攻撃可能範囲は実測で自分の順位 ±21 です。`NotEnough` / `Refillable` は攻撃せず警告して exit 0。
+- API 仕様: `docs/api/ARENA_API.md` / エージェント向け手順: `.agents/skills/arena/SKILL.md`
 
 ### Tips: direnv による自動有効化
 

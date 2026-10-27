@@ -168,6 +168,16 @@ class PlayerStatus:
 
 class ApiAction(str, Enum):
     ARENA_GET_ALL = "arenaGetAll"
+    ARENA_FIND_ENEMIES = "arenaFindEnemies"
+    ARENA_CHECK_TARGET_RANGE = "arenaCheckTargetRange"
+    ARENA_ATTACK = "arenaAttack"
+    GRAND_FIND_ENEMIES = "grandFindEnemies"
+    GRAND_CHECK_TARGET_RANGE = "grandCheckTargetRange"
+    GRAND_ATTACK = "grandAttack"
+    TOP_GET = "topGet"
+    TEAM_GET_ALL = "teamGetAll"
+    TEAM_GET_FAVOR = "teamGetFavor"
+    TEAM_GET_BANNERS = "team_getBanners"
     MISSION_GET_ALL = "missionGetAll"
     MISSION_RAID = "missionRaid"
     QUEST_GET_ALL = "questGetAll"
@@ -549,6 +559,51 @@ class HWClient:
             timezone=_safe_int(user_data.get("timeZone")),
             next_day_ts=_safe_int(user_data.get("nextDayTs")),
         )
+
+    # --- Arena / Grand Arena thin RPC wrappers ---
+
+    def arena_top_get(self, grand: bool = False) -> HWResponse:
+        """ランキング上位50件を取得する（``topGet``）。"""
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.TOP_GET,
+                    "args": {"type": "grand" if grand else "arena", "extraId": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload)
+
+    def arena_find_enemies(self, grand: bool = False) -> HWResponse:
+        """現在攻撃できる候補（最大3件）を取得する。"""
+        action = ApiAction.GRAND_FIND_ENEMIES if grand else ApiAction.ARENA_FIND_ENEMIES
+        return self.call({"calls": [{"name": action, "args": {}, "ident": "body"}]})
+
+    def arena_check_target_range(self, ids: list[int], grand: bool = False) -> HWResponse:
+        """``*CheckTargetRange`` を呼ぶ（API 上限は1リクエスト3件）。"""
+        action = ApiAction.GRAND_CHECK_TARGET_RANGE if grand else ApiAction.ARENA_CHECK_TARGET_RANGE
+        payload = {
+            "calls": [
+                {"name": action, "args": {"ids": [int(i) for i in ids]}, "ident": "body"}
+            ]
+        }
+        return self.call(payload)
+
+    def arena_attack(self, args: dict[str, Any], grand: bool = False) -> HWResponse:
+        """``arenaAttack`` / ``grandAttack`` を送信する。"""
+        action = ApiAction.GRAND_ATTACK if grand else ApiAction.ARENA_ATTACK
+        payload = {
+            "calls": [
+                {
+                    "name": action,
+                    "args": args,
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload)
 
     def sleep(self) -> None:
         """APIリクエスト間のインターバル（レートリミット回避）"""

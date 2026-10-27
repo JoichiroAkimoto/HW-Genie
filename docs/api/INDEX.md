@@ -27,6 +27,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 - [USER_API.md](./USER_API.html) (ユーザー・アカウント関連)
 - [UNIT_API.md](./UNIT_API.html) (ヒーロー・タイタン・ペット)
 - [GUILD_API.md](./GUILD_API.html) (ギルド・PvP関連)
+- [ARENA_API.md](./ARENA_API.html) (アリーナ・ランキング・チーム・指定攻撃)
 - [QUEST_API.md](./QUEST_API.html) (クエスト・ミッション・報酬)
 - [SHOP_API.md](./SHOP_API.html) (ショップ・資産関連)
 - [ADVENTURE_API.md](./ADVENTURE_API.html) (PVE・アドベンチャー)
