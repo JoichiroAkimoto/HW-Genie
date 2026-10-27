@@ -5,8 +5,14 @@ Scope: normal Arena only. Grand Arena can be described by the private
 
 Safety rules:
 - Only players ranked *above* the current account can be attacked.
-- ``--dry-run`` sends read-only calls (``arenaCheckTargetRange`` included) and
-  never calls ``arenaAttack``.
+- A live attack is accepted only for players in the latest
+  ``arenaFindEnemies`` candidate list (range-check ``true`` alone is not
+  enough). The list rotates, so it is refreshed up to
+  ``DEFAULT_CANDIDATE_RETRIES`` extra times while waiting for the target.
+  There is no fixed "N ranks above" cutoff: candidates may include players
+  farther than the roughly 13 ranks observed so far.
+- ``--dry-run`` performs the same candidate preflight and
+  ``arenaCheckTargetRange`` call, but never calls ``arenaAttack``.
 - ``arenaCheckTargetRange`` accepts at most 3 IDs per request; callers are
   batched accordingly.
 - ``arenaAttack`` is sent exactly once (``max_retries=0``): a timeout after the
@@ -41,6 +47,10 @@ ARENA_MAX_ATTEMPTS = 5
 ARENA_RANGE = 21
 # ``*CheckTargetRange`` rejects 4+ ids with ERROR TooMany.
 MAX_RANGE_IDS = 3
+# ``*Attack`` only accepts players in the latest ``*FindEnemies`` list. The
+# list rotates, so refresh it this many extra times while waiting for the
+# requested target to appear.
+DEFAULT_CANDIDATE_RETRIES = 10
 
 # Config key in account_configs: {"arena": {name: {heroes, pet?, favor, banners?}}}
 ARENA_TEAM_PRESETS_KEY = "arena_team_presets"
@@ -705,6 +715,54 @@ def fetch_arena_candidates(
     return parse_candidates_response(_unwrap_item(res.detail))
 
 
+def _validate_candidate_retries(retries: int) -> int:
+    if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
+        raise ArenaError(
+            f"candidate_retries must be a non-negative integer (got {retries!r})."
+        )
+    return retries
+
+
+def fetch_candidate(
+    client: HWClient,
+    *,
+    user_id: int | None = None,
+    place: int | None = None,
+    retries: int = DEFAULT_CANDIDATE_RETRIES,
+    mode: ArenaMode = ARENA_MODE,
+) -> ArenaTopEntry | None:
+    """Return the target's current ``*FindEnemies`` entry.
+
+    ``*Attack`` only accepts players present in the most recent candidate list,
+    and the list rotates between calls. ``retries`` counts refreshes *after*
+    the first call, so up to ``retries + 1`` requests are made. Identify the
+    target by ``user_id`` (stable) or ``place`` (for ``--rank`` resolution).
+
+    There is deliberately no fixed "N ranks above" limit here: the candidate
+    window observed so far is roughly 1-13 ranks above, but a higher-ranked
+    player can appear as a candidate. Membership in this list is the only
+    extra requirement beyond the ±21 range check.
+    """
+    _require_arena_mode(mode)
+    if (user_id is None) == (place is None):
+        raise ArenaError("fetch_candidate requires exactly one of user_id or place.")
+    retries = _validate_candidate_retries(retries)
+    for attempt in range(retries + 1):
+        candidates = fetch_arena_candidates(client, mode)
+        for entry in candidates:
+            if user_id is not None and entry.user_id == user_id:
+                return entry
+            if place is not None and entry.place == place:
+                return entry
+        if attempt < retries:
+            label = f"userId {user_id}" if user_id is not None else f"rank {place}"
+            print(
+                f"{Emojis.INFO}Target ({label}) is not in the current candidates; "
+                f"refreshing ({attempt + 1}/{retries})."
+            )
+    return None
+
+
 def _chunked(items: list[int], size: int) -> Iterator[list[int]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
@@ -764,20 +822,20 @@ def resolve_target(
     *,
     rank: int | None = None,
     user_id: int | None = None,
+    candidate_retries: int = DEFAULT_CANDIDATE_RETRIES,
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaTarget:
     """Resolve ``--rank`` / ``--user-id`` to a target ranked above the player.
 
     The own rank from ``topGet`` (``ArenaTop.own_place``) is preferred over the
     earlier ``status.place`` because it is fresher; the earlier value is only a
-    fallback when ``topGet`` omits ``place``.
+    fallback when ``topGet`` omits ``place``. Targets outside the top 50 are
+    resolved from the rotating candidate list, retrying up to
+    ``candidate_retries`` extra times.
     """
     _require_arena_mode(mode)
     if (rank is None) == (user_id is None):
         raise ArenaError("Specify exactly one of --rank or --user-id.")
-
-    top: ArenaTop | None = None
-    candidates: list[ArenaTopEntry] | None = None
 
     if rank is not None:
         if isinstance(rank, bool) or rank < 1:
@@ -791,14 +849,18 @@ def resolve_target(
             )
         entry = _find_entry(top.entries, rank=rank)
         if entry is None:
-            candidates = fetch_arena_candidates(client, mode)
-            entry = _find_entry(candidates, rank=rank)
+            entry = fetch_candidate(
+                client,
+                place=rank,
+                retries=candidate_retries,
+                mode=mode,
+            )
         if entry is None:
             raise ArenaError(
                 f"Rank {rank} was not found in the top 50 or the current candidate "
-                "list. The ranking API only returns the top 50 and candidates are "
-                "roughly the 13 nearest ranks above you; use --user-id <id> for "
-                "other players."
+                f"list after {candidate_retries + 1} attempt(s). The ranking API "
+                "only returns the top 50; other players must appear in "
+                "arenaFindEnemies. Retry later or raise --candidate-retries."
             )
         return ArenaTarget(
             user_id=entry.user_id,
@@ -815,12 +877,17 @@ def resolve_target(
     own_place = top.own_place if top.own_place is not None else status.place
     entry = _find_entry(top.entries, user_id=target_id)
     if entry is None:
-        candidates = fetch_arena_candidates(client, mode)
-        entry = _find_entry(candidates, user_id=target_id)
+        entry = fetch_candidate(
+            client,
+            user_id=target_id,
+            retries=candidate_retries,
+            mode=mode,
+        )
     if entry is None:
         raise ArenaError(
-            f"Could not resolve place for userId {target_id}. It is not in the "
-            "top 50 or the current candidate list; use --rank for a known rank."
+            f"Could not resolve place for userId {target_id} after "
+            f"{candidate_retries + 1} candidate attempt(s). It is not in the top 50 "
+            "or the current candidate list; use --rank for a known rank."
         )
     if entry.place >= own_place:
         raise ArenaError(
@@ -915,16 +982,52 @@ def run_arena_attack(
     team: ArenaTeam,
     *,
     dry_run: bool = False,
+    candidate_retries: int = DEFAULT_CANDIDATE_RETRIES,
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaAttackResult:
-    """Verify the target range and attack (unless ``dry_run``)."""
+    """Verify the target and attack (unless ``dry_run``).
+
+    A live attack is only accepted for players present in the latest
+    ``*FindEnemies`` response, so the candidate list is refreshed up to
+    ``candidate_retries`` extra times until the target appears. Both dry-run
+    and live attacks require candidate membership, keeping the dry-run
+    prediction accurate.
+    """
     _require_arena_mode(mode)
+    candidate_retries = _validate_candidate_retries(candidate_retries)
     validate_team(team)
 
-    # Re-read the own rank immediately before the range check: a rank change
-    # since ``status`` was fetched must not let a same/lower-ranked target
-    # through (``*CheckTargetRange`` is also true for below-ranked opponents).
+    # Re-read the own rank immediately before the checks: a rank change since
+    # ``status`` was fetched must not let a same/lower-ranked target through
+    # (``*CheckTargetRange`` is also true for below-ranked opponents).
     fresh_place = fetch_own_place(client, mode)
+    if target.place >= fresh_place:
+        raise ArenaError(
+            f"Target {_format_target(target)} is not above your current rank "
+            f"{fresh_place}; only players ranked above you can be attacked "
+            "(upper-only). Re-run after checking the ranking."
+        )
+
+    candidate = fetch_candidate(
+        client, user_id=target.user_id, retries=candidate_retries, mode=mode
+    )
+    if candidate is None:
+        raise ArenaError(
+            f"Target {_format_target(target)} did not appear in the candidate list "
+            f"after {candidate_retries + 1} attempt(s). arenaAttack only accepts "
+            "players currently returned by arenaFindEnemies (the observed window is "
+            "roughly 1-13 ranks above, but higher ranks can appear); no attack was "
+            "sent. Retry later or raise --candidate-retries."
+        )
+
+    # The candidate entry carries the target's current place, which may have
+    # shifted since ``resolve_target``. Re-apply the upper-only rule to it.
+    target = ArenaTarget(
+        user_id=target.user_id,
+        place=candidate.place,
+        name=candidate.name or target.name,
+        power=candidate.power if candidate.power is not None else target.power,
+    )
     if target.place >= fresh_place:
         raise ArenaError(
             f"Target {_format_target(target)} is not above your current rank "
@@ -1261,6 +1364,7 @@ __all__ = [
     "ArenaTarget",
     "ArenaTeam",
     "ARENA_TEAM_PRESETS_KEY",
+    "DEFAULT_CANDIDATE_RETRIES",
     "attackable_window",
     "build_attack_args",
     "check_target_range",
@@ -1268,6 +1372,7 @@ __all__ = [
     "fetch_arena_candidates",
     "fetch_arena_status",
     "fetch_arena_top",
+    "fetch_candidate",
     "fetch_own_place",
     "fetch_saved_team",
     "load_arena_presets",

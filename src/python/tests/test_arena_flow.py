@@ -124,6 +124,17 @@ def _candidates_response(entries: list[dict]) -> dict:
     return {"response": {"enemies": entries}}
 
 
+def _candidate(
+    uid: int = 111, place: int = 10, name: str = "Bob", power: int = 5000
+) -> dict:
+    return {
+        "userId": str(uid),
+        "place": str(place),
+        "power": str(power),
+        "user": {"name": name},
+    }
+
+
 def _range_response(uid: int, allowed: bool) -> dict:
     return {"response": {str(uid): allowed}}
 
@@ -276,13 +287,44 @@ def test_resolve_target_rank_falls_back_to_candidates(mock_client, mock_sleep):
     assert _call_names(mock_call) == ["topGet", "arenaFindEnemies"]
 
 
-def test_resolve_target_rank_not_found_suggests_user_id(mock_client, mock_sleep):
+def test_resolve_target_rank_retries_candidates(mock_client, mock_sleep):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([])),
+        _ok(_candidates_response([_candidate(uid=999, place=18)])),
+        _ok(_candidates_response([_candidate(uid=222, place=17, name="Bob")])),
+    ]
+    target = resolve_target(
+        client, _make_status(), rank=17, candidate_retries=1
+    )
+    assert (target.user_id, target.place, target.name) == (222, 17, "Bob")
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaFindEnemies",
+        "arenaFindEnemies",
+    ]
+
+
+def test_resolve_target_user_id_retries_candidates(mock_client, mock_sleep):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([])),
+        _ok(_candidates_response([_candidate(uid=999, place=18)])),
+        _ok(_candidates_response([_candidate(uid=111, place=17)])),
+    ]
+    target = resolve_target(
+        client, _make_status(), user_id=111, candidate_retries=1
+    )
+    assert (target.user_id, target.place) == (111, 17)
+
+
+def test_resolve_target_rank_not_found_suggests_retrying(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [_ok(_top_response([])), _ok(_candidates_response([]))]
     with pytest.raises(ArenaError) as exc:
-        resolve_target(client, _make_status(), rank=1)
+        resolve_target(client, _make_status(), rank=1, candidate_retries=0)
     message = str(exc.value)
-    assert "--user-id" in message
+    assert "--candidate-retries" in message
     assert "top 50" in message.lower()
 
 
@@ -326,7 +368,7 @@ def test_resolve_target_unknown_user_id_rejected(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [_ok(_top_response([])), _ok(_candidates_response([]))]
     with pytest.raises(ArenaError, match="Could not resolve"):
-        resolve_target(client, _make_status(), user_id=111)
+        resolve_target(client, _make_status(), user_id=111, candidate_retries=0)
 
 
 def test_resolve_target_rejects_self_before_lookup(mock_client, mock_sleep):
@@ -385,18 +427,24 @@ def test_run_arena_attack_dry_run_does_not_call_attack(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
     ]
     result = run_arena_attack(client, _make_status(), _target(), _team(), dry_run=True)
     assert result.dry_run is True
     assert result.accepted is False
-    assert _call_names(mock_call) == ["arenaGetAll", "arenaCheckTargetRange"]
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaCheckTargetRange",
+    ]
 
 
 def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, False)),
     ]
     with pytest.raises(ArenaError) as exc:
@@ -404,7 +452,11 @@ def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
     message = str(exc.value)
     assert "22" in message
     assert "1-21" in message
-    assert _call_names(mock_call) == ["arenaGetAll", "arenaCheckTargetRange"]
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaCheckTargetRange",
+    ]
 
 
 def test_run_arena_attack_range_missing_target_does_not_attack(
@@ -413,6 +465,7 @@ def test_run_arena_attack_range_missing_target_does_not_attack(
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok({"response": {}}),
     ]
     with pytest.raises(ArenaError, match="outside the attack range"):
@@ -439,6 +492,7 @@ def test_run_arena_attack_uses_fresh_place_for_window_message(
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response(18)),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, False)),
     ]
     with pytest.raises(ArenaError) as exc:
@@ -447,12 +501,133 @@ def test_run_arena_attack_uses_fresh_place_for_window_message(
     assert "1-17" in str(exc.value)
 
 
+def test_run_arena_attack_refreshes_candidates_until_target_appears(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate(uid=999, place=18)])),
+        _ok(_candidates_response([_candidate(uid=998, place=15)])),
+        _ok(_candidates_response([_candidate()])),
+        _ok(_range_response(111, True)),
+        _ok(_attack_response()),
+    ]
+    result = run_arena_attack(
+        client,
+        _make_status(),
+        _target(),
+        _team(),
+        dry_run=True,
+        candidate_retries=2,
+    )
+    assert result.dry_run is True
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaFindEnemies",
+        "arenaFindEnemies",
+        "arenaCheckTargetRange",
+    ]
+
+
+def test_run_arena_attack_candidate_retry_exhaustion_does_not_attack(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate(uid=999, place=18)])),
+        _ok(_candidates_response([_candidate(uid=998, place=15)])),
+        _ok(_candidates_response([_candidate(uid=997, place=12)])),
+    ]
+    with pytest.raises(ArenaError) as exc:
+        run_arena_attack(
+            client, _make_status(), _target(), _team(), candidate_retries=2
+        )
+    message = str(exc.value)
+    assert "did not appear" in message
+    assert "no attack was sent" in message
+    assert "--candidate-retries" in message
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaFindEnemies",
+        "arenaFindEnemies",
+    ]
+    assert "arenaAttack" not in _call_names(mock_call)
+    assert "arenaCheckTargetRange" not in _call_names(mock_call)
+
+
+def test_run_arena_attack_zero_candidate_retries_fetches_once(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response()),
+        _ok(_candidates_response([])),
+    ]
+    with pytest.raises(ArenaError, match="after 1 attempt"):
+        run_arena_attack(
+            client, _make_status(), _target(), _team(), candidate_retries=0
+        )
+    assert _call_names(mock_call) == ["arenaGetAll", "arenaFindEnemies"]
+
+
+def test_run_arena_attack_rejects_candidate_that_moved_below(
+    mock_client, mock_sleep
+):
+    # resolved as rank 5 earlier, but the fresh candidate entry says rank 10
+    # (= own rank), so the upper-only rule must reject it.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response(10)),
+        _ok(_candidates_response([_candidate(place=10)])),
+    ]
+    target = ArenaTarget(user_id=111, place=5, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="upper-only"):
+        run_arena_attack(client, _make_status(place=10), target, _team())
+    assert _call_names(mock_call) == ["arenaGetAll", "arenaFindEnemies"]
+
+
+@pytest.mark.parametrize("retries", [-1, 1.5, True])
+def test_run_arena_attack_rejects_invalid_candidate_retries(
+    mock_client, mock_sleep, retries
+):
+    client, mock_call = mock_client
+    with pytest.raises(ArenaError, match="candidate_retries"):
+        run_arena_attack(
+            client, _make_status(), _target(), _team(), candidate_retries=retries
+        )
+    assert mock_call.call_count == 0
+
+
+def test_run_arena_attack_uses_candidate_place_and_name(
+    mock_client, mock_sleep, capsys
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response()),
+        _ok(
+            _candidates_response(
+                [_candidate(place=9, name="Carol", power=9000)]
+            )
+        ),
+        _ok(_range_response(111, True)),
+    ]
+    run_arena_attack(client, _make_status(), _target(), _team(), dry_run=True)
+    out = capsys.readouterr().out
+    assert "rank 9" in out
+    assert "Carol" in out
+
+
 def test_run_arena_attack_sends_exact_args_once_without_retry(
     mock_client, mock_sleep
 ):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _ok(_attack_response()),
     ]
@@ -464,10 +639,11 @@ def test_run_arena_attack_sends_exact_args_once_without_retry(
     calls = mock_call.call_args_list
     assert [c.args[0]["calls"][0]["name"] for c in calls] == [
         "arenaGetAll",
+        "arenaFindEnemies",
         "arenaCheckTargetRange",
         "arenaAttack",
     ]
-    attack_call = calls[2].args[0]["calls"][0]
+    attack_call = calls[3].args[0]["calls"][0]
     assert attack_call["ident"] == "body"
     assert attack_call["context"] == {"actionTs": 0}
     assert attack_call["args"] == {
@@ -478,13 +654,14 @@ def test_run_arena_attack_sends_exact_args_once_without_retry(
         "banners": [2],
     }
     # The attack must be sent exactly once (no client-side retry).
-    assert calls[2].kwargs == {"max_retries": 0}
+    assert calls[3].kwargs == {"max_retries": 0}
 
 
 def test_run_arena_attack_network_error_is_unknown_outcome(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _unexpected("network_or_parse_error"),
     ]
@@ -493,13 +670,14 @@ def test_run_arena_attack_network_error_is_unknown_outcome(mock_client, mock_sle
     message = str(exc.value)
     assert "outcome is unknown" in message
     assert "may have consumed an attempt" in message
-    # One attempt only: fresh place + range + a single attack call.
+    # One attempt only: fresh place + candidates + range + a single attack call.
     assert _call_names(mock_call) == [
         "arenaGetAll",
+        "arenaFindEnemies",
         "arenaCheckTargetRange",
         "arenaAttack",
     ]
-    assert mock_call.call_args_list[2].kwargs == {"max_retries": 0}
+    assert mock_call.call_args_list[3].kwargs == {"max_retries": 0}
 
 
 def test_hwclient_call_max_retries_zero_makes_single_attempt(mock_sleep):
@@ -518,6 +696,7 @@ def test_run_arena_attack_not_enough_returns_stopped(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _err("NotEnough"),
     ]
@@ -540,6 +719,7 @@ def test_run_arena_attack_classifies_refillable_detail(
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _err_detail("NotEnough", detail),
     ]
@@ -558,6 +738,7 @@ def test_run_arena_attack_refillable_returns_stopped(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _err("Refillable"),
     ]
@@ -574,6 +755,7 @@ def test_run_arena_attack_unknown_result_warns_but_accepts(mock_client, mock_sle
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _ok({"response": {}}),
     ]
@@ -587,6 +769,7 @@ def test_run_arena_attack_other_error_raises(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
+        _ok(_candidates_response([_candidate()])),
         _ok(_range_response(111, True)),
         _err("SomeError"),
     ]
@@ -608,6 +791,7 @@ def _attack_args(**overrides) -> argparse.Namespace:
         banner=None,
         favor=None,
         dry_run=False,
+        candidate_retries=10,
         debug=False,
     )
     base.update(overrides)
@@ -665,6 +849,18 @@ def test_cmd_arena_attack_consumption_stop_exits_0(monkeypatch, stopped):
     main_mod.cmd_arena_attack(_attack_args())
 
 
+def test_cmd_arena_attack_passes_candidate_retries(monkeypatch):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    captured: dict = {}
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    main_mod.cmd_arena_attack(_attack_args(candidate_retries=3))
+    assert captured["candidate_retries"] == 3
+
+
 def test_arena_cli_registered(monkeypatch, capsys):
     import sys
 
@@ -679,6 +875,7 @@ def test_arena_cli_registered(monkeypatch, capsys):
     assert "--user-id" in out
     assert "--dry-run" in out
     assert "--team" in out
+    assert "--candidate-retries" in out
 
 
 # --- parser `-a` placement (finding 7) ---

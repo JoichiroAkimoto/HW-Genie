@@ -50,6 +50,19 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _non_negative_int(value: str) -> int:
+    """argparse type: an integer >= 0."""
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid non-negative int value: {value!r}"
+        ) from exc
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative: {value!r}")
+    return n
+
+
 def _run_host_identifier() -> str:
     """Return the execution environment identifier (``user@host``) for run_logs.
 
@@ -686,10 +699,19 @@ def cmd_arena_attack(args):
                 file=sys.stderr,
             )
         target = resolve_target(
-            client, status, rank=args.rank, user_id=args.user_id
+            client,
+            status,
+            rank=args.rank,
+            user_id=args.user_id,
+            candidate_retries=args.candidate_retries,
         )
         run_arena_attack(
-            client, status, target, team, dry_run=bool(args.dry_run)
+            client,
+            status,
+            target,
+            team,
+            dry_run=bool(args.dry_run),
+            candidate_retries=args.candidate_retries,
         )
     except ArenaError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1831,6 +1853,8 @@ def main():
     p_arena_team_remove.add_argument("name", help="Preset name")
     p_arena_team_remove.set_defaults(func=cmd_arena_team_remove)
 
+    from hw_genie.commands.arena import DEFAULT_CANDIDATE_RETRIES
+
     p_arena_attack = arena_sub.add_parser(
         "attack", parents=[parent_parser], help="Attack a player ranked above you"
     )
@@ -1850,6 +1874,16 @@ def main():
     )
     p_arena_attack.add_argument(
         "--dry-run", action="store_true", help="Resolve target and check range without attacking"
+    )
+    p_arena_attack.add_argument(
+        "--candidate-retries",
+        type=_non_negative_int,
+        default=DEFAULT_CANDIDATE_RETRIES,
+        metavar="N",
+        help=(
+            "Extra arenaFindEnemies refreshes while waiting for the target to "
+            f"appear in the current candidate list (default: {DEFAULT_CANDIDATE_RETRIES})"
+        ),
     )
     p_arena_attack.set_defaults(func=cmd_arena_attack)
 
