@@ -921,6 +921,76 @@ def test_get_thinking_level_display():
     assert ai_review._get_thinking_level_display(cfg) == "HIGH"
 
 
+def test_models_json_per_model_default_effort():
+    """models.json の既定: flash=MEDIUM / flash-lite=HIGH / openrouter=high。"""
+    cfg = ai_review.load_model_config()
+    with mock.patch.dict(os.environ, {}, clear=True):
+        flash_cfg = ai_review._build_thinking_config(cfg["flash"])
+        assert flash_cfg is not None
+        assert str(flash_cfg.thinking_level).upper().endswith("MEDIUM")
+
+        lite_cfg = ai_review._build_thinking_config(cfg["flash-lite"])
+        assert lite_cfg is not None
+        assert str(lite_cfg.thinking_level).upper().endswith("HIGH")
+
+        # --effort はモデル既定より優先
+        override = ai_review._build_thinking_config(cfg["flash-lite"], "MINIMAL")
+        assert override is not None
+        assert str(override.thinking_level).upper().endswith("MINIMAL")
+
+    assert cfg["openrouter-free"].get("reasoning_effort") == "high"
+
+
+def test_openrouter_reasoning_resolution():
+    """--effort > models.json reasoning_effort > 未指定 の解決順。"""
+    assert ai_review._openrouter_reasoning("HIGH", {"reasoning_effort": "low"}) == "high"
+    assert ai_review._openrouter_reasoning(None, {"reasoning_effort": "high"}) == "high"
+    # auto はモデル既定へフォールバック、off は明示的なパラメータなし
+    assert ai_review._openrouter_reasoning("auto", {"reasoning_effort": "high"}) == "high"
+    assert ai_review._openrouter_reasoning("off", {"reasoning_effort": "high"}) is None
+    assert ai_review._openrouter_reasoning(None, {}) is None
+    # OpenRouter が受け付けない値は無視
+    assert ai_review._openrouter_reasoning("bogus", {}) is None
+
+
+def test_run_openrouter_pass_retries_without_reasoning():
+    """effort 付きで全モデル失敗時は reasoning なしの 2 パス目が走る。"""
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        calls.append((model, reasoning_effort))
+        if reasoning_effort is not None:
+            raise Exception("400 reasoning unsupported")
+        return ai_review.OpenRouterResponse(text="ok")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, exc = ai_review._run_openrouter_pass(
+            ["a", "b"], "p", "s", ["k"], "high"
+        )
+    assert resp is not None and resp.text == "ok"
+    assert used_model == "a"
+    assert exc is None
+    # 1 パス目: 全モデル high で失敗 → 2 パス目: 先頭 a が成功
+    assert calls == [("a", "high"), ("b", "high"), ("a", None)]
+
+
+def test_run_openrouter_pass_single_pass_without_effort():
+    """effort 未指定なら 1 パスだけで完了する（既存挙動のまま）。"""
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        calls.append((model, reasoning_effort))
+        raise Exception("boom")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, exc = ai_review._run_openrouter_pass(
+            ["a", "b"], "p", "s", ["k"], None
+        )
+    assert resp is None and used_model is None
+    assert exc is not None
+    assert calls == [("a", None), ("b", None)]
+
+
 def test_build_execution_metadata_comprehensive():
     """実行メタデータにモデル、実バージョン、思考レベル、変更規模、コミットリンク、Actions ログが含まれる。"""
     mock_usage = mock.MagicMock()
