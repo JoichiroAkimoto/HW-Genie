@@ -324,21 +324,42 @@ def _is_retryable_api_error(e: Exception) -> tuple[bool, int | None]:
     return False, None
 
 
-def _build_thinking_config(model_info: dict) -> types.ThinkingConfig | None:
-    """モデル設定および環境変数から ThinkingConfig を構築する。
+def _parse_comment_option(text: str, flag: str) -> str | None:
+    """リクエスト文言から ``--flag <value>`` の値を抽出する（行頭または空白必須）。
+
+    openrouter モデル名（``openrouter/free`` 等）に合わせ ``/`` ``:`` ``.`` ``-``
+    を許容し、末尾の読点・空白を除去する。該当がなければ None。
+    """
+    match = re.search(
+        rf"(?m)(?:^|\s+)--{re.escape(flag)}\s+([\w./:\-]+)", text, re.IGNORECASE
+    )
+    if not match:
+        return None
+    return match.group(1).strip().strip(",").strip()
+
+
+def _build_thinking_config(
+    model_info: dict, effort: str | None = None
+) -> types.ThinkingConfig | None:
+    """コメントオプション・環境変数・モデル設定から ThinkingConfig を構築する。
 
     優先順位:
-    1. 環境変数 GEMINI_THINKING_LEVEL が明示されていれば最優先。
+    1. PR コメントの ``--effort`` オプション（effort 引数）。
+       - "AUTO" は未指定扱い（次の優先度に委ねる）。
        - "OFF", "NONE", "FALSE", "0", "DISABLED" の場合は None（思考無効化）。
        - "HIGH", "MEDIUM", "LOW", "MINIMAL" の場合は該当レベル。
-    2. models.json の model_info.get("thinking_level")。
+    2. 環境変数 GEMINI_THINKING_LEVEL が明示されている場合。
+    3. models.json の model_info.get("thinking_level")。
        - None や False の場合は None（明示的に無効化・非対応）。
-       - "HIGH" などの場合は該当レベル。
-    3. 未指定の場合はデフォルト "HIGH"（最大思考レベル）。
+    4. 未指定の場合は None を返し、API のデフォルト挙動に委ねる
+       （最大レベル HIGH を強制すると 10 分タイムアウトに収まらないことがある）。
     """
-    env_level = os.environ.get("GEMINI_THINKING_LEVEL")
-    if env_level is not None:
-        level_str = env_level.strip().upper()
+    for level in (effort, os.environ.get("GEMINI_THINKING_LEVEL")):
+        if level is None or not str(level).strip():
+            continue
+        level_str = str(level).strip().upper()
+        if level_str == "AUTO":
+            continue
         if level_str in ("OFF", "NONE", "FALSE", "0", "DISABLED"):
             return None
         return types.ThinkingConfig(thinking_level=level_str)
@@ -352,7 +373,7 @@ def _build_thinking_config(model_info: dict) -> types.ThinkingConfig | None:
             return None
         return types.ThinkingConfig(thinking_level=level_str)
 
-    return types.ThinkingConfig(thinking_level="HIGH")
+    return None
 
 
 def _get_thinking_level_display(thinking_config: types.ThinkingConfig | None) -> str | None:
@@ -1116,13 +1137,14 @@ def main():
     env_model_key = os.environ.get("MODEL_KEY", DEFAULT_MODEL_KEY)
 
     model_key = env_model_key
-    # Parse --model from additional_context (must be start of line or preceded by whitespace)
-    # Allow slash and colon for openrouter models (e.g. openrouter/free)
-    model_match = re.search(
-        r"(?m)(?:^|\s+)--model\s+([\w./:\-]+)", additional_context, re.IGNORECASE
-    )
-    if model_match:
-        model_key = model_match.group(1).strip().strip(",").strip()
+    # Parse --model / --effort from additional_context (e.g. "@gemini-cli /quick-review
+    # --model gemini-flash-latest --effort high"). openrouter 名のため / : . - も許容。
+    comment_model = _parse_comment_option(additional_context, "model")
+    if comment_model:
+        model_key = comment_model
+    thinking_effort = _parse_comment_option(additional_context, "effort")
+    if thinking_effort:
+        print(f"Thinking effort from --effort: {thinking_effort}")
 
     # models.json のキー/name/aliases に基づいて model_info と model_name を解決
     model_info, model_name = resolve_model(model_key, model_config)
@@ -1255,7 +1277,7 @@ def main():
     try:
         start_time = datetime.datetime.now(JST)
 
-        thinking_config = _build_thinking_config(model_info)
+        thinking_config = _build_thinking_config(model_info, thinking_effort)
         config_kwargs = {"system_instruction": system_instruction}
         if thinking_config is not None:
             config_kwargs["thinking_config"] = thinking_config
