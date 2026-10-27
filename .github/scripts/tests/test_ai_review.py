@@ -941,6 +941,25 @@ def test_models_json_per_model_default_effort():
     assert cfg["openrouter-free"].get("reasoning_effort") == "high"
 
 
+def test_thinking_effort_display():
+    """実行情報の思考レベル表示は既定/指定/無効化のいずれも出所付きで常時分かる。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        # models.json 既定（flash=MEDIUM / lite=HIGH）
+        assert ai_review._thinking_effort_display({"thinking_level": "MEDIUM"}, None) == "MEDIUM （既定）"
+        assert ai_review._thinking_effort_display({"thinking_level": "HIGH"}, None) == "HIGH （既定）"
+        # --effort 指定は出所を明示
+        assert ai_review._thinking_effort_display({"thinking_level": "MEDIUM"}, "low") == "LOW （--effort 指定）"
+        # 設定なしは API 既定扱い
+        assert ai_review._thinking_effort_display({}, None) == "未設定（API 既定）"
+        # 明示無効化（models.json の null / --effort off）は OFF として表示
+        assert ai_review._thinking_effort_display({"thinking_level": None}, None) == "OFF （既定）"
+        assert ai_review._thinking_effort_display({}, "off") == "OFF （--effort 指定）"
+
+    # 環境変数由来は「既定」扱い
+    with mock.patch.dict(os.environ, {"GEMINI_THINKING_LEVEL": "LOW"}):
+        assert ai_review._thinking_effort_display({}, None) == "LOW （既定）"
+
+
 def test_openrouter_reasoning_resolution():
     """--effort > models.json reasoning_effort > 未指定 の解決順。"""
     assert ai_review._openrouter_reasoning("HIGH", {"reasoning_effort": "low"}) == "high"
@@ -964,11 +983,12 @@ def test_run_openrouter_pass_retries_without_reasoning():
         return ai_review.OpenRouterResponse(text="ok")
 
     with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
-        resp, used_model, exc = ai_review._run_openrouter_pass(
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
             ["a", "b"], "p", "s", ["k"], "high"
         )
     assert resp is not None and resp.text == "ok"
     assert used_model == "a"
+    assert used_effort is None  # 1 パス目全滅 → 2 パス目（reasoning なし）で成功
     assert exc is None
     # 1 パス目: 全モデル high で失敗 → 2 パス目: 先頭 a が成功
     assert calls == [("a", "high"), ("b", "high"), ("a", None)]
@@ -983,12 +1003,27 @@ def test_run_openrouter_pass_single_pass_without_effort():
         raise Exception("boom")
 
     with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
-        resp, used_model, exc = ai_review._run_openrouter_pass(
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
             ["a", "b"], "p", "s", ["k"], None
         )
-    assert resp is None and used_model is None
+    assert resp is None and used_model is None and used_effort is None
     assert exc is not None
     assert calls == [("a", None), ("b", None)]
+
+
+def test_run_openrouter_pass_reports_used_effort():
+    """1 パス目で成功した場合は実際に送った effort が返る。"""
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        return ai_review.OpenRouterResponse(text="ok")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
+            ["a", "b"], "p", "s", ["k"], "high"
+        )
+    assert resp is not None and used_model == "a"
+    assert used_effort == "high"
+    assert exc is None
 
 
 def test_build_execution_metadata_comprehensive():
@@ -1032,6 +1067,18 @@ def test_build_execution_metadata_comprehensive():
     assert "gemini-flash-latest" in metadata
     assert "gemini-2.5-flash-001" in metadata
     assert "思考: `HIGH`" in metadata
+    # 出所付き表示（呼び出し側が渡した effort_display がそのまま使われる）
+    metadata_annotated = ai_review.build_execution_metadata(
+        model_name="gemini-flash-latest",
+        resolved_model_name="gemini-2.5-flash",
+        model_info=model_info,
+        response=mock_resp,
+        thinking_config=thinking_cfg,
+        effort_display="HIGH （既定）",
+        files_modified_count=3,
+        duration=4.5,
+    )
+    assert "思考: `HIGH （既定）`" in metadata_annotated
     # 対象コミットリンクと Actions ログリンク
     assert "https://github.com/JoichiroAkimoto/HW-Genie/commit/a1b2c3d" in metadata
     assert "https://github.com/JoichiroAkimoto/HW-Genie/actions/runs/123456" in metadata
@@ -1047,7 +1094,7 @@ def test_build_execution_metadata_comprehensive():
 
 
 def test_build_execution_metadata_unknown_cost_and_no_thinking():
-    """Thinking なし、コスト不明モデルでの表示が正しく処理される。"""
+    """Thinking なし・コスト不明モデルでも実行情報には思考レベル（未設定）が常時表示される。"""
     mock_resp = mock.MagicMock()
     mock_resp.model_version = None
     mock_resp.usage_metadata = None
@@ -1070,6 +1117,6 @@ def test_build_execution_metadata_unknown_cost_and_no_thinking():
     )
 
     assert "`custom-model`" in metadata
-    assert "思考" not in metadata
+    assert "思考: `未設定（API 既定）`" in metadata
     assert "(取得できませんでした)" in metadata
 

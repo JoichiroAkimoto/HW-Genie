@@ -351,7 +351,8 @@ def _build_thinking_config(
     2. 環境変数 GEMINI_THINKING_LEVEL が明示されている場合。
     3. models.json の model_info.get("thinking_level")。
        - None や False の場合は None（明示的に無効化・非対応）。
-    4. 未指定の場合は None を返し、API のデフォルト挙動に委ねる
+       - レベルが設定されているモデルは該当レベル（per-model デフォルト）。
+    4. 上記いずれも未設定の場合は None を返し、API のデフォルト挙動に委ねる
        （最大レベル HIGH を強制すると 10 分タイムアウトに収まらないことがある）。
     """
     for level in (effort, os.environ.get("GEMINI_THINKING_LEVEL")):
@@ -374,6 +375,52 @@ def _build_thinking_config(
         return types.ThinkingConfig(thinking_level=level_str)
 
     return None
+
+
+def _effective_thinking_level(
+    model_info: dict, effort: str | None
+) -> tuple[str | None, str]:
+    """表示用の実効思考レベルと出所（--effort / env / models.json / api_default）を返す。
+
+    ``_build_thinking_config`` の解決順と意図的に一致させ、None（= パラメータ
+    未送信）でも「何が無効化されたのか」を表示できるようにするためのヘルパー。
+    """
+    for level, source in (
+        (effort, "--effort"),
+        (os.environ.get("GEMINI_THINKING_LEVEL"), "env"),
+    ):
+        if level is None or not str(level).strip():
+            continue
+        level_str = str(level).strip().upper()
+        if level_str == "AUTO":
+            continue
+        if level_str in ("OFF", "NONE", "FALSE", "0", "DISABLED"):
+            return None, source
+        return level_str, source
+
+    if "thinking_level" in model_info:
+        model_level = model_info.get("thinking_level")
+        if model_level is None or model_level is False:
+            return None, "models.json"
+        level_str = str(model_level).strip().upper()
+        if level_str in ("OFF", "NONE", "FALSE", "0", "DISABLED"):
+            return None, "models.json"
+        return level_str, "models.json"
+
+    return None, "api_default"
+
+
+def _thinking_effort_display(
+    model_info: dict, thinking_effort: str | None
+) -> str:
+    """思考レベル未設定時にも「どこで決まっているか」が分かる表示文字列を組み立てる。"""
+    level, source = _effective_thinking_level(model_info, thinking_effort)
+    annotation = "（--effort 指定）" if source == "--effort" else "（既定）"
+    if level is not None:
+        return f"{level} {annotation}"
+    if source != "api_default":
+        return f"OFF {annotation}"
+    return "未設定（API 既定）"
 
 
 def _get_thinking_level_display(thinking_config: types.ThinkingConfig | None) -> str | None:
@@ -557,8 +604,8 @@ def _run_openrouter_pass(
     system_instruction: str,
     api_keys: list[str],
     reasoning_effort: str | None,
-) -> tuple[OpenRouterResponse | None, str | None, Exception | None]:
-    """OpenRouter のモデル群を順に試行し (response, model, last_exc) を返す。
+) -> tuple[OpenRouterResponse | None, str | None, str | None, Exception | None]:
+    """OpenRouter のモデル群を順に試行し (response, model, 使用された effort, last_exc) を返す。
 
     effort 指定で全モデル失敗した場合は reasoning なしの 2 パス目を 1 回だけ
     再試行する。無料ルーターには ``reasoning`` パラメータを扱えないモデルが
@@ -578,13 +625,13 @@ def _run_openrouter_pass(
                     api_keys,
                     reasoning_effort=effort,
                 )
-                return resp, fb_model, None
+                return resp, fb_model, effort, None
             except Exception as fe:  # noqa: BLE001
                 last_exc = fe
                 print(f"OpenRouter model {fb_model} failed: {fe}")
         if effort is not None:
             print("OpenRouter pass with reasoning failed; retrying without reasoning param...")
-    return None, None, last_exc
+    return None, None, None, last_exc
 
 
 def _generate_with_openrouter(
@@ -826,6 +873,7 @@ def build_execution_metadata(
     model_info: dict,
     response,
     thinking_config: types.ThinkingConfig | None = None,
+    effort_display: str | None = None,
     files_modified_count: int | str = "N/A",
     lines_added: int | None = None,
     lines_deleted: int | None = None,
@@ -865,9 +913,8 @@ def build_execution_metadata(
     else:
         model_str = f"`{resolved_model_name or model_name}`"
 
-    thinking_disp = _get_thinking_level_display(thinking_config)
-    if thinking_disp:
-        model_str += f" (思考: `{thinking_disp}`)"
+    thinking_disp = effort_display or _get_thinking_level_display(thinking_config)
+    model_str += f" (思考: `{thinking_disp or '未設定（API 既定）'}`)"
     metadata += f"- **モデル**: {model_str}\n"
 
     # 2. トレーサビリティ（対象コミット & Actions ログ）
@@ -1348,6 +1395,7 @@ def main():
         # 生成: provider に応じて Gemini / OpenRouter を選択
         response = None
         last_exc: Exception | None = None
+        or_used_effort: str | None = None
 
         if is_openrouter_primary:
             if not openrouter_keys:
@@ -1359,7 +1407,7 @@ def main():
             else:
                 fallback_models = [model_name]
                 print(f"Trying OpenRouter model {model_name}...")
-            or_resp, or_model, or_exc = _run_openrouter_pass(
+            or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
                 fallback_models,
                 prompt,
                 system_instruction,
@@ -1465,7 +1513,7 @@ def main():
         if not is_openrouter_primary and response is None and openrouter_keys:
             fallback_models = _get_openrouter_fallback_models()
             print(f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
-            or_resp, or_model, or_exc = _run_openrouter_pass(
+            or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
                 fallback_models,
                 prompt,
                 system_instruction,
@@ -1483,7 +1531,7 @@ def main():
                     "output_cost_per_1m": None,
                     "max_diff_chars": model_info.get("max_diff_chars", 500000),
                 }
-                # OpenRouter は思考非表示のため表示から除外
+                # 思考レベル表示は or_used_effort（実際に送った reasoning パラメータ）で行う
                 thinking_config = None
                 print(f"OpenRouter fallback succeeded with model {or_model}")
             else:
@@ -1526,13 +1574,22 @@ def main():
         if not commit_sha and head_sha:
             commit_sha = head_sha[:7]
 
-        # 今回の実行情報
+        # 今回の実行情報（思考/推定レベルは既定・指定どちらでも常に出所付きで表示）
+        if or_used_effort is not None:
+            effort_display_annot = "（--effort 指定）" if thinking_effort else "（既定）"
+            effort_display = f"reasoning: {or_used_effort} {effort_display_annot}"
+        elif is_openrouter_primary:
+            effort_display = "reasoning なし（モデル既定）"
+        else:
+            effort_display = _thinking_effort_display(model_info, thinking_effort)
+
         metadata = build_execution_metadata(
             model_name=model_name,
             resolved_model_name=resolved_model_name,
             model_info=model_info,
             response=response,
             thinking_config=thinking_config,
+            effort_display=effort_display,
             files_modified_count=files_modified_count,
             lines_added=lines_added,
             lines_deleted=lines_deleted,
