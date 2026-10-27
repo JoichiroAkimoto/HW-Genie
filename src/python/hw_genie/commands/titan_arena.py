@@ -121,6 +121,28 @@ def _aprint(progress: str, msg: str) -> None:
     print(msg, flush=True)
 
 
+def report_bridge_timing(engine: Any, account_label: str | None, progress: str) -> None:
+    """Print the JS bridge's per-job timing breakdown after an account run.
+
+    Only engines that record timings (:class:`JsBridgeBattleEngine`) report;
+    every other engine and any failure is silent so reporting can never break
+    an otherwise successful tier run. ``quiet`` suppresses it like every other
+    non-error line. Shared by ``toe run`` and ``multi toe``.
+    """
+    progress = _normalize_progress(progress)
+    if progress == "quiet":
+        return
+    if not isinstance(engine, JsBridgeBattleEngine):
+        return
+    try:
+        text = engine.timing_summary()
+    except Exception:  # noqa: BLE001 - reporting must never break a run
+        return
+    if not text:
+        return
+    _aprint(progress, f"[{account_label}] {text}" if account_label else text)
+
+
 def _emit_status_line(
     account: str | None,
     text: str,
@@ -225,6 +247,93 @@ def _engine_calc(engine: BattleEngine, battle: dict[str, Any], progress: str = "
     return engine.calc(battle)
 
 
+def _engine_calc_batch(
+    engine: BattleEngine,
+    battles: list[dict[str, Any]],
+    progress: str = "verbose",
+    *,
+    max_consecutive_errors: int | None = None,
+    abort_on_first_error: bool = False,
+) -> list[BattleEstimate | Exception]:
+    """Run several simulations, returning per-battle failures in place.
+
+    Engines with a ``calc_batch`` hook (the JS bridge) queue every job at
+    once so the userscript drains them back-to-back; the others run
+    sequentially through :func:`_engine_calc`. Exceptions are captured per
+    battle so callers keep their per-rival skip/abort semantics; interrupts
+    always propagate. In the sequential path, ``max_consecutive_errors``
+    raises :class:`BridgeDeadError` after that many failures in a row so a
+    dead bridge aborts the raid instead of paying one launch per rival.
+    ``abort_on_first_error`` re-raises the original exception immediately:
+    non-bridge engines (the Python estimator) fail fast instead of paying
+    one StartBattle per rival for an error that cannot recover.
+    """
+    if not battles:
+        return []
+    batch = getattr(engine, "calc_batch", None)
+    if callable(batch):
+        if isinstance(engine, JsBridgeBattleEngine):
+            on_progress = (
+                (lambda msg: print(msg, flush=True))
+                if _normalize_progress(progress) == "verbose"
+                else None
+            )
+            outcomes = list(batch(battles, on_progress=on_progress))
+        else:
+            outcomes = list(batch(battles))
+        if len(outcomes) != len(battles):
+            # A short/long batch would silently drop rivals from EndRaid.
+            raise BridgeError(
+                f"engine returned {len(outcomes)} results for {len(battles)} battles"
+            )
+        return outcomes
+    outcomes: list[BattleEstimate | Exception] = []
+    consecutive_errors = 0
+    for battle in battles:
+        if _cancel_requested():
+            raise _interrupted_error([])
+        try:
+            outcomes.append(_engine_calc(engine, battle, progress))
+        except (KeyboardInterrupt, InterruptedError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - per-rival skip semantics
+            if abort_on_first_error:
+                raise
+            consecutive_errors += 1
+            if (
+                max_consecutive_errors is not None
+                and consecutive_errors >= max_consecutive_errors
+            ):
+                raise BridgeDeadError(
+                    f"userscript not answering during raid "
+                    f"({consecutive_errors} consecutive bridge errors)",
+                    partial_results=[],
+                ) from exc
+            outcomes.append(exc)
+        else:
+            consecutive_errors = 0
+    return outcomes
+
+
+def _end_battle_earned(response: Any) -> float | None:
+    """Best-effort ``attackScoreEarned`` of an EndBattle response (None on failure).
+
+    ``> 0`` means the rival's cumulative attackScore actually rose, which the
+    tier loop uses as progress for no-win passes.
+    """
+    if not isinstance(response, dict):
+        return None
+    raw = response.get("attackScoreEarned")
+    if raw is None:
+        raw = response.get("scoreEarned")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _summarize_end_battle(rival_id: str, est: BattleEstimate, response: Any) -> str:
     """Concise one-line EndBattle summary (full payload goes to debug log)."""
     score: Any = "?"
@@ -296,11 +405,11 @@ def _tier_key(tier: Any) -> str:
 MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
 
 # Consecutive raid-tier (canRaid=True) passes with zero new clears before
-# stopping. With end_on_loss=False losses bank nothing, so such passes are
-# independent fresh draws: a few retries are intentional (seed gacha), but
-# grinding them unboundedly wastes hours on 0%-win matchups. Non-raid
-# (canRaid=False) tiers do not use this counter: they stop after exactly 1
-# zero-win pass via the early return in the tier loop below.
+# stopping. Banks do not clear rivals, so each pass draws independent fresh
+# seeds: a few retries are intentional (seed gacha), but grinding them
+# unboundedly wastes hours on 0%-win matchups. Non-raid (canRaid=False)
+# tiers do not use this counter: they stop after a pass that banks nothing
+# new (zero ``earned``) via the early return in the tier loop below.
 MAX_CONSECUTIVE_NO_PROGRESS_PASSES = 3
 
 # --- Lightweight bridge warnings (display only; battle logic untouched) ---
@@ -316,7 +425,7 @@ _BRIDGE_USERSCRIPT_HINT_SHOWN = False
 # interleave, so counts are keyed by account label to avoid one account's
 # streak tripping (or resetting) another's. Labels come from
 # ``run_titan_arena(..., account_label=...)``; unlabelled calls share the ""
-# bucket. ``estimate_only`` / ``abandoned`` outcomes never reach
+# bucket. ``estimate_only`` / ``abandoned`` / ``dummy`` outcomes never reach
 # :func:`_track_invalid_battle` (no EndBattle was sent) and explicitly reset
 # their account's streak via :func:`_reset_invalid_battle` so a planned
 # non-submit never inherits a stale count.
@@ -416,10 +525,11 @@ def _is_bridge_timeout(res: dict[str, Any]) -> bool:
 
 
 def _loss_stars(est: Any) -> int:
-    """Best-effort ``stars`` of a losing estimate for best-loss ranking.
+    """Best-effort ``stars`` of a losing estimate.
 
+    Feeds the improving-bank threshold (not only best-loss ranking).
     Bridge/Mock estimates may carry non-int stars; anything unparsable
-    ranks as 0 so ranking never raises.
+    ranks as 0 so the comparison never raises.
     """
     try:
         return int(getattr(est, "stars", 0) or 0)
@@ -599,6 +709,7 @@ def run_titan_arena(
     dry_run: bool = False,
     estimate_only: bool = False,
     end_on_loss: bool = True,
+    bank_if_stars_above: int | None = None,
     attempt_label: str | None = None,
     account_label: str | None = None,
     progress: str = "verbose",
@@ -616,6 +727,11 @@ def run_titan_arena(
 
     With ``end_on_loss=False``, a losing simulation abandons the battle
     without calling EndBattle (no score banking, but faster tier sweeps).
+    ``bank_if_stars_above`` refines that: a loss whose ``stars`` beat the
+    given value is still banked, so a sweep keeps its best partial score
+    without paying an EndBattle for every attempt. A dummy estimate (no
+    hero progress at all) is never submitted: it is returned as an
+    unverified ``abandoned`` result with ``dummy=True``.
 
     ``progress`` selects output compactness: ``verbose`` (today's full
     output), ``line`` (per-attempt details suppressed; the tier loop owns
@@ -748,18 +864,44 @@ def run_titan_arena(
             "bridge_timeout": isinstance(exc, BridgeTimeoutError),
         }
     _vprint(progress, f"{Emojis.STEP}Engine: win={est.win} stars={est.stars} ({type(engine).__name__})")
+    if not _has_any_heroes(est.progress):
+        # Userscript dummy loss (in-page calc failed): unverified, so never
+        # submit it to EndBattle (the server would reject it as Invalid
+        # battle) and never treat it as a real loss.
+        _vprint(progress, f"{Emojis.INFO}Dummy estimate (no hero progress) — abandoning without EndBattle.")
+        _reset_invalid_battle(account_label)
+        return {
+            "status": ResponseStatus.SUCCESS,
+            "battle": battle,
+            "estimate": est,
+            "abandoned": True,
+            "dummy": True,
+        }
     if estimate_only:
         _vprint(progress, f"{Emojis.INFO}Estimate-only: not calling titanArenaEndBattle.")
         _reset_invalid_battle(account_label)
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "estimate_only": True}
 
-    if not est.win and not end_on_loss:
+    banking_best = (
+        not est.win
+        and not end_on_loss
+        and bank_if_stars_above is not None
+        and est.stars > bank_if_stars_above
+    )
+    if not est.win and not end_on_loss and not banking_best:
         _vprint(progress, f"{Emojis.INFO}Loss — abandoning battle without EndBattle (no score banking).")
         _reset_invalid_battle(account_label)
         return {"status": ResponseStatus.SUCCESS, "battle": battle, "estimate": est, "abandoned": True}
+    if banking_best:
+        _vprint(
+            progress,
+            f"{Emojis.INFO}Loss improved stars ({est.stars} > {bank_if_stars_above}) — banking the best loss.",
+        )
 
     outcome = _end_battle(client, rival_id_str, est, progress)
     _track_invalid_battle(outcome, engine, account_label)
+    if banking_best:
+        outcome["banked_best"] = True
     return outcome
 
 
@@ -816,7 +958,12 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: 
         logger.debug("EndBattle full response: %s", _shorten_response(response, 100000))
     end_emoji = Emojis.VICTORY if est.win else Emojis.INFO
     _aprint(progress, f"{end_emoji}EndBattle: {_summarize_end_battle(rival_id, est, response)}")
-    return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_detail": response}
+    return {
+        "status": ResponseStatus.SUCCESS,
+        "estimate": est,
+        "end_detail": response,
+        "earned": _end_battle_earned(response),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -831,7 +978,7 @@ def run_titan_arena_tier(
     engine: BattleEngine | None = None,
     attack_score_threshold: int = AUTO_RIVAL_SCORE_THRESHOLD,
     stop_on_first_loss: bool = False,
-    end_on_loss: bool = True,
+    end_on_loss: bool | None = None,
     seeds_per_team: int = 2,
     bank_best_loss: bool = True,
     max_total_attempts: int | None = None,
@@ -863,25 +1010,32 @@ def run_titan_arena_tier(
     trigger the abort since they carry no signal about team strength.
     This is orthogonal to the per-battle abandon policy: the
     tier loop calls :func:`run_titan_arena` with ``end_on_loss``
-    (default ``True``), i.e. losing sims also send ``EndBattle`` so partial
-    attackScore is banked on every attempt; pass ``end_on_loss=False``
-    (CLI ``--no-end-on-loss``) to skip ``EndBattle`` on losses and advance
-    to the next team/seed instead (faster sweeps, no score banking).
-    When the plan is exhausted with no win, ``bank_best_loss`` (default
-    ``True``) re-runs the highest-stars losing team once with
-    ``end_on_loss=True`` so partial attackScore is banked; the estimate
-    engine and unverified-only rivals skip this (their EndBattle would be
-    rejected or empty). ``--stop-on-loss`` also skips it (fast abort).
+    (``None`` = auto, see below), i.e. whether losing sims send
+    ``EndBattle`` (partial attackScore banking). ``False`` abandons losing
+    battles and advances to the next team/seed instead (slower to bank but a
+    much faster sweep); with ``bank_best_loss`` the best improving loss is
+    still banked, so a rival keeps its best partial score without one
+    EndBattle per attempt. ``True`` banks every verified loss. ``None`` picks
+    ``True`` (the default: attackScore keeps the max battle score, so a worse
+    loss earns 0 and never regresses; banking every loss maximises progress
+    on stuck rivals). There is no separate best-loss "+1" attempt: S5
+    deleted it because the first verified loss is always an improving bank,
+    so nothing is submitted outside the plan. ``--no-bank-best-loss``
+    therefore only disables improving-loss banking, and
+    ``--stop-on-loss`` keeps its fast abort on non-raid tiers (the
+    banked-progress continuation below is gated off); raid tiers may still
+    retry up to the no-progress cap.
 
     ``max_total_attempts`` caps total StartBattle attempts per rival
     (``None`` = full pass: ``max_attempts_per_rival`` for a single team,
     otherwise ``len(rotation) × seeds_per_team``). Estimate-engine runs,
     whose EndBattle is rejected as ``Invalid battle``, should pass an
-    explicit cap to avoid paying the full sweep per rival. The banking
-    attempt is one extra StartBattle outside this cap (the cap targets
-    estimate planning). A pass with no wins but banked-loss entries counts
-    as progress: completion is attempted and the loop continues with fresh
-    status instead of stopping early.
+    explicit cap to avoid paying the full sweep per rival. For non-raid
+    tiers (``canRaid=False``) a no-win pass still counts as progress when at
+    least one verified EndBattle raised a rival's ``attackScore``
+    (``earned`` > 0): the loop keeps sweeping until a full pass banks
+    nothing new, then stops. Raid tiers instead retry up to
+    ``MAX_CONSECUTIVE_NO_PROGRESS_PASSES`` such passes.
 
     The function returns a dict summarising the tier outcome (rival results,
     raid results, errors, ``raid_errors`` for API/payload failures,
@@ -905,6 +1059,12 @@ def run_titan_arena_tier(
     engine = engine or PythonBattleEngine()
     rotation = _resolve_team_rotation(client, titans)
     titans = rotation[0]
+    if end_on_loss is None:
+        # 既定は毎回バンク（旧来の既定）。attackScore はバトルスコアの max
+        # 保持と判明したため、劣る負けを送っても earned 0 で無害であり、
+        # 詰まった rival には毎回送るのが加点に最も有効。速度優先の掃引は
+        # --no-end-on-loss（ベスト更新時のみバンク）で明示的に選ぶ。
+        end_on_loss = True
     if account_label:
         print(f"{Emojis.START}Titan Arena tier run — account: {account_label}", flush=True)
     summary: dict[str, Any] = {
@@ -990,6 +1150,12 @@ def run_titan_arena_tier(
     # ``raid_disabled_tier`` so a new tier retries the raid.
     raid_disabled_reason: str | None = None
     raid_disabled_tier: Any = _NO_TIER
+    # Per-rival best stars banked in earlier passes. A later pass seeds
+    # ``best_banked_stars`` from this so an equal/worse loss is abandoned
+    # instead of overwriting a better banked result (last-write-wins safety).
+    # Reset when the tier changes: a new tier's rivals start from scratch.
+    banked_best_by_rival: dict[str, int] = {}
+    banked_best_tier: Any = _NO_TIER
     while True:
         if _cancel_requested():
             return _mark_interrupted(summary)
@@ -1012,6 +1178,15 @@ def run_titan_arena_tier(
             return summary
 
         tier = status.get("tier")
+        if (
+            banked_best_tier is not _NO_TIER
+            and _tier_key(tier) != _tier_key(banked_best_tier)
+        ):
+            # A new tier has different rivals; a cross-pass best from the old
+            # tier must not suppress banking for them. The sentinel keeps
+            # this correct for an initial ``None`` tier.
+            banked_best_by_rival.clear()
+        banked_best_tier = tier
         if (
             raid_disabled_tier is not _NO_TIER
             and _tier_key(tier) != _tier_key(raid_disabled_tier)
@@ -1166,6 +1341,7 @@ def run_titan_arena_tier(
                 progress=progress,
                 dashboard=dashboard,
                 tier=tier,
+                banked_best_by_rival=banked_best_by_rival,
             )
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
@@ -1231,14 +1407,14 @@ def run_titan_arena_tier(
             _farm_daily_reward(client, summary)
             return summary
         if not any(r.get("win") for r in rival_results) and not status.get("canRaid"):
-            if any(
-                r.get("banked_loss") and not r.get("unverified")
-                for r in rival_results
+            if (
+                not stop_on_first_loss
+                and any(r.get("earned") for r in rival_results)
             ):
-                # Banked partial score counts as progress: the rival is
-                # touched, so attempt completion and continue with fresh
-                # status (bounded by max_passes; a later pass with no wins
-                # and no banked entries still stops).
+                # No win, but at least one verified EndBattle raised a rival's
+                # attackScore this pass (``earned`` > 0): real progress, so
+                # keep sweeping instead of stopping. Passes are bounded by
+                # the score ceiling: once every bank earns 0 the run stops.
                 completed = _complete_tier(client, summary, tier=tier)
                 _farm_daily_reward(client, summary)
                 if completed and _at_max(status, tier):
@@ -1275,9 +1451,11 @@ def _has_any_heroes(progress: Any) -> bool:
 
     The userscript submits an all-empty progress
     (``[{attackers: {heroes: {}}, defenders: {heroes: {}}}]``) when its
-    in-page calc fails. Such dummy losses must be excluded from EndRaid:
-    if the server validates raid results like EndBattle, one dummy could
-    void the whole raid including genuine wins.
+    in-page calc fails. Such dummy losses must be excluded from EndRaid
+    (one dummy could void the whole raid including genuine wins) and from
+    the single-battle path, where :func:`run_titan_arena` abandons them
+    as unverified instead of submitting an EndBattle the server would
+    reject as ``Invalid battle``.
     """
     if not isinstance(progress, list):
         return False
@@ -1455,6 +1633,18 @@ def _run_raid(
 ) -> dict[str, Any]:
     """Simulate every raid rival and submit only verified results.
 
+    Engines with a ``calc_batch`` hook (the JS bridge) queue all rival
+    battles as one batch (the bridge drains its job queue per tick), then
+    classify exactly like the sequential path. Because every battle is in
+    flight at once, a burst of bridge errors is only fatal when the bridge
+    never answered at all: with no dummy/verified outcome and at least
+    ``MAX_CONSECUTIVE_BRIDGE_TIMEOUTS`` errors,
+    :class:`BridgeDeadError` is raised (partial results stay empty since
+    nothing was verified), while a mix with verified results still reaches
+    EndRaid. Engines without ``calc_batch`` fall back to the sequential
+    path, which can still raise :class:`BridgeDeadError` after that many
+    consecutive errors before EndRaid is reached.
+
     Completion is judged from the EndRaid echo when it covers every rival; a
     missing/partial echo falls back to a fresh ``titanArenaGetStatus`` (the
     authoritative remaining-rival view). If neither is usable, completion is
@@ -1547,7 +1737,16 @@ def _run_raid(
         or ""
     )
     results: dict[str, dict[str, Any]] = {}
+    # Per-rival battle entries keyed by rival id. Materialized in
+    # ``raid_rivals`` order after classification: appending skips during
+    # payload building and results afterwards would reorder mixed outcomes.
+    battle_entries: dict[str, dict[str, Any]] = {}
+    raid_order = [str(rid) for rid in raid_rivals]
     bridge_errors = 0
+    # Every battle is in flight at once, so a burst of errors is only fatal
+    # when the bridge never answered at all (no dummy/verified outcome).
+    bridge_contact = False
+    pending: list[tuple[str, dict[str, Any]]] = []
     for rival_id, raw_rival in raid_rivals.items():
         if _cancel_requested():
             raise _interrupted_error([])
@@ -1582,56 +1781,76 @@ def _run_raid(
             # Without the real roster + seed the in-page calc can only fail
             # (dummy loss), so keep it out of EndRaid and let the per-rival
             # path retry this rival with StartBattle.
-            raid_summary["battles"].append(
-                {
-                    "rivalId": rid,
-                    "skipped": True,
-                    "reason": f"missing {'/'.join(missing)}",
-                }
-            )
+            battle_entries[rid] = {
+                "rivalId": rid,
+                "skipped": True,
+                "reason": f"missing {'/'.join(missing)}",
+            }
             _vprint(progress, f"  - raid rival {rid}: skipped (missing {'/'.join(missing)})")
             continue
-        battle = _build_raid_battle(
-            rid,
-            attackers,
-            defender_team,
-            seed=seed,
-            start_time=start_time,
-            user_id=user_id,
+        pending.append(
+            (
+                rid,
+                _build_raid_battle(
+                    rid,
+                    attackers,
+                    defender_team,
+                    seed=seed,
+                    start_time=start_time,
+                    user_id=user_id,
+                ),
+            )
         )
-        try:
-            est = _engine_calc(engine, battle, progress)
-            if not _has_any_heroes(est.progress):
-                # Userscript dummy loss (in-page calc failed): unverified, so
-                # keep it out of EndRaid. The per-rival path retries it later.
-                # A dummy proves the bridge answered, so it resets the
-                # consecutive-error count like any successful contact.
-                bridge_errors = 0
-                raid_summary["battles"].append({"rivalId": rid, "win": False, "dummy": True})
-                _vprint(progress, f"  - raid rival {rid}: dummy loss skipped (unverified calc)")
-                continue
-            bridge_errors = 0
-            results[rid] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
-            raid_summary["battles"].append({"rivalId": rid, "win": est.win})
-            _vprint(progress, f"  - raid rival {rid}: win={est.win}")
-        except (KeyboardInterrupt, InterruptedError):
-            raise
-        except (BridgeError, Exception) as exc:
+
+    # Every rival battle is queued up front: the userscript drains its queue
+    # in one tick, so the per-rival poll interval leaves the critical path.
+    outcomes = _engine_calc_batch(
+        engine,
+        [battle for _, battle in pending],
+        progress,
+        # PythonBattleEngine errors carry real signal and abort immediately
+        # (abort_on_first_error below); a silent bridge should abort after N
+        # consecutive rivals.
+        max_consecutive_errors=(
+            None if isinstance(engine, PythonBattleEngine) else MAX_CONSECUTIVE_BRIDGE_TIMEOUTS
+        ),
+        # The Python estimator fails fast: its errors cannot recover and
+        # would otherwise cost one StartBattle per remaining rival.
+        abort_on_first_error=isinstance(engine, PythonBattleEngine),
+    )
+    for (rid, _battle), outcome in zip(pending, outcomes):
+        if isinstance(outcome, Exception):
             if isinstance(engine, PythonBattleEngine):
-                raise
+                raise outcome
             bridge_errors += 1
-            raid_summary["battles"].append({"rivalId": rid, "error": str(exc)})
-            _vprint(progress, f"  - raid rival {rid}: bridge error {exc} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
-            if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
-                raise BridgeDeadError(
-                    f"userscript not answering during raid ({bridge_errors} consecutive bridge errors)",
-                    partial_results=[],
-                ) from exc
+            battle_entries[rid] = {"rivalId": rid, "error": str(outcome)}
+            _vprint(progress, f"  - raid rival {rid}: bridge error {outcome} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
             # Skip fake progress: without a verified engine result we must
             # not fabricate progress for EndRaid. The rival is simply left
             # out of the results so the server scores only verified battles.
+            # The dead-bridge abort is decided after the whole batch: a
+            # transient burst must not discard rivals that did answer.
             continue
+        est = outcome
+        if not _has_any_heroes(est.progress):
+            # Userscript dummy loss (in-page calc failed): unverified, so
+            # keep it out of EndRaid. The per-rival path retries it later.
+            # A dummy proves the bridge answered, so it resets the
+            # consecutive-error count like any successful contact.
+            bridge_errors = 0
+            bridge_contact = True
+            battle_entries[rid] = {"rivalId": rid, "win": False, "dummy": True}
+            _vprint(progress, f"  - raid rival {rid}: dummy loss skipped (unverified calc)")
+            continue
+        bridge_errors = 0
+        bridge_contact = True
+        results[rid] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
+        battle_entries[rid] = {"rivalId": rid, "win": est.win}
+        _vprint(progress, f"  - raid rival {rid}: win={est.win}")
 
+    raid_summary["battles"] = [
+        battle_entries[rid] for rid in raid_order if rid in battle_entries
+    ]
     missing_skips = [b for b in raid_summary["battles"] if b.get("skipped")]
     error_skips = [
         b
@@ -1650,6 +1869,17 @@ def _run_raid(
             progress,
             f"{Emojis.WARNING}Raid engine/bridge errors for {len(error_skips)} "
             "rival(s); individual battles will retry them.",
+        )
+    if (
+        bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS
+        and not bridge_contact
+    ):
+        # Every queued battle failed and not one dummy/verified answer came
+        # back: the bridge is dead, not merely flaky. Raise only after the
+        # full classification so verified results are never discarded.
+        raise BridgeDeadError(
+            f"userscript not answering during raid ({bridge_errors} consecutive bridge errors)",
+            partial_results=[],
         )
 
     if _cancel_requested():
@@ -1802,8 +2032,7 @@ def _decide_attempt_action(
 ) -> dict[str, Any]:
     """Classify one attempt result into a single action descriptor.
 
-    Shared by the plan loop and the best-loss fallback in
-    :func:`_run_rivals` so both paths interpret results identically.
+    Used by the plan loop in :func:`_run_rivals`.
     Pure (no side effects): the caller executes the action, owning
     ``bridge_errors`` counting, ``BridgeDeadError`` raises,
     ``rival_reported`` updates, prints and status-line updates.
@@ -1819,9 +2048,9 @@ def _decide_attempt_action(
     est = res.get("estimate")
     # A failed EndBattle (Invalid battle, NotFound, NotAvailable, ...) banked
     # nothing server-side, so it must not count as a win even when the local
-    # estimate says win. Estimate-only fallbacks and StartBattle errors also
-    # never bank a score.
-    unverified = bool(res.get("estimate_only") or end_error or start_error)
+    # estimate says win. Estimate-only fallbacks, dummy (no-hero-progress)
+    # results and StartBattle errors also never bank a score.
+    unverified = bool(res.get("estimate_only") or res.get("dummy") or end_error or start_error)
     win = (
         bool(est and getattr(est, "win", False))
         and not end_error
@@ -1853,7 +2082,18 @@ def _run_rivals(
     progress: str = "verbose",
     dashboard: Any = None,
     tier: Any | None = None,
+    banked_best_by_rival: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fight every un-cleared rival through a per-rival attempt plan.
+
+    Losses are abandoned unless ``end_on_loss`` or an improving bank
+    (``bank_best_loss``) applies. A verified improving bank updates
+    ``banked_best_by_rival`` (and this pass's ``best_banked_stars``) so a
+    later pass never re-banks a worse loss, but it is not tier-loop progress
+    by itself: a no-win sweep stops after its pass. There is no extra
+    best-loss attempt outside the plan (S5 removed it; the first verified
+    loss is always an improving bank, so one would be unreachable).
+    """
     progress = _normalize_progress(progress)
     finish_targets = _select_auto_rivals(status, threshold)
     if not finish_targets:
@@ -1871,10 +2111,9 @@ def _run_rivals(
     # The plan is finite and logged; runaway protection comes from the
     # bridge-dead abort and the tier-level pass cap instead of truncation.
     # With end_on_loss=False, losing sims abandon the battle without
-    # EndBattle (no score banking, faster sweeps). When the whole plan
-    # still yields no win, bank_best_loss submits one extra EndBattle with
-    # the highest-stars losing team (end_on_loss=True) so partial
-    # attackScore is banked instead of leaving the rival untouched.
+    # EndBattle (no score banking, faster sweeps). With bank_best_loss the
+    # best improving loss is still banked while sweeping; nothing is submitted
+    # outside the plan (the +1 best-loss attempt is gone).
     # max_total_attempts caps the plan (None = full pass). Estimate-engine
     # runs should pass an explicit cap to bound per-rival StartBattle cost.
     if team_rotation is None:
@@ -1892,20 +2131,24 @@ def _run_rivals(
         + (f" cap={max_total_attempts}" if max_total_attempts is not None else "")
         + ")",
     )
+    # Bank the best improving loss while abandoning the rest. The estimate
+    # engine is excluded: its EndBattle is always rejected as "Invalid
+    # battle", so banking would only add dead requests.
+    bank_on_improve = (
+        (not end_on_loss) and bank_best_loss and not isinstance(engine, PythonBattleEngine)
+    )
     results: list[dict[str, Any]] = []
     bridge_errors = 0
     acc_key = str(account_label or "?")
     line_state: dict[str, Any] = {"last_emit": 0.0, "throttle_secs": PROGRESS_THROTTLE_SECS}
 
-    def _update_line(rival_id: str, attempt_no: int, last: str, rival_start: float, total: int | None = None) -> None:
+    def _update_line(rival_id: str, attempt_no: int, last: str, rival_start: float) -> None:
         wins = sum(1 for r in results if r.get("win"))
         elapsed = time.monotonic() - rival_start
-        # The banking attempt is one extra StartBattle outside the plan cap,
-        # so its updates pass total=len+1 explicitly; plan attempts use the default.
         body = _build_status_text(
             str(rival_id),
             attempt_no,
-            len(attempt_plan) if total is None else total,
+            len(attempt_plan),
             wins,
             last,
             elapsed,
@@ -1927,18 +2170,22 @@ def _run_rivals(
         tier_prefix = f"Tier {tier} " if tier is not None else ""
         _vprint(progress, f"{Emojis.STEP}{tier_prefix}Rival {rival_id} ({display_no}/{display_total}, {len(attempt_plan)} attempts planned)")
         rival_reported = False
-        # Verified losing estimates, ranked for the best-loss fallback:
-        # (stars, first_seen_order, team). Abandoned battles cannot be
-        # submitted retroactively (the server validates progress against the
-        # pending StartBattle seed), so the fallback re-runs the best team
-        # once more with end_on_loss=True instead.
-        loss_candidates: list[tuple[int, int, list[int]]] = []
+        # Highest stars already banked for this rival while abandoning the
+        # rest (only used when losses are abandoned: bank_on_improve). Seeded
+        # from earlier passes so a worse loss can never overwrite a better
+        # banked result (last-write-wins servers would regress).
+        best_banked_stars = (
+            banked_best_by_rival.get(str(rival_id), -1)
+            if banked_best_by_rival is not None
+            else -1
+        )
         for attempt_no, (team, _seed_no) in enumerate(attempt_plan, start=1):
             if _cancel_requested():
                 raise _interrupted_error(results)
             try:
                 res = run_titan_arena(
                     client, rival_id=rival_id, titans=team, engine=engine, end_on_loss=end_on_loss,
+                    bank_if_stars_above=best_banked_stars if bank_on_improve else None,
                     attempt_label=f"{attempt_no}/{len(attempt_plan)}",
                     account_label=account_label,
                     progress=progress,
@@ -2019,11 +2266,22 @@ def _run_rivals(
                 entry["end_error"] = res.get("end_error")
             if res.get("abandoned"):
                 entry["abandoned"] = True
+            if res.get("earned") is not None and not unverified:
+                # Verified EndBattle score increase; the tier loop treats
+                # this as progress for no-win passes.
+                entry["earned"] = res["earned"]
             results.append(entry)
-            if not win and not unverified and res.get("abandoned") and est is not None:
-                # Verified loss with nothing banked: rankable for the
-                # best-loss fallback below (stars desc, earliest first).
-                loss_candidates.append((_loss_stars(est), len(loss_candidates), list(team)))
+            if res.get("banked_best") and not unverified:
+                # The improving loss went through EndBattle, so it is banked.
+                # Its ``earned`` (when > 0) marks the pass as progress for
+                # the tier loop. An unverified EndBattle banked nothing:
+                # keep the previous best so the next attempt can still beat it.
+                best_banked_stars = max(best_banked_stars, _loss_stars(est))
+                if banked_best_by_rival is not None:
+                    banked_best_by_rival[str(rival_id)] = max(
+                        banked_best_by_rival.get(str(rival_id), -1),
+                        best_banked_stars,
+                    )
             if win:
                 rival_reported = True
                 _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN ({attempt_no}/{len(attempt_plan)})")
@@ -2048,92 +2306,6 @@ def _run_rivals(
                     f"  - rival {rival_id}: {reason} ({attempt_no + 1}/{len(attempt_plan)}, "
                     f"elapsed {_fmt_duration(elapsed)}, ~{_fmt_duration(pace)}/attempt)...",
                 )
-        if not rival_reported and not stop_on_first_loss and bank_best_loss:
-            rival_entries = [r for r in results if str(r.get("rivalId")) == str(rival_id)]
-            if (
-                not any(r.get("win") for r in rival_entries)
-                and loss_candidates
-                and not isinstance(engine, PythonBattleEngine)
-            ):
-                # Best-loss fallback: no win after the full plan, so bank
-                # partial attackScore with the highest-stars losing team.
-                # The abandoned battles above cannot be submitted
-                # retroactively (the server checks progress against the
-                # pending StartBattle seed), hence one fresh attempt with
-                # end_on_loss=True. Estimate-engine progress is always
-                # rejected as "Invalid battle", so it is skipped.
-                if _cancel_requested():
-                    raise _interrupted_error(results)
-                best_stars, _, best_team = max(loss_candidates, key=lambda c: (c[0], -c[1]))
-                _aprint(
-                    progress,
-                    f"{Emojis.STEP}rival {rival_id}: no win after {len(attempt_plan)} attempts — "
-                    f"banking best loss (stars={best_stars} team={best_team})...",
-                )
-                try:
-                    bank_res = run_titan_arena(
-                        client, rival_id=rival_id, titans=best_team, engine=engine, end_on_loss=True,
-                        attempt_label=f"bank/{len(attempt_plan) + 1}",
-                        account_label=account_label,
-                        progress=progress,
-                        dashboard=dashboard,
-                    )
-                except (KeyboardInterrupt, InterruptedError):
-                    raise _interrupted_error(results)
-                except Exception as exc:  # pragma: no cover - defensive
-                    results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "error": str(exc)})
-                    rival_reported = True
-                    _aprint(progress, f"  - rival {rival_id}: best-loss banking failed: {exc}")
-                    _update_line(str(rival_id), len(attempt_plan) + 1, "error", rival_start, total=len(attempt_plan) + 1)
-                else:
-                    bank_action = _decide_attempt_action(
-                        bank_res, attempt_no=len(attempt_plan) + 1,
-                        plan_len=len(attempt_plan) + 1,
-                    )
-                    bank_total = len(attempt_plan) + 1
-                    if bank_action["action"] == "bridge_error":
-                        bridge_errors += 1
-                        results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "unverified": True, "bridge_error": bank_res.get("bridge_error")})
-                        rival_reported = True
-                        _update_line(str(rival_id), bank_total, "bridge-error", rival_start, total=bank_total)
-                        if bridge_errors >= MAX_CONSECUTIVE_BRIDGE_TIMEOUTS:
-                            msg = (
-                                "userscript not answering "
-                                f"({bridge_errors} consecutive bridge errors). Open the game in the browser "
-                                "with the userscript active, then re-run. Stopping tier loop."
-                            )
-                            _aprint(progress, f"{Emojis.WARNING}{msg}")
-                            raise BridgeDeadError(msg, partial_results=results) from None
-                    elif bank_action["action"] == "beaten_already":
-                        rival_reported = True
-                        if _is_already_cleared(client, str(rival_id), threshold):
-                            _aprint(progress, f"  - rival {rival_id}: already cleared (stale snapshot).")
-                            results.append({"rivalId": str(rival_id), "win": True, "already_cleared": True})
-                            _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN (already cleared)")
-                            _update_line(str(rival_id), bank_total, "WIN", rival_start, total=bank_total)
-                        else:
-                            results.append({"rivalId": str(rival_id), "win": False, "team": best_team, "banked_loss": True, "start_error": bank_res.get("error")})
-                            _aprint(progress, f"{Emojis.INFO}rival {rival_id}: no win (start error {bank_res.get('error')})")
-                            _update_line(str(rival_id), bank_total, "loss", rival_start, total=bank_total)
-                    else:
-                        bank_est = bank_res.get("estimate")
-                        bank_unverified = bool(bank_action["unverified"])
-                        bank_win = bool(bank_action["win"])
-                        bank_entry: dict[str, Any] = {"rivalId": str(rival_id), "win": bank_win, "team": best_team, "banked_loss": True}
-                        if bank_unverified:
-                            bank_entry["unverified"] = True
-                        if bank_res.get("end_error"):
-                            bank_entry["end_error"] = bank_res.get("end_error")
-                        if bank_res.get("abandoned"):
-                            bank_entry["abandoned"] = True
-                        results.append(bank_entry)
-                        rival_reported = True
-                        if bank_win:
-                            _aprint(progress, f"{Emojis.VICTORY}rival {rival_id}: WIN (best-loss banking)")
-                            _update_line(str(rival_id), bank_total, "WIN", rival_start, total=bank_total)
-                        else:
-                            _aprint(progress, f"{Emojis.INFO}rival {rival_id}: best loss banked (stars={_loss_stars(bank_est)})")
-                            _update_line(str(rival_id), bank_total, "banked-loss", rival_start, total=bank_total)
         if not rival_reported:
             entries = [r for r in results if str(r.get("rivalId")) == str(rival_id)]
             if entries and not any(r.get("win") for r in entries) and len(entries) >= len(attempt_plan):

@@ -103,6 +103,21 @@ def _cancel_requested() -> bool:
         return False
 
 
+@dataclass
+class BridgeTiming:
+    """Wall-clock breakdown of one bridge job (all values in seconds).
+
+    ``queue_wait`` / ``sim`` / ``poll_lag`` come from the auth server's job
+    timestamps, so they need no userscript-side instrumentation.
+    """
+
+    post_rtt: float
+    queue_wait: float | None
+    sim: float | None
+    poll_lag: float | None
+    total: float
+
+
 class JsBridgeBattleEngine:
     """Delegate the simulation to the userscript via the auth server job queue.
 
@@ -110,46 +125,144 @@ class JsBridgeBattleEngine:
     browser and posts the exact ``progress/result`` back. Until that job
     comes back we raise :class:`BridgeTimeoutError` so the caller can fall
     back to the Python estimator or abort the tier.
+
+    ``timings`` accumulates one :class:`BridgeTiming` per finished job so
+    callers can report where the wall clock actually goes; see
+    :meth:`timing_summary`.
     """
 
-    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 0.25, timeout: float = 30.0,
+    def __init__(self, auth_server_url: str, user_id: str, poll_interval: float = 0.1, timeout: float = 30.0,
                  heartbeat_interval: float = 10.0):
         self.auth_server_url = auth_server_url.rstrip("/")
         self.user_id = user_id
         self.poll_interval = poll_interval
         self.timeout = timeout
         self.heartbeat_interval = heartbeat_interval
+        self.timings: list[BridgeTiming] = []
 
-    def calc(
-        self,
-        battle: dict[str, Any],
-        on_progress: Callable[[str], None] | None = None,
-    ) -> BattleEstimate:  # pragma: no cover - network
+    # -- job plumbing ----------------------------------------------------
+
+    def _post_job(self, battle: dict[str, Any]) -> tuple[str, float, float]:
+        """POST one battle; return ``(job_id, posted_at, post_rtt)``."""
         import json
         import time
-        import urllib.error
         import urllib.request
 
-        try:
-            job_body = json.dumps({"account": self.user_id, "battle": battle}).encode("utf-8")
-            if _cancel_requested():
-                raise InterruptedError("interrupted by user")
-            req = urllib.request.Request(
-                f"{self.auth_server_url}/toe/job",
-                data=job_body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                job = json.loads(resp.read().decode("utf-8"))
-            job_id = job.get("id")
-            if not job_id:
-                raise BridgeError("auth server did not return a job id")
+        posted_at = time.time()
+        job_body = json.dumps({"account": self.user_id, "battle": battle}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.auth_server_url}/toe/job",
+            data=job_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            job = json.loads(resp.read().decode("utf-8"))
+        job_id = job.get("id")
+        if not job_id:
+            raise BridgeError("auth server did not return a job id")
+        return str(job_id), posted_at, time.time() - posted_at
 
-            start = time.time()
-            deadline = start + self.timeout
-            next_heartbeat = start + self.heartbeat_interval if self.heartbeat_interval > 0 else float("inf")
-            while time.time() < deadline:
+    def _fetch_job(self, job_id: str) -> dict[str, Any]:
+        import json
+        import urllib.request
+
+        poll_req = urllib.request.Request(
+            f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",
+            method="GET",
+        )
+        with urllib.request.urlopen(poll_req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _record_timing(self, payload: dict[str, Any], post_rtt: float, total: float) -> None:
+        """Store one job's breakdown from the auth server timestamps."""
+        import time
+
+        created = _safe_float(payload.get("created_at"))
+        claimed = _safe_float(payload.get("claimed_at"))
+        finished = _safe_float(payload.get("finished_at"))
+        queue_wait = claimed - created if created is not None and claimed is not None else None
+        sim = finished - claimed if claimed is not None and finished is not None else None
+        poll_lag = time.time() - finished if finished is not None else None
+        self.timings.append(
+            BridgeTiming(
+                post_rtt=post_rtt,
+                queue_wait=queue_wait,
+                sim=sim,
+                poll_lag=poll_lag,
+                total=total,
+            )
+        )
+
+    def timing_summary(self) -> str | None:
+        """One-line average breakdown of this engine's bridge jobs."""
+        if not self.timings:
+            return None
+
+        def avg(values: list[float | None]) -> str:
+            known = [v for v in values if v is not None]
+            if not known:
+                return "-"
+            return f"{sum(known) / len(known):.2f}s"
+
+        n = len(self.timings)
+        return (
+            f"ToE bridge timing ({n} job{'s' if n != 1 else ''}, avg): "
+            f"post {avg([t.post_rtt for t in self.timings])} | "
+            f"queue {avg([t.queue_wait for t in self.timings])} | "
+            f"sim {avg([t.sim for t in self.timings])} | "
+            f"poll {avg([t.poll_lag for t in self.timings])} | "
+            f"total {avg([t.total for t in self.timings])}"
+        )
+
+    # -- public API ------------------------------------------------------
+
+    def calc_batch(
+        self,
+        battles: list[dict[str, Any]],
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[BattleEstimate | BaseException]:  # pragma: no cover - network
+        """Simulate several battles with all jobs queued up front.
+
+        The userscript drains its queue in one tick, so submitting every raid
+        battle before polling removes the per-rival poll interval from the
+        critical path. Per-battle failures are returned in place (as
+        :class:`BridgeError` / :class:`BridgeTimeoutError`) so the caller can
+        skip just those rivals, exactly like the sequential path.
+        """
+        if not battles:
+            return []
+        import time
+
+        try:
+            results: list[BattleEstimate | BaseException | None] = [None] * len(battles)
+            pending: dict[str, tuple[int, float, float]] = {}
+            for index, battle in enumerate(battles):
+                if _cancel_requested():
+                    raise InterruptedError("interrupted by user")
+                try:
+                    job_id, posted_at, post_rtt = self._post_job(battle)
+                except (KeyboardInterrupt, InterruptedError):
+                    raise
+                except BridgeError as exc:
+                    results[index] = exc
+                    continue
+                except Exception as exc:
+                    results[index] = BridgeError(str(exc))
+                    continue
+                pending[job_id] = (index, posted_at, post_rtt)
+
+            now = time.time()
+            next_heartbeat = now + self.heartbeat_interval if self.heartbeat_interval > 0 else float("inf")
+            # Jobs are posted up front, so an unclaimed job has no meaningful
+            # clock (the userscript drains at most a few per tick, each sim can
+            # take seconds). Instead of a per-job deadline, track when the
+            # queue last made progress and fail the whole queue only when it
+            # stalls for ``timeout``. A claimed job stays bounded by
+            # ``claimed_at + timeout`` in case it never finishes.
+            last_progress_at = now
+            claimed_seen: set[str] = set()
+            while pending:
                 if _cancel_requested():
                     raise InterruptedError("interrupted by user")
                 time.sleep(self.poll_interval)
@@ -158,26 +271,90 @@ class JsBridgeBattleEngine:
                 now = time.time()
                 if now >= next_heartbeat:
                     if on_progress is not None:
-                        on_progress(
-                            f"  … waiting for userscript job {str(job_id)[:8]} "
-                            f"({now - start:.0f}s elapsed, timeout {self.timeout:.0f}s)…",
-                        )
+                        on_progress(self._heartbeat_text(pending, now))
                     next_heartbeat = now + self.heartbeat_interval
-                poll_req = urllib.request.Request(
-                    f"{self.auth_server_url}/toe/job/{job_id}?account={self.user_id}",
-                    method="GET",
-                )
-                with urllib.request.urlopen(poll_req, timeout=5) as resp:
-                    payload = json.loads(resp.read().decode("utf-8"))
-                if payload.get("status") == "done":
-                    return battle_estimate_from_bridge_result(payload.get("result") or {})
-            raise BridgeTimeoutError(f"userscript did not finish battle within {self.timeout}s")
+                for job_id, (index, posted_at, post_rtt) in list(pending.items()):
+                    try:
+                        payload = self._fetch_job(job_id)
+                        if not isinstance(payload, dict):
+                            raise BridgeError("auth server returned a malformed job payload")
+                        if payload.get("status") == "done":
+                            detected_at = time.time()
+                            self._record_timing(payload, post_rtt, detected_at - posted_at)
+                            results[index] = battle_estimate_from_bridge_result(
+                                payload.get("result") or {}
+                            )
+                            pending.pop(job_id, None)
+                            last_progress_at = detected_at
+                        else:
+                            claimed_at = _safe_float(payload.get("claimed_at"))
+                            if claimed_at is None:
+                                # Still queued: no per-job clock until the
+                                # userscript claims it (see above).
+                                continue
+                            if job_id not in claimed_seen:
+                                # A claim refreshes queue progress once; a
+                                # claimed job that never finishes is still
+                                # bounded by its own deadline below.
+                                claimed_seen.add(job_id)
+                                last_progress_at = time.time()
+                            if time.time() - claimed_at >= self.timeout:
+                                results[index] = BridgeTimeoutError(
+                                    f"userscript did not finish battle within {self.timeout}s"
+                                )
+                                pending.pop(job_id, None)
+                                last_progress_at = time.time()
+                    except (KeyboardInterrupt, InterruptedError):
+                        raise
+                    except Exception as exc:
+                        # A failed fetch, malformed payload or decode error is
+                        # this job's problem only; the rest still finish.
+                        results[index] = (
+                            exc if isinstance(exc, BridgeError) else BridgeError(str(exc))
+                        )
+                        pending.pop(job_id, None)
+                        last_progress_at = time.time()
+                if pending and time.time() - last_progress_at >= self.timeout:
+                    # No claim, finish or failure for a full timeout: the
+                    # queue itself is stalled (bridge dead), not merely slow.
+                    for index, _posted_at, _post_rtt in pending.values():
+                        results[index] = BridgeTimeoutError(
+                            f"userscript did not finish battle within {self.timeout}s "
+                            "(job queue stalled)"
+                        )
+                    pending.clear()
+            return [r if r is not None else BridgeError("job finished without a result") for r in results]
         except (KeyboardInterrupt, InterruptedError):
             raise
         except BridgeError:
             raise
         except Exception as exc:
             raise BridgeError(str(exc)) from exc
+
+    def _heartbeat_text(self, pending: dict[str, tuple[int, float, float]], now: float) -> str:
+        """Progress line for a stalled bridge (single job keeps the legacy text)."""
+        if len(pending) == 1:
+            job_id, (_, posted_at, _) = next(iter(pending.items()))
+            return (
+                f"  … waiting for userscript job {job_id[:8]} "
+                f"({now - posted_at:.0f}s elapsed, timeout {self.timeout:.0f}s)…"
+            )
+        oldest = min(posted_at for _, posted_at, _ in pending.values())
+        return (
+            f"  … waiting for {len(pending)} userscript jobs "
+            f"({now - oldest:.0f}s elapsed, timeout {self.timeout:.0f}s)…"
+        )
+
+    def calc(
+        self,
+        battle: dict[str, Any],
+        on_progress: Callable[[str], None] | None = None,
+    ) -> BattleEstimate:  # pragma: no cover - network
+        """Simulate one battle, re-raising the batch result's failure."""
+        result = self.calc_batch([battle], on_progress=on_progress)[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 def battle_estimate_from_bridge_result(envelope: dict[str, Any]) -> BattleEstimate:
@@ -198,6 +375,16 @@ def battle_estimate_from_bridge_result(envelope: dict[str, Any]) -> BattleEstima
         stars=_safe_int(inner.get("stars")),
         progress=progress if isinstance(progress, list) else [],
     )
+
+
+def _safe_float(value: Any) -> float | None:
+    """Best-effort float parse for bridge job timestamps (None on failure)."""
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_int(value: Any) -> int:

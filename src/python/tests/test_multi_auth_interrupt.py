@@ -503,8 +503,11 @@ def test_invalid_streak_per_account_interleave(monkeypatch, capsys):
     client = MagicMock()
     client.call.side_effect = invalid_call
     eng = JsBridgeBattleEngine(auth_server_url="http://127.0.0.1:9", user_id="1")
+    verified_progress = [
+        {"attackers": {"heroes": {"1": {"id": 1}}}, "defenders": {"heroes": {"2": {"id": 2}}}}
+    ]
     monkeypatch.setattr(
-        eng, "calc", lambda battle, on_progress=None: BattleEstimate(True, 3, [])
+        eng, "calc", lambda battle, on_progress=None: BattleEstimate(True, 3, verified_progress)
     )
     for _ in range(3):
         run_titan_arena(
@@ -590,8 +593,11 @@ def test_userscript_hint_shown_once_and_invalid_streak_warns(monkeypatch, capsys
     client2 = MagicMock()
     client2.call.side_effect = invalid_call
     eng2 = JsBridgeBattleEngine(auth_server_url="http://127.0.0.1:9", user_id="1")
+    verified_progress = [
+        {"attackers": {"heroes": {"1": {"id": 1}}}, "defenders": {"heroes": {"2": {"id": 2}}}}
+    ]
     monkeypatch.setattr(
-        eng2, "calc", lambda battle, on_progress=None: BattleEstimate(True, 3, [])
+        eng2, "calc", lambda battle, on_progress=None: BattleEstimate(True, 3, verified_progress)
     )
     for _ in range(4):
         run_titan_arena(

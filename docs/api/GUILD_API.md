@@ -400,14 +400,20 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
   そのまま個別バトルの対象になる）。
   明示編成: `hw-genie toe run -a Dave --titans 4003 4023 4004 4001 4000`
   - `--threshold 250` で対象閾値を変更可能（`--stop-on-loss` で初回敗北時に中断）
-  - 各試行の負けも `EndBattle` で部分スコアをバンクするのが既定
-    （`--seeds` 既定 10）。`--no-end-on-loss` で負けのバンクを抑止
-    （高速掃引、best-loss fallback は継続）。
-  - プラン全滅しても勝てない rival には最善負けの確保（best-loss fallback）:
-    検証済み敗北の中で stars 最大の編成を `end_on_loss=True` で 1 回だけ
-    再実行し、部分 `attackScore` をバンクする。estimate エンジン・未検証
-    のみの rival・`--stop-on-loss` 時はスキップ。`--no-bank-best-loss` で無効化。
-    バンク試行は `--max-attempts` の上限外の +1 回の追加 StartBattle。
+  - 負けのバンク方針（`--seeds` 既定 10）。既定は **負けも毎回バンク**する。
+    `attackScore` はバトルスコアの max 保持（`attackScoreEarned` が増分）なので、
+    劣る負けを送っても無害（earned 0）で、詰まった rival の加点に最も有効。
+    勝ちのないパスでも、バンクでスコアが伸びた間はパスを繰り返し、
+    伸びなくなったら停止する。`--no-end-on-loss` で「ベスト更新時のみ」バンク
+    （最速掃引）、`--no-bank-best-loss` を併用した場合のみ一切バンクしない。
+  - best-loss fallback（+1 の追加 StartBattle + EndBattle）は **廃止** した
+    （設計 S5）。最初の検証済み敗北は必ず改善バンクになるため、追加試行は
+    到達不能な dead code だった。`--max-attempts` の上限外の試行はない。
+    `--no-bank-best-loss` は改善バンクのみを無効化する。
+  - レイドのシミュレーションは全 rival 分を auth server にまとめて投入し、
+    userscript が 1 tick で連続処理する（250ms 間隔）。`--engine hybrid` の
+    実行終了時には `ToE bridge timing (…): post / queue / sim / poll / total` の
+    平均が出るので、遅い区間の切り分けに使う。
   - 回転テーブル `STATIC_TEAM_ROTATION` には水3火2の
     `[4003, 4004, 4014, 4001, 4010]` を含む（Tier8 の光壁 `-480913`
     に 15 seeds で WIN の実績）。
