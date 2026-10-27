@@ -960,6 +960,83 @@ def test_thinking_effort_display():
         assert ai_review._thinking_effort_display({}, None) == "LOW （既定）"
 
 
+def test_resolve_effort_display_gemini_path():
+    """OpenRouter 未使用時は Gemini 向け解決（models.json 既定 / --effort 指定）を表示。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert ai_review._resolve_effort_display(
+            used_openrouter=False,
+            or_used_effort=None,
+            initial_reasoning_effort=None,
+            thinking_effort=None,
+            model_info={"thinking_level": "HIGH"},
+        ) == "HIGH （既定）"
+        assert ai_review._resolve_effort_display(
+            used_openrouter=False,
+            or_used_effort=None,
+            initial_reasoning_effort=None,
+            thinking_effort="low",
+            model_info={"thinking_level": "HIGH"},
+        ) == "LOW （--effort 指定）"
+
+
+def test_resolve_effort_display_openrouter_fallback_divergence():
+    """Gemini 全滅→OpenRouter フォールバック成功で reasoning 未送信の回帰。
+
+    model_info に Gemini 用の thinking_level が残っていても Gemini レベルを
+    表示せず、実送信どおり「reasoning なし」を出す。
+    """
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert ai_review._resolve_effort_display(
+            used_openrouter=True,
+            or_used_effort=None,
+            initial_reasoning_effort="high",
+            thinking_effort="HIGH",
+            model_info={"name": "openrouter/free", "thinking_level": "HIGH"},
+        ) == "reasoning なし（モデル既定）"
+
+
+def test_resolve_effort_display_openrouter_used_effort():
+    """実際に送った reasoning.effort を出所付きで表示する。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        # --effort 未指定（models.json 由来）は「既定」
+        assert ai_review._resolve_effort_display(
+            used_openrouter=True,
+            or_used_effort="high",
+            initial_reasoning_effort="high",
+            thinking_effort=None,
+            model_info={"reasoning_effort": "high"},
+        ) == "reasoning: high （既定）"
+        # --effort 指定が実際に使われた場合のみ --effort 帰属
+        assert ai_review._resolve_effort_display(
+            used_openrouter=True,
+            or_used_effort="high",
+            initial_reasoning_effort="high",
+            thinking_effort="HIGH",
+            model_info={"reasoning_effort": "high"},
+        ) == "reasoning: high （--effort 指定）"
+
+
+def test_resolve_effort_display_openrouter_source_attribution():
+    """auto / 不正値が models.json にフォールバックした場合は --effort に帰属しない。"""
+    with mock.patch.dict(os.environ, {}, clear=True):
+        # --effort auto → models.json の reasoning_effort "high" が実送信された
+        assert ai_review._resolve_effort_display(
+            used_openrouter=True,
+            or_used_effort="high",
+            initial_reasoning_effort="high",
+            thinking_effort="auto",
+            model_info={"reasoning_effort": "high"},
+        ) == "reasoning: high （既定）"
+        # --effort が OpenRouter 不正値 → models.json の値が実送信された
+        assert ai_review._resolve_effort_display(
+            used_openrouter=True,
+            or_used_effort="high",
+            initial_reasoning_effort="high",
+            thinking_effort="bogus",
+            model_info={"reasoning_effort": "high"},
+        ) == "reasoning: high （既定）"
+
+
 def test_openrouter_reasoning_resolution():
     """--effort > models.json reasoning_effort > 未指定 の解決順。"""
     assert ai_review._openrouter_reasoning("HIGH", {"reasoning_effort": "low"}) == "high"
