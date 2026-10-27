@@ -37,7 +37,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Seer's Game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`hw-genie seers-game` / `multi seers-game`。1ゲーム 25 コイン、毎日1回無料（JST 11:00 リセット）。ツールは無料/有料を区別せず枯渇まで回す。`--dry-run` で状態・残高表示のみ、`--pick N`（デフォルト 2、live の `event.size` に対して検証）/ `--max-games N` 対応）。
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。
 - **Guild Chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`、`docs/api/CHAT_API.md` 参照）。
-- **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid 優先、全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
+- **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。`--progress line` の進捗は Tier 内の rival 位置（例: `T7 3/9`）を表示。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
@@ -161,7 +161,7 @@ bin/hwsa
 - `multi asgard-shop`: 全アカウントの Asgard ショップ自動購入のみ（Osh / Maestro 週を自動判定、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off）
 - `multi seers-game`: 全アカウントの Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応、`--dry-run` で予行確認可）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
-- `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
+- `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用

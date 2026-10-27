@@ -1468,6 +1468,29 @@ def test_summarize_toe_empty_without_errors_is_ok():
     assert summarize_toe(results) == 0
 
 
+def test_summarize_toe_raid_errors_visible_but_not_failed(capsys):
+    """Raid API/payload errors are shown in the footer without failing."""
+    from hw_genie.runner import summarize_toe
+
+    results = [
+        (
+            "acc",
+            (
+                {
+                    "rival_results": [{"win": True}],
+                    "errors": [],
+                    "completed_tier": True,
+                    "daily_reward": None,
+                    "raid_errors": [{"stage": "raid", "message": "x"}],
+                },
+                None,
+            ),
+        ),
+    ]
+    assert summarize_toe(results) == 0
+    assert "⚠️ Raid errors (1): acc (1)" in capsys.readouterr().out
+
+
 def test_summarize_toe_empty_with_errors_still_fails():
     from hw_genie.runner import summarize_toe
 
@@ -2686,8 +2709,8 @@ def test_toe_routine_threads_bank_best_loss(monkeypatch):
     assert seen["bank"] is False
 
 
-def test_toe_routine_defaults_seeds_10_and_end_on_loss(monkeypatch):
-    """toe_routine defaults to 10 seeds with loss banking enabled."""
+def test_toe_routine_defaults_seeds_10_and_end_on_loss_auto(monkeypatch):
+    """toe_routine defaults to 10 seeds and leaves loss banking on auto."""
     from hw_genie import runner
 
     seen = {}
@@ -2702,9 +2725,11 @@ def test_toe_routine_defaults_seeds_10_and_end_on_loss(monkeypatch):
 
     monkeypatch.setattr("hw_genie.commands.titan_arena.run_titan_arena_tier", fake_tier)
     runner.toe_routine(engine="estimate")(FakeClient(), "Alice")
-    assert seen == {"seeds": 10, "bank": True}
+    assert seen == {"seeds": 10, "bank": None}
     runner.toe_routine(engine="estimate", seeds_per_team=3, end_on_loss=False)(FakeClient(), "Alice")
     assert seen == {"seeds": 3, "bank": False}
+    runner.toe_routine(engine="estimate", seeds_per_team=3, end_on_loss=True)(FakeClient(), "Alice")
+    assert seen == {"seeds": 3, "bank": True}
 
 
 @pytest.mark.usefixtures("bypass_multi_preflight")
@@ -2725,17 +2750,21 @@ def test_cmd_multi_toe_threads_no_end_on_loss(monkeypatch):
         lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {"a": ({"rival_results": [], "errors": [], "completed_tier": False, "daily_reward": None}, None)},
     )
 
-    def make_args(no_end):
+    def make_args(no_end=False, end=False):
         return type(
             "A",
             (),
             {"mode": "toe", "accounts": ["a"], "parallel": 1, "debug": False,
              "dry_run": False, "engine": "hybrid", "seeds": 10, "threshold": 250,
              "auth_server_url": "http://127.0.0.1:8765", "max_attempts": None,
-             "no_bank_best_loss": False, "no_end_on_loss": no_end},
+             "no_bank_best_loss": False, "no_end_on_loss": no_end,
+             "end_on_loss": end},
         )()
 
-    main.cmd_multi(make_args(False))
-    assert captured == {"seeds": 10, "bank": True}
-    main.cmd_multi(make_args(True))
+    # 未指定は auto（None）で、tier 側が回転/単一編成から決める。
+    main.cmd_multi(make_args())
+    assert captured == {"seeds": 10, "bank": None}
+    main.cmd_multi(make_args(no_end=True))
     assert captured == {"seeds": 10, "bank": False}
+    main.cmd_multi(make_args(end=True))
+    assert captured == {"seeds": 10, "bank": True}

@@ -597,3 +597,140 @@ test("frozen holder still served via ghost fallback", () => {
     else globalThis.window = prevWindow;
   }
 });
+
+test("tick drains up to maxJobs queued jobs in one pass", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+  const origFetch = globalThis.fetch;
+  let claims = 0;
+  let submits = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      claims += 1;
+      // Three queued jobs: the cap must stop the drain before the third.
+      if (claims > 3) return { ok: false, status: 204 };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: `j${claims}`, account: "", battle: { type: "titan_arena" } }),
+      };
+    }
+    if (u.includes("/result")) {
+      submits += 1;
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  try {
+    await tick("", "http://127.0.0.1:1", 2);
+    // Two jobs claimed and submitted; the third is left for the next tick.
+    assert.strictEqual(claims, 2);
+    assert.strictEqual(submits, 2);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
+test("tick stops draining when shouldStop turns true", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+  const origFetch = globalThis.fetch;
+  let claims = 0;
+  let submits = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      claims += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: `j${claims}`, account: "", battle: { type: "titan_arena" } }),
+      };
+    }
+    if (u.includes("/result")) {
+      submits += 1;
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  try {
+    let checks = 0;
+    // False at the top of the first drain iteration, true afterwards:
+    // stop() must interrupt an in-flight drain.
+    const shouldStop = () => {
+      checks += 1;
+      return checks > 1;
+    };
+    await tick("", "http://127.0.0.1:1", 3, shouldStop);
+    assert.strictEqual(claims, 1);
+    assert.strictEqual(submits, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
+test("installToeBridge serializes overlapping interval ticks", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const origFetch = globalThis.fetch;
+  const origSetInterval = globalThis.setInterval;
+  const origSetTimeout = globalThis.setTimeout;
+  // Real timer captured before stubbing: used to flush the loop's microtasks.
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+  let nextCalls = 0;
+  let resolveNext;
+  const pendingNext = new Promise((resolve) => {
+    resolveNext = resolve;
+  });
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/toe/next")) {
+      nextCalls += 1;
+      return pendingNext;
+    }
+    return { ok: false, status: 404 };
+  };
+  let tickCallback = null;
+  globalThis.setInterval = (cb) => {
+    tickCallback = cb;
+    return 1;
+  };
+  globalThis.setTimeout = () => 0;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    // Two interval ticks before the first claim settles: the running guard
+    // must stop the second from starting another /toe/next request.
+    tickCallback();
+    tickCallback();
+    assert.strictEqual(nextCalls, 1);
+    resolveNext({ ok: false, status: 204 });
+    await pendingNext;
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    assert.strictEqual(nextCalls, 1);
+    // The guard released: a later tick polls again.
+    tickCallback();
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+    assert.strictEqual(nextCalls, 2);
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = origFetch;
+    globalThis.setInterval = origSetInterval;
+    globalThis.setTimeout = origSetTimeout;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});

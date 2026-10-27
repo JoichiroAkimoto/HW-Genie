@@ -557,7 +557,7 @@ def _resolve_toe_progress(args, default: str = "line") -> str:
 
 
 def _resolve_toe_bank_best_loss(args) -> bool:
-    """Return whether best-loss banking is enabled for ToE commands.
+    """Return whether improving-loss banking is enabled for ToE commands.
 
     Only an explicit ``--no-bank-best-loss`` (real ``True``) disables it;
     anything else — including auto-created ``MagicMock`` attributes in
@@ -570,18 +570,26 @@ def _resolve_toe_bank_best_loss(args) -> bool:
     return False if value is True else True
 
 
-def _resolve_toe_end_on_loss(args) -> bool:
-    """Return whether losing sims send EndBattle for ToE tier runs.
+def _resolve_toe_end_on_loss(args) -> bool | None:
+    """Return the loss-banking policy for ToE tier runs (``None`` = auto).
 
-    Only an explicit ``--no-end-on-loss`` (real ``True``) disables it;
-    anything else — including auto-created ``MagicMock`` attributes in
-    legacy tests — keeps the default ``True``.
+    ``--no-end-on-loss`` (real ``True``) abandons non-improving losses;
+    ``--end-on-loss`` (real ``True``) banks every verified loss. Anything
+    else — including auto-created ``MagicMock`` attributes in legacy tests —
+    returns ``None`` so the tier loop decides: the default banks every
+    verified loss (max-score aggregation makes a worse bank harmless).
+    ``--no-bank-best-loss`` separately disables the improving-loss banking.
     """
     try:
-        value = getattr(args, "no_end_on_loss", False)
+        no_value = getattr(args, "no_end_on_loss", False)
+        yes_value = getattr(args, "end_on_loss", False)
     except Exception:
+        return None
+    if no_value is True:
+        return False
+    if yes_value is True:
         return True
-    return False if value is True else True
+    return None
 
 
 def _sanitize_progress_log_text(text: str | None) -> str | None:
@@ -650,7 +658,7 @@ def cmd_toe_run(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
     from hw_genie.battle.engine import get_default_engine
-    from hw_genie.commands.titan_arena import run_titan_arena_tier
+    from hw_genie.commands.titan_arena import report_bridge_timing, run_titan_arena_tier
 
     mode = getattr(args, "engine", "estimate")
     if mode == "playwright":
@@ -679,6 +687,7 @@ def cmd_toe_run(args):
         account_label = resolve_account(args.account)
     except Exception:
         account_label = None
+    progress = _resolve_toe_progress(args)
     try:
         summary = run_titan_arena_tier(
             client,
@@ -691,12 +700,15 @@ def cmd_toe_run(args):
             bank_best_loss=_resolve_toe_bank_best_loss(args),
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
             account_label=account_label,
-            progress=_resolve_toe_progress(args),
+            progress=progress,
         )
     except (KeyboardInterrupt, InterruptedError):
         # Cooperative 1st-press stop before a summary exists: clean complete.
         # (2nd-press SystemExit(130) is not caught here and still aborts.)
         return
+    finally:
+        # S1: report where the wall clock went (hybrid bridge only).
+        report_bridge_timing(engine, account_label, progress)
     if isinstance(summary, dict) and summary.get("interrupted"):
         # User-aborted tier counts as COMPLETE (ok) unless real bridge/API
         # errors ride along; the interrupt marker itself never fails.
@@ -1711,23 +1723,29 @@ def main():
     p_toe_run.add_argument(
         "--stop-on-loss",
         action="store_true",
-        help="Abort the tier after the first losing rival attempt (stops rotation retries; combine with --no-end-on-loss for no score banking)",
+        help="Abort the tier after the first losing rival attempt (stops rotation retries; combine --no-end-on-loss and --no-bank-best-loss for no score banking)",
     )
     p_toe_run.add_argument(
         "--no-bank-best-loss",
         action="store_true",
-        help="Skip the best-loss fallback (by default, a rival with no win after the full plan banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
+        help="Disable improving-loss banking (--no-end-on-loss sweeps bank only a new best; the default banks every loss; there is no separate extra banking attempt)",
     )
     p_toe_run.add_argument(
         "--seeds",
         type=int,
         default=10,
-        help="Seeds tried per team per rival (each seed = fresh StartBattle; losing sims bank EndBattle unless --no-end-on-loss)",
+        help="Seeds tried per team per rival (each seed = fresh StartBattle; loss banking follows --end-on-loss/--no-end-on-loss, default: bank every loss)",
     )
-    p_toe_run.add_argument(
+    toe_loss_group = p_toe_run.add_mutually_exclusive_group()
+    toe_loss_group.add_argument(
+        "--end-on-loss",
+        action="store_true",
+        help="Bank EndBattle on every losing sim (default; a no-win pass keeps sweeping while banked scores rise). --no-end-on-loss banks only a new best for faster sweeps",
+    )
+    toe_loss_group.add_argument(
         "--no-end-on-loss",
         action="store_true",
-        help="Skip EndBattle on losing sims (no score banking; faster sweeps, best-loss fallback still applies)",
+        help="Abandon losing sims except a new best (fastest sweep; combine with --no-bank-best-loss to never bank a loss)",
     )
     p_toe_run.add_argument(
         "--max-attempts",
@@ -1829,12 +1847,18 @@ def main():
     p_multi.add_argument(
         "--no-bank-best-loss",
         action="store_true",
-        help="Skip the best-loss fallback in the 'toe' mode (by default, a rival with no win banks one EndBattle with the highest-stars losing team; auto-skipped for the estimate engine, unverified-only rivals, and --stop-on-loss; the banking attempt is one extra StartBattle outside --max-attempts)",
+        help="Disable improving-loss banking in the 'toe' mode (--no-end-on-loss sweeps bank only a new best; the default banks every loss; there is no separate extra banking attempt)",
     )
-    p_multi.add_argument(
+    multi_loss_group = p_multi.add_mutually_exclusive_group()
+    multi_loss_group.add_argument(
+        "--end-on-loss",
+        action="store_true",
+        help="Bank EndBattle on every losing sim in the 'toe' mode (default; a no-win pass keeps sweeping while banked scores rise)",
+    )
+    multi_loss_group.add_argument(
         "--no-end-on-loss",
         action="store_true",
-        help="Skip EndBattle on losing sims in the 'toe' mode (no score banking; faster sweeps)",
+        help="Abandon losing sims except a new best in the 'toe' mode (fastest sweep; combine with --no-bank-best-loss to never bank)",
     )
     gold_group = p_multi.add_mutually_exclusive_group()
     gold_group.add_argument(
