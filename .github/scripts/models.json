@@ -8,7 +8,6 @@
     "input_cost_per_1m": 1.50,
     "output_cost_per_1m": 9.00,
     "max_diff_chars": 2000000,
-    "thinking_level": "HIGH",
     "provider": "gemini",
     "fallback": true
   },
@@ -21,7 +20,6 @@
     "input_cost_per_1m": 0.25,
     "output_cost_per_1m": 1.50,
     "max_diff_chars": 2000000,
-    "thinking_level": "HIGH",
     "provider": "gemini",
     "fallback": true
   },
