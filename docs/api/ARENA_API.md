@@ -86,6 +86,7 @@ Content-Type: application/json; charset=UTF-8
 
 - `type`: `"arena"` / `"grand"`
 - `extraId`: 0 / 1 / 2 を検証したが、いずれも同じトップ50を返した（ページングなし）
+- `--user-id` を指定しても順位解決の要件は回避できません。対象がこの `topGet`（トップ50）または `arenaFindEnemies` の候補に存在しない場合は exit 1 になります。
 
 ### Response Structure
 ```json
@@ -302,7 +303,7 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 | 状況 | CLI の挙動 |
 |---|---|
 | `arenaCheckTargetRange` が `false` / 欠落 | 攻撃せず exit 1。自分の順位と `own_place - 21` の下限を表示 |
-| 指定ランクがトップ50・候補にない | 攻撃せず exit 1。`--user-id` を案内 |
+| 指定ランクがトップ50・候補にない | 攻撃せず exit 1。`--user-id` は `topGet` / 候補から順位を解決できるプレイヤーのみ指定可能（解決できなければ exit 1） |
 | 指定ランク / `userId` が自分以上 | 攻撃せず exit 1。上位のみ対象である旨を表示 |
 | 自分自身を指定 | 攻撃せず exit 1 |
 | チームが5体でない / 重複 / 不正ID | API 呼び出し前に exit 1 |

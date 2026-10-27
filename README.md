@@ -88,7 +88,7 @@ uv run hw-genie arena attack -a Alice --user-id 11111111 --dry-run
 
 - `--heroes` はちょうど5体（重複なし・ID < 6000）、`--pet` は任意（>= 6000）、`--banner` は任意、`--favor HERO=PATRON` は繰り返し可。
 - 優先順位: 直接指定 > `--team` プリセット > ゲーム保存チーム（heroes / pet / banner はフィールド単位で補完）。favor は明示指定 > プリセット > 同モードの保存 favor（選択ヒーロー一致分のみ、欠落は警告、空なら省略）。`--banner 0` はバナーなしとして扱います。
-- `topGet` はトップ50のみ（ページングなし）。それ以外の相手は `--user-id` を使います（上位と確認できる場合のみ）。
+- `topGet` はトップ50のみ（ページングなし）。`--user-id` も、対象が `topGet` または現在の候補 `arenaFindEnemies` に存在して順位を解決できる場合のみ指定できます（順位不明は exit 1）。
 - `arenaCheckTargetRange` は1リクエスト最大3件、攻撃可能範囲は実測で自分の順位 ±21 です。`NotEnough` / `Refillable` は攻撃せず警告して exit 0。
 - `arenaAttack` は1回だけ送信し、自動リトライしません。タイムアウト等で結果不明の場合は、攻撃回数の二重消費を避けるため exit 1 でゲーム側での確認を促します。
 - API 仕様: `docs/api/ARENA_API.md` / エージェント向け手順: `.agents/skills/arena/SKILL.md`
