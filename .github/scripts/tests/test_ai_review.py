@@ -832,12 +832,49 @@ def test_fetch_file_contents_counts_header_in_budget():
 # ---------------------------------------------------------------------------
 
 
-def test_build_thinking_config_defaults_to_high():
-    """未設定時はデフォルトで最大レベル HIGH の ThinkingConfig が生成される。"""
+def test_build_thinking_config_defaults_to_none():
+    """未設定時は None を返し API のデフォルト挙動に委ねる（HIGH 強制を廃止）。"""
     with mock.patch.dict(os.environ, {}, clear=True):
         config = ai_review._build_thinking_config({})
+        assert config is None
+
+
+def test_build_thinking_config_effort_option():
+    """--effort 値（effort 引数）が環境変数・models.json より優先される。"""
+    with mock.patch.dict(os.environ, {"GEMINI_THINKING_LEVEL": "LOW"}):
+        config = ai_review._build_thinking_config({"thinking_level": "MEDIUM"}, "HIGH")
         assert config is not None
         assert str(config.thinking_level).upper().endswith("HIGH")
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        config = ai_review._build_thinking_config({"thinking_level": "MEDIUM"}, "minimal")
+        assert config is not None
+        assert str(config.thinking_level).upper().endswith("MINIMAL")
+
+        # OFF 系は無効化（None）
+        assert ai_review._build_thinking_config({}, "off") is None
+
+        # "auto" は未指定扱い → models.json の設定へフォールバック
+        config_auto = ai_review._build_thinking_config({"thinking_level": "LOW"}, "auto")
+        assert config_auto is not None
+        assert str(config_auto.thinking_level).upper().endswith("LOW")
+
+
+def test_parse_comment_option():
+    """``--flag value`` を行頭/空白区切りで抽出し、末尾の読点を除去する。"""
+    text = "@gemini-cli /quick-review --model gemini-flash-latest --effort high,"
+    assert ai_review._parse_comment_option(text, "model") == "gemini-flash-latest"
+    assert ai_review._parse_comment_option(text, "effort") == "high"
+
+    # openrouter 名（スラッシュ・コロン）も許容
+    assert (
+        ai_review._parse_comment_option("--model openrouter/free", "model")
+        == "openrouter/free"
+    )
+    # 前置空白必須（"x--model" は無視）
+    assert ai_review._parse_comment_option("x--model foo", "model") is None
+    # 未指定は None
+    assert ai_review._parse_comment_option("/quick-review", "effort") is None
 
 
 def test_build_thinking_config_uses_model_info():
