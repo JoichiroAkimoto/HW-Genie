@@ -136,6 +136,9 @@ class ArenaTarget:
     place: int
     name: str | None = None
     power: int | None = None
+    # Candidate entry captured while resolving the target, so the attack step
+    # does not have to re-run the rotating-list retry loop.
+    candidate: ArenaTopEntry | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -346,11 +349,7 @@ def attackable_window(own_place: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def validate_team(team: ArenaTeam) -> None:
-    """Validate an Arena team before any attack-related API call."""
-    if not isinstance(team, ArenaTeam):
-        raise ArenaError("Arena team is invalid.")
-    heroes = list(team.heroes or [])
+def _validate_hero_ids(heroes: list[int]) -> None:
     if len(heroes) != 5:
         raise ArenaError(f"Arena team must have exactly 5 heroes (got {len(heroes)}).")
     for hero_id in heroes:
@@ -359,24 +358,65 @@ def validate_team(team: ArenaTeam) -> None:
     if len(set(heroes)) != len(heroes):
         raise ArenaError("Arena team heroes must be unique.")
 
-    if team.pet is not None:
-        if isinstance(team.pet, bool) or not isinstance(team.pet, int) or team.pet < 6000:
-            raise ArenaError(f"Invalid pet ID {team.pet!r}: pets must be integers >= 6000.")
 
-    for hero_id, patron_id in (team.favor or {}).items():
-        if hero_id not in heroes:
+def _validate_pet_id(pet: int) -> None:
+    if isinstance(pet, bool) or not isinstance(pet, int) or pet < 6000:
+        raise ArenaError(f"Invalid pet ID {pet!r}: pets must be integers >= 6000.")
+
+
+def _validate_favor_map(favor: dict[int, int], heroes: list[int] | None) -> None:
+    for hero_id, patron_id in favor.items():
+        if heroes is not None and hero_id not in heroes:
             raise ArenaError(
                 f"Favor hero {hero_id} is not part of the selected team ({heroes})."
             )
         if isinstance(patron_id, bool) or not isinstance(patron_id, int) or patron_id <= 0:
             raise ArenaError(f"Invalid patron pet ID {patron_id!r} for hero {hero_id}.")
 
-    banners = [banner for banner in (team.banners or []) if banner != 0]
-    if len(banners) > 1:
-        raise ArenaError(f"Arena team accepts at most 1 banner (got {len(banners)}).")
-    for banner in banners:
+
+def _validate_banners(banners: list[int]) -> None:
+    selected = [banner for banner in banners if banner != 0]
+    if len(selected) > 1:
+        raise ArenaError(f"Arena team accepts at most 1 banner (got {len(selected)}).")
+    for banner in selected:
         if isinstance(banner, bool) or not isinstance(banner, int) or banner < 1:
             raise ArenaError(f"Invalid banner ID {banner!r}: banners must be positive.")
+
+
+def validate_team(team: ArenaTeam) -> None:
+    """Validate an Arena team before any attack-related API call."""
+    if not isinstance(team, ArenaTeam):
+        raise ArenaError("Arena team is invalid.")
+    heroes = list(team.heroes or [])
+    _validate_hero_ids(heroes)
+    if team.pet is not None:
+        _validate_pet_id(team.pet)
+    _validate_favor_map(team.favor or {}, heroes)
+    _validate_banners(team.banners or [])
+
+
+def validate_partial_team(
+    *,
+    heroes: list[int] | None = None,
+    pet: int | None = None,
+    banner: int | None = None,
+    favor: dict[int, int] | None = None,
+) -> None:
+    """Validate only the fields supplied on the command line, before any API call.
+
+    Favor hero membership needs the resolved heroes, so it is skipped when
+    ``heroes`` is None and re-checked by :func:`validate_team` after the team
+    is resolved. Patron IDs are always checked.
+    """
+    hero_ids = list(heroes) if heroes is not None else None
+    if hero_ids is not None:
+        _validate_hero_ids(hero_ids)
+    if pet is not None:
+        _validate_pet_id(pet)
+    if favor is not None:
+        _validate_favor_map(favor, hero_ids)
+    if banner is not None:
+        _validate_banners([banner])
 
 
 def parse_favor_args(raw: list[str] | None) -> dict[int, int] | None:
@@ -831,11 +871,13 @@ def resolve_target(
     earlier ``status.place`` because it is fresher; the earlier value is only a
     fallback when ``topGet`` omits ``place``. Targets outside the top 50 are
     resolved from the rotating candidate list, retrying up to
-    ``candidate_retries`` extra times.
+    ``candidate_retries`` extra times. A candidate-resolved target keeps its
+    entry in ``ArenaTarget.candidate`` so the attack step reuses it.
     """
     _require_arena_mode(mode)
     if (rank is None) == (user_id is None):
         raise ArenaError("Specify exactly one of --rank or --user-id.")
+    _validate_candidate_retries(candidate_retries)
 
     if rank is not None:
         if isinstance(rank, bool) or rank < 1:
@@ -848,13 +890,15 @@ def resolve_target(
                 "only players ranked above you can be attacked."
             )
         entry = _find_entry(top.entries, rank=rank)
+        candidate = None
         if entry is None:
-            entry = fetch_candidate(
+            candidate = fetch_candidate(
                 client,
                 place=rank,
                 retries=candidate_retries,
                 mode=mode,
             )
+            entry = candidate
         if entry is None:
             raise ArenaError(
                 f"Rank {rank} was not found in the top 50 or the current candidate "
@@ -867,6 +911,7 @@ def resolve_target(
             place=entry.place,
             name=entry.name,
             power=entry.power,
+            candidate=candidate,
         )
 
     target_id = int(user_id)  # type: ignore[arg-type]
@@ -876,13 +921,15 @@ def resolve_target(
     top = fetch_arena_top(client, mode)
     own_place = top.own_place if top.own_place is not None else status.place
     entry = _find_entry(top.entries, user_id=target_id)
+    candidate = None
     if entry is None:
-        entry = fetch_candidate(
+        candidate = fetch_candidate(
             client,
             user_id=target_id,
             retries=candidate_retries,
             mode=mode,
         )
+        entry = candidate
     if entry is None:
         raise ArenaError(
             f"Could not resolve place for userId {target_id} after "
@@ -899,6 +946,7 @@ def resolve_target(
         place=entry.place,
         name=entry.name,
         power=entry.power,
+        candidate=candidate,
     )
 
 
@@ -991,7 +1039,8 @@ def run_arena_attack(
     ``*FindEnemies`` response, so the candidate list is refreshed up to
     ``candidate_retries`` extra times until the target appears. Both dry-run
     and live attacks require candidate membership, keeping the dry-run
-    prediction accurate.
+    prediction accurate. When ``resolve_target`` already captured the entry in
+    ``target.candidate``, it is reused instead of re-running the retry loop.
     """
     _require_arena_mode(mode)
     candidate_retries = _validate_candidate_retries(candidate_retries)
@@ -1008,17 +1057,22 @@ def run_arena_attack(
             "(upper-only). Re-run after checking the ranking."
         )
 
-    candidate = fetch_candidate(
-        client, user_id=target.user_id, retries=candidate_retries, mode=mode
-    )
+    candidate = target.candidate
     if candidate is None:
-        raise ArenaError(
-            f"Target {_format_target(target)} did not appear in the candidate list "
-            f"after {candidate_retries + 1} attempt(s). arenaAttack only accepts "
-            "players currently returned by arenaFindEnemies (the observed window is "
-            "roughly 1-13 ranks above, but higher ranks can appear); no attack was "
-            "sent. Retry later or raise --candidate-retries."
+        candidate = fetch_candidate(
+            client, user_id=target.user_id, retries=candidate_retries, mode=mode
         )
+        if candidate is None:
+            raise ArenaError(
+                f"Target {_format_target(target)} did not appear in the candidate list "
+                f"after {candidate_retries + 1} attempt(s). arenaAttack only accepts "
+                "players currently returned by arenaFindEnemies (the observed window is "
+                "roughly 1-13 ranks above, but higher ranks can appear); no attack was "
+                "sent. Retry later or raise --candidate-retries."
+            )
+        # The retry loop can span many requests, so re-read the own rank before
+        # the upper-only check and the range-window message.
+        fresh_place = fetch_own_place(client, mode)
 
     # The candidate entry carries the target's current place, which may have
     # shifted since ``resolve_target``. Re-apply the upper-only rule to it.
@@ -1027,6 +1081,7 @@ def run_arena_attack(
         place=candidate.place,
         name=candidate.name or target.name,
         power=candidate.power if candidate.power is not None else target.power,
+        candidate=candidate,
     )
     if target.place >= fresh_place:
         raise ArenaError(
@@ -1249,9 +1304,10 @@ def run_arena_status(
     if status.attempts is not None:
         print(f"  {Emojis.INFO}Attack attempts: {status.attempts} / {ARENA_MAX_ATTEMPTS}")
     else:
-        print(f"  {Emojis.WARNING}Attack attempts: unavailable (refillable id={ARENA_ATTACK_REFILLABLE_ID})")
+        print(f"  {Emojis.WARNING}Attack attempts: unavailable")
     if status.cooldown is not None:
-        print(f"  {Emojis.INFO}Cooldown: {status.cooldown} (refillable id={ARENA_COOLDOWN_REFILLABLE_ID})")
+        cooldown = f"{status.cooldown}s" if status.cooldown else "none"
+        print(f"  {Emojis.INFO}Cooldown: {cooldown}")
     print(f"  {Emojis.INFO}Saved team: {_format_team(status.saved_team)}")
     lower, upper = attackable_window(status.place)
     if upper >= lower:
@@ -1392,6 +1448,7 @@ __all__ = [
     "run_arena_top",
     "save_arena_preset",
     "serialize_team",
+    "validate_partial_team",
     "validate_preset_name",
     "validate_team",
 ]

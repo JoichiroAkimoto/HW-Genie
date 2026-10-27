@@ -22,6 +22,7 @@ from hw_genie.commands.arena import (
     resolve_team,
     save_arena_preset,
     serialize_team,
+    validate_partial_team,
     validate_preset_name,
     validate_team,
 )
@@ -196,6 +197,40 @@ def test_validate_team_rejects_invalid(team):
 def test_validate_team_rejects_favor_key_not_selected():
     with pytest.raises(ArenaError, match="[Ff]avor"):
         validate_team(ArenaTeam(heroes=[1, 2, 3, 4, 5], favor={6: 6002}))
+
+
+def test_validate_partial_team_accepts_supplied_fields_only():
+    validate_partial_team(
+        heroes=[1, 2, 3, 4, 5],
+        pet=6008,
+        banner=2,
+        favor={1: 7001},
+    )
+    validate_partial_team(banner=0)
+    validate_partial_team(pet=6008, favor={1: 7001})
+    validate_partial_team()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"heroes": [1, 2, 3, 4]},
+        {"heroes": [1, 2, 3, 4, 4]},
+        {"heroes": [1, 2, 3, 4, 6008]},
+        {"pet": 1234},
+        {"banner": -1},
+        {"favor": {1: 0}},
+        {"favor": {1: 6002}, "heroes": [2, 3, 4, 5, 6]},
+    ],
+)
+def test_validate_partial_team_rejects_invalid_supplied_fields(kwargs):
+    with pytest.raises(ArenaError):
+        validate_partial_team(**kwargs)
+
+
+def test_validate_partial_team_skips_favor_membership_without_heroes():
+    # Membership needs the resolved heroes; patron IDs are still checked.
+    validate_partial_team(favor={99: 6002})
 
 
 # --- favor args ---

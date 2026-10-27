@@ -12,10 +12,12 @@ from hw_genie.commands.arena import (
     ArenaStatus,
     ArenaTarget,
     ArenaTeam,
+    ArenaTopEntry,
     check_target_range,
     fetch_arena_candidates,
     fetch_arena_status,
     fetch_arena_top,
+    fetch_candidate,
     resolve_target,
     run_arena_attack,
 )
@@ -378,6 +380,28 @@ def test_resolve_target_rejects_self_before_lookup(mock_client, mock_sleep):
     assert mock_call.call_count == 0
 
 
+@pytest.mark.parametrize("retries", [-1, 1.5, True])
+def test_resolve_target_rejects_invalid_retries_without_api_calls(
+    mock_client, mock_sleep, retries
+):
+    client, mock_call = mock_client
+    with pytest.raises(ArenaError, match="candidate_retries"):
+        resolve_target(
+            client, _make_status(), rank=10, candidate_retries=retries
+        )
+    assert mock_call.call_count == 0
+
+
+@pytest.mark.parametrize("retries", [-1, 1.5, True])
+def test_fetch_candidate_rejects_invalid_retries_without_api_calls(
+    mock_client, mock_sleep, retries
+):
+    client, mock_call = mock_client
+    with pytest.raises(ArenaError, match="candidate_retries"):
+        fetch_candidate(client, user_id=111, retries=retries)
+    assert mock_call.call_count == 0
+
+
 # --- range check batching ---
 
 
@@ -423,11 +447,18 @@ def _target() -> ArenaTarget:
     return ArenaTarget(user_id=111, place=10, name="Bob", power=5000)
 
 
+def _entry(
+    uid: int = 111, place: int = 10, name: str = "Bob", power: int = 5000
+) -> ArenaTopEntry:
+    return ArenaTopEntry(user_id=uid, place=place, name=name, power=power)
+
+
 def test_run_arena_attack_dry_run_does_not_call_attack(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
     ]
     result = run_arena_attack(client, _make_status(), _target(), _team(), dry_run=True)
@@ -436,6 +467,7 @@ def test_run_arena_attack_dry_run_does_not_call_attack(mock_client, mock_sleep):
     assert _call_names(mock_call) == [
         "arenaGetAll",
         "arenaFindEnemies",
+        "arenaGetAll",
         "arenaCheckTargetRange",
     ]
 
@@ -445,6 +477,7 @@ def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, False)),
     ]
     with pytest.raises(ArenaError) as exc:
@@ -455,6 +488,7 @@ def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
     assert _call_names(mock_call) == [
         "arenaGetAll",
         "arenaFindEnemies",
+        "arenaGetAll",
         "arenaCheckTargetRange",
     ]
 
@@ -466,6 +500,7 @@ def test_run_arena_attack_range_missing_target_does_not_attack(
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok({"response": {}}),
     ]
     with pytest.raises(ArenaError, match="outside the attack range"):
@@ -493,12 +528,103 @@ def test_run_arena_attack_uses_fresh_place_for_window_message(
     mock_call.side_effect = [
         _ok(_own_place_response(18)),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response(18)),
         _ok(_range_response(111, False)),
     ]
     with pytest.raises(ArenaError) as exc:
         run_arena_attack(client, _make_status(place=22), _target(), _team())
     assert "rank 18" in str(exc.value)
     assert "1-17" in str(exc.value)
+
+
+def test_run_arena_attack_rereads_own_place_after_candidate(mock_client, mock_sleep):
+    # The first read says 22, the candidate is at 15, but the player rose to 10
+    # while the candidate list was being refreshed: the target is no longer
+    # above the player, so the attack must stop before the range check.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response(22)),
+        _ok(_candidates_response([_candidate(place=15)])),
+        _ok(_own_place_response(10)),
+    ]
+    with pytest.raises(ArenaError, match="upper-only"):
+        run_arena_attack(client, _make_status(place=22), _target(), _team())
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaGetAll",
+    ]
+
+
+def test_run_arena_attack_reuses_resolved_candidate(mock_client, mock_sleep):
+    # A target resolved from the candidate list carries its entry, so the
+    # attack step must not refresh arenaFindEnemies again.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response()),
+        _ok(_range_response(111, True)),
+        _ok(_attack_response()),
+    ]
+    target = ArenaTarget(
+        user_id=111,
+        place=15,
+        name="Bob",
+        power=5000,
+        candidate=_entry(place=15),
+    )
+    result = run_arena_attack(client, _make_status(), target, _team())
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
+
+
+def test_run_arena_attack_rejects_reused_candidate_that_moved_below(
+    mock_client, mock_sleep
+):
+    # resolve_target captured rank 5, but the reused candidate entry now says
+    # rank 10 (= own rank); the reuse path must still re-check upper-only.
+    client, mock_call = mock_client
+    mock_call.side_effect = [_ok(_own_place_response(10))]
+    target = ArenaTarget(
+        user_id=111,
+        place=5,
+        name="Bob",
+        power=5000,
+        candidate=_entry(place=10),
+    )
+    with pytest.raises(ArenaError, match="upper-only"):
+        run_arena_attack(client, _make_status(place=10), target, _team())
+    assert _call_names(mock_call) == ["arenaGetAll"]
+
+
+def test_resolved_candidate_is_not_refetched_by_attack(mock_client, mock_sleep):
+    # --user-id outside the top 50: resolve_target consumes one candidate list,
+    # and run_arena_attack reuses it instead of doubling the retry budget.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([])),
+        _ok(_candidates_response([_candidate(place=15)])),
+        _ok(_own_place_response()),
+        _ok(_range_response(111, True)),
+        _ok(_attack_response()),
+    ]
+    target = resolve_target(client, _make_status(), user_id=111, candidate_retries=3)
+    assert target.candidate is not None
+    run_arena_attack(
+        client, _make_status(), target, _team(), candidate_retries=3
+    )
+    names = _call_names(mock_call)
+    assert names.count("arenaFindEnemies") == 1
+    assert names == [
+        "topGet",
+        "arenaFindEnemies",
+        "arenaGetAll",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
 
 
 def test_run_arena_attack_refreshes_candidates_until_target_appears(
@@ -510,6 +636,7 @@ def test_run_arena_attack_refreshes_candidates_until_target_appears(
         _ok(_candidates_response([_candidate(uid=999, place=18)])),
         _ok(_candidates_response([_candidate(uid=998, place=15)])),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _ok(_attack_response()),
     ]
@@ -527,6 +654,7 @@ def test_run_arena_attack_refreshes_candidates_until_target_appears(
         "arenaFindEnemies",
         "arenaFindEnemies",
         "arenaFindEnemies",
+        "arenaGetAll",
         "arenaCheckTargetRange",
     ]
 
@@ -583,11 +711,16 @@ def test_run_arena_attack_rejects_candidate_that_moved_below(
     mock_call.side_effect = [
         _ok(_own_place_response(10)),
         _ok(_candidates_response([_candidate(place=10)])),
+        _ok(_own_place_response(10)),
     ]
     target = ArenaTarget(user_id=111, place=5, name="Bob", power=5000)
     with pytest.raises(ArenaError, match="upper-only"):
         run_arena_attack(client, _make_status(place=10), target, _team())
-    assert _call_names(mock_call) == ["arenaGetAll", "arenaFindEnemies"]
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaGetAll",
+    ]
 
 
 @pytest.mark.parametrize("retries", [-1, 1.5, True])
@@ -613,6 +746,7 @@ def test_run_arena_attack_uses_candidate_place_and_name(
                 [_candidate(place=9, name="Carol", power=9000)]
             )
         ),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
     ]
     run_arena_attack(client, _make_status(), _target(), _team(), dry_run=True)
@@ -628,6 +762,7 @@ def test_run_arena_attack_sends_exact_args_once_without_retry(
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _ok(_attack_response()),
     ]
@@ -640,10 +775,11 @@ def test_run_arena_attack_sends_exact_args_once_without_retry(
     assert [c.args[0]["calls"][0]["name"] for c in calls] == [
         "arenaGetAll",
         "arenaFindEnemies",
+        "arenaGetAll",
         "arenaCheckTargetRange",
         "arenaAttack",
     ]
-    attack_call = calls[3].args[0]["calls"][0]
+    attack_call = calls[4].args[0]["calls"][0]
     assert attack_call["ident"] == "body"
     assert attack_call["context"] == {"actionTs": 0}
     assert attack_call["args"] == {
@@ -654,7 +790,7 @@ def test_run_arena_attack_sends_exact_args_once_without_retry(
         "banners": [2],
     }
     # The attack must be sent exactly once (no client-side retry).
-    assert calls[3].kwargs == {"max_retries": 0}
+    assert calls[4].kwargs == {"max_retries": 0}
 
 
 def test_run_arena_attack_network_error_is_unknown_outcome(mock_client, mock_sleep):
@@ -662,6 +798,7 @@ def test_run_arena_attack_network_error_is_unknown_outcome(mock_client, mock_sle
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _unexpected("network_or_parse_error"),
     ]
@@ -670,14 +807,14 @@ def test_run_arena_attack_network_error_is_unknown_outcome(mock_client, mock_sle
     message = str(exc.value)
     assert "outcome is unknown" in message
     assert "may have consumed an attempt" in message
-    # One attempt only: fresh place + candidates + range + a single attack call.
     assert _call_names(mock_call) == [
         "arenaGetAll",
         "arenaFindEnemies",
+        "arenaGetAll",
         "arenaCheckTargetRange",
         "arenaAttack",
     ]
-    assert mock_call.call_args_list[3].kwargs == {"max_retries": 0}
+    assert mock_call.call_args_list[4].kwargs == {"max_retries": 0}
 
 
 def test_hwclient_call_max_retries_zero_makes_single_attempt(mock_sleep):
@@ -697,6 +834,7 @@ def test_run_arena_attack_not_enough_returns_stopped(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _err("NotEnough"),
     ]
@@ -707,21 +845,24 @@ def test_run_arena_attack_not_enough_returns_stopped(mock_client, mock_sleep):
 
 
 @pytest.mark.parametrize(
-    ("detail", "expected"),
+    ("name", "detail", "expected"),
     [
-        ({"name": "NotEnough", "description": "Refillable 5"}, "Refillable"),
-        ({"name": "NotEnough", "description": "Refillable 6"}, "NotEnough"),
+        ("NotEnough", {"name": "NotEnough", "description": "Refillable 5"}, "Refillable"),
+        ("NotEnough", {"name": "NotEnough", "description": "Refillable 6"}, "NotEnough"),
+        ("Refillable", {"name": "Refillable", "description": "Refillable 6"}, "NotEnough"),
+        ("Refillable", {"name": "Refillable", "description": "Refillable 5"}, "Refillable"),
     ],
 )
 def test_run_arena_attack_classifies_refillable_detail(
-    mock_client, mock_sleep, detail, expected
+    mock_client, mock_sleep, name, detail, expected
 ):
     client, mock_call = mock_client
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
-        _err_detail("NotEnough", detail),
+        _err_detail(name, detail),
     ]
     result = run_arena_attack(
         client, _make_status(cooldown=120), _target(), _team()
@@ -739,6 +880,7 @@ def test_run_arena_attack_refillable_returns_stopped(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _err("Refillable"),
     ]
@@ -756,6 +898,7 @@ def test_run_arena_attack_unknown_result_warns_but_accepts(mock_client, mock_sle
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _ok({"response": {}}),
     ]
@@ -770,6 +913,7 @@ def test_run_arena_attack_other_error_raises(mock_client, mock_sleep):
     mock_call.side_effect = [
         _ok(_own_place_response()),
         _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response()),
         _ok(_range_response(111, True)),
         _err("SomeError"),
     ]
@@ -859,6 +1003,51 @@ def test_cmd_arena_attack_passes_candidate_retries(monkeypatch):
     )
     main_mod.cmd_arena_attack(_attack_args(candidate_retries=3))
     assert captured["candidate_retries"] == 3
+
+
+def test_cmd_arena_attack_passes_dry_run_and_favor(monkeypatch):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    attack_kwargs: dict = {}
+    team_kwargs: dict = {}
+    monkeypatch.setattr(arena_mod, "parse_favor_args", lambda raw: {13: 6002})
+    monkeypatch.setattr(
+        arena_mod,
+        "resolve_team",
+        lambda **kwargs: (team_kwargs.update(kwargs), (_team(), []))[1],
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack",
+        lambda *args, **kwargs: attack_kwargs.update(kwargs),
+    )
+    main_mod.cmd_arena_attack(
+        _attack_args(dry_run=True, candidate_retries=4, favor=["13=6002"])
+    )
+    assert attack_kwargs["dry_run"] is True
+    assert attack_kwargs["candidate_retries"] == 4
+    assert team_kwargs["favor"] == {13: 6002}
+
+
+def test_cmd_arena_attack_warns_when_saved_team_missing(monkeypatch, capsys):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    monkeypatch.setattr(arena_mod, "run_arena_attack", lambda *args, **kwargs: None)
+    main_mod.cmd_arena_attack(_attack_args(heroes=[1, 2, 3, 4, 5]))
+    assert "saved Arena team" in capsys.readouterr().err
+
+
+def test_cmd_arena_attack_unknown_preset_fails_before_status(monkeypatch):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    called: dict = {}
+    monkeypatch.setattr(arena_mod, "load_arena_presets", lambda account: {})
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_status",
+        lambda client: called.setdefault("status", True),
+    )
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_arena_attack(_attack_args(team="missing"))
+    assert exc.value.code == 1
+    assert "status" not in called
 
 
 def test_arena_cli_registered(monkeypatch, capsys):

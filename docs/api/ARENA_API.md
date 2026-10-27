@@ -358,8 +358,9 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 | 指定ランクがトップ50・候補にない | 攻撃せず exit 1。`--user-id` は `topGet` / 候補から順位を解決できるプレイヤーのみ指定可能（解決できなければ exit 1） |
 | 指定ランク / `userId` が自分以上（解決時または候補の最新順位で判定） | 攻撃せず exit 1。上位のみ対象である旨を表示 |
 | 自分自身を指定 | 攻撃せず exit 1 |
-| チームが5体でない / 重複 / 不正ID | API 呼び出し前に exit 1 |
-| `--candidate-retries` が負数 | API 呼び出し前に exit 1 |
+| `--heroes` が5個でない / `--candidate-retries` が負数（argparse エラー） | API 呼び出し前に exit 2 |
+| ヒーローIDの不正（重複・範囲外）、`--pet` / `--banner` / `--favor` の不正値 | API 呼び出し前に exit 1 |
+| `--favor` のヒーローが選択チームに含まれない | `--heroes` 指定時は API 呼び出し前に exit 1。プリセット/保存チームを使う場合はチーム解決後に exit 1 |
 | `NotEnough`（攻撃回数切れ、例: `Refillable 6`） | 攻撃せず警告して exit 0 |
 | `Refillable`（クールダウン。`Refillable 5` や `NotEnough` + description も含む） | 攻撃せず、`status.cooldown` があれば残り時間を表示して exit 0 |
 | 攻撃送信後にタイムアウト / 結果不明 | exit 1。「結果不明・攻撃回数を消費した可能性があるためゲーム側で確認」と表示（自動リトライしない） |
@@ -369,8 +370,6 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 ## TODO / 未解明事項
 - **候補ウィンドウの条件**: `arenaFindEnemies` が 13 位より上を含む条件は未解明。自分の順位変動・サーバー側の候補生成タイミング・防衛編成などが候補か。`--candidate-retries` を増やしても見つからない場合があるため、候補生成の規則を追加調査する。
 - **Grand Arena CLI**: `grandAttack` のペイロード/レスポンスは実機確認済み（上記）。CLI 対応時は3チーム・3ペット・3バナー、refillable id=20/21、最後の `battles[].result` からの順位読み取りが必要。
-- **Combat Training**: `demoBattles_startBattle` の例は `docs/superpowers/Arena.md` にあるが、本 CLI の対象外。
 
 ## 関連
 - CLI: `.agents/skills/arena/SKILL.md`
-- 生ペイロード例: `docs/superpowers/Arena.md`

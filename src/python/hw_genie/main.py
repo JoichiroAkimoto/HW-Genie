@@ -572,8 +572,9 @@ def cmd_arena_status(args):
 
     headers = _ensure_session(args)
     client = HWClient(headers)
+    alias = resolve_account(args.account) if args.account else None
     try:
-        run_arena_status(client, account_alias=args.account or None)
+        run_arena_status(client, account_alias=alias)
     except ArenaError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -650,14 +651,13 @@ def cmd_arena_attack(args):
     """Attack a player ranked above the current account."""
     from hw_genie.commands.arena import (
         ArenaError,
-        ArenaTeam,
         fetch_arena_status,
         load_arena_presets,
         parse_favor_args,
         resolve_target,
         resolve_team,
         run_arena_attack,
-        validate_team,
+        validate_partial_team,
     )
 
     account = resolve_account(args.account)
@@ -667,16 +667,12 @@ def cmd_arena_attack(args):
         favor = parse_favor_args(args.favor)
         # Validate direct flags before the first API call. Fields omitted here
         # are filled from the preset/saved team later (favor merge included).
-        if args.heroes is not None:
-            validate_team(
-                ArenaTeam(
-                    heroes=args.heroes,
-                    pet=args.pet,
-                    favor=favor or {},
-                    banners=[args.banner] if args.banner is not None else [],
-                )
-            )
-        status = fetch_arena_status(client)
+        validate_partial_team(
+            heroes=args.heroes,
+            pet=args.pet,
+            banner=args.banner,
+            favor=favor,
+        )
         preset = None
         if args.team:
             presets = load_arena_presets(account)
@@ -685,6 +681,13 @@ def cmd_arena_attack(args):
                 raise ArenaError(
                     f"Unknown Arena team preset '{args.team}'. Use `arena team list`."
                 )
+        status = fetch_arena_status(client)
+        if status.saved_team is None and preset is None and args.heroes is not None:
+            print(
+                "⚠️  Could not read the saved Arena team; pet/banner/favor fall "
+                "back to --pet/--banner/--favor only.",
+                file=sys.stderr,
+            )
         team, missing = resolve_team(
             heroes=args.heroes,
             pet=args.pet,
