@@ -531,11 +531,68 @@ class OpenRouterResponse:
         self.candidates: list = []
 
 
+def _openrouter_reasoning(effort: str | None, model_info: dict) -> str | None:
+    """OpenRouter に送る ``reasoning.effort`` を解決する。
+
+    優先順位: ``--effort`` 指定 > models.json の ``reasoning_effort`` > 未指定(None)。
+    "auto" は未指定扱い（モデル既定に委ねる）、"off" 系は明示的なパラメータなし扱い。
+    OpenRouter が受け付けるのは minimal/low/medium/high の 4 値のみ。
+    """
+    for candidate in (effort, model_info.get("reasoning_effort")):
+        if candidate is None:
+            continue
+        value = str(candidate).strip().lower()
+        if not value or value == "auto":
+            continue
+        if value in ("off", "none", "false", "0", "disabled"):
+            return None
+        if value in ("minimal", "low", "medium", "high"):
+            return value
+    return None
+
+
+def _run_openrouter_pass(
+    fallback_models: list[str],
+    prompt: str,
+    system_instruction: str,
+    api_keys: list[str],
+    reasoning_effort: str | None,
+) -> tuple[OpenRouterResponse | None, str | None, Exception | None]:
+    """OpenRouter のモデル群を順に試行し (response, model, last_exc) を返す。
+
+    effort 指定で全モデル失敗した場合は reasoning なしの 2 パス目を 1 回だけ
+    再試行する。無料ルーターには ``reasoning`` パラメータを扱えないモデルが
+    混在しており、全滅でレビュー全体を失敗させないための保険。
+    """
+    last_exc: Exception | None = None
+    passes: list[str | None] = [reasoning_effort]
+    if reasoning_effort is not None:
+        passes.append(None)
+    for effort in passes:
+        for fb_model in fallback_models:
+            try:
+                resp = _generate_with_openrouter(
+                    fb_model,
+                    prompt,
+                    system_instruction,
+                    api_keys,
+                    reasoning_effort=effort,
+                )
+                return resp, fb_model, None
+            except Exception as fe:  # noqa: BLE001
+                last_exc = fe
+                print(f"OpenRouter model {fb_model} failed: {fe}")
+        if effort is not None:
+            print("OpenRouter pass with reasoning failed; retrying without reasoning param...")
+    return None, None, last_exc
+
+
 def _generate_with_openrouter(
     model_name: str,
     prompt: str,
     system_instruction: str,
     api_keys: list[str],
+    reasoning_effort: str | None = None,
 ) -> OpenRouterResponse:
     """OpenRouter (OpenAI 互換) 経由で生成を実行する。
 
@@ -547,6 +604,8 @@ def _generate_with_openrouter(
         prompt: ユーザープロンプト。
         system_instruction: システムインストラクション。
         api_keys: OpenRouter API キーのリスト（先頭から順に試行）。
+        reasoning_effort: ``reasoning.effort`` に渡す値 (minimal/low/medium/high)。
+            None の場合はパラメータ自体を送らない。
 
     Returns:
         ``OpenRouterResponse`` オブジェクト。
@@ -579,6 +638,8 @@ def _generate_with_openrouter(
                     ],
                     "max_tokens": OPENROUTER_DEFAULT_MAX_TOKENS,
                 }
+                if reasoning_effort:
+                    payload["reasoning"] = {"effort": reasoning_effort}
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -1298,27 +1359,27 @@ def main():
             else:
                 fallback_models = [model_name]
                 print(f"Trying OpenRouter model {model_name}...")
-            for fb_model in fallback_models:
-                try:
-                    fb_resp = _generate_with_openrouter(
-                        fb_model, prompt, system_instruction, openrouter_keys
-                    )
-                    response = fb_resp
-                    model_name = fb_model
-                    resolved_model_name = fb_model
-                    model_info = {
-                        "name": fb_model,
-                        "input_cost_per_1m": None,
-                        "output_cost_per_1m": None,
-                        "max_diff_chars": model_info.get("max_diff_chars", 500000),
-                    }
-                    thinking_config = None
-                    print(f"OpenRouter succeeded with model {fb_model}")
-                    break
-                except Exception as fe:  # noqa: BLE001
-                    last_exc = fe
-                    print(f"OpenRouter model {fb_model} failed: {fe}")
-                    continue
+            or_resp, or_model, or_exc = _run_openrouter_pass(
+                fallback_models,
+                prompt,
+                system_instruction,
+                openrouter_keys,
+                _openrouter_reasoning(thinking_effort, model_info),
+            )
+            if or_resp is not None:
+                response = or_resp
+                model_name = or_model
+                resolved_model_name = or_model
+                model_info = {
+                    "name": or_model,
+                    "input_cost_per_1m": None,
+                    "output_cost_per_1m": None,
+                    "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                }
+                thinking_config = None
+                print(f"OpenRouter succeeded with model {or_model}")
+            else:
+                last_exc = or_exc
 
         if not is_openrouter_primary and gemini_keys:
             # エイリアス解決は最初のキーで一度だけ試行（API 呼び出しが必要なため）。失敗しても続行
@@ -1404,29 +1465,29 @@ def main():
         if not is_openrouter_primary and response is None and openrouter_keys:
             fallback_models = _get_openrouter_fallback_models()
             print(f"Gemini keys exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
-            for fb_model in fallback_models:
-                try:
-                    fb_resp = _generate_with_openrouter(
-                        fb_model, prompt, system_instruction, openrouter_keys
-                    )
-                    response = fb_resp
-                    # メタデータ用にモデル情報を更新（コスト不明として扱う）
-                    model_name = fb_model
-                    resolved_model_name = fb_model
-                    model_info = {
-                        "name": fb_model,
-                        "input_cost_per_1m": None,
-                        "output_cost_per_1m": None,
-                        "max_diff_chars": model_info.get("max_diff_chars", 500000),
-                    }
-                    # OpenRouter は思考非対応のため表示から除外
-                    thinking_config = None
-                    print(f"OpenRouter fallback succeeded with model {fb_model}")
-                    break
-                except Exception as fe:  # noqa: BLE001
-                    last_exc = fe
-                    print(f"OpenRouter fallback model {fb_model} failed: {fe}")
-                    continue
+            or_resp, or_model, or_exc = _run_openrouter_pass(
+                fallback_models,
+                prompt,
+                system_instruction,
+                openrouter_keys,
+                _openrouter_reasoning(thinking_effort, model_info),
+            )
+            if or_resp is not None:
+                response = or_resp
+                # メタデータ用にモデル情報を更新（コスト不明として扱う）
+                model_name = or_model
+                resolved_model_name = or_model
+                model_info = {
+                    "name": or_model,
+                    "input_cost_per_1m": None,
+                    "output_cost_per_1m": None,
+                    "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                }
+                # OpenRouter は思考非表示のため表示から除外
+                thinking_config = None
+                print(f"OpenRouter fallback succeeded with model {or_model}")
+            else:
+                last_exc = or_exc
 
         if response is None:
             if last_exc is not None:
