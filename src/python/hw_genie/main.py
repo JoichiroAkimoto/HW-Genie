@@ -109,6 +109,19 @@ def _ensure_session(args) -> dict[str, str]:
     return headers
 
 
+def _require_registered_account(account: str) -> None:
+    """Exit with a clear error when the account has no DB row."""
+    from hw_genie.core.session_manager import SessionManager
+
+    if not SessionManager.load(account):
+        print(
+            f"Error: Account '{account}' is not registered in the database. "
+            "Use `auth --list` to see registered accounts.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_auth(args):
     """認証情報の更新・表示"""
     # --fresh は --list との併用が必須（--list-names 併用は常にエラー）
@@ -575,8 +588,8 @@ def cmd_arena_team_set(args):
     )
 
     account = resolve_account(args.account)
-    headers = _ensure_session(args)
-    client = HWClient(headers)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args)) if args.from_saved else None
     try:
         favor = parse_favor_args(args.favor)
         run_arena_team_set(
@@ -599,7 +612,7 @@ def cmd_arena_team_list(args):
     from hw_genie.commands.arena import ArenaError, run_arena_team_list
 
     account = resolve_account(args.account)
-    _ensure_session(args)
+    _require_registered_account(account)
     try:
         run_arena_team_list(account)
     except ArenaError as e:
@@ -612,7 +625,7 @@ def cmd_arena_team_remove(args):
     from hw_genie.commands.arena import ArenaError, run_arena_team_remove
 
     account = resolve_account(args.account)
-    _ensure_session(args)
+    _require_registered_account(account)
     try:
         run_arena_team_remove(account, args.name)
     except ArenaError as e:
@@ -1762,8 +1775,11 @@ def main():
     p_seers.set_defaults(func=cmd_seers_game)
 
     # Arena (status / top / team presets / targeted attack)
+    # NOTE: do not put parents=[parent_parser] on the intermediate `arena` /
+    # `arena team` parsers. argparse would parse `-a` there and the leaf
+    # subparser's default (None) would overwrite it. Leaves inherit it instead.
     p_arena = subparsers.add_parser(
-        "arena", parents=[parent_parser], help="Arena operations (status/top/team/attack)"
+        "arena", help="Arena operations (status/top/team/attack)"
     )
     arena_sub = p_arena.add_subparsers(dest="arena_type", required=True)
 
@@ -1782,7 +1798,7 @@ def main():
     p_arena_top.set_defaults(func=cmd_arena_top)
 
     p_arena_team = arena_sub.add_parser(
-        "team", parents=[parent_parser], help="Manage named Arena team presets"
+        "team", help="Manage named Arena team presets"
     )
     arena_team_sub = p_arena_team.add_subparsers(dest="arena_team_action", required=True)
 

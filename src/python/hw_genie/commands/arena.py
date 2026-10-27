@@ -1,7 +1,7 @@
 """Arena v1: status, ranking, team presets, and targeted attacks.
 
-Scope: normal Arena only. Grand Arena is parameterized through :data:`GRAND_MODE`
-but not exposed on the CLI yet.
+Scope: normal Arena only. Grand Arena can be described by the private
+``_GRAND_MODE`` scaffold, but every runner rejects it until a later release.
 
 Safety rules:
 - Only players ranked *above* the current account can be attacked.
@@ -9,6 +9,8 @@ Safety rules:
   never calls ``arenaAttack``.
 - ``arenaCheckTargetRange`` accepts at most 3 IDs per request; callers are
   batched accordingly.
+- ``arenaAttack`` is sent exactly once (``max_retries=0``): a timeout after the
+  server accepted the request must not trigger a second attack.
 
 The verified API shapes and the empirical ±21 rank window live in
 ``docs/api/ARENA_API.md``.
@@ -21,7 +23,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from hw_genie.core.client import ApiAction, Emojis, HWClient
+from hw_genie.core.client import (
+    ApiAction,
+    Emojis,
+    ErrorName,
+    HWClient,
+    HWResponse,
+    ResponseStatus,
+)
 
 # Arena attack attempts / cooldown live in ``userGetInfo.refillable``.
 ARENA_ATTACK_REFILLABLE_ID = 6
@@ -71,7 +80,7 @@ ARENA_MODE = ArenaMode(
     team_field="arena",
 )
 
-GRAND_MODE = ArenaMode(
+_GRAND_MODE = ArenaMode(
     key="grand",
     get_all=ApiAction.ARENA_GET_ALL,
     find_enemies=ApiAction.GRAND_FIND_ENEMIES,
@@ -81,6 +90,20 @@ GRAND_MODE = ArenaMode(
     place_field="grandPlace",
     team_field="grand",
 )
+
+
+def _require_arena_mode(mode: ArenaMode) -> None:
+    """Reject non-Arena modes until the 3-team GA shape is implemented."""
+    if mode.key != ARENA_MODE.key:
+        raise ArenaError("Grand Arena is not implemented yet.")
+
+
+def _normalize_banner(value: Any) -> int | None:
+    """Return a banner ID, treating the ``0`` sentinel (and gaps) as absent."""
+    banner = _safe_int(value, None)
+    if banner is None or banner <= 0:
+        return None
+    return banner
 
 
 @dataclass
@@ -94,7 +117,7 @@ class ArenaTeam:
 
     @property
     def banner(self) -> int | None:
-        return self.banners[0] if self.banners else None
+        return next((b for b in self.banners if b), None)
 
 
 @dataclass
@@ -338,12 +361,12 @@ def validate_team(team: ArenaTeam) -> None:
         if isinstance(patron_id, bool) or not isinstance(patron_id, int) or patron_id <= 0:
             raise ArenaError(f"Invalid patron pet ID {patron_id!r} for hero {hero_id}.")
 
-    banners = team.banners or []
+    banners = [banner for banner in (team.banners or []) if banner != 0]
     if len(banners) > 1:
         raise ArenaError(f"Arena team accepts at most 1 banner (got {len(banners)}).")
     for banner in banners:
-        if isinstance(banner, bool) or not isinstance(banner, int) or banner < 0:
-            raise ArenaError(f"Invalid banner ID {banner!r}: banners must be numeric.")
+        if isinstance(banner, bool) or not isinstance(banner, int) or banner < 1:
+            raise ArenaError(f"Invalid banner ID {banner!r}: banners must be positive.")
 
 
 def parse_favor_args(raw: list[str] | None) -> dict[int, int] | None:
@@ -378,27 +401,42 @@ def resolve_team(
     preset: ArenaTeam | None = None,
     saved: ArenaTeam | None = None,
 ) -> tuple[ArenaTeam, list[int]]:
-    """Resolve a team with direct flags > preset > saved team.
+    """Resolve a team with direct flags > preset > saved team, field by field.
 
-    Favor precedence: explicit ``--favor`` > preset favor > saved favor for the
-    selected heroes. Missing entries are returned as hero IDs for a warning.
+    Each field falls back independently: a preset that only defines heroes
+    still inherits the saved team's pet/banner. Favor precedence is explicit
+    ``--favor`` > preset favor > saved favor for the selected heroes. Missing
+    entries are returned as hero IDs for a warning.
     """
-    base = preset if preset is not None else saved
-    selected_heroes = (
-        [int(h) for h in heroes]
-        if heroes is not None
-        else (list(base.heroes) if base is not None else [])
-    )
+    if heroes is not None:
+        selected_heroes = [int(h) for h in heroes]
+    elif preset is not None and preset.heroes:
+        selected_heroes = list(preset.heroes)
+    elif saved is not None:
+        selected_heroes = list(saved.heroes)
+    else:
+        selected_heroes = []
     if not selected_heroes:
         raise ArenaError(
             "No Arena team selected and no saved Arena team was found. "
             "Pass --heroes (and optionally --pet/--banner/--favor) or use --team."
         )
 
-    base_pet = base.pet if base is not None else None
-    base_banner = base.banner if base is not None else None
-    selected_pet = pet if pet is not None else base_pet
-    selected_banner = banner if banner is not None else base_banner
+    if pet is not None:
+        selected_pet = pet
+    elif preset is not None and preset.pet is not None:
+        selected_pet = preset.pet
+    else:
+        selected_pet = saved.pet if saved is not None else None
+
+    if banner is not None:
+        # 0 is the game's "no banner" sentinel: an explicit 0 suppresses the
+        # preset/saved banner instead of falling back to it.
+        selected_banner = None if banner == 0 else banner
+    elif preset is not None and preset.banner is not None:
+        selected_banner = preset.banner
+    else:
+        selected_banner = saved.banner if saved is not None else None
 
     merged_favor: dict[int, int] = {}
     if favor is not None:
@@ -434,8 +472,9 @@ def build_attack_args(user_id: int, team: ArenaTeam) -> dict[str, Any]:
         args["pet"] = int(team.pet)
     if team.favor:
         args["favor"] = {str(h): int(p) for h, p in team.favor.items()}
-    if team.banners:
-        args["banners"] = [int(b) for b in team.banners[:1]]
+    banners = [int(b) for b in team.banners[:1] if b]
+    if banners:
+        args["banners"] = banners
     return args
 
 
@@ -490,6 +529,7 @@ def fetch_saved_team(
     client: HWClient, mode: ArenaMode = ARENA_MODE
 ) -> ArenaTeam | None:
     """Fetch the saved team/favor/banner for the mode (None when unavailable)."""
+    _require_arena_mode(mode)
     res = client.call(
         {
             "calls": [
@@ -538,8 +578,8 @@ def fetch_saved_team(
     raw_banner = banner_body.get(mode.team_field) if isinstance(banner_body, dict) else None
     if isinstance(raw_banner, list):
         raw_banner = raw_banner[0] if raw_banner else None
-    banner = _safe_int(raw_banner, None)
-    if banner is not None and banner >= 0:
+    banner = _normalize_banner(raw_banner)
+    if banner is not None:
         banners.append(banner)
 
     team = ArenaTeam(heroes=heroes, pet=pet, favor=favor, banners=banners)
@@ -554,6 +594,7 @@ def fetch_arena_status(
     client: HWClient, mode: ArenaMode = ARENA_MODE
 ) -> ArenaStatus:
     """Resolve own rank, attempts/cooldown, and the saved team."""
+    _require_arena_mode(mode)
     res = client.call(
         {
             "calls": [
@@ -599,7 +640,38 @@ def fetch_arena_status(
     )
 
 
+def fetch_own_place(client: HWClient, mode: ArenaMode = ARENA_MODE) -> int:
+    """Read only ``arenaGetAll`` and return the mode's own rank.
+
+    Used immediately before an attack so a rank change between the earlier
+    status fetch and the attack cannot widen the upper-only boundary.
+    """
+    _require_arena_mode(mode)
+    res = client.call(
+        {"calls": [{"name": mode.get_all, "args": {}, "ident": "arena"}]}
+    )
+    client.sleep()
+    if not res.is_success:
+        raise ArenaError(
+            f"Could not read your {mode.key} rank from {mode.get_all.value} "
+            f"({res.error_name or res.status.value}); refusing to attack."
+        )
+    responses = _unwrap_item(res.detail)
+    place = (
+        _safe_int(responses.get(mode.place_field), None)
+        if isinstance(responses, dict)
+        else None
+    )
+    if place is None or place <= 0:
+        raise ArenaError(
+            f"Could not read your {mode.key} rank from {mode.get_all.value}; "
+            "refusing to attack."
+        )
+    return place
+
+
 def fetch_arena_top(client: HWClient, mode: ArenaMode = ARENA_MODE) -> ArenaTop:
+    _require_arena_mode(mode)
     res = client.call(
         {
             "calls": [
@@ -621,6 +693,7 @@ def fetch_arena_top(client: HWClient, mode: ArenaMode = ARENA_MODE) -> ArenaTop:
 def fetch_arena_candidates(
     client: HWClient, mode: ArenaMode = ARENA_MODE
 ) -> list[ArenaTopEntry]:
+    _require_arena_mode(mode)
     res = client.call(
         {"calls": [{"name": mode.find_enemies, "args": {}, "ident": "body"}]}
     )
@@ -641,6 +714,7 @@ def check_target_range(
     client: HWClient, ids: list[int], mode: ArenaMode = ARENA_MODE
 ) -> dict[int, bool]:
     """Check attackability, splitting IDs into API-sized chunks (max 3)."""
+    _require_arena_mode(mode)
     wanted = [int(i) for i in ids]
     result: dict[int, bool] = {}
     for chunk in _chunked(wanted, MAX_RANGE_IDS):
@@ -658,7 +732,7 @@ def check_target_range(
         client.sleep()
         if not res.is_success:
             error = res.error_name or res.status.value
-            if error == "TooMany":
+            if error == ErrorName.TOO_MANY.value:
                 raise ArenaError(
                     "TooMany: target range check accepts at most "
                     f"{MAX_RANGE_IDS} ids per request."
@@ -692,7 +766,13 @@ def resolve_target(
     user_id: int | None = None,
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaTarget:
-    """Resolve ``--rank`` / ``--user-id`` to a target ranked above the player."""
+    """Resolve ``--rank`` / ``--user-id`` to a target ranked above the player.
+
+    The own rank from ``topGet`` (``ArenaTop.own_place``) is preferred over the
+    earlier ``status.place`` because it is fresher; the earlier value is only a
+    fallback when ``topGet`` omits ``place``.
+    """
+    _require_arena_mode(mode)
     if (rank is None) == (user_id is None):
         raise ArenaError("Specify exactly one of --rank or --user-id.")
 
@@ -702,12 +782,13 @@ def resolve_target(
     if rank is not None:
         if isinstance(rank, bool) or rank < 1:
             raise ArenaError(f"--rank must be a positive integer (got {rank!r}).")
-        if rank >= status.place:
+        top = fetch_arena_top(client, mode)
+        own_place = top.own_place if top.own_place is not None else status.place
+        if rank >= own_place:
             raise ArenaError(
-                f"Target rank {rank} is not above your current rank {status.place}; "
+                f"Target rank {rank} is not above your current rank {own_place}; "
                 "only players ranked above you can be attacked."
             )
-        top = fetch_arena_top(client, mode)
         entry = _find_entry(top.entries, rank=rank)
         if entry is None:
             candidates = fetch_arena_candidates(client, mode)
@@ -731,6 +812,7 @@ def resolve_target(
         raise ArenaError("Refusing to attack yourself.")
 
     top = fetch_arena_top(client, mode)
+    own_place = top.own_place if top.own_place is not None else status.place
     entry = _find_entry(top.entries, user_id=target_id)
     if entry is None:
         candidates = fetch_arena_candidates(client, mode)
@@ -740,10 +822,10 @@ def resolve_target(
             f"Could not resolve place for userId {target_id}. It is not in the "
             "top 50 or the current candidate list; use --rank for a known rank."
         )
-    if entry.place >= status.place:
+    if entry.place >= own_place:
         raise ArenaError(
             f"userId {target_id} is ranked {entry.place}, which is not above your "
-            f"current rank {status.place}; only players ranked above you can be attacked."
+            f"current rank {own_place}; only players ranked above you can be attacked."
         )
     return ArenaTarget(
         user_id=entry.user_id,
@@ -779,6 +861,53 @@ def _format_target(target: ArenaTarget) -> str:
     return f"rank {target.place} (userId {target.user_id}{name})"
 
 
+def _error_text(res: HWResponse) -> str:
+    """Flatten an ``HWResponse`` error payload into searchable text."""
+    parts: list[str] = []
+    detail = res.detail
+    if isinstance(detail, dict):
+        for key in ("name", "description", "message"):
+            value = detail.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif isinstance(detail, str):
+        parts.append(detail)
+    if res.error_name:
+        parts.append(str(res.error_name))
+    return " ".join(parts)
+
+
+def _classify_attack_error(res: HWResponse) -> str | None:
+    """Return ``ErrorName.NOT_ENOUGH`` / ``ErrorName.REFILLABLE`` or None.
+
+    The server reports cooldown/attempt exhaustion as either
+    ``error_name == "Refillable"`` or ``NotEnough`` with a description like
+    ``"Refillable 5"`` (cooldown) / ``"Refillable 6"`` (attack attempts).
+    """
+    name = res.error_name or ""
+    text = _error_text(res).lower()
+    match = re.search(r"refillable\D{0,12}(\d+)", text)
+    refillable_id = int(match.group(1)) if match else None
+
+    if name == ErrorName.REFILLABLE.value:
+        return (
+            ErrorName.NOT_ENOUGH.value
+            if refillable_id == ARENA_ATTACK_REFILLABLE_ID
+            else ErrorName.REFILLABLE.value
+        )
+    if name == ErrorName.NOT_ENOUGH.value:
+        if "refillable" in text and refillable_id == ARENA_COOLDOWN_REFILLABLE_ID:
+            return ErrorName.REFILLABLE.value
+        return ErrorName.NOT_ENOUGH.value
+    return None
+
+
+def _cooldown_suffix(status: ArenaStatus) -> str:
+    if status.cooldown is None:
+        return ""
+    return f" Cooldown: {status.cooldown}s."
+
+
 def run_arena_attack(
     client: HWClient,
     status: ArenaStatus,
@@ -789,15 +918,27 @@ def run_arena_attack(
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaAttackResult:
     """Verify the target range and attack (unless ``dry_run``)."""
+    _require_arena_mode(mode)
     validate_team(team)
+
+    # Re-read the own rank immediately before the range check: a rank change
+    # since ``status`` was fetched must not let a same/lower-ranked target
+    # through (``*CheckTargetRange`` is also true for below-ranked opponents).
+    fresh_place = fetch_own_place(client, mode)
+    if target.place >= fresh_place:
+        raise ArenaError(
+            f"Target {_format_target(target)} is not above your current rank "
+            f"{fresh_place}; only players ranked above you can be attacked "
+            "(upper-only). Re-run after checking the ranking."
+        )
 
     allowed = check_target_range(client, [target.user_id], mode)
     if allowed.get(target.user_id) is not True:
-        lower, upper = attackable_window(status.place)
+        lower, upper = attackable_window(fresh_place)
         raise ArenaError(
             f"Target {_format_target(target)} is outside the attack range for your "
-            f"rank {status.place}. Attackable opponents above you: rank {lower}-{upper} "
-            f"(within {status.place} - {ARENA_RANGE} of your rank)."
+            f"rank {fresh_place}. Attackable opponents above you: rank {lower}-{upper} "
+            f"(within {fresh_place} - {ARENA_RANGE} of your rank)."
         )
 
     print(f"{Emojis.INFO}Target: {_format_target(target)}")
@@ -809,6 +950,8 @@ def run_arena_attack(
         return ArenaAttackResult(dry_run=True, accepted=False)
 
     args = build_attack_args(target.user_id, team)
+    # Never retry an attack: a timeout after the server accepted the request
+    # would double-attack and consume another attempt.
     res = client.call(
         {
             "calls": [
@@ -819,23 +962,34 @@ def run_arena_attack(
                     "ident": "body",
                 }
             ]
-        }
+        },
+        max_retries=0,
     )
     client.sleep()
 
     if not res.is_success:
         error = res.error_name or res.status.value
-        if error == "NotEnough":
+        if res.status == ResponseStatus.UNEXPECTED or error == "network_or_parse_error":
+            raise ArenaError(
+                "The arena attack request was sent but its outcome is unknown "
+                f"({error}). Check the game client before retrying; the attack may "
+                "have consumed an attempt."
+            )
+        stopped = _classify_attack_error(res)
+        if stopped == ErrorName.NOT_ENOUGH.value:
             warning = "Arena attack not sent: not enough attack attempts (NotEnough)."
             print(f"{Emojis.WARNING}{warning}")
             return ArenaAttackResult(
-                dry_run=False, accepted=False, stopped="NotEnough", warning=warning
+                dry_run=False, accepted=False, stopped=stopped, warning=warning
             )
-        if error == "Refillable":
-            warning = "Arena attack not sent: Arena is on cooldown (Refillable)."
+        if stopped == ErrorName.REFILLABLE.value:
+            warning = (
+                "Arena attack not sent: Arena is on cooldown (Refillable)."
+                + _cooldown_suffix(status)
+            )
             print(f"{Emojis.WARNING}{warning}")
             return ArenaAttackResult(
-                dry_run=False, accepted=False, stopped="Refillable", warning=warning
+                dry_run=False, accepted=False, stopped=stopped, warning=warning
             )
         raise ArenaError(f"{mode.attack.value} failed ({error}).")
 
@@ -880,8 +1034,8 @@ def serialize_team(team: ArenaTeam) -> dict[str, Any]:
     }
     if team.pet is not None:
         data["pet"] = int(team.pet)
-    if team.banners:
-        data["banners"] = [int(b) for b in team.banners[:1]]
+    if team.banners and team.banners[0] > 0:
+        data["banners"] = [int(team.banners[0])]
     return data
 
 
@@ -893,6 +1047,8 @@ def deserialize_team(data: Any) -> ArenaTeam:
         raise ArenaError("Stored Arena team is missing heroes.")
     heroes = [int(h) for h in raw_heroes]
     pet = _safe_int(data.get("pet"), None)
+    if pet == 0:
+        pet = None
     raw_favor = data.get("favor")
     favor: dict[int, int] = {}
     if isinstance(raw_favor, dict):
@@ -904,9 +1060,9 @@ def deserialize_team(data: Any) -> ArenaTeam:
     raw_banners = data.get("banners")
     banners: list[int] = []
     if isinstance(raw_banners, list):
-        banners = [int(b) for b in raw_banners]
+        banners = [int(b) for b in raw_banners if _normalize_banner(b) is not None]
     elif raw_banners is not None:
-        banner = _safe_int(raw_banners, None)
+        banner = _normalize_banner(raw_banners)
         if banner is not None:
             banners = [banner]
 
@@ -1100,7 +1256,6 @@ def run_arena_team_remove(
 
 __all__ = [
     "ARENA_MODE",
-    "GRAND_MODE",
     "ArenaError",
     "ArenaStatus",
     "ArenaTarget",
@@ -1113,6 +1268,7 @@ __all__ = [
     "fetch_arena_candidates",
     "fetch_arena_status",
     "fetch_arena_top",
+    "fetch_own_place",
     "fetch_saved_team",
     "load_arena_presets",
     "parse_attack_result",

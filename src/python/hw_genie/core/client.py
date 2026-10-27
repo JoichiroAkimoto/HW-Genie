@@ -216,6 +216,8 @@ class ErrorName(str, Enum):
     NOT_ENOUGH_STAMINA = "notEnoughStamina"
     LIMIT_REACHED = "limitReached"
     NOT_ENOUGH = "NotEnough"
+    TOO_MANY = "TooMany"
+    REFILLABLE = "Refillable"
 
 
 @dataclass
@@ -280,16 +282,26 @@ class HWClient:
         headers["x-request-id"] = str(self.request_id)
         return headers
 
-    def call(self, payload: dict[str, Any]) -> HWResponse:
+    def call(
+        self, payload: dict[str, Any], *, max_retries: int | None = None
+    ) -> HWResponse:
         """
         APIを呼び出し、統一されたエラーハンドリングを行う。
         一時的なネットワークエラーやレートリミットに対してはリトライを行う。
+
+        Args:
+            payload: RPC payload.
+            max_retries: Retry budget for transient errors. ``None`` keeps the
+                default :attr:`MAX_RETRIES` behaviour; ``0`` means a single
+                attempt (required for non-idempotent calls such as attacks,
+                where a retry could consume a second attempt).
 
         Returns:
             HWResponse オブジェクト
         Raises:
             HWAuthError: 認証エラーが発生した場合
         """
+        retries = self.MAX_RETRIES if max_retries is None else max(0, int(max_retries))
         headers = self.get_headers()
         current_request_id = self.request_id
 
@@ -382,7 +394,7 @@ class HWClient:
                         )
 
                 attempt += 1
-                if attempt > self.MAX_RETRIES:
+                if attempt > retries:
                     response_text = ""
                     if isinstance(e, HTTPError) and e.response is not None:
                         response_text = f" | Response: {e.response.text[:500]}"
@@ -559,51 +571,6 @@ class HWClient:
             timezone=_safe_int(user_data.get("timeZone")),
             next_day_ts=_safe_int(user_data.get("nextDayTs")),
         )
-
-    # --- Arena / Grand Arena thin RPC wrappers ---
-
-    def arena_top_get(self, grand: bool = False) -> HWResponse:
-        """ランキング上位50件を取得する（``topGet``）。"""
-        payload = {
-            "calls": [
-                {
-                    "name": ApiAction.TOP_GET,
-                    "args": {"type": "grand" if grand else "arena", "extraId": 0},
-                    "ident": "body",
-                }
-            ]
-        }
-        return self.call(payload)
-
-    def arena_find_enemies(self, grand: bool = False) -> HWResponse:
-        """現在攻撃できる候補（最大3件）を取得する。"""
-        action = ApiAction.GRAND_FIND_ENEMIES if grand else ApiAction.ARENA_FIND_ENEMIES
-        return self.call({"calls": [{"name": action, "args": {}, "ident": "body"}]})
-
-    def arena_check_target_range(self, ids: list[int], grand: bool = False) -> HWResponse:
-        """``*CheckTargetRange`` を呼ぶ（API 上限は1リクエスト3件）。"""
-        action = ApiAction.GRAND_CHECK_TARGET_RANGE if grand else ApiAction.ARENA_CHECK_TARGET_RANGE
-        payload = {
-            "calls": [
-                {"name": action, "args": {"ids": [int(i) for i in ids]}, "ident": "body"}
-            ]
-        }
-        return self.call(payload)
-
-    def arena_attack(self, args: dict[str, Any], grand: bool = False) -> HWResponse:
-        """``arenaAttack`` / ``grandAttack`` を送信する。"""
-        action = ApiAction.GRAND_ATTACK if grand else ApiAction.ARENA_ATTACK
-        payload = {
-            "calls": [
-                {
-                    "name": action,
-                    "args": args,
-                    "context": {"actionTs": 0},
-                    "ident": "body",
-                }
-            ]
-        }
-        return self.call(payload)
 
     def sleep(self) -> None:
         """APIリクエスト間のインターバル（レートリミット回避）"""

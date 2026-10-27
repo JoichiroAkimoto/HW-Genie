@@ -3,8 +3,6 @@
 All API access is mocked; no live calls and no real account names are used.
 """
 
-from unittest.mock import MagicMock
-
 import pytest
 
 from hw_genie.commands.arena import (
@@ -29,13 +27,6 @@ from hw_genie.commands.arena import (
 )
 from hw_genie.core.client import ApiAction
 from hw_genie.core.session_manager import SessionManager
-
-
-def _ok(detail: dict) -> MagicMock:
-    res = MagicMock()
-    res.is_success = True
-    res.detail = detail
-    return res
 
 
 # --- ApiAction ---
@@ -180,6 +171,10 @@ def test_validate_team_accepts_valid_team():
     )
 
 
+def test_validate_team_treats_banner_zero_as_absent():
+    validate_team(ArenaTeam(heroes=[1, 2, 3, 4, 5], banners=[0]))
+
+
 @pytest.mark.parametrize(
     "team",
     [
@@ -190,6 +185,7 @@ def test_validate_team_accepts_valid_team():
         ArenaTeam(heroes=[1, 2, 3, 4, 5], pet=1234),
         ArenaTeam(heroes=[1, 2, 3, 4, 5], favor={99: 6002}),
         ArenaTeam(heroes=[1, 2, 3, 4, 5], banners=["x"]),
+        ArenaTeam(heroes=[1, 2, 3, 4, 5], banners=[-1]),
     ],
 )
 def test_validate_team_rejects_invalid(team):
@@ -282,6 +278,45 @@ def test_resolve_team_direct_heroes_can_reuse_saved_pet_and_banner():
     assert team.banners == [2]
 
 
+def test_resolve_team_preset_heroes_inherit_saved_pet_and_banner():
+    # A preset with heroes only must not suppress the saved pet/banner.
+    preset = ArenaTeam(heroes=[1, 2, 3, 4, 5])
+    saved = ArenaTeam(
+        heroes=[6, 7, 8, 9, 10],
+        pet=6002,
+        favor={1: 7002, 6: 7006},
+        banners=[2],
+    )
+    team, missing = resolve_team(preset=preset, saved=saved)
+    assert team.heroes == [1, 2, 3, 4, 5]
+    assert team.pet == 6002
+    assert team.banners == [2]
+    assert team.favor == {1: 7002}
+    assert missing == [2, 3, 4, 5]
+
+
+def test_resolve_team_preset_fields_win_over_saved_individually():
+    preset = ArenaTeam(heroes=[1, 2, 3, 4, 5], pet=6001, banners=[1])
+    saved = ArenaTeam(heroes=[6, 7, 8, 9, 10], pet=6002, banners=[2])
+    team, _ = resolve_team(preset=preset, saved=saved)
+    assert team.pet == 6001
+    assert team.banners == [1]
+
+
+def test_resolve_team_explicit_banner_zero_suppresses_banner():
+    saved = ArenaTeam(heroes=[1, 2, 3, 4, 5], pet=6008, banners=[2])
+    team, _ = resolve_team(banner=0, saved=saved)
+    assert team.banners == []
+    assert "banners" not in build_attack_args(1, team)
+
+
+def test_resolve_team_saved_banner_zero_is_treated_as_absent():
+    saved = ArenaTeam(heroes=[1, 2, 3, 4, 5], pet=6008, banners=[0])
+    team, _ = resolve_team(saved=saved)
+    assert team.banners == []
+    assert "banners" not in build_attack_args(1, team)
+
+
 def test_resolve_team_without_any_team_raises():
     with pytest.raises(ArenaError, match="team"):
         resolve_team()
@@ -355,6 +390,13 @@ def test_serialize_deserialize_team_roundtrip_with_int_banner():
     assert deserialize_team(data).banners == [2]
 
 
+def test_deserialize_team_drops_banner_zero():
+    base = {"heroes": [1, 2, 3, 4, 5]}
+    assert deserialize_team({**base, "banners": [0]}).banners == []
+    assert deserialize_team({**base, "banners": 0}).banners == []
+    assert "banners" not in serialize_team(deserialize_team({**base, "banners": [0]}))
+
+
 @pytest.mark.parametrize("name", ["", "   ", "atk 1", "atk/1", "../x", "a" * 41])
 def test_validate_preset_name_rejects_unsafe(name):
     with pytest.raises(ArenaError):
@@ -393,6 +435,11 @@ def test_build_attack_args_omits_pet_and_banners_when_absent():
     assert "favor" not in args
 
 
+def test_build_attack_args_omits_banner_zero():
+    args = build_attack_args(1, ArenaTeam(heroes=[1, 2, 3, 4, 5], banners=[0]))
+    assert "banners" not in args
+
+
 def test_parse_attack_result_reads_battles_result():
     parsed = parse_attack_result(
         {"response": {"battles": [{"result": {"win": True, "oldPlace": 22, "newPlace": 10}}]}}
@@ -416,3 +463,14 @@ def test_arena_mode_uses_arena_methods():
     assert ARENA_MODE.check_range == ApiAction.ARENA_CHECK_TARGET_RANGE
     assert ARENA_MODE.attack == ApiAction.ARENA_ATTACK
     assert ARENA_MODE.top_type == "arena"
+
+
+def test_grand_mode_is_private_and_rejected():
+    import hw_genie.commands.arena as arena_mod
+
+    assert not hasattr(arena_mod, "GRAND_MODE")
+    assert arena_mod._GRAND_MODE.key == "grand"
+    with pytest.raises(ArenaError, match="not implemented"):
+        arena_mod.fetch_arena_status(object(), arena_mod._GRAND_MODE)
+    with pytest.raises(ArenaError, match="not implemented"):
+        arena_mod.fetch_saved_team(object(), arena_mod._GRAND_MODE)

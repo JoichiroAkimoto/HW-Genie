@@ -8,8 +8,8 @@ title: Arena API Reference
 ## 概要
 Arena / Grand Arena の順位・防衛チーム・攻撃候補を取得し、指定プレイヤーを攻撃するための RPC 群です。ここに記載したレスポンス形状は、2026-10-27 に読み取り専用 API（`arenaAttack` / `grandAttack` は未実行）で実機確認したものです。
 
-- 通常 Arena の CLI 実装は `src/python/hw_genie/commands/arena.py`（`feat/arena-target-attack`）。
-- 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。
+- 通常 Arena の CLI 実装は `src/python/hw_genie/commands/arena.py` です。
+- 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。`topGet` の `place`（自分の順位）が取得できた場合は、古い `arenaGetAll` の値より優先します。攻撃直前にも `arenaGetAll` を再取得して上位のみを再確認します。
 - `arenaCheckTargetRange` は **1リクエスト最大3件** です。4件以上は `ERROR TooMany`（`"Too many ids to process!"`）になります。
 - 攻撃可能な順位範囲は実測で **自分の順位 ±21** です（例: 22位 → 1〜43位、34位 → 13〜50位）。本機能は上位のみを対象とするため、実質 `own_place - 21` 〜 `own_place - 1` です。
 - `topGet` はトップ50のみ返し、ページングはありません。50位より下は `arenaFindEnemies` の候補（自分の約13位上まで）に依存します。
@@ -218,9 +218,10 @@ Content-Type: application/json; charset=UTF-8
 }
 ```
 
-- `pet` / `banners` は未指定なら省略可能です。
-- `favor` は部分マップ・空マップでも送信できます（保存チームでも欠落があるため）。
+- `pet` / `banners` は未指定なら省略可能です。`banners: [0]` は送信しません（0 は「バナーなし」のセンチネル）。`--banner 0` もバナーなしとして扱います。
+- `favor` は部分マップを送信できます（保存チームでも欠落があるため）。空の場合は payload から省略されます。
 - `context.actionTs` は `HWClient.call()` が送信直前に現在時刻へ更新します。
+- **`arenaAttack` はリトライしません**（`HWClient.call(..., max_retries=0)` で1回だけ送信）。タイムアウト等で結果が不明な場合は、攻撃回数を二重に消費しないよう「結果不明・ゲーム側で確認してから再実行」を促すエラーで停止します。
 
 ### Request（Grand Arena）
 ```json
@@ -305,8 +306,9 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 | 指定ランク / `userId` が自分以上 | 攻撃せず exit 1。上位のみ対象である旨を表示 |
 | 自分自身を指定 | 攻撃せず exit 1 |
 | チームが5体でない / 重複 / 不正ID | API 呼び出し前に exit 1 |
-| `NotEnough`（攻撃回数切れ） | 攻撃せず警告して exit 0 |
-| `Refillable`（クールダウン） | 攻撃せず警告して exit 0 |
+| `NotEnough`（攻撃回数切れ、例: `Refillable 6`） | 攻撃せず警告して exit 0 |
+| `Refillable`（クールダウン。`Refillable 5` や `NotEnough` + description も含む） | 攻撃せず、`status.cooldown` があれば残り時間を表示して exit 0 |
+| 攻撃送信後にタイムアウト / 結果不明 | exit 1。「結果不明・攻撃回数を消費した可能性があるためゲーム側で確認」と表示（自動リトライしない） |
 | 攻撃受理後に結果を解析できない | 警告して exit 0（再試行で消費しない） |
 | 認証エラー | 既存の `HWAuthError` 共通ハンドラ |
 
