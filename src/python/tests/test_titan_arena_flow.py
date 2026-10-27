@@ -644,13 +644,16 @@ def test_resolve_team_rotation_saved_first_and_deduped(mock_client, mock_sleep):
     assert rotation.index([4044, 4003, 4043, 4002, 4004]) > rotation.index([4012, 4042, 4013, 4043, 4010])
     # No duplicates anywhere (saved + static combined)
     assert len({tuple(t) for t in rotation}) == len(rotation)
-    assert len(rotation) == 28  # saved dupes static#1, so 1 + 28 - 1
+    assert len(rotation) == 30  # saved dupes static#1, so 1 + 30 - 1
     # 水+1 Tenebris/Eden mixed team
     assert [4033, 4003, 4023, 4004, 4000] in rotation
     # 水2火3
     assert [4003, 4013, 4004, 4014, 4010] in rotation
     # 水3火2（Carol Tier8 の光壁 -480913 に WIN の実績）
     assert [4003, 4004, 4014, 4001, 4010] in rotation
+    # 水3大地2（Bob Tier5 の強 rival に手動バトルで WIN の実績）
+    assert [4003, 4023, 4024, 4001, 4000] in rotation
+    assert [4003, 4023, 4024, 4004, 4000] in rotation
 
 
 def test_resolve_team_rotation_explicit_is_single(mock_client, mock_sleep):
