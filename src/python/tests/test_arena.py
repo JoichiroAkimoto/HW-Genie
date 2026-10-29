@@ -12,7 +12,6 @@ from hw_genie.commands.arena import (
     ArenaSnapshot,
     ArenaTeam,
     ArenaTopEntry,
-    attackable_window,
     build_attack_args,
     deserialize_snapshot,
     deserialize_team,
@@ -153,16 +152,6 @@ def test_parse_range_response_handles_missing_and_non_dict():
     assert parse_range_response(None) == {}
     assert parse_range_response({"response": None}) == {}
     assert parse_range_response({"response": {"1": True}}) == {1: True}
-
-
-# --- attack window (display only) ---
-
-
-def test_attackable_window_above_only():
-    assert attackable_window(22) == (1, 21)
-    assert attackable_window(34) == (13, 33)
-    # No upper target when already rank 1.
-    assert attackable_window(1) == (1, 0)
 
 
 # --- team validation ---

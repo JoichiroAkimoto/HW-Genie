@@ -18,13 +18,15 @@ Safety rules:
   rule is still always enforced from a fresh ``topGet`` (the target must be in
   the current top 50 so its current rank can be verified), and a false
   ``arenaCheckTargetRange`` stops the attack unless ``--force`` is given.
+  ``--force`` is only valid together with ``--from-snapshot``.
 - ``arenaCheckTargetRange`` accepts at most 3 IDs per request; callers are
   batched accordingly.
 - ``arenaAttack`` is sent exactly once (``max_retries=0``): a timeout after the
   server accepted the request must not trigger a second attack.
 
-The verified API shapes and the empirical ±21 rank window live in
-``docs/api/ARENA_API.md``.
+The verified API shapes live in ``docs/api/ARENA_API.md``, together with the
+empirical rank-window observations. That window is rank/league-dependent (not
+a fixed ±21 rule); the ``*CheckTargetRange`` response is authoritative.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from hw_genie.core.client import (
     ApiAction,
@@ -49,10 +51,6 @@ ARENA_ATTACK_REFILLABLE_ID = 6
 ARENA_COOLDOWN_REFILLABLE_ID = 5
 ARENA_MAX_ATTEMPTS = 5
 
-# Empirical window observed at ranks 22/34: own_place ± 21. This is only used
-# for user-facing messages; the authoritative per-rank window is whatever
-# ``*CheckTargetRange`` returns and may be wider at lower ranks.
-ARENA_RANGE = 21
 # ``*CheckTargetRange`` rejects 4+ ids with ERROR TooMany.
 MAX_RANGE_IDS = 3
 # ``*Attack`` only accepts players in the latest ``*FindEnemies`` list. The
@@ -350,19 +348,6 @@ def parse_range_response(detail: Any) -> dict[int, bool]:
         elif isinstance(value, str) and value.strip().lower() in ("true", "false"):
             parsed[user_id] = value.strip().lower() == "true"
     return parsed
-
-
-def attackable_window(own_place: int) -> tuple[int, int]:
-    """Return the *above-only* rank window as ``(lower, upper)`` for messages.
-
-    The ±21 span is empirical from ranks 22/34; the real per-rank window comes
-    from ``*CheckTargetRange`` and may be wider at lower ranks. This feature
-    never targets the same rank or below, so the upper bound is
-    ``own_place - 1``.
-    """
-    lower = max(1, own_place - ARENA_RANGE)
-    upper = max(0, own_place - 1)
-    return lower, upper
 
 
 # ---------------------------------------------------------------------------
@@ -714,8 +699,9 @@ def fetch_arena_status(
 def fetch_own_place(client: HWClient, mode: ArenaMode = ARENA_MODE) -> int:
     """Read only ``arenaGetAll`` and return the mode's own rank.
 
-    Used immediately before an attack so a rank change between the earlier
-    status fetch and the attack cannot widen the upper-only boundary.
+    Used before an attack (so a rank change between the earlier status fetch
+    and the attack cannot widen the upper-only boundary) and by the read-only
+    ``arena snapshot`` view as the ``topGet`` fallback.
     """
     _require_arena_mode(mode)
     res = client.call(
@@ -737,6 +723,27 @@ def fetch_own_place(client: HWClient, mode: ArenaMode = ARENA_MODE) -> int:
         raise ArenaError(
             f"Could not read your {mode.key} rank from {mode.get_all.value}; "
             "refusing to attack."
+        )
+    return place
+
+
+def _resolve_own_place(
+    top_place: int | None, fallback: Callable[[], int | None]
+) -> int:
+    """Return a positive own rank, preferring the fresher ``topGet`` value.
+
+    ``topGet`` has been observed to report ``place: 0`` when the own rank is
+    unavailable. ``None`` and non-positive values are therefore treated as
+    missing so the upper-only rule never compares against an invalid rank.
+    ``fallback`` is only called when ``top_place`` is unusable.
+    """
+    if top_place is not None and top_place > 0:
+        return top_place
+    place = fallback()
+    if place is None or place <= 0:
+        raise ArenaError(
+            "Could not determine your current arena rank; refusing to resolve "
+            "or attack a target. Refresh the ranking and try again."
         )
     return place
 
@@ -802,7 +809,7 @@ def fetch_candidate(
     There is deliberately no fixed "N ranks above" limit here: the candidate
     window observed so far is roughly 1-13 ranks above, but a higher-ranked
     player can appear as a candidate. Membership in this list is the only
-    extra requirement beyond the ±21 range check.
+    extra requirement beyond a ``*CheckTargetRange`` result of ``true``.
     """
     _require_arena_mode(mode)
     if (user_id is None) == (place is None):
@@ -890,8 +897,9 @@ def resolve_target(
 
     The own rank from ``topGet`` (``ArenaTop.own_place``) is preferred over the
     earlier ``status.place`` because it is fresher; the earlier value is only a
-    fallback when ``topGet`` omits ``place``. Targets outside the top 50 are
-    resolved from the rotating candidate list, retrying up to
+    fallback when ``topGet`` omits ``place`` or reports 0/negative. If neither
+    yields a positive rank, resolution stops with a clear error. Targets outside
+    the top 50 are resolved from the rotating candidate list, retrying up to
     ``candidate_retries`` extra times. A candidate-resolved target keeps its
     entry in ``ArenaTarget.candidate`` so the attack step reuses it.
     """
@@ -904,7 +912,7 @@ def resolve_target(
         if isinstance(rank, bool) or rank < 1:
             raise ArenaError(f"--rank must be a positive integer (got {rank!r}).")
         top = fetch_arena_top(client, mode)
-        own_place = top.own_place if top.own_place is not None else status.place
+        own_place = _resolve_own_place(top.own_place, lambda: status.place)
         if rank >= own_place:
             raise ArenaError(
                 f"Target rank {rank} is not above your current rank {own_place}; "
@@ -940,7 +948,7 @@ def resolve_target(
         raise ArenaError("Refusing to attack yourself.")
 
     top = fetch_arena_top(client, mode)
-    own_place = top.own_place if top.own_place is not None else status.place
+    own_place = _resolve_own_place(top.own_place, lambda: status.place)
     entry = _find_entry(top.entries, user_id=target_id)
     candidate = None
     if entry is None:
@@ -1116,8 +1124,8 @@ def run_arena_attack(
         raise ArenaError(
             f"Target {_format_target(target)} is outside the attack range reported "
             f"by {mode.check_range.value} for your rank {fresh_place}. The window "
-            "is rank/league-dependent (empirical ±21 at ranks 22/34, wider at lower "
-            "ranks); no attack was sent."
+            "is rank/league-dependent and that check result is authoritative; "
+            "no attack was sent."
         )
 
     print(f"{Emojis.INFO}Target: {_format_target(target)}")
@@ -1491,10 +1499,8 @@ def run_arena_snapshot(
         raise ArenaError("No saved Arena snapshot. Run `arena find-enemies` first.")
 
     top = fetch_arena_top(client, mode)
-    current_own = (
-        top.own_place
-        if top.own_place is not None and top.own_place > 0
-        else fetch_own_place(client, mode)
+    current_own = _resolve_own_place(
+        top.own_place, lambda: fetch_own_place(client, mode)
     )
     current_by_uid = {entry.user_id: entry for entry in top.entries}
     ids = [entry.user_id for entry in snapshot.candidates]
@@ -1560,11 +1566,11 @@ def run_arena_attack_from_snapshot(
 
     # The snapshot place is stale, so it is never used for the upper-only
     # check: ``topGet`` (current rank) is authoritative. Fall back to
-    # ``arenaGetAll`` only when ``topGet`` omits the own rank.
+    # ``arenaGetAll`` only when ``topGet`` omits the own rank or reports 0.
     top = fetch_arena_top(client, mode)
-    fresh_place = top.own_place
-    if fresh_place is None or fresh_place <= 0:
-        fresh_place = fetch_own_place(client, mode)
+    fresh_place = _resolve_own_place(
+        top.own_place, lambda: fetch_own_place(client, mode)
+    )
     current = _find_entry(top.entries, user_id=target.user_id)
     if current is None:
         raise ArenaError(
@@ -1669,7 +1675,10 @@ def run_arena_top(
     shown = len(entries)
     total = len(top.entries)
     suffix = f" (showing {shown}/{total})" if shown != total else ""
-    print(f"{Emojis.INFO}Your rank: {_human_int(top.own_place)}; topGet returns at most 50 entries{suffix}")
+    own_place = (
+        top.own_place if top.own_place is not None and top.own_place > 0 else None
+    )
+    print(f"{Emojis.INFO}Your rank: {_human_int(own_place)}; topGet returns at most 50 entries{suffix}")
     return top
 
 
@@ -1741,7 +1750,6 @@ __all__ = [
     "ARENA_SNAPSHOT_KEY",
     "ARENA_TEAM_PRESETS_KEY",
     "DEFAULT_CANDIDATE_RETRIES",
-    "attackable_window",
     "build_attack_args",
     "capture_arena_snapshot",
     "check_target_range",

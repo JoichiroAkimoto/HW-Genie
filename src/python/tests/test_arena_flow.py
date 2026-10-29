@@ -279,6 +279,34 @@ def test_resolve_target_prefers_fresh_top_place_over_status(mock_client, mock_sl
         resolve_target(client, _make_status(place=30), rank=25)
 
 
+@pytest.mark.parametrize("lookup", [{"rank": 10}, {"user_id": 111}])
+def test_resolve_target_zero_top_place_falls_back_to_status(
+    mock_client, mock_sleep, lookup
+):
+    # topGet has been observed to report place 0; it must not be used as the
+    # upper-only boundary. The earlier status rank (120) is the fallback.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "10", "userId": "111"}], own_place=0)),
+    ]
+    target = resolve_target(client, _make_status(place=120), **lookup)
+    assert (target.user_id, target.place) == (111, 10)
+    assert _call_names(mock_call) == ["topGet"]
+
+
+@pytest.mark.parametrize("lookup", [{"rank": 10}, {"user_id": 111}])
+def test_resolve_target_raises_when_own_rank_is_unknown(
+    mock_client, mock_sleep, lookup
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "10", "userId": "111"}], own_place=0)),
+    ]
+    with pytest.raises(ArenaError, match="Could not determine your current arena rank"):
+        resolve_target(client, _make_status(place=0), **lookup)
+    assert _call_names(mock_call) == ["topGet"]
+
+
 def test_resolve_target_rank_falls_back_to_candidates(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [
@@ -490,6 +518,7 @@ def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
     message = str(exc.value)
     assert "22" in message
     assert "rank/league-dependent" in message
+    assert "21" not in message
     assert _call_names(mock_call) == [
         "arenaGetAll",
         "arenaFindEnemies",
@@ -541,6 +570,7 @@ def test_run_arena_attack_uses_fresh_place_for_window_message(
     message = str(exc.value)
     assert "rank 18" in message
     assert "rank/league-dependent" in message
+    assert "21" not in message
 
 
 def test_run_arena_attack_rereads_own_place_after_candidate(mock_client, mock_sleep):
@@ -1084,6 +1114,47 @@ def test_run_arena_attack_from_snapshot_force_sends_when_range_false(
     )
     assert result.accepted is True
     assert _call_names(mock_call)[-1] == "arenaAttack"
+
+
+def test_run_arena_attack_from_snapshot_force_dry_run_stops_before_attack(
+    mock_client, mock_sleep
+):
+    # --force permits a false range check, but --dry-run must still stop at the
+    # check: the call sequence ends at arenaCheckTargetRange.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), force=True, dry_run=True
+    )
+    assert result.dry_run is True
+    assert result.accepted is False
+    assert _call_names(mock_call) == ["topGet", "arenaCheckTargetRange"]
+
+
+def test_run_arena_attack_from_snapshot_zero_top_place_uses_arena_get_all(
+    mock_client, mock_sleep
+):
+    # A topGet place of 0 is treated as missing, matching the snapshot view.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=0)),
+        _ok(_own_place_response(16)),
+        _ok(_range_response(111, True)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), dry_run=True
+    )
+    assert result.dry_run is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaGetAll",
+        "arenaCheckTargetRange",
+    ]
 
 
 def test_run_arena_attack_from_snapshot_rejects_now_below(

@@ -359,8 +359,10 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 `arenaFindEnemies` の結果を保存し、候補を更新せずに後から状態確認・攻撃するための実験用機能です。
 
 - `arena find-enemies -a <account>`: `arenaGetAll` + `arenaFindEnemies` を1回ずつ呼び、結果を `account_configs.arena_snapshot` に保存します。攻撃はしません。
-- `arena snapshot -a <account>`: 保存済みスナップショットと現在の順位を比較します。`topGet`（自分の順位と候補の現在順位）と `arenaCheckTargetRange`（読み取り）を呼び、**`arenaFindEnemies` は呼びません**。`topGet` に自分の `place` がない場合のみ `arenaGetAll` にフォールバックします。`topGet` はトップ50のみ対応です。
-- `arena attack -a <account> --from-snapshot (--rank N | --user-id ID)`: 保存済み候補に `arenaAttack` を送ります。**`arenaFindEnemies` は呼びません**。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されます（現在の `arena top` の順位とは異なる場合があるため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは `topGet` の現在順位で再チェックし（`place` がない場合のみ `arenaGetAll` にフォールバック）、対象が**現在のトップ50に存在しない場合は順位を検証できないため攻撃しません**。`arenaCheckTargetRange` が false の場合は既定で停止し、`--force` を付けた時だけ送信します（上位のみの制約は `--force` でも解除されません）。
+- `arena snapshot -a <account>`: 保存済みスナップショットと現在の順位を比較します。`topGet`（自分の順位と候補の現在順位）と `arenaCheckTargetRange`（読み取り）を呼び、**`arenaFindEnemies` は呼びません**。`topGet` に自分の `place` がない（または 0 以下の）場合のみ `arenaGetAll` にフォールバックします。`topGet` はトップ50のみ対応です。
+- `arena attack -a <account> --from-snapshot (--rank N | --user-id ID)`: 保存済み候補に `arenaAttack` を送ります。**`arenaFindEnemies` は呼びません**。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されます（現在の `arena top` の順位とは異なる場合があるため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは `topGet` の現在順位で再チェックし（`place` がない、または 0 以下の場合のみ `arenaGetAll` にフォールバック）、対象が**現在のトップ50に存在しない場合は順位を検証できないため攻撃しません**。`arenaCheckTargetRange` が false の場合は既定で停止し、`--force` を付けた時だけ送信します（上位のみの制約は `--force` でも解除されません）。
+
+`arena snapshot` の `>13` 列は、現在の順位差が 13 位より上かどうかを示す**診断用**の表示です（固定ルールではなく、攻撃可否は `arenaCheckTargetRange` の結果が正）。
 
 保存形状:
 
@@ -391,6 +393,7 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 | `--from-snapshot` で `arenaCheckTargetRange` が false（`--force` なし） | 攻撃せず exit 1。`--force` の案内を表示 |
 | `--force` を `--from-snapshot` なしで指定 | API 呼び出し前に exit 1 |
 | `arenaCheckTargetRange` が `false` / 欠落 | 攻撃せず exit 1。順位/リーグ依存のウィンドウである旨を表示（固定の ±21 は表示しない） |
+| `topGet` の `place` が 0 / 欠落で、`arenaGetAll`（status）の順位も無効 | 攻撃せず exit 1。「Could not determine your current arena rank; refusing to resolve or attack a target.」を表示（`arena snapshot` の読み取りでも同じ） |
 | 指定ランクがトップ50・候補にない | 攻撃せず exit 1。`--user-id` は `topGet` / 候補から順位を解決できるプレイヤーのみ指定可能（解決できなければ exit 1） |
 | 指定ランク / `userId` が自分以上（解決時または候補の最新順位で判定） | 攻撃せず exit 1。上位のみ対象である旨を表示 |
 | 自分自身を指定 | 攻撃せず exit 1 |

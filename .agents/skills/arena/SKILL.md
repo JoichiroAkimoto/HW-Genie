@@ -74,8 +74,8 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
 - **上位のみ**: `--rank` / `--user-id` が自分以上、または順位を解決できない場合は exit 1 で攻撃しません。
 - **候補必須（通常攻撃）**: `--rank` / `--user-id` とも、対象が `topGet`（トップ50）または `arenaFindEnemies` の候補に存在する必要があります。実攻撃は最新の候補にいる相手しか受理されません。`--candidate-retries` を増やしても見つからない場合は exit 1 で攻撃しません。
 - **13位・±21という固定上限はありません**: トップ帯では候補は1〜13位上が中心ですが、GA 51位では27〜33位上も候補になりました。CLI は候補と `arenaCheckTargetRange` の実レスポンスだけで判定します。
-- **`--from-snapshot` は実験用**: `arenaFindEnemies` を呼ばず、保存済み候補に `arenaAttack` を送ります。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されるため、現在の `arena top` と一致するとは限りません（攻撃前に `arena snapshot` で確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください。`--candidate-retries` は使いません。
-- **スナップショットの保存先**: アカウントごとに `account_configs` の `config_key="arena_snapshot"`。`arena snapshot` は `topGet`（トップ50）で現在順位を表示するだけで、候補リストは更新しません。
+- **`--from-snapshot` は実験用**: `arenaFindEnemies` を呼ばず、保存済み候補に `arenaAttack` を送ります。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されるため、現在の `arena top` と一致するとは限りません（攻撃前に `arena snapshot` で確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください（`--from-snapshot` との併用時のみ有効）。`--candidate-retries` は使いません。
+- **スナップショットの保存先**: アカウントごとに `account_configs` の `config_key="arena_snapshot"`。`arena snapshot` は `topGet`（トップ50）で現在順位を表示するだけで、候補リストは更新しません。`>13` 列は診断用（固定ルールではない）。
 - **攻撃回数**: `NotEnough` / `Refillable` は攻撃せず警告して exit 0 です（`Refillable 5` はクールダウン、`Refillable 6` は回数切れとして扱い、クールダウン時は残り時間も表示）。`arena status` で残回数とクールダウンを確認できます。
 - **キャンペーン用途ではありません**: 自動周回・自動ターゲット選択・`multi arena` は未対応です。1回ずつ明示的に指定してください。
 - API 仕様の詳細は `docs/api/ARENA_API.md` を参照してください。
