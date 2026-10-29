@@ -20,7 +20,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
 *   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
-*   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`）。
+*   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`。デイリー／ギルドクエストに加え、`guild_glyph_defaults.enabled=true` ならギルド活動のグリフ強化 `heroEnchantRune` も実行）。
 *   **db-inspect**: データベース（Turso クラウド / ローカルレプリカ）の確認。
 
 ### 2. コマンドラインツールの使用法
@@ -32,7 +32,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh / Maestro 週を自動判定。`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on）。詳細は `.agents/skills/asgard-shop/SKILL.md`）
 *   **Seer's Game**: `uv run hw-genie seers-game`（開始→カード4択×4→終了を Seer's Coin 枯渇まで自動周回。`--dry-run` で状態・残高表示のみ、`--pick N` で毎ラウンド引くカード指定（デフォルト 2、live の `event.size` に対して検証）、`--max-games N` で打ち切り。`multi seers-game` で全アカウント一括（`--dry-run` 可）。詳細は `.agents/skills/seers-game/SKILL.md`）
 *   **デイリールーチン**: `uv run hw-genie daily`（`--iterations N` でアイテムレイドの反復回数を指定可能 = 1 リクエストあたり `times:10` × N。ヒーローレイドは固定 3 回、デフォルトはスタミナ限界まで）
-*   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
+*   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` / `quest_guild_defaults` / `guild_glyph_defaults` の `enabled` フラグでアカウントごとに制御。`--set-default glyph ...` でギルド活動のグリフ強化（`heroEnchantRune`）を設定。詳細は `.agents/skills/quest-status/SKILL.md`）
 *   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）
 *   **consumable 一括消費**: `uv run hw-genie consumable run`（レジストリ `CONSUMABLE_USE_TARGETS` 登録済みアイテムを在庫全量消費。1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`<libId>` 位置引数で指定、未登録アイテムは `--method` でメソッド指定、`--dry-run` で予行。詳細は `.agents/skills/consumable/SKILL.md`）
 *   **ギルドチャット**: `uv run hw-genie chat`（`chatGetAll` / `chatType=clan` の履歴を表形式と要約で表示。`--type` / `--count` / `--last-id` / `--raw` / `--json`。詳細は `.agents/skills/guild-chat/SKILL.md`）

@@ -758,13 +758,16 @@ def cmd_chat(args):
 def cmd_quests(args):
     """クエスト（デイリー等）の取得・表示"""
     from hw_genie.commands.quests import (
+        GUILD_GLYPH_DEFAULTS_KEY,
         QUEST_GUILD_DEFAULTS_KEY,
         classify_quest,
         edit_quest_defaults_interactive,
+        ensure_guild_glyph_defaults,
         ensure_quest_defaults,
         ensure_quest_guild_defaults,
         run_quest_execute,
         run_quest_status,
+        set_guild_glyph_defaults,
         set_quest_defaults,
         set_quest_guild_defaults,
     )
@@ -798,14 +801,24 @@ def cmd_quests(args):
         guild_defaults = ensure_quest_guild_defaults(account)
         print(f"ℹ️  Initialized {QUEST_GUILD_DEFAULTS_KEY} for {account}:")
         print(f"    - guild quests (Sparks of Power) enabled={guild_defaults.get('enabled', False)}")
+        glyph_defaults = ensure_guild_glyph_defaults(account)
+        print(f"ℹ️  Initialized {GUILD_GLYPH_DEFAULTS_KEY} for {account}:")
+        print(
+            f"    - guild glyph activity enabled={glyph_defaults.get('enabled', False)}"
+            f" (heroId={glyph_defaults.get('heroId')} tier={glyph_defaults.get('tier')})"
+        )
         return
 
-    # アカウント固有の操作引数上書き（quest_defaults / quest_guild_defaults）を 1 件登録する
+    # アカウント固有の操作引数上書き（quest_defaults / quest_guild_defaults /
+    # guild_glyph_defaults）を 1 件登録する
     if args.set_default:
         quest_id, key, value = args.set_default
         if str(quest_id) == "guild":
             stored = set_quest_guild_defaults(account, key, value)
             print(f"ℹ️  Registered quest_guild_defaults[{key}] = {stored} ({type(stored).__name__}) for {account}")
+        elif str(quest_id) == "glyph":
+            stored = set_guild_glyph_defaults(account, key, value)
+            print(f"ℹ️  Registered guild_glyph_defaults[{key}] = {stored} ({type(stored).__name__}) for {account}")
         else:
             stored = set_quest_defaults(account, int(quest_id), key, value)
             _, name = classify_quest(int(quest_id))
@@ -1782,8 +1795,8 @@ def main():
     p_quests.add_argument("--execute", action="store_true", help="Execute operations to complete uncompleted daily quests (destructive; asks confirmation per step unless --yes)")
     p_quests.add_argument("--dry-run", action="store_true", help="Show the quest execution plan without running anything")
     p_quests.add_argument("--yes", action="store_true", help="Skip per-step confirmation (only valid with --execute)")
-    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999, or --set-default guild enabled true)")
-    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults and quest_guild_defaults for the account (seed as enabled=false)")
+    p_quests.add_argument("--set-default", nargs=3, metavar=("QUEST_ID", "KEY", "VALUE"), help="Register an account-specific operation arg override (e.g. --set-default 10024 heroId 999, --set-default guild enabled true, or --set-default glyph heroId 46)")
+    p_quests.add_argument("--init-defaults", action="store_true", help="Initialize quest_defaults, quest_guild_defaults and guild_glyph_defaults for the account (seed as enabled=false)")
     p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 

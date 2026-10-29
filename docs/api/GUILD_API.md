@@ -67,6 +67,25 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 | `level` | string | クランレベル |
 | `members` | object | メンバー一覧（キーはプレイヤーID） |
 
+### stat{} フィールド（ギルド活動）
+
+`clanGetInfo` の `stat` には自分の当日・累計の活動ポイントが入る（実測）。
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `todayActivity` | number | 自分の当日ギルド活動ポイント |
+| `activitySum` | number | 自分の累計ギルド活動ポイント |
+| `todayDungeonActivity` | number | 自分の当日ダンジョン活動ポイント |
+| `dungeonActivitySum` | number | 自分の累計ダンジョン活動ポイント |
+| `activityForRuneAvailable` | boolean | **今日のグリフ（ルーン）強化による活動ポイントをまだ獲得できるか**。true = 未獲得、false = 獲得済み（グリフ強化の直後に true → false へ変わることを実測確認） |
+
+`hw-genie quests` はギルド活動のグリフ強化（`heroEnchantRune`）の実行可否判定に
+`stat.activityForRuneAvailable` を使う（設定は `account_configs` の
+`guild_glyph_defaults`）。日次リセットはサーバー時刻（`serverResetTime` /
+`userGetInfo` の `nextServerDayTs`）に従う。クエスト `10050`
+（Earn 1750 Guild Activity points）はエナジー消費でも進むため、グリフ実施の
+判定には使わない。
+
 ---
 
 ### clanWarGetBriefInfo - ギルド戦 (GW) の概要
