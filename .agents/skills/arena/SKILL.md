@@ -15,6 +15,7 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
 - **favor**: 明示 `--favor` が最優先。なければプリセット → 同モードの保存 favor（`teamGetFavor.arena`）から選択ヒーローに一致する分だけを使い、欠落ヒーローは警告されます。他モードの favor は流用しません。favor が空の場合は payload から省略されます（部分マップは可）。
 - **`--dry-run`**: 読み取り API・`arenaFindEnemies`（必要ならリトライ）・`arenaCheckTargetRange` を実行し、`arenaAttack` は **絶対に送りません**。候補外なら実攻撃でも失敗するため、dry-run の時点で exit 1 になります。
 - **実攻撃がデフォルト**: `--dry-run` を付けない場合は攻撃します（`--yes` はありません）。`arenaAttack` は **1回だけ** 送信し、自動リトライしません。タイムアウト等で結果不明の場合は exit 1 で「ゲーム側で確認してから再実行」を促します（攻撃回数を二重消費しないため）。
+- **`arena plan`（読み取り専用）**: 取り込み済みの戦闘コーパス（`hw-genie battle import`）から、対象の現在の防衛編成に対する攻撃編成の勝率を返します。`arenaAttack` は送りません。同一防衛者（`defender_player_id`）の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。順位付けは Wilson 下限で行い、`--min-samples` / `--min-win-rate` を満たす候補だけ `REC` になります。
 
 ## ワークフロー
 > **Tip**: 複数アカウントでは `uv run hw-genie auth --list` で正しいアカウント名を確認してください。
@@ -68,6 +69,29 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
    uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1 --dry-run
    uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
    ```
+
+## 事前計算（任意・読み取りのみ）
+
+過去の戦闘ログから「この防衛編成にはこの攻撃編成が勝っている」を引けます。`arenaAttack` は送りません。
+
+```bash
+# 1) 戦闘リプレイを取り込む（重複は自動スキップ）
+uv run hw-genie battle import -a Alice --type arena --limit 50
+
+# 2) 対象の現在の防衛編成に対する攻撃編成ランキング
+uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
+
+# 3) REC が出たら、表示されたコマンドで攻撃（まず --dry-run）
+uv run hw-genie arena attack -a Alice --user-id 11111111 \
+  --heroes 1 2 3 4 5 --pet 6001 --banner 2 --dry-run
+```
+
+- 同一防衛者（`defender_player_id`）の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。
+- 順位付けは Wilson 下限です（1勝0敗の「100%」が3勝0敗より上に来ないようにするため）。
+- ゲートは `--min-samples`（既定3）と `--min-win-rate`（既定1.0）。満たさない候補は `REC` になりません。
+- `--game-version` で特定のサーバーバージョンの戦闘だけに絞り込めます（既定は全バージョン）。
+- 防衛編成は `topGet` を優先し、見つからなければ `arenaFindEnemies`（候補）にフォールバックして取得します（`--json` を汚さないよう候補更新の進捗表示は抑制）。どちらにも編成が無い場合のみエラーになります。
+- コーパスが空の場合は `battle import` を先に実行してください。
 
 ## 注意
 - **まず `--dry-run`**: ターゲット解決・候補確認・範囲チェック・チーム内容を確認してから実攻撃してください。
