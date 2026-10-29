@@ -7,7 +7,7 @@ description: HW-Genie を使用して Arena の状態・ランキングを確認
 Arena の順位・攻撃回数・保存チームを確認し、名前付きチームプリセットを作成して、**自分より上位** のプレイヤーを `--rank` または `--user-id` で指定して攻撃します。
 
 - **対象は上位のみ**: 同順位・下位・順位不明のプレイヤーは攻撃しません（安全側で拒否）。
-- **攻撃可能性の条件**: 攻撃には「最新の `arenaFindEnemies` 候補にいること」と「`arenaCheckTargetRange` が true」の **両方** が必要です。範囲チェックが true でも候補外なら `arenaAttack` は `NotAvailable` になります（実機確認済み）。
+- **攻撃可能性の条件（通常攻撃）**: 攻撃には「最新の `arenaFindEnemies` 候補にいること」と「`arenaCheckTargetRange` が true」の **両方** が必要です。範囲チェックが true でも候補外なら `arenaAttack` は `NotAvailable` になります（実機確認済み）。
 - **範囲チェックのウィンドウ**: 順位/リーグ依存です。トップ帯（22位/34位）では ±21 でしたが、**Grand Arena 51位では5〜50位まで true**（46位上）でした。±21 を固定ルールにせず、常に `arenaCheckTargetRange` の実レスポンスに従います。
 - **候補の範囲**: トップ帯（Arena 16〜19位）では1〜13位上が中心でしたが、**Grand Arena 51位では18〜24位（27〜33位上）** が候補に現れました（読み取り確認）。CLI は「-13位まで」のような固定制限を設けず、候補への登場と範囲チェックで判定します。候補は呼び出しごとに変わるため、`--candidate-retries N`（デフォルト10）で `arenaFindEnemies` を追加リクエストして対象の登場を待てます（`0` で初回のみ）。
 - **ランキング**: `topGet` はトップ50のみ（ページングなし）。`--user-id` は対象が `topGet` または現在の候補に存在し、順位を解決できる場合のみ使用できます（順位不明は拒否。候補解決にも `--candidate-retries` が効きます）。
@@ -55,12 +55,27 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
    uv run hw-genie arena attack -a Alice --rank 10 \
      --heroes 29 13 73 71 35 --pet 6008 --banner 2 --favor 13=6003
    ```
+6. 手動検証（実験用。スナップショットを保持したまま順位変動を確認）:
+   ```bash
+   # 候補を1回取得して account_configs.arena_snapshot に保存
+   uv run hw-genie arena find-enemies -a Alice
+
+   # 保存した候補と現在の自分/相手の順位・CheckTargetRange を表示
+   # （arenaFindEnemies は呼ばない）
+   uv run hw-genie arena snapshot -a Alice
+
+   # スナップショットの相手を、候補を更新せずに攻撃
+   uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1 --dry-run
+   uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
+   ```
 
 ## 注意
 - **まず `--dry-run`**: ターゲット解決・候補確認・範囲チェック・チーム内容を確認してから実攻撃してください。
 - **上位のみ**: `--rank` / `--user-id` が自分以上、または順位を解決できない場合は exit 1 で攻撃しません。
-- **候補必須**: `--rank` / `--user-id` とも、対象が `topGet`（トップ50）または `arenaFindEnemies` の候補に存在する必要があります。実攻撃は最新の候補にいる相手しか受理されません。`--candidate-retries` を増やしても見つからない場合は exit 1 で攻撃しません。
+- **候補必須（通常攻撃）**: `--rank` / `--user-id` とも、対象が `topGet`（トップ50）または `arenaFindEnemies` の候補に存在する必要があります。実攻撃は最新の候補にいる相手しか受理されません。`--candidate-retries` を増やしても見つからない場合は exit 1 で攻撃しません。
 - **13位・±21という固定上限はありません**: トップ帯では候補は1〜13位上が中心ですが、GA 51位では27〜33位上も候補になりました。CLI は候補と `arenaCheckTargetRange` の実レスポンスだけで判定します。
+- **`--from-snapshot` は実験用**: `arenaFindEnemies` を呼ばず、保存済み候補に `arenaAttack` を送ります。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されるため、現在の `arena top` と一致するとは限りません（攻撃前に `arena snapshot` で確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください。`--candidate-retries` は使いません。
+- **スナップショットの保存先**: アカウントごとに `account_configs` の `config_key="arena_snapshot"`。`arena snapshot` は `topGet`（トップ50）で現在順位を表示するだけで、候補リストは更新しません。
 - **攻撃回数**: `NotEnough` / `Refillable` は攻撃せず警告して exit 0 です（`Refillable 5` はクールダウン、`Refillable 6` は回数切れとして扱い、クールダウン時は残り時間も表示）。`arena status` で残回数とクールダウンを確認できます。
 - **キャンペーン用途ではありません**: 自動周回・自動ターゲット選択・`multi arena` は未対応です。1回ずつ明示的に指定してください。
 - API 仕様の詳細は `docs/api/ARENA_API.md` を参照してください。

@@ -9,7 +9,7 @@ title: Arena API Reference
 Arena / Grand Arena の順位・防衛チーム・攻撃候補を取得し、指定プレイヤーを攻撃するための RPC 群です。ここに記載したレスポンス形状は 2026-10-27 に実機で確認したものです（読み取り API に加え、`arenaAttack` は 22→11 位の勝利、`grandAttack` は Bo3 勝利の応答を確認済み）。
 
 - 通常 Arena の CLI 実装は `src/python/hw_genie/commands/arena.py` です。
-- 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。`topGet` の `place`（自分の順位）が取得できた場合は、古い `arenaGetAll` の値より優先します。攻撃直前にも `arenaGetAll` を再取得して上位のみを再確認します。
+- 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。`topGet` の `place`（自分の順位）が取得できた場合は、古い `arenaGetAll` の値より優先します。通常攻撃の直前にも `arenaGetAll` を再取得して上位のみを再確認します（`--from-snapshot` は `topGet` 優先）。
 - **実攻撃で確認できた条件**: 対象が **最新の `arenaFindEnemies` レスポンスに含まれる** こと。範囲チェック `true` だけでは不十分です（22位から 2 / 4 / 6 / 8 位は `true` でも候補外のため `NotAvailable`。11位は候補に現れた回に `WIN (22 -> 11)`）。
 - **`arenaAttack` が現在の順位ウィンドウを再チェックするかは未検証** です。候補リストはスナップショットとして扱われ、生成後に自分/相手の順位が動くと、現在の順位差と一致しなくなる可能性があります（下記 TODO）。
 - `arenaCheckTargetRange` は **1リクエスト最大3件** です。4件以上は `ERROR TooMany`（`"Too many ids to process!"`）になります。
@@ -354,11 +354,42 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 
 ---
 
+## 手動検証用スナップショット
+
+`arenaFindEnemies` の結果を保存し、候補を更新せずに後から状態確認・攻撃するための実験用機能です。
+
+- `arena find-enemies -a <account>`: `arenaGetAll` + `arenaFindEnemies` を1回ずつ呼び、結果を `account_configs.arena_snapshot` に保存します。攻撃はしません。
+- `arena snapshot -a <account>`: 保存済みスナップショットと現在の順位を比較します。`topGet`（自分の順位と候補の現在順位）と `arenaCheckTargetRange`（読み取り）を呼び、**`arenaFindEnemies` は呼びません**。`topGet` に自分の `place` がない場合のみ `arenaGetAll` にフォールバックします。`topGet` はトップ50のみ対応です。
+- `arena attack -a <account> --from-snapshot (--rank N | --user-id ID)`: 保存済み候補に `arenaAttack` を送ります。**`arenaFindEnemies` は呼びません**。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されます（現在の `arena top` の順位とは異なる場合があるため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは `topGet` の現在順位で再チェックし（`place` がない場合のみ `arenaGetAll` にフォールバック）、対象が**現在のトップ50に存在しない場合は順位を検証できないため攻撃しません**。`arenaCheckTargetRange` が false の場合は既定で停止し、`--force` を付けた時だけ送信します（上位のみの制約は `--force` でも解除されません）。
+
+保存形状:
+
+```json
+{
+  "arena": {
+    "saved_at": "2026-10-29T16:10:15+09:00",
+    "own_place": 16,
+    "candidates": [
+      {"user_id": 11111111, "place": 4, "name": "Bob", "power": 5000}
+    ]
+  }
+}
+```
+
+> **注意**: `topGet` が候補リストを更新するかは未検証です。スナップショット検証では、`arena snapshot` / `--from-snapshot` が `arenaFindEnemies` を呼ばないことを前提にしています。`--from-snapshot` は実験用で、通常の `arena attack` は候補プリフライト付きの安全側デフォルトのままです。
+
+---
+
 ## エラーと CLI の挙動
 
 | 状況 | CLI の挙動 |
 |---|---|
 | 対象が `--candidate-retries` 回更新しても `arenaFindEnemies` 候補に現れない | 攻撃せず exit 1。候補外は実攻撃でも `NotAvailable` になる旨と、リトライ回数を増やす案内を表示 |
+| `--from-snapshot` で保存済みスナップショットがない | 攻撃せず exit 1。`arena find-enemies` の実行を案内 |
+| `--from-snapshot` の対象がスナップショットにない | 攻撃せず exit 1 |
+| `--from-snapshot` の対象が現在のトップ50にない | 攻撃せず exit 1。現在順位を検証できず上位のみを保証できない旨を表示（スナップショット順位へのフォールバックはしない） |
+| `--from-snapshot` で `arenaCheckTargetRange` が false（`--force` なし） | 攻撃せず exit 1。`--force` の案内を表示 |
+| `--force` を `--from-snapshot` なしで指定 | API 呼び出し前に exit 1 |
 | `arenaCheckTargetRange` が `false` / 欠落 | 攻撃せず exit 1。順位/リーグ依存のウィンドウである旨を表示（固定の ±21 は表示しない） |
 | 指定ランクがトップ50・候補にない | 攻撃せず exit 1。`--user-id` は `topGet` / 候補から順位を解決できるプレイヤーのみ指定可能（解決できなければ exit 1） |
 | 指定ランク / `userId` が自分以上（解決時または候補の最新順位で判定） | 攻撃せず exit 1。上位のみ対象である旨を表示 |

@@ -7,12 +7,17 @@ import pytest
 
 from hw_genie.commands.arena import (
     ARENA_MODE,
+    ARENA_SNAPSHOT_KEY,
     ArenaError,
+    ArenaSnapshot,
     ArenaTeam,
+    ArenaTopEntry,
     attackable_window,
     build_attack_args,
+    deserialize_snapshot,
     deserialize_team,
     load_arena_presets,
+    load_arena_snapshot,
     parse_attack_result,
     parse_candidates_response,
     parse_favor_args,
@@ -21,6 +26,8 @@ from hw_genie.commands.arena import (
     remove_arena_preset,
     resolve_team,
     save_arena_preset,
+    save_arena_snapshot,
+    serialize_snapshot,
     serialize_team,
     validate_partial_team,
     validate_preset_name,
@@ -430,6 +437,82 @@ def test_deserialize_team_drops_banner_zero():
     assert deserialize_team({**base, "banners": [0]}).banners == []
     assert deserialize_team({**base, "banners": 0}).banners == []
     assert "banners" not in serialize_team(deserialize_team({**base, "banners": [0]}))
+
+
+# --- snapshot storage ---
+
+
+def test_snapshot_save_load_roundtrip():
+    _register_alice()
+    snapshot = ArenaSnapshot(
+        own_place=16,
+        candidates=[
+            ArenaTopEntry(place=4, user_id=111, name="Bob", power=5000),
+            ArenaTopEntry(place=9, user_id=222, name="Carol"),
+        ],
+        saved_at="2026-10-29T16:10:15+09:00",
+    )
+    save_arena_snapshot("Alice", snapshot)
+
+    assert load_arena_snapshot("Alice") == snapshot
+    raw = SessionManager.load("Alice")[ARENA_SNAPSHOT_KEY]
+    assert raw["arena"]["own_place"] == 16
+    assert raw["arena"]["candidates"][0] == {
+        "user_id": 111,
+        "place": 4,
+        "name": "Bob",
+        "power": 5000,
+    }
+
+
+def test_snapshot_save_overwrites_previous():
+    _register_alice()
+    save_arena_snapshot(
+        "Alice",
+        ArenaSnapshot(own_place=16, candidates=[ArenaTopEntry(1, 111)]),
+    )
+    save_arena_snapshot(
+        "Alice",
+        ArenaSnapshot(own_place=17, candidates=[ArenaTopEntry(2, 222)]),
+    )
+    loaded = load_arena_snapshot("Alice")
+    assert loaded is not None
+    assert loaded.own_place == 17
+    assert [(c.place, c.user_id) for c in loaded.candidates] == [(2, 222)]
+
+
+def test_deserialize_snapshot_skips_invalid_candidates():
+    snapshot = deserialize_snapshot(
+        {
+            "own_place": "16",
+            "saved_at": "2026-10-29T16:10:15+09:00",
+            "candidates": [
+                {"user_id": "111", "place": "4", "name": "Bob"},
+                {"user_id": "0", "place": "5"},
+                {"user_id": "222", "place": "0"},
+                {"user_id": "333", "place": "9", "power": "123"},
+                "not-a-dict",
+            ],
+        }
+    )
+    assert snapshot is not None
+    assert snapshot.own_place == 16
+    assert [(c.user_id, c.place) for c in snapshot.candidates] == [
+        (111, 4),
+        (333, 9),
+    ]
+
+
+def test_deserialize_snapshot_rejects_invalid_own_place():
+    assert deserialize_snapshot({"own_place": "0", "candidates": []}) is None
+    assert deserialize_snapshot({"candidates": []}) is None
+    assert deserialize_snapshot("not-a-dict") is None
+
+
+def test_serialize_snapshot_handles_empty_candidates():
+    data = serialize_snapshot(ArenaSnapshot(own_place=16))
+    assert data["own_place"] == 16
+    assert data["candidates"] == []
 
 
 @pytest.mark.parametrize("name", ["", "   ", "atk 1", "atk/1", "../x", "a" * 41])

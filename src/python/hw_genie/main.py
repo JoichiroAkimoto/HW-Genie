@@ -593,6 +593,34 @@ def cmd_arena_top(args):
         sys.exit(1)
 
 
+def cmd_arena_find_enemies(args):
+    """Call arenaFindEnemies once and save the candidate snapshot."""
+    from hw_genie.commands.arena import ArenaError, run_arena_find_enemies
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_arena_find_enemies(client, account, raw=bool(args.raw))
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_snapshot(args):
+    """Show the saved snapshot alongside current own/target ranks."""
+    from hw_genie.commands.arena import ArenaError, run_arena_snapshot
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_arena_snapshot(client, account)
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_arena_team_set(args):
     """Create/update a named Arena team preset."""
     from hw_genie.commands.arena import (
@@ -653,10 +681,13 @@ def cmd_arena_attack(args):
         ArenaError,
         fetch_arena_status,
         load_arena_presets,
+        load_arena_snapshot,
         parse_favor_args,
+        resolve_snapshot_target,
         resolve_target,
         resolve_team,
         run_arena_attack,
+        run_arena_attack_from_snapshot,
         validate_partial_team,
     )
 
@@ -664,6 +695,11 @@ def cmd_arena_attack(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
     try:
+        from_snapshot = bool(getattr(args, "from_snapshot", False))
+        force = bool(getattr(args, "force", False))
+        if force and not from_snapshot:
+            raise ArenaError("--force is only valid with --from-snapshot.")
+
         favor = parse_favor_args(args.favor)
         # Validate direct flags before the first API call. Fields omitted here
         # are filled from the preset/saved team later (favor merge included).
@@ -680,6 +716,13 @@ def cmd_arena_attack(args):
             if preset is None:
                 raise ArenaError(
                     f"Unknown Arena team preset '{args.team}'. Use `arena team list`."
+                )
+        snapshot = None
+        if from_snapshot:
+            snapshot = load_arena_snapshot(account)
+            if snapshot is None:
+                raise ArenaError(
+                    "No saved Arena snapshot. Run `arena find-enemies` first."
                 )
         status = fetch_arena_status(client)
         if status.saved_team is None and preset is None and args.heroes is not None:
@@ -701,21 +744,34 @@ def cmd_arena_attack(args):
                 f"⚠️  No favor entry for heroes: {', '.join(map(str, missing))}",
                 file=sys.stderr,
             )
-        target = resolve_target(
-            client,
-            status,
-            rank=args.rank,
-            user_id=args.user_id,
-            candidate_retries=args.candidate_retries,
-        )
-        run_arena_attack(
-            client,
-            status,
-            target,
-            team,
-            dry_run=bool(args.dry_run),
-            candidate_retries=args.candidate_retries,
-        )
+        if from_snapshot:
+            target = resolve_snapshot_target(
+                snapshot, rank=args.rank, user_id=args.user_id
+            )
+            run_arena_attack_from_snapshot(
+                client,
+                status,
+                target,
+                team,
+                dry_run=bool(args.dry_run),
+                force=force,
+            )
+        else:
+            target = resolve_target(
+                client,
+                status,
+                rank=args.rank,
+                user_id=args.user_id,
+                candidate_retries=args.candidate_retries,
+            )
+            run_arena_attack(
+                client,
+                status,
+                target,
+                team,
+                dry_run=bool(args.dry_run),
+                candidate_retries=args.candidate_retries,
+            )
     except ArenaError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1822,6 +1878,23 @@ def main():
     p_arena_top.add_argument("--raw", action="store_true", help="Print the raw topGet response as JSON")
     p_arena_top.set_defaults(func=cmd_arena_top)
 
+    p_arena_find = arena_sub.add_parser(
+        "find-enemies",
+        parents=[parent_parser],
+        help="(experimental) Call arenaFindEnemies once and save the candidate snapshot",
+    )
+    p_arena_find.add_argument(
+        "--raw", action="store_true", help="Print the saved snapshot as JSON"
+    )
+    p_arena_find.set_defaults(func=cmd_arena_find_enemies)
+
+    p_arena_snapshot = arena_sub.add_parser(
+        "snapshot",
+        parents=[parent_parser],
+        help="(experimental) Show the saved snapshot against current own/target ranks",
+    )
+    p_arena_snapshot.set_defaults(func=cmd_arena_snapshot)
+
     p_arena_team = arena_sub.add_parser(
         "team", help="Manage named Arena team presets"
     )
@@ -1879,13 +1952,30 @@ def main():
         "--dry-run", action="store_true", help="Resolve target and check range without attacking"
     )
     p_arena_attack.add_argument(
+        "--from-snapshot",
+        action="store_true",
+        help=(
+            "Attack a target from the saved snapshot without calling "
+            "arenaFindEnemies (experimental)"
+        ),
+    )
+    p_arena_attack.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "With --from-snapshot, send even when arenaCheckTargetRange is false "
+            "(upper-only is still enforced)"
+        ),
+    )
+    p_arena_attack.add_argument(
         "--candidate-retries",
         type=_non_negative_int,
         default=DEFAULT_CANDIDATE_RETRIES,
         metavar="N",
         help=(
             "Extra arenaFindEnemies refreshes while waiting for the target to "
-            f"appear in the current candidate list (default: {DEFAULT_CANDIDATE_RETRIES})"
+            "appear in the current candidate list (default: "
+            f"{DEFAULT_CANDIDATE_RETRIES}; not used with --from-snapshot)"
         ),
     )
     p_arena_attack.set_defaults(func=cmd_arena_attack)

@@ -13,6 +13,11 @@ Safety rules:
   farther than the roughly 13 ranks observed so far.
 - ``--dry-run`` performs the same candidate preflight and
   ``arenaCheckTargetRange`` call, but never calls ``arenaAttack``.
+- Experimental exception: ``--from-snapshot`` skips
+  ``arenaFindEnemies`` and attacks a saved candidate directly. The upper-only
+  rule is still always enforced from a fresh ``topGet`` (the target must be in
+  the current top 50 so its current rank can be verified), and a false
+  ``arenaCheckTargetRange`` stops the attack unless ``--force`` is given.
 - ``arenaCheckTargetRange`` accepts at most 3 IDs per request; callers are
   batched accordingly.
 - ``arenaAttack`` is sent exactly once (``max_retries=0``): a timeout after the
@@ -27,6 +32,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Iterator
 
 from hw_genie.core.client import (
@@ -56,6 +62,8 @@ DEFAULT_CANDIDATE_RETRIES = 10
 
 # Config key in account_configs: {"arena": {name: {heroes, pet?, favor, banners?}}}
 ARENA_TEAM_PRESETS_KEY = "arena_team_presets"
+# Config key in account_configs for the manual-verification snapshot.
+ARENA_SNAPSHOT_KEY = "arena_snapshot"
 
 _PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 
@@ -151,6 +159,15 @@ class ArenaTopEntry:
     power: int | None = None
     heroes: list[int] = field(default_factory=list)
     pet: int | None = None
+
+
+@dataclass
+class ArenaSnapshot:
+    """A saved ``*FindEnemies`` response for manual verification."""
+
+    own_place: int
+    candidates: list[ArenaTopEntry] = field(default_factory=list)
+    saved_at: str = ""
 
 
 @dataclass
@@ -1111,6 +1128,17 @@ def run_arena_attack(
         print(f"{Emojis.INFO}Dry-run: arenaAttack was not sent.")
         return ArenaAttackResult(dry_run=True, accepted=False)
 
+    return _send_arena_attack(client, status, target, team, mode)
+
+
+def _send_arena_attack(
+    client: HWClient,
+    status: ArenaStatus,
+    target: ArenaTarget,
+    team: ArenaTeam,
+    mode: ArenaMode = ARENA_MODE,
+) -> ArenaAttackResult:
+    """Send exactly one attack and classify the response."""
     args = build_attack_args(target.user_id, team)
     # Never retry an attack: a timeout after the server accepted the request
     # would double-attack and consume another attempt.
@@ -1162,9 +1190,7 @@ def run_arena_attack(
             "check the game client before retrying (a retry may consume another attempt)."
         )
         print(f"{Emojis.WARNING}{warning}")
-        return ArenaAttackResult(
-            dry_run=False, accepted=True, warning=warning
-        )
+        return ArenaAttackResult(dry_run=False, accepted=True, warning=warning)
 
     outcome = "WIN" if parsed.win else "LOSS"
     print(
@@ -1290,6 +1316,295 @@ def remove_arena_preset(account: str, name: str, mode: ArenaMode = ARENA_MODE) -
         return root
 
     SessionManager.repo.update_config_merged(account, ARENA_TEAM_PRESETS_KEY, _merge)
+
+
+# ---------------------------------------------------------------------------
+# Snapshots (account_configs.arena_snapshot)
+# ---------------------------------------------------------------------------
+
+
+def serialize_snapshot(snapshot: ArenaSnapshot) -> dict[str, Any]:
+    return {
+        "saved_at": snapshot.saved_at,
+        "own_place": int(snapshot.own_place),
+        "candidates": [
+            {
+                "user_id": int(entry.user_id),
+                "place": int(entry.place),
+                "name": entry.name,
+                "power": entry.power,
+            }
+            for entry in snapshot.candidates
+        ],
+    }
+
+
+def deserialize_snapshot(data: Any) -> ArenaSnapshot | None:
+    if not isinstance(data, dict):
+        return None
+    own_place = _safe_int(data.get("own_place"), None)
+    if own_place is None or own_place <= 0:
+        return None
+    raw_candidates = data.get("candidates")
+    candidates: list[ArenaTopEntry] = []
+    if isinstance(raw_candidates, list):
+        for item in raw_candidates:
+            if not isinstance(item, dict):
+                continue
+            user_id = _safe_int(item.get("user_id"), None)
+            place = _safe_int(item.get("place"), None)
+            if user_id is None or user_id <= 0 or place is None or place <= 0:
+                continue
+            name = item.get("name")
+            candidates.append(
+                ArenaTopEntry(
+                    place=place,
+                    user_id=user_id,
+                    name=name if isinstance(name, str) else None,
+                    power=_safe_int(item.get("power"), None),
+                )
+            )
+    saved_at = data.get("saved_at")
+    return ArenaSnapshot(
+        own_place=own_place,
+        candidates=candidates,
+        saved_at=saved_at if isinstance(saved_at, str) else "",
+    )
+
+
+def save_arena_snapshot(
+    account: str, snapshot: ArenaSnapshot, mode: ArenaMode = ARENA_MODE
+) -> ArenaSnapshot:
+    from hw_genie.core.session_manager import SessionManager
+
+    _require_arena_mode(mode)
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        root = existing if isinstance(existing, dict) else {}
+        root[mode.key] = serialize_snapshot(snapshot)
+        return root
+
+    SessionManager.repo.update_config_merged(account, ARENA_SNAPSHOT_KEY, _merge)
+    return snapshot
+
+
+def load_arena_snapshot(
+    account: str, mode: ArenaMode = ARENA_MODE
+) -> ArenaSnapshot | None:
+    from hw_genie.core.session_manager import SessionManager
+
+    _require_arena_mode(mode)
+    data = SessionManager.load(account) or {}
+    root = data.get(ARENA_SNAPSHOT_KEY)
+    section = root.get(mode.key) if isinstance(root, dict) else None
+    return deserialize_snapshot(section)
+
+
+def capture_arena_snapshot(
+    client: HWClient, mode: ArenaMode = ARENA_MODE
+) -> ArenaSnapshot:
+    _require_arena_mode(mode)
+    own_place = fetch_own_place(client, mode)
+    candidates = fetch_arena_candidates(client, mode)
+    return ArenaSnapshot(
+        own_place=own_place,
+        candidates=candidates,
+        saved_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+    )
+
+
+def resolve_snapshot_target(
+    snapshot: ArenaSnapshot,
+    *,
+    rank: int | None = None,
+    user_id: int | None = None,
+) -> ArenaTarget:
+    if (rank is None) == (user_id is None):
+        raise ArenaError("Specify exactly one of --rank or --user-id.")
+    entry = _find_entry(snapshot.candidates, rank=rank, user_id=user_id)
+    if entry is None:
+        label = f"rank {rank}" if rank is not None else f"userId {user_id}"
+        raise ArenaError(
+            f"{label} is not in the saved Arena snapshot. "
+            "Run `arena find-enemies` to take a new snapshot."
+        )
+    return ArenaTarget(
+        user_id=entry.user_id,
+        place=entry.place,
+        name=entry.name,
+        power=entry.power,
+    )
+
+
+def _snapshot_age(saved_at: str) -> str:
+    try:
+        saved = datetime.fromisoformat(saved_at)
+    except (TypeError, ValueError):
+        return "unknown"
+    now = datetime.now(saved.tzinfo) if saved.tzinfo else datetime.now()
+    seconds = max(0, int((now - saved).total_seconds()))
+    if seconds < 120:
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 120:
+        return f"{minutes}m ago"
+    return f"{minutes // 60}h ago"
+
+
+def run_arena_find_enemies(
+    client: HWClient,
+    account: str,
+    *,
+    raw: bool = False,
+    mode: ArenaMode = ARENA_MODE,
+) -> ArenaSnapshot:
+    snapshot = capture_arena_snapshot(client, mode)
+    save_arena_snapshot(account, snapshot, mode)
+    if raw:
+        print(
+            json.dumps(
+                {mode.key: serialize_snapshot(snapshot)},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return snapshot
+
+    print(f"{Emojis.SUCCESS}Saved {mode.key} snapshot at {snapshot.saved_at}")
+    print(f"  {Emojis.INFO}Own rank: {snapshot.own_place}")
+    if not snapshot.candidates:
+        print(f"  {Emojis.INFO}No candidates returned by {mode.find_enemies.value}.")
+    for entry in snapshot.candidates:
+        name = f" {entry.name}" if entry.name else ""
+        print(
+            f"  {Emojis.INFO}rank {entry.place} "
+            f"(userId {entry.user_id}{name}, delta {entry.place - snapshot.own_place:+d})"
+        )
+    return snapshot
+
+
+def run_arena_snapshot(
+    client: HWClient, account: str, mode: ArenaMode = ARENA_MODE
+) -> ArenaSnapshot:
+    snapshot = load_arena_snapshot(account, mode)
+    if snapshot is None:
+        raise ArenaError("No saved Arena snapshot. Run `arena find-enemies` first.")
+
+    top = fetch_arena_top(client, mode)
+    current_own = (
+        top.own_place
+        if top.own_place is not None and top.own_place > 0
+        else fetch_own_place(client, mode)
+    )
+    current_by_uid = {entry.user_id: entry for entry in top.entries}
+    ids = [entry.user_id for entry in snapshot.candidates]
+    checks = check_target_range(client, ids, mode) if ids else {}
+
+    print(f"\n{Emojis.STEP}--- Arena snapshot ({account}) ---")
+    print(
+        f"  {Emojis.INFO}Saved at: {snapshot.saved_at or 'unknown'} "
+        f"({_snapshot_age(snapshot.saved_at)})"
+    )
+    print(f"  {Emojis.INFO}Own rank: {snapshot.own_place} -> {current_own}")
+    if not snapshot.candidates:
+        print(f"  {Emojis.INFO}No candidates in the snapshot.")
+        return snapshot
+
+    header = (
+        f"{'UserID':>12} {'Name':<16} "
+        f"{'Snapshot':>8} {'Current':>7} {'Delta':>6} {'>13':>4} {'Range':>5}"
+    )
+    print(header)
+    print("-" * len(header))
+    for entry in snapshot.candidates:
+        current = current_by_uid.get(entry.user_id)
+        current_place = current.place if current is not None else None
+        delta = current_place - current_own if current_place is not None else None
+        over13 = "-" if delta is None else ("yes" if delta < -13 else "no")
+        range_value = checks.get(entry.user_id)
+        range_text = "?" if range_value is None else ("true" if range_value else "false")
+        print(
+            f"{entry.user_id:>12} {(entry.name or '?')[:16]:<16} "
+            f"{entry.place:>8} {_human_int(current_place):>7} "
+            f"{_human_int(delta):>6} {over13:>4} {range_text:>5}"
+        )
+    print(
+        f"{Emojis.INFO}topGet covers the top 50 only; the snapshot itself is not refreshed."
+    )
+    return snapshot
+
+
+def run_arena_attack_from_snapshot(
+    client: HWClient,
+    status: ArenaStatus,
+    target: ArenaTarget,
+    team: ArenaTeam,
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    mode: ArenaMode = ARENA_MODE,
+) -> ArenaAttackResult:
+    """Attack a saved-snapshot target without calling ``*FindEnemies``.
+
+    Experimental path for verifying whether the server still accepts a
+    snapshot candidate after ranks have drifted. The target must be in the
+    current top 50 so its current rank can be verified; the upper-only rule is
+    always enforced from that fresh rank, and a false ``*CheckTargetRange``
+    stops unless ``force`` is set.
+    """
+    _require_arena_mode(mode)
+    validate_team(team)
+
+    if status.user_id is not None and target.user_id == status.user_id:
+        raise ArenaError("Refusing to attack yourself.")
+
+    # The snapshot place is stale, so it is never used for the upper-only
+    # check: ``topGet`` (current rank) is authoritative. Fall back to
+    # ``arenaGetAll`` only when ``topGet`` omits the own rank.
+    top = fetch_arena_top(client, mode)
+    fresh_place = top.own_place
+    if fresh_place is None or fresh_place <= 0:
+        fresh_place = fetch_own_place(client, mode)
+    current = _find_entry(top.entries, user_id=target.user_id)
+    if current is None:
+        raise ArenaError(
+            f"Target {_format_target(target)} is not in the current top 50; "
+            "its current rank cannot be verified, so the upper-only rule cannot "
+            "be enforced. No attack was sent."
+        )
+    target = ArenaTarget(
+        user_id=target.user_id,
+        place=current.place,
+        name=current.name or target.name,
+        power=current.power if current.power is not None else target.power,
+    )
+    if target.place >= fresh_place:
+        raise ArenaError(
+            f"Target {_format_target(target)} is not above your current rank "
+            f"{fresh_place}; only players ranked above you can be attacked "
+            "(upper-only). Re-run after checking the ranking."
+        )
+
+    allowed = check_target_range(client, [target.user_id], mode)
+    range_ok = allowed.get(target.user_id) is True
+    print(f"{Emojis.INFO}Target: {_format_target(target)}")
+    print(f"{Emojis.INFO}Team:   {_format_team(team)}")
+    print(
+        f"{Emojis.INFO}Range check: "
+        f"{'allowed' if range_ok else 'not allowed'}"
+    )
+
+    if not range_ok and not force:
+        raise ArenaError(
+            "CheckTargetRange returned false (or no result). The snapshot attack "
+            "stopped without consuming an attempt; use --force to send it anyway "
+            "(upper-only is still enforced)."
+        )
+    if dry_run:
+        print(f"{Emojis.INFO}Dry-run: arenaAttack was not sent.")
+        return ArenaAttackResult(dry_run=True, accepted=False)
+
+    return _send_arena_attack(client, status, target, team, mode)
 
 
 # ---------------------------------------------------------------------------
@@ -1419,14 +1734,18 @@ def run_arena_team_remove(
 __all__ = [
     "ARENA_MODE",
     "ArenaError",
+    "ArenaSnapshot",
     "ArenaStatus",
     "ArenaTarget",
     "ArenaTeam",
+    "ARENA_SNAPSHOT_KEY",
     "ARENA_TEAM_PRESETS_KEY",
     "DEFAULT_CANDIDATE_RETRIES",
     "attackable_window",
     "build_attack_args",
+    "capture_arena_snapshot",
     "check_target_range",
+    "deserialize_snapshot",
     "deserialize_team",
     "fetch_arena_candidates",
     "fetch_arena_status",
@@ -1434,6 +1753,7 @@ __all__ = [
     "fetch_candidate",
     "fetch_own_place",
     "fetch_saved_team",
+    "load_arena_snapshot",
     "load_arena_presets",
     "parse_attack_result",
     "parse_candidates_response",
@@ -1441,15 +1761,21 @@ __all__ = [
     "parse_range_response",
     "parse_top_response",
     "remove_arena_preset",
+    "resolve_snapshot_target",
     "resolve_target",
     "resolve_team",
     "run_arena_attack",
+    "run_arena_attack_from_snapshot",
+    "run_arena_find_enemies",
+    "run_arena_snapshot",
     "run_arena_status",
     "run_arena_team_list",
     "run_arena_team_remove",
     "run_arena_team_set",
     "run_arena_top",
     "save_arena_preset",
+    "save_arena_snapshot",
+    "serialize_snapshot",
     "serialize_team",
     "validate_partial_team",
     "validate_preset_name",

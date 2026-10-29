@@ -38,7 +38,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。
 - **Guild Chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`、`docs/api/CHAT_API.md` 参照）。
 - **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid 優先、全滅時は最善負け編成で部分スコアをバンク（`--no-bank-best-loss` で無効化）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
-- **Arena (targeted attack)**: 自分より上位の指定プレイヤーをチーム指定で攻撃（`hw-genie arena status` / `top` / `team` / `attack`。`--rank` または `--user-id`、`--team` プリセット / `--heroes`・`--pet`・`--banner`・`--favor` の直接指定、`--dry-run` で攻撃なしの候補確認、`--candidate-retries` で候補リスト更新回数を指定。`topGet` はトップ50のみ、攻撃は最新の `arenaFindEnemies` 候補かつ `arenaCheckTargetRange` が true の両方を満たす相手のみ。範囲チェックのウィンドウは順位/リーグ依存（トップ帯では ±21、GA 51位では5〜50位）。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）。
+- **Arena (targeted attack)**: 自分より上位の指定プレイヤーをチーム指定で攻撃（`hw-genie arena status` / `top` / `find-enemies` / `snapshot` / `team` / `attack`。`--rank` または `--user-id`、`--team` プリセット / `--heroes`・`--pet`・`--banner`・`--favor` の直接指定、`--dry-run` で攻撃なしの候補確認、`--candidate-retries` で候補リスト更新回数を指定。`topGet` はトップ50のみ。通常攻撃は「最新の `arenaFindEnemies` 候補」かつ「`arenaCheckTargetRange` が true」の両方を満たす相手のみ。範囲チェックのウィンドウは順位/リーグ依存（トップ帯では ±21、GA 51位では5〜50位）。手動検証用の `find-enemies` は候補を1回取得して保存し、`snapshot` / `attack --from-snapshot`（実験用）は `arenaFindEnemies` を呼ばず保存候補を比較・攻撃する（上位のみは現在の `topGet` で強制、range false は `--force` 時のみ送信）。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
@@ -92,12 +92,29 @@ uv run hw-genie arena attack -a Alice --rank 10 --team atk1 --candidate-retries 
 - `--heroes` はちょうど5体（重複なし・ID < 6000）、`--pet` は任意（>= 6000）、`--banner` は任意、`--favor HERO=PATRON` は繰り返し可。
 - 優先順位: 直接指定 > `--team` プリセット > ゲーム保存チーム（heroes / pet / banner はフィールド単位で補完）。favor は明示指定 > プリセット > 同モードの保存 favor（選択ヒーロー一致分のみ、欠落は警告、空なら省略）。`--banner 0` はバナーなしとして扱います。
 - `topGet` はトップ50のみ（ページングなし）。`--user-id` も、対象が `topGet` または現在の候補 `arenaFindEnemies` に存在して順位を解決できる場合のみ指定できます（順位不明は exit 1）。
-- 実攻撃は **最新の `arenaFindEnemies` 候補にいる相手だけ** が受理されます（候補外は `NotAvailable`）。さらに `arenaCheckTargetRange` が `true`（1リクエスト最大3件）である必要があります。範囲チェック `true` は必要条件ですが、それだけでは攻撃できません。
+- 通常攻撃では、実攻撃は **最新の `arenaFindEnemies` 候補にいる相手だけ** が受理されます（候補外は `NotAvailable`）。さらに `arenaCheckTargetRange` が `true`（1リクエスト最大3件）である必要があります。範囲チェック `true` は必要条件ですが、それだけでは攻撃できません。
 - 範囲チェックのウィンドウは **順位/リーグ依存** です。22位/34位では ±21 でしたが、Grand Arena 51位では5〜50位まで `true`（46位上）でした。±21 を固定ルールにしないでください。
 - 候補はトップ帯では1〜13位上が中心ですが、GA 51位では18〜24位（27〜33位上）も候補に現れました（読み取り確認）。`--candidate-retries N`（既定10）で候補リストを更新しながら対象の登場を待てます（`0` で初回のみ）。
 - `NotEnough` / `Refillable` は攻撃せず警告して exit 0。
 - `arenaAttack` は1回だけ送信し、自動リトライしません。タイムアウト等で結果不明の場合は、攻撃回数の二重消費を避けるため exit 1 でゲーム側での確認を促します。
 - API 仕様: `docs/api/ARENA_API.md` / エージェント向け手順: `.agents/skills/arena/SKILL.md`
+
+#### 手動検証（実験用スナップショット）
+
+```bash
+# arenaFindEnemies を1回だけ呼び、候補を account_configs.arena_snapshot に保存
+uv run hw-genie arena find-enemies -a Alice
+
+# 保存した候補と現在の自分/相手の順位、CheckTargetRange を表示
+# （arenaFindEnemies は呼ばない）
+uv run hw-genie arena snapshot -a Alice
+
+# スナップショットの相手を、候補を更新せずに攻撃
+uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1 --dry-run
+uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
+```
+
+`--from-snapshot --rank N` は**保存済みスナップショットの順位**に対して `N` を解決します（現在の `arena top` の順位ではないため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください（上位のみの制約は解除されません）。`--candidate-retries` は使いません。
 
 ### Tips: direnv による自動有効化
 

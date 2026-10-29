@@ -9,6 +9,7 @@ from requests.exceptions import Timeout
 from hw_genie.commands.arena import (
     ArenaAttackResult,
     ArenaError,
+    ArenaSnapshot,
     ArenaStatus,
     ArenaTarget,
     ArenaTeam,
@@ -18,8 +19,12 @@ from hw_genie.commands.arena import (
     fetch_arena_status,
     fetch_arena_top,
     fetch_candidate,
+    resolve_snapshot_target,
     resolve_target,
     run_arena_attack,
+    run_arena_attack_from_snapshot,
+    run_arena_find_enemies,
+    run_arena_snapshot,
 )
 from hw_genie.core.client import HWClient, ResponseStatus
 
@@ -922,6 +927,377 @@ def test_run_arena_attack_other_error_raises(mock_client, mock_sleep):
         run_arena_attack(client, _make_status(), _target(), _team())
 
 
+# --- snapshots (manual verification) ---
+
+
+def _snap_entry(uid: int, place: int, name: str = "Bob") -> ArenaTopEntry:
+    return ArenaTopEntry(place=place, user_id=uid, name=name, power=1000)
+
+
+def _snapshot(
+    own_place: int = 16,
+    candidates: list[ArenaTopEntry] | None = None,
+) -> ArenaSnapshot:
+    default = [
+        _snap_entry(111, 4, "Bob"),
+        _snap_entry(222, 9, "Carol"),
+        _snap_entry(333, 14, "Dave"),
+    ]
+    return ArenaSnapshot(
+        own_place=own_place,
+        candidates=candidates if candidates is not None else default,
+        saved_at="2026-10-29T16:10:15+09:00",
+    )
+
+
+def test_resolve_snapshot_target_by_rank_and_user_id():
+    snapshot = _snapshot()
+    assert resolve_snapshot_target(snapshot, rank=9).user_id == 222
+    assert resolve_snapshot_target(snapshot, user_id=111).place == 4
+    with pytest.raises(ArenaError, match="not in the saved"):
+        resolve_snapshot_target(snapshot, rank=3)
+    with pytest.raises(ArenaError, match="exactly one"):
+        resolve_snapshot_target(snapshot)
+
+
+def test_run_arena_find_enemies_saves_snapshot(mock_client, mock_sleep, monkeypatch):
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response(16)),
+        _ok(
+            _candidates_response(
+                [_candidate(uid=111, place=4), _candidate(uid=222, place=9)]
+            )
+        ),
+    ]
+    saved: dict = {}
+
+    def _save(account, snapshot, mode=None):
+        saved.update(account=account, snapshot=snapshot)
+        return snapshot
+
+    monkeypatch.setattr(arena_mod, "save_arena_snapshot", _save)
+    result = run_arena_find_enemies(client, "Alice")
+    assert _call_names(mock_call) == ["arenaGetAll", "arenaFindEnemies"]
+    assert saved["account"] == "Alice"
+    assert saved["snapshot"] is result
+    assert result.own_place == 16
+    assert [(c.user_id, c.place) for c in result.candidates] == [(111, 4), (222, 9)]
+
+
+def test_run_arena_snapshot_shows_current_ranks_without_find_enemies(
+    mock_client, mock_sleep, monkeypatch, capsys
+):
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda account, mode=None: _snapshot()
+    )
+    mock_call.side_effect = [
+        _ok(
+            _top_response(
+                [
+                    {"place": "2", "userId": "111"},
+                    {"place": "10", "userId": "222"},
+                    {"place": "14", "userId": "333"},
+                ],
+                own_place=16,
+            )
+        ),
+        _ok({"response": {"111": True, "222": False, "333": True}}),
+    ]
+    run_arena_snapshot(client, "Alice")
+    assert "arenaFindEnemies" not in _call_names(mock_call)
+    out = capsys.readouterr().out
+    assert "Own rank: 16 -> 16" in out
+    assert ">13" in out
+    assert "yes" in out
+    assert "false" in out
+    assert "topGet covers the top 50 only" in out
+
+
+def test_run_arena_snapshot_without_saved_snapshot_raises(
+    mock_client, mock_sleep, monkeypatch
+):
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    monkeypatch.setattr(arena_mod, "load_arena_snapshot", lambda account, mode=None: None)
+    with pytest.raises(ArenaError, match="find-enemies"):
+        run_arena_snapshot(client, "Alice")
+    assert mock_call.call_count == 0
+
+
+def test_run_arena_attack_from_snapshot_skips_find_enemies(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, True)),
+        _ok(_attack_response(old=16, new=14)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team()
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
+    assert "arenaFindEnemies" not in _call_names(mock_call)
+
+
+def test_run_arena_attack_from_snapshot_range_false_stops_without_force(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="--force"):
+        run_arena_attack_from_snapshot(
+            client, _make_status(place=16), target, _team()
+        )
+    assert "arenaAttack" not in _call_names(mock_call)
+
+
+def test_run_arena_attack_from_snapshot_force_sends_when_range_false(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+        _ok(_attack_response(old=16, new=14)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), force=True
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call)[-1] == "arenaAttack"
+
+
+def test_run_arena_attack_from_snapshot_rejects_now_below(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "10", "userId": "111"}], own_place=10)),
+    ]
+    target = ArenaTarget(user_id=111, place=5, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="upper-only"):
+        run_arena_attack_from_snapshot(
+            client, _make_status(place=10), target, _team()
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_dry_run_sends_nothing(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, True)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), dry_run=True
+    )
+    assert result.dry_run is True
+    assert "arenaAttack" not in _call_names(mock_call)
+
+
+def test_run_arena_attack_from_snapshot_rejects_target_absent_from_top(
+    mock_client, mock_sleep
+):
+    # A target that left the top 50 has an unverifiable current rank, so the
+    # stale snapshot place must not be used to bypass the upper-only rule.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([], own_place=16)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="not in the current top 50"):
+        run_arena_attack_from_snapshot(
+            client, _make_status(place=16), target, _team()
+        )
+    names = _call_names(mock_call)
+    assert names == ["topGet"]
+    assert "arenaCheckTargetRange" not in names
+    assert "arenaAttack" not in names
+
+
+def test_run_arena_attack_from_snapshot_force_still_enforces_upper_only(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "10", "userId": "111"}], own_place=10)),
+    ]
+    target = ArenaTarget(user_id=111, place=5, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="upper-only"):
+        run_arena_attack_from_snapshot(
+            client, _make_status(place=10), target, _team(), force=True
+        )
+    names = _call_names(mock_call)
+    assert names == ["topGet"]
+    assert "arenaCheckTargetRange" not in names
+    assert "arenaAttack" not in names
+
+
+def test_run_arena_attack_from_snapshot_uses_current_place_over_snapshot(
+    mock_client, mock_sleep
+):
+    # Snapshot said own 16 / target 14, but both moved up: own 10, target 8.
+    # The stale snapshot pre-check must not reject this valid attack.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "8", "userId": "111"}], own_place=10)),
+        _ok(_range_response(111, True)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), dry_run=True
+    )
+    assert result.dry_run is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+    ]
+
+
+def test_run_arena_attack_from_snapshot_falls_back_to_arena_get_all(
+    mock_client, mock_sleep
+):
+    # topGet normally carries the own rank; when it does not, arenaGetAll is
+    # used as the fallback before the upper-only check.
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(
+            {
+                "response": {
+                    "top": [{"place": "14", "userId": "111"}],
+                    "users": {},
+                }
+            }
+        ),
+        _ok(_own_place_response(16)),
+        _ok(_range_response(111, True)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client, _make_status(place=16), target, _team(), dry_run=True
+    )
+    assert result.dry_run is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaGetAll",
+        "arenaCheckTargetRange",
+    ]
+
+
+def test_run_arena_attack_from_snapshot_rejects_self_without_api_calls(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    target = ArenaTarget(user_id=900, place=5, name="Alice", power=5000)
+    with pytest.raises(ArenaError, match="yourself"):
+        run_arena_attack_from_snapshot(
+            client, _make_status(user_id=900), target, _team()
+        )
+    assert mock_call.call_count == 0
+
+
+def test_resolve_snapshot_target_empty_snapshot_raises():
+    snapshot = _snapshot(candidates=[])
+    assert snapshot.candidates == []
+    with pytest.raises(ArenaError, match="not in the saved"):
+        resolve_snapshot_target(snapshot, rank=4)
+
+
+def test_run_arena_snapshot_handles_candidate_outside_top50(
+    mock_client, mock_sleep, monkeypatch, capsys
+):
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    monkeypatch.setattr(
+        arena_mod,
+        "load_arena_snapshot",
+        lambda account, mode=None: _snapshot(
+            candidates=[_snap_entry(111, 4), _snap_entry(222, 9)]
+        ),
+    )
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "2", "userId": "111"}], own_place=16)),
+        _ok({"response": {"111": True, "222": True}}),
+    ]
+    run_arena_snapshot(client, "Alice")
+    assert "arenaFindEnemies" not in _call_names(mock_call)
+    assert "?" in capsys.readouterr().out
+
+
+def test_run_arena_snapshot_falls_back_to_arena_get_all_when_top_place_missing(
+    mock_client, mock_sleep, monkeypatch, capsys
+):
+    # topGet normally carries the own rank; when it does not, arenaGetAll is
+    # used before printing the snapshot delta column.
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda account, mode=None: _snapshot()
+    )
+    mock_call.side_effect = [
+        _ok(
+            {
+                "response": {
+                    "top": [{"place": "4", "userId": "111"}],
+                    "users": {},
+                }
+            }
+        ),
+        _ok(_own_place_response(16)),
+        _ok({"response": {"111": True, "222": False, "333": True}}),
+    ]
+    run_arena_snapshot(client, "Alice")
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaGetAll",
+        "arenaCheckTargetRange",
+    ]
+    assert "Own rank: 16 -> 16" in capsys.readouterr().out
+
+
+def test_run_arena_snapshot_with_empty_snapshot_prints_no_candidates(
+    mock_client, mock_sleep, monkeypatch, capsys
+):
+    import hw_genie.commands.arena as arena_mod
+
+    client, mock_call = mock_client
+    monkeypatch.setattr(
+        arena_mod,
+        "load_arena_snapshot",
+        lambda account, mode=None: _snapshot(candidates=[]),
+    )
+    mock_call.side_effect = [
+        _ok(_top_response([], own_place=16)),
+    ]
+    run_arena_snapshot(client, "Alice")
+    assert "arenaCheckTargetRange" not in _call_names(mock_call)
+    assert "No candidates in the snapshot." in capsys.readouterr().out
+
+
 # --- CLI handler behavior (light) ---
 
 
@@ -936,6 +1312,8 @@ def _attack_args(**overrides) -> argparse.Namespace:
         banner=None,
         favor=None,
         dry_run=False,
+        from_snapshot=False,
+        force=False,
         candidate_retries=10,
         debug=False,
     )
@@ -1051,6 +1429,46 @@ def test_cmd_arena_attack_unknown_preset_fails_before_status(monkeypatch):
     assert "status" not in called
 
 
+def test_cmd_arena_attack_force_without_snapshot_errors(monkeypatch, capsys):
+    main_mod, _arena_mod = _patch_attack_handler(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_arena_attack(_attack_args(force=True))
+    assert exc.value.code == 1
+    assert "--force" in capsys.readouterr().err
+
+
+def test_cmd_arena_attack_from_snapshot_uses_snapshot_runner(monkeypatch):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda account, mode=None: _snapshot()
+    )
+    monkeypatch.setattr(
+        arena_mod, "resolve_snapshot_target", lambda snapshot, **kwargs: _target()
+    )
+
+    def _no_resolve(*args, **kwargs):
+        raise AssertionError("resolve_target must not run with --from-snapshot")
+
+    monkeypatch.setattr(arena_mod, "resolve_target", _no_resolve)
+    captured: dict = {}
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack_from_snapshot",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    main_mod.cmd_arena_attack(_attack_args(from_snapshot=True, force=True))
+    assert captured["force"] is True
+    assert captured["dry_run"] is False
+
+
+def test_cmd_arena_attack_from_snapshot_without_snapshot_errors(monkeypatch):
+    main_mod, arena_mod = _patch_attack_handler(monkeypatch)
+    monkeypatch.setattr(arena_mod, "load_arena_snapshot", lambda account, mode=None: None)
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_arena_attack(_attack_args(from_snapshot=True))
+    assert exc.value.code == 1
+
+
 def test_arena_cli_registered(monkeypatch, capsys):
     import sys
 
@@ -1066,6 +1484,23 @@ def test_arena_cli_registered(monkeypatch, capsys):
     assert "--dry-run" in out
     assert "--team" in out
     assert "--candidate-retries" in out
+    assert "--from-snapshot" in out
+    assert "--force" in out
+
+
+@pytest.mark.parametrize(
+    "command", [["arena", "find-enemies"], ["arena", "snapshot"]]
+)
+def test_arena_snapshot_commands_registered(monkeypatch, capsys, command):
+    import sys
+
+    import hw_genie.main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["hw-genie", *command, "--help"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code == 0
+    assert "usage:" in capsys.readouterr().out.lower()
 
 
 # --- parser `-a` placement (finding 7) ---
