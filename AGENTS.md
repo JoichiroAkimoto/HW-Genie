@@ -21,7 +21,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
 *   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 *   **item-raid**: 特定アイテムの繰り返し収集。
-*   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`）。
+*   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`。デイリー／ギルドクエストに加え、`guild_glyph_defaults.enabled=true` ならギルド活動のグリフ強化 `heroEnchantRune` も実行）。
 *   **db-inspect**: データベース（Turso クラウド / ローカルレプリカ）の確認。
 
 ### 2. コマンドラインツールの使用法
@@ -34,7 +34,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **Seer's Game**: `uv run hw-genie seers-game`（開始→カード4択×4→終了を Seer's Coin 枯渇まで自動周回。`--dry-run` で状態・残高表示のみ、`--pick N` で毎ラウンド引くカード指定（デフォルト 2、live の `event.size` に対して検証）、`--max-games N` で打ち切り。`multi seers-game` で全アカウント一括（`--dry-run` 可）。詳細は `.agents/skills/seers-game/SKILL.md`）
 *   **Arena**: `uv run hw-genie arena status -a <account>` / `arena top -a <account> [--limit N] [--raw]` / `arena find-enemies -a <account> [--raw]` / `arena snapshot -a <account>` / `arena team set <name> -a <account> (--from-saved | --heroes 5個) [--pet] [--banner] [--favor HERO=PATRON]` / `arena team list|remove` / `arena attack -a <account> (--rank N | --user-id ID) [--team NAME] [--heroes 5個] [--pet] [--banner] [--favor ...] [--dry-run] [--candidate-retries N] [--from-snapshot] [--force]`（**自分より上位のみ**攻撃。実攻撃は最新の `arenaFindEnemies` 候補にいる相手だけが受理され、候補外は `NotAvailable`。`--candidate-retries`（既定10）で候補リストを更新しながら対象の登場を待てる。`--from-snapshot` は保存済み候補に `arenaFindEnemies` を呼ばず攻撃し、`--force` は `--from-snapshot` 併用時のみ有効で range false は `--force` がない限り停止。`--dry-run` も候補確認と `arenaCheckTargetRange` まで実行し `arenaAttack` は送らない。`topGet` はトップ50のみ。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）
 *   **デイリールーチン**: `uv run hw-genie daily`（`--iterations N` でアイテムレイドの反復回数を指定可能 = 1 リクエストあたり `times:10` × N。ヒーローレイドは固定 3 回、デフォルトはスタミナ限界まで）
-*   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` の `enabled` フラグでアカウントごとに制御。詳細は `.agents/skills/quest-status/SKILL.md`）
+*   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` / `quest_guild_defaults` / `guild_glyph_defaults` の `enabled` フラグでアカウントごとに制御。`--set-default glyph ...` でギルド活動のグリフ強化（`heroEnchantRune`）を設定。詳細は `.agents/skills/quest-status/SKILL.md`）
 *   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）
 *   **consumable 一括消費**: `uv run hw-genie consumable run`（レジストリ `CONSUMABLE_USE_TARGETS` 登録済みアイテムを在庫全量消費。1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`<libId>` 位置引数で指定、未登録アイテムは `--method` でメソッド指定、`--dry-run` で予行。詳細は `.agents/skills/consumable/SKILL.md`）
 *   **ギルドチャット**: `uv run hw-genie chat`（`chatGetAll` / `chatType=clan` の履歴を表形式と要約で表示。`--type` / `--count` / `--last-id` / `--raw` / `--json`。詳細は `.agents/skills/guild-chat/SKILL.md`）

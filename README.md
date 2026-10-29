@@ -31,7 +31,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Daily Routine**: ヒーローレイドとショッピングをワンコマンドで連続実行（アイテムレイドはスタミナ限界、または `--iterations N` で反復回数指定 = 1 リクエストあたり 10 回 × N）。`multi daily` / `multi full` も同様に `--iterations` で制御可能。
 - **Hero Raid**: 指定したミッションのヒーローレイドを実行（`--times` で回数指定、デフォルト 3）。
 - **Item Raid**: 特定のアイテムを目的とした繰り返しレイドの自動化（スタミナ不足または指定回数に達するまで）。
-- **Quest Status**: 現在のクエスト（デイリー・週次・ギルド・メイン・イベント etc.）の状態をカテゴリ別に取得・表示。`--execute` でデイリーの自動完了も可能（実行可否はアカウントごとの `quest_defaults` enabled フラグで制御、`--edit-defaults` の対話的ウィザードで設定、`hw-genie quests`）。`multi quests` で全アカウント一括自動完了（`--dry-run` 予行可）、daily / full ルーチンにも統合済み。
+- **Quest Status**: 現在のクエスト（デイリー・週次・ギルド・メイン・イベント etc.）の状態をカテゴリ別に取得・表示。`--execute` でデイリーの自動完了も可能（実行可否はアカウントごとの `quest_defaults` enabled フラグで制御、`--edit-defaults` の対話的ウィザードで設定、`hw-genie quests`）。ギルド活動のグリフ強化（`heroEnchantRune`）は `guild_glyph_defaults.enabled` で制御し、`clanGetInfo` の `stat.activityForRuneAvailable` が true の日だけ 1 回実行（`--set-default glyph ...` で設定）。`multi quests` で全アカウント一括自動完了（`--dry-run` 予行可）、daily / full ルーチンにも統合済み。
 - **Hero Shopping**: ターゲットショップでのヒーローソウル購入と、ソウルショップでの全アイテム・タウンショップの固定スロット（2,4,5,6）の一括購入（余剰ソウルの自動換金対応）。ペットポーションは `hw-genie shop` では買わず、`daily` / `full` ルーチンでのみ購入する。タウン購入はゴールドを消費するため残高に注意。
 - **Asgard Shop**: Asgard（ギルドレイド）の Realm Traveler ショップで Valor Emblem を使ったバフとゴールドバフを自動購入（`hw-genie asgard-shop` / `multi asgard-shop`。Osh 週は固定優先度、Maestro 週は優先度 S→A→B の組み合わせ最適化で購入。判定不能な週はスキップ、`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on））。
 - **Seer's Game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`hw-genie seers-game` / `multi seers-game`。1ゲーム 25 コイン、毎日1回無料（JST 11:00 リセット）。ツールは無料/有料を区別せず枯渇まで回す。`--dry-run` で状態・残高表示のみ、`--pick N`（デフォルト 2、live の `event.size` に対して検証）/ `--max-games N` 対応）。
@@ -210,7 +210,7 @@ bin/hwsa
 
 - `hwda` サービス: `hw-genie multi daily`（全アカウントのデイリールーチン）
 - `hwsa` サービス: `hw-genie multi full`（ヒーローレイド + ショップ + デイリー）
-- `multi quests`: 全アカウントのデイリークエスト自動完了のみ（`--dry-run` で予行確認可）。daily / full は実行後に各アカウントの `quest_defaults.enabled` クエストを自動完了します（enabled のみ、初期状態は無効）
+- `multi quests`: 全アカウントのデイリークエスト自動完了のみ（`--dry-run` で予行確認可）。daily / full は実行後に各アカウントの `quest_defaults.enabled` クエストと `guild_glyph_defaults.enabled` のグリフ強化（`heroEnchantRune`）を自動実行します（enabled のみ、初期状態は無効）
 - `multi asgard-shop`: 全アカウントの Asgard ショップ自動購入のみ（Osh / Maestro 週を自動判定、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off）
 - `multi seers-game`: 全アカウントの Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応、`--dry-run` で予行確認可）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）

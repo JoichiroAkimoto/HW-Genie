@@ -6,6 +6,7 @@ ID → 名称/カテゴリ/目標値）を正引きテーブルとして使う�
 未確定の ID は ID ファミリの規則でカテゴリだけ推定する。
 """
 
+import copy
 import json
 import logging
 import sys
@@ -214,6 +215,38 @@ QUEST_DEFAULTS_KEY = "quest_defaults"
 #                 （Gift 資源の二重消費防止）。
 # ・note       … 操作 RPC 名の連結メモ（可読性専用）
 QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
+
+# ギルド活動の「グリフ（ルーン）強化で 700 アクティビティポイント獲得」専用の
+# 実行制御設定キー（config_key="guild_glyph_defaults"）。
+# これはクエスト ID に紐づかない独立した操作のため、固定 ID をキーにする
+# ``quest_defaults``（int キーの dict）ではなく、``quest_guild_defaults`` と
+# 同じ「ギルド系の独立設定」として別 config_key に置く
+# （quest_defaults に文字列キーを混ぜると int(k) 変換・一覧・ウィザードが壊れる）。
+# ・enabled … true のときのみ実行する（初期状態は false。安全ゲート）
+# ・heroId / tier / items … ``heroEnchantRune`` の引数。tier はグリフの
+#   スロット番号（0 始まり。実測: tier=2 が 3 番目のグリフ）。
+#   items はグリフ強化の消費素材（例: {"consumable": {"1": 1}}）。
+# ・note    … DB 可読性用メモ（例: "Martha Magic Defense +10"）
+# ・last_run_at … 最後に heroEnchantRune が成功した Unix 秒（内部記録）。
+#   clanGetInfo の serverResetTime から求めた今日のサイクル開始時刻以上なら
+#   「今日は実行済み」としてスキップする（フラグ更新遅延・複数プロセスの
+#   近接実行による二重消費の保険。成功時のみ記録）。
+# 実行前に対象アカウントの ``clanGetInfo`` を読み、
+# ``response.stat.activityForRuneAvailable`` が true のときだけ実行する
+# （false = 今日の分は獲得済みなので何もしない）。
+GUILD_GLYPH_DEFAULTS_KEY = "guild_glyph_defaults"
+
+# グリフ強化レシピの既定値（アカウントごとに ``guild_glyph_defaults`` で上書き可能）。
+# 実測で確認した操作: heroEnchantRune heroId=46 / tier=2 /
+# items={"consumable": {"1": 1}}（対象ヒーローの 3 番目のグリフを素材 1 個で強化）。
+GUILD_GLYPH_RECIPE: dict[str, Any] = {
+    "heroId": 46,
+    "tier": 2,
+    "items": {"consumable": {"1": 1}},
+}
+
+# 失敗報告・ログ表示用のラベル（quest_id を持たない独立操作）
+GUILD_GLYPH_LABEL = "Guild glyph activity"
 
 # 自動受領しないギルドクエスト報酬（questFarm の claim 対象から除外する）。
 # 手動管理のため、スタミナとポータルは自動取得しない（他は取得する）。
@@ -766,6 +799,91 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
     return SessionManager.repo.update_config_merged(account, QUEST_GUILD_DEFAULTS_KEY, _merge)
 
 
+# guild_glyph_defaults で受け付けるキー。
+# ``last_run_at`` は「同一リセットサイクル内の再実行防止」の内部記録
+# （最後に heroEnchantRune が成功した Unix 秒。手動変更は不要）。
+GUILD_GLYPH_KEYS = ("enabled", "heroId", "tier", "items", "note", "last_run_at")
+
+
+def _validate_guild_glyph_value(key: str, value: Any) -> None:
+    """``guild_glyph_defaults`` の 1 キーの値を検証する（不正は ValueError）。
+
+    破壊的 RPC（グリフ素材の消費）の設定なので、``quest_defaults`` より厳しく
+    検証する。特に ``enabled`` は bool のみ許可する（``"no"`` 等の真値文字列で
+    意図せず有効化されるのを防ぐ）。``items`` は JSON dict を要求する。
+    """
+    if key not in GUILD_GLYPH_KEYS:
+        allowed = ", ".join(GUILD_GLYPH_KEYS)
+        raise ValueError(f"unknown guild_glyph_defaults key {key!r} (allowed: {allowed})")
+    if key == "enabled":
+        if not isinstance(value, bool):
+            raise ValueError("guild_glyph_defaults['enabled'] must be true or false")
+    elif key in ("heroId", "tier", "last_run_at"):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"guild_glyph_defaults[{key!r}] must be an integer")
+    elif key == "items":
+        if not isinstance(value, dict) or not value:
+            raise ValueError(
+                "guild_glyph_defaults['items'] must be a non-empty JSON object "
+                "(e.g. '{\"consumable\": {\"1\": 1}}')"
+            )
+    elif key == "note":
+        if not isinstance(value, str):
+            raise ValueError("guild_glyph_defaults['note'] must be a string")
+
+
+def set_guild_glyph_defaults(account: str, key: str, value: Any) -> Any:
+    """``guild_glyph_defaults`` に 1 パラメータだけ保存する（既存値は保持してマージ）。
+
+    ``set_quest_defaults`` と同じく、CLI から渡される文字列値は
+    ``_parse_config_value`` で解釈する（``items`` の JSON dict も登録可能）。
+    保存前に ``_validate_guild_glyph_value`` でキーと型を検証する（不正は
+    ValueError）。保存は ``update_config_merged`` によるロック付き
+    read-modify-write で行う。
+    """
+    if isinstance(value, str):
+        value = _parse_config_value(value)
+    _validate_guild_glyph_value(key, value)
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        defaults = existing if isinstance(existing, dict) else {}
+        defaults[key] = value
+        return defaults
+
+    SessionManager.repo.update_config_merged(account, GUILD_GLYPH_DEFAULTS_KEY, _merge)
+    return value
+
+
+def ensure_guild_glyph_defaults(account: str) -> dict[str, Any]:
+    """``guild_glyph_defaults`` を初期化・補完する（既存値は保持）。
+
+    未設定のアカウントに ``enabled: false``、``GUILD_GLYPH_RECIPE`` の既定
+    引数（heroId / tier / items）、``note``（RPC 名）を投入する。初期状態は
+    無効で、``--set-default glyph enabled true`` で有効化する運用
+    （``quest_guild_defaults`` と同じ安全ゲート）。
+    ``items`` は dict だが、これはレシピ既定値ではなく操作ペイロードそのもの
+    なので補完する（ウィザードの行編集では扱わず ``--set-default`` で登録する）。
+    補完は ``update_config_merged`` のロック付き read-modify-write で行う。
+
+    Returns:
+        保存後の ``guild_glyph_defaults``（dict）。
+    """
+    account = resolve_account(account)
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        defaults = existing if isinstance(existing, dict) else {}
+        if defaults.get("enabled") is None:
+            defaults["enabled"] = False
+        for key, value in GUILD_GLYPH_RECIPE.items():
+            if key not in defaults:
+                defaults[key] = copy.deepcopy(value)
+        if "note" not in defaults:
+            defaults["note"] = _rpc_display(ApiAction.HERO_ENCHANT_RUNE)
+        return defaults
+
+    return SessionManager.repo.update_config_merged(account, GUILD_GLYPH_DEFAULTS_KEY, _merge)
+
+
 def ensure_quest_defaults(account: str) -> dict[int, dict[str, Any]]:
     """``quest_defaults`` を初期化・補完する（既存値は保持）。
 
@@ -1047,6 +1165,10 @@ def run_quest_execute(
       実行せず、直接 ``questFarm`` で受領する**（既に条件達成済みなのに
       操作リソースを消費しないため）。ただしスタミナ・ポータル報酬は
       手動管理のため受領せずスキップする（_is_claim_excluded / _is_manual_keep_reward）。
+    - **ギルド活動（グリフ強化）**: ``guild_glyph_defaults.enabled=true`` の
+      アカウントでは、``clanGetInfo`` の ``stat.activityForRuneAvailable`` が
+      true のときだけ ``heroEnchantRune`` を 1 回実行する（詳細は
+      ``_run_guild_glyph_phase``）。
     - 失敗した項目は ``{account, quest_id, quest_name, step, error}`` として
       返り値と標準出力の両方に報告される。
 
@@ -1168,47 +1290,50 @@ def run_quest_execute(
         print(f"\n📋 [dry-run] Quest execution plan for {account}:")
         if not has_work:
             print("🔄 No executable quests.")
-            return [], failures, skipped
-        for q in claimable:
-            print(f"\n🔹 {q.id} {q.name}: [claim already available]")
-            if _is_claim_excluded(q):
-                print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
-                continue
-            print("    - questFarm (claim reward, no operation needed)")
-        for q in guild_claimable:
-            print(f"\n🔹 {q.id} {q.name}: [claim already available]")
-            if _is_claim_excluded(q):
-                print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
-                continue
-            print("    - questFarm (claim reward, no operation needed)")
-        for q, steps, shop_buy_skipped in targets:
-            print(f"\n🔹 {q.id} {q.name}")
-            if shop_buy_skipped:
-                overrides = account_defaults.get(q.id) or {}
-                print(f"    - skipped shopBuy (amount={overrides.get('amount')!r}/slot={overrides.get('slot')!r})")
-            for st in steps:
-                print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
-            candidates = _filter_candidates(
-                _quest_candidates(account_defaults, q.id),
-                {k for st in steps for k in st["args"]},
-            )
-            if candidates:
-                print(f"    (fallback candidates: {candidates})")
-        if guild_active:
-            daily_covers_recipe = any(q.id == GUILD_QUEST_RECIPE_ID for q, _, _ in targets)
-            if not guild_enabled:
-                print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
-            elif daily_covers_recipe:
-                print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
-            elif guild_recipe_done_today:
-                last_ts = guild_defaults.get("last_recipe_at")
-                at_label = format_create_time(int(last_ts)) if last_ts is not None else "today"
-                print(f"ℹ️  Guild quests (Sparks of Power): recipe already run today ({at_label}); skipping recipe (claims still run).")
-            else:
-                print("\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks (not run yet today)")
-                steps = _guild_recipe_steps(account_defaults, guild_defaults)
+        else:
+            for q in claimable:
+                print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+                if _is_claim_excluded(q):
+                    print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
+                    continue
+                print("    - questFarm (claim reward, no operation needed)")
+            for q in guild_claimable:
+                print(f"\n🔹 {q.id} {q.name}: [claim already available]")
+                if _is_claim_excluded(q):
+                    print(f"    - SKIP (manual-keep: {format_reward(q.reward)})")
+                    continue
+                print("    - questFarm (claim reward, no operation needed)")
+            for q, steps, shop_buy_skipped in targets:
+                print(f"\n🔹 {q.id} {q.name}")
+                if shop_buy_skipped:
+                    overrides = account_defaults.get(q.id) or {}
+                    print(f"    - skipped shopBuy (amount={overrides.get('amount')!r}/slot={overrides.get('slot')!r})")
                 for st in steps:
                     print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
+                candidates = _filter_candidates(
+                    _quest_candidates(account_defaults, q.id),
+                    {k for st in steps for k in st["args"]},
+                )
+                if candidates:
+                    print(f"    (fallback candidates: {candidates})")
+            if guild_active:
+                daily_covers_recipe = any(q.id == GUILD_QUEST_RECIPE_ID for q, _, _ in targets)
+                if not guild_enabled:
+                    print("ℹ️  Guild quests (Sparks of Power) found but quest_guild_defaults.enabled=false (skip; see Skipped list).")
+                elif daily_covers_recipe:
+                    print("ℹ️  Guild quests (Sparks of Power): recipe covered by daily quest 10023 in this plan; skipping duplicate recipe (claims still run).")
+                elif guild_recipe_done_today:
+                    last_ts = guild_defaults.get("last_recipe_at")
+                    at_label = format_create_time(int(last_ts)) if last_ts is not None else "today"
+                    print(f"ℹ️  Guild quests (Sparks of Power): recipe already run today ({at_label}); skipping recipe (claims still run).")
+                else:
+                    print("\n🔹 Guild quests (Sparks of Power): run recipe to gain Sparks (not run yet today)")
+                    steps = _guild_recipe_steps(account_defaults, guild_defaults)
+                    for st in steps:
+                        print(f"    - {_rpc_display(st['rpc'])} {st['args']}")
+        # グリフ活動（ギルド活動ポイント）は quest_defaults とは独立した設定で、
+        # 対象クエストの有無に関係なく毎回判定する（フラグ確認は読み取りのみ）。
+        _run_guild_glyph_phase(client, account, dry_run=True, confirm=confirm, succeeded=succeeded, failures=failures)
         print_skipped_quests(account, skipped)
         return [], failures, skipped
 
@@ -1287,6 +1412,13 @@ def run_quest_execute(
         confirm=confirm,
         succeeded=succeeded,
         failures=failures,
+    )
+
+    # ギルド活動（グリフ強化で 700 アクティビティポイント）フェーズ:
+    # guild_glyph_defaults.enabled=true かつ clanGetInfo の
+    # activityForRuneAvailable=true のときだけ heroEnchantRune を実行する。
+    _run_guild_glyph_phase(
+        client, account, dry_run=False, confirm=confirm, succeeded=succeeded, failures=failures
     )
 
     print_skipped_quests(account, skipped)
@@ -1416,6 +1548,180 @@ def _run_guild_quest_phase(
     if not reached:
         print("   ℹ️  No guild quest reached claimable state yet.")
     _claim_quests(client, reached, account, succeeded, failures)
+
+
+def _guild_glyph_failure(account: str, step: str, error: str) -> dict[str, Any]:
+    """グリフ活動の失敗報告エントリ（quest_id を持たないため None）。"""
+    return {
+        "account": account,
+        "quest_id": None,
+        "quest_name": GUILD_GLYPH_LABEL,
+        "step": step,
+        "error": error,
+    }
+
+
+def _guild_glyph_response(res: HWResponse) -> dict[str, Any] | None:
+    """``clanGetInfo`` の ``result.response`` を取り出す（形式不正は None）。
+
+    ``HWClient.call`` は単一コール時に ``results[0].result``（= ``{"response":
+    {...}}``）を ``detail`` に格納するため、``stat`` は ``detail["response"]``
+    配下にある。
+    """
+    detail = res.detail if isinstance(res.detail, dict) else {}
+    response = detail.get("response")
+    return response if isinstance(response, dict) else None
+
+
+def _guild_glyph_available(response: dict[str, Any]) -> bool | None:
+    """``clanGetInfo`` の ``response.stat.activityForRuneAvailable`` を返す。
+
+    取得できない（項目欠損・bool 以外）場合は None を返し、呼び出し側で
+    「判定不能＝実行しない」として扱う。
+    """
+    stat = response.get("stat")
+    if not isinstance(stat, dict):
+        return None
+    value = stat.get("activityForRuneAvailable")
+    return value if isinstance(value, bool) else None
+
+
+def _guild_glyph_cycle_boundary(response: dict[str, Any]) -> int | None:
+    """現在のギルド活動リセットサイクル開始時刻（Unix 秒）を返す。
+
+    ``clanGetInfo`` の ``serverResetTime``（次のサーバーリセット = 02:00 UTC）から
+    24 時間を引いた時刻。取得できない場合は None（サイクルガード無効）。
+    """
+    reset_time = _to_int(response.get("serverResetTime"))
+    if not reset_time:
+        return None
+    return reset_time - 86400
+
+
+def _guild_glyph_args(defaults: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """``guild_glyph_defaults`` から ``heroEnchantRune`` の args を組み立てる。
+
+    誤った引数で破壊的 RPC（グリフ素材の消費）を送らないよう、heroId/tier は
+    整数化できなければ失敗、items は空でない dict でなければ失敗とする。
+
+    Returns:
+        ``(args, error)`` — 正常時は ``(args, None)``、不正時は ``(None, 理由)``。
+    """
+    hero_id = _to_int(defaults.get("heroId"))
+    tier = _to_int(defaults.get("tier"))
+    items = defaults.get("items")
+    if hero_id is None:
+        return None, "invalid heroId in guild_glyph_defaults (expected int)"
+    if tier is None:
+        return None, "invalid tier in guild_glyph_defaults (expected int)"
+    if not isinstance(items, dict) or not items:
+        return None, "invalid items in guild_glyph_defaults (expected non-empty dict)"
+    return {"heroId": hero_id, "tier": tier, "items": items}, None
+
+
+def _run_guild_glyph_phase(
+    client: HWClient,
+    account: str,
+    dry_run: bool,
+    confirm: bool,
+    succeeded: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> None:
+    """ギルド活動の「グリフ強化で 700 アクティビティポイント獲得」を 1 日 1 回実行する。
+
+    - ``guild_glyph_defaults.enabled`` が bool の true（既定 false）のときだけ
+      実行する（``"no"`` 等の真値文字列で誤って有効化されないよう ``is True``
+      で判定する安全ゲート）。
+    - 実行前に対象アカウントの ``clanGetInfo`` を読み、
+      ``response.stat.activityForRuneAvailable`` が true のときだけ
+      ``heroEnchantRune`` を呼ぶ（false = 今日の分は獲得済み）。
+    - 併せて ``serverResetTime`` から現在の活動リセットサイクル開始時刻を求め、
+      ``last_run_at`` がその時刻以降なら実行済みとしてスキップする
+      （フラグ更新遅延や複数プロセスの近接実行による二重消費を防ぐ保険。
+      記録は成功時のみ）。
+    - フラグが取得できない（API エラー・項目欠損）場合は実行せず失敗報告する
+      （判定不能のままグリフ素材を消費しない）。
+    - ``dry_run=True`` では計画表示のみで、操作（書き込み）は行わない。
+      フラグ確認のための ``clanGetInfo``（読み取り）は行う。
+    - 成功は ``succeeded``、失敗は ``failures`` に quest_id=None で積む
+      （``print_quest_failures`` / multi のサマリで他クエストと同じ扱いになる）。
+    """
+    defaults = ensure_guild_glyph_defaults(account)
+    note = defaults.get("note")
+    note_suffix = f" (note: {note})" if note else ""
+
+    if defaults.get("enabled") is not True:
+        if dry_run:
+            print(f"\n🔹 {GUILD_GLYPH_LABEL}: disabled (guild_glyph_defaults.enabled=false)")
+        return
+
+    res = client.clan_get_info()
+    if res.status != ResponseStatus.SUCCESS:
+        error = res.error_name or "-"
+        failures.append(_guild_glyph_failure(account, "clanGetInfo", error))
+        print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: clanGetInfo failed: {error}")
+        return
+
+    response = _guild_glyph_response(res)
+    if response is None:
+        error = "unexpected clanGetInfo response format"
+        failures.append(_guild_glyph_failure(account, "clanGetInfo", error))
+        print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: {error}; skipping.")
+        return
+
+    available = _guild_glyph_available(response)
+    if available is None:
+        error = "response.stat.activityForRuneAvailable not found"
+        failures.append(_guild_glyph_failure(account, "clanGetInfo", error))
+        print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: {error}; skipping.")
+        return
+    if not available:
+        print(f"\nℹ️  [{account}] {GUILD_GLYPH_LABEL}: already earned today (activityForRuneAvailable=false); skipping.")
+        return
+
+    # フラグが true でも、同一リセットサイクル内に既に成功していれば再実行しない
+    # （フラグ更新遅延・複数プロセスの近接実行によるグリフ素材の二重消費防止）。
+    boundary = _guild_glyph_cycle_boundary(response)
+    last_run = _to_int(defaults.get("last_run_at"))
+    if boundary is not None and last_run is not None and last_run >= boundary:
+        at_label = format_create_time(last_run)
+        print(f"\nℹ️  [{account}] {GUILD_GLYPH_LABEL}: already ran this cycle ({at_label}); skipping.")
+        return
+
+    args, error = _guild_glyph_args(defaults)
+    if args is None:
+        failures.append(_guild_glyph_failure(account, "heroEnchantRune", error or "-"))
+        print(f"❌ [{account}] {GUILD_GLYPH_LABEL} cannot execute: {error}")
+        return
+
+    rpc_name = _rpc_display(ApiAction.HERO_ENCHANT_RUNE)
+    if dry_run:
+        print(f"\n🔹 {GUILD_GLYPH_LABEL}: run {rpc_name} {args}{note_suffix} (not earned yet today)")
+        return
+
+    if not confirm:
+        try:
+            answer = input(f"   ⚠️  Run {rpc_name} {args}? [y/N] ")
+        except EOFError:
+            print("   ⛔ No interactive input available; re-run with --yes to proceed unattended.")
+            failures.append(_guild_glyph_failure(account, rpc_name, "no interactive input (use --yes)"))
+            return
+        if answer.strip().lower() not in ("y", "yes"):
+            print(f"   ⏭️  Skipped {rpc_name} (user declined)")
+            failures.append(_guild_glyph_failure(account, rpc_name, "skipped by user"))
+            return
+
+    print(f"\n🔹 [{account}] {GUILD_GLYPH_LABEL}: running {rpc_name} {args}{note_suffix} ...")
+    resp = client.quest_operation(ApiAction.HERO_ENCHANT_RUNE, args)
+    if resp.status == ResponseStatus.SUCCESS:
+        succeeded.append({"account": account, "quest_id": None, "quest_name": GUILD_GLYPH_LABEL})
+        # 成功時のみサイクル内の実行記録を残す（失敗時は次回リトライできる）。
+        set_guild_glyph_defaults(account, "last_run_at", int(time.time()))
+        print(f"   ✅ [{account}] {GUILD_GLYPH_LABEL} done (heroId={args['heroId']} tier={args['tier']}); +700 guild activity points.")
+        return
+    error = resp.error_name or "-"
+    failures.append(_guild_glyph_failure(account, rpc_name, error))
+    print(f"❌ [{account}] {GUILD_GLYPH_LABEL} failed at {rpc_name}: {error}")
 
 
 def print_skipped_quests(account: str, skipped: list[int]) -> None:

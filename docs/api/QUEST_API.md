@@ -52,6 +52,7 @@ title: Quest API Reference
 `10004`=Arena/GA 3回、`10006`=Use emerald exchange、`10007`=Perform 1 summon in the Soul Atrium（召喚・交換の対応は gacha_open / 交換操作のレスポンスで確定）、
 `10024`=Hero's Artifact 1回、`10028`=Titan Artifact、`10030`=Skin 1回、
 `10050`=Earn 1750 Guild Activity points（報酬: consumable 3×10 + gold 10000。target 1750、questGetAll では progress 1858 と超過が含まれる）。
+`10050` はグリフ強化でも進むが、エナジー消費でも加算されるため「今日のグリフを使ったか」の判定には使えない（判定は `clanGetInfo` の `stat.activityForRuneAvailable` を使う。詳細は [GUILD_API.md](GUILD_API.md)）。
 `10033` は dungeonActivity 報酬だが Daily タブには表示されない未分類。
 
 #### ギルドクエスト（2000xxxx/2001xxxx = Sparks of Power）

@@ -60,6 +60,41 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ---
 
+## heroEnchantRune - グリフ（ルーン）強化
+
+ヒーローのグリフ（ルーン）を強化します。`heroGetAll` の各ヒーローの `runes`
+配列が tier 順のグリフ値で、強化すると該当 index の値が増加します
+（実測: `tier: 2` で `runes[2]` が 0 → 18590）。
+
+ギルド活動の「グリフ強化で活動ポイント獲得（1 日 1 回）」の操作として
+`hw-genie quests` から実行できます（`guild_glyph_defaults`）。実行可否は
+`clanGetInfo` の `stat.activityForRuneAvailable` で判定します
+（[GUILD_API.md](GUILD_API.md) 参照）。
+
+### Request Args
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `heroId` | number | ○ | 対象ヒーロー ID |
+| `tier` | number | ○ | グリフのスロット（0 始まり。`heroGetAll` の `runes` の index に対応） |
+| `items` | object | ○ | 消費素材（例: `{"consumable": {"1": 1}}`） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"heroEnchantRune","args":{"heroId":46,"tier":2,"items":{"consumable":{"1":1}}},"ident":"body"}]}'
+```
+
+### Tips
+- 破壊的メソッド（グリフ素材を消費する）。`hw-genie` は
+  `guild_glyph_defaults.enabled=true` かつ `activityForRuneAvailable=true` の
+  ときだけ実行する。
+- レスポンス本文はツールでは使用しない（成功/失敗ステータスのみ参照）。
+
+---
+
 ## titanGetAll - 全タイタン情報取得
 
 所持している全タイタンのステータス、レベル、星ランク等の情報を取得します。

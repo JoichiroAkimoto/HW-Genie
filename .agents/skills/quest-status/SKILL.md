@@ -1,6 +1,6 @@
 ---
 name: quest-status
-description: HW-Genie を使用して未完了のデイリー等クエストの状態を取得・表示します。--execute で QUEST_OPERATIONS 登録済みのデイリーとギルドクエスト（Sparks of Power）を自動完了（操作実行＋questFarm 報酬受領）することもできます。
+description: HW-Genie を使用して未完了のデイリー等クエストの状態を取得・表示します。--execute で QUEST_OPERATIONS 登録済みのデイリーとギルドクエスト（Sparks of Power）、ギルド活動のグリフ強化（heroEnchantRune）を自動完了（操作実行＋questFarm 報酬受領）することもできます。
 ---
 # クエスト状態 Skill (HW-Genie 版)
 
@@ -31,7 +31,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    ```bash
    uv run hw-genie quests -a <ACCOUNT> --raw
    ```
-   - **破壊的操作**（デイリークエスト自動完了）: `--execute` で QUEST_OPERATIONS に登録済みの未完了デイリー（10007/10024/10028/10030/10023）を、操作 API（強化・召喚・購入）→ questFarm で自動クリアします。各ステップ実行前に y/n 確認が入るため、自動実行は追加で `--yes` を指定します（例: `uv run hw-genie quests -a <ACCOUNT> --execute --yes`）。
+   - **破壊的操作**（デイリークエスト自動完了）: `--execute` で QUEST_OPERATIONS に登録済みの未完了デイリー（10007/10024/10028/10030/10023）を、操作 API（強化・召喚・購入）→ questFarm で自動クリアします。`guild_glyph_defaults.enabled=true` のアカウントでは、ギルド活動のグリフ強化（`heroEnchantRune`）も実行します（下記）。各ステップ実行前に y/n 確認が入るため、自動実行は追加で `--yes` を指定します（例: `uv run hw-genie quests -a <ACCOUNT> --execute --yes`）。
    ```bash
    # 実行プランだけ確認（何も実行しない）
    uv run hw-genie quests -a <ACCOUNT> --dry-run
@@ -86,6 +86,18 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
    ```
    - アカウント固有の操作引数は `account_configs` の `quest_defaults` で上書き可能です。上書きキーはステップの args に**既に存在するキー**にのみ適用され（誤ったキーは警告）、マルチステップ（10028 等）では該当する全ステップに適用されます。
    - 10028（Titan Artifact）の `shopBuy` は実行時に **shopGetAll の実在庫から reward/cost を動的解決**します（取得は実行単位で 1 回にキャッシュされ複数クエスト間で共有）。在庫取得失敗（認証以外）時のみコード既定値へフォールバックし、**指定 shop / slot が在庫に無い、または指定 slot が購入済み（bought）の場合は実行せず失敗報告**します（固定 reward での NotAvailable 送信を防止）。購入スキップ運用（10028 専用）: `quest_defaults[10028]` が `enabled:true` かつ `slot` キーありで null 相当 または `amount` キーありで 0 のとき（OR）、1 段目 `shopBuy` をスキップし 2 段目 `titanArtifactLevelUp` のみ実行します（手持ちフラグメントで強化だけ行う魔法値運用。`amount 0` 推奨、`slot null` も可、どちらでもスキップ。`enabled:false` は全体停止）。受理エイリアスの全集合: slot 側は `None` / `"null"` / `"none"` / `"nil"` / `""`（前後空白除去・大文字小文字無視なので `" NULL "` も可）、amount 側は `0` / `0.0` / `"0"` / `"0.0"` / `" 0 "`（前後空白許容。bool の `True`/`False` は数値とみなさず除外）。スキップ**しない**もの: `slot=0`（有効 slot 扱い）、`amount=None` / `amount=""` / `amount=-1`、`shopId=None`（正常 slot/amount なら無関係）、キー欠損（`slot` や `amount` 自体が未設定。`{"enabled": true}` だけではスキップしない）。手持ち不足でレベルアップが失敗したら購入フォールバックせず失敗報告で止めます。スキップで残りステップが 0 になった場合も黙って落とさず失敗報告します（dry-run の計画表示にも残る）。
+- **ギルド活動（グリフ強化で 700 アクティビティポイント）**: 1 日 1 回、グリフ（ルーン）を 1 つ強化するとギルド活動ポイントを獲得できます。クエスト ID に紐づかない独立操作のため、`quest_defaults`（int キー）ではなく **`guild_glyph_defaults`**（config キー `guild_glyph_defaults`、初期状態 `enabled:false`）で制御します。`--init-defaults` で `enabled:false` ＋ 既定引数（`heroId` 46 / `tier` 2 / `items` `{"consumable": {"1": 1}}`）と `note` を投入し、`--set-default glyph ...` で上書き・有効化します:
+    ```bash
+    # 有効化（既定の対象は heroId=46 の tier=2（3 番目）のグリフ）
+    uv run hw-genie quests -a <ACCOUNT> --set-default glyph enabled true
+    # 対象ヒーロー・グリフ位置・消費素材の上書き
+    uv run hw-genie quests -a <ACCOUNT> --set-default glyph heroId 61
+    uv run hw-genie quests -a <ACCOUNT> --set-default glyph tier 4
+    uv run hw-genie quests -a <ACCOUNT> --set-default glyph items '{"consumable": {"1": 1}}'
+    # メモ（可読性専用。例: グリフの内容）
+    uv run hw-genie quests -a <ACCOUNT> --set-default glyph note "Martha Magic Defense +10"
+    ```
+    実行前に対象アカウントの **`clanGetInfo` の `response.stat.activityForRuneAvailable`** を読み、true（今日の分をまだ獲得可能）のときだけ `heroEnchantRune` を 1 回実行します。false（今日は獲得済み）や判定不能（項目欠損・API エラー）では実行しません（不明のままグリフ素材を消費しない）。さらに `serverResetTime` から求めた今日のサイクル開始時刻を境界に、成功時刻 `last_run_at`（内部記録）がサイクル内なら再実行しません（フラグ更新遅延・複数プロセスの近接実行による二重消費の保険）。クエスト `10050`（Earn 1750 Guild Activity points）はエナジー消費でも進むため、グリフ実施の判定には使いません。`quests --execute` / `--dry-run` / `multi quests` / `multi daily` / `multi full` のすべてに組み込まれています（`--dry-run` はフラグ確認の読み取りのみで操作しません。無効時は dry-run に `disabled`、獲得済みなら `already earned today` と表示）。設定値はキーと型を検証します（`enabled` は `true`/`false` のみ、`heroId`/`tier` は整数、`items` は JSON オブジェクト。未知キーや不正値はエラー終了）。
 
 ## 表示内容
 - カテゴリ別（Daily / Weekly / Guild / Main / Event / Battle Pass / One-time / Unclassified）に、クエスト ID・名前・進捗（progress/target）・報酬・createTime を表示。
