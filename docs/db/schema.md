@@ -61,6 +61,7 @@ Unique constraint: `(account_id, config_key)`
 | `"headers"` | `dict[str, str]` | 認証ヘッダー（x-auth-*） |
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
+| `"arena_team_presets"` | `dict[str, dict[str, dict]]` | Arena チームプリセット。`{"arena": {"atk1": {"heroes": [...], "pet": 6008, "favor": {"13": 6003}, "banners": [2]}}}` の形（`pet` / `banners` は任意、Grand Arena 用の `grand` キーは将来拡張） |
 | `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
 
 ---

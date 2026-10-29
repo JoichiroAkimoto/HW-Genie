@@ -43,7 +43,9 @@ ARENA_ATTACK_REFILLABLE_ID = 6
 ARENA_COOLDOWN_REFILLABLE_ID = 5
 ARENA_MAX_ATTEMPTS = 5
 
-# Empirical attackable rank window: own_place ± 21 (read-only live verification).
+# Empirical window observed at ranks 22/34: own_place ± 21. This is only used
+# for user-facing messages; the authoritative per-rank window is whatever
+# ``*CheckTargetRange`` returns and may be wider at lower ranks.
 ARENA_RANGE = 21
 # ``*CheckTargetRange`` rejects 4+ ids with ERROR TooMany.
 MAX_RANGE_IDS = 3
@@ -334,10 +336,12 @@ def parse_range_response(detail: Any) -> dict[int, bool]:
 
 
 def attackable_window(own_place: int) -> tuple[int, int]:
-    """Return the attackable *above-only* rank window as ``(lower, upper)``.
+    """Return the *above-only* rank window as ``(lower, upper)`` for messages.
 
-    The server-side window is ``own_place ± 21``. This feature never targets
-    the same rank or below, so the upper bound is ``own_place - 1``.
+    The ±21 span is empirical from ranks 22/34; the real per-rank window comes
+    from ``*CheckTargetRange`` and may be wider at lower ranks. This feature
+    never targets the same rank or below, so the upper bound is
+    ``own_place - 1``.
     """
     lower = max(1, own_place - ARENA_RANGE)
     upper = max(0, own_place - 1)
@@ -1092,11 +1096,11 @@ def run_arena_attack(
 
     allowed = check_target_range(client, [target.user_id], mode)
     if allowed.get(target.user_id) is not True:
-        lower, upper = attackable_window(fresh_place)
         raise ArenaError(
-            f"Target {_format_target(target)} is outside the attack range for your "
-            f"rank {fresh_place}. Attackable opponents above you: rank {lower}-{upper} "
-            f"(within {fresh_place} - {ARENA_RANGE} of your rank)."
+            f"Target {_format_target(target)} is outside the attack range reported "
+            f"by {mode.check_range.value} for your rank {fresh_place}. The window "
+            "is rank/league-dependent (empirical ±21 at ranks 22/34, wider at lower "
+            "ranks); no attack was sent."
         )
 
     print(f"{Emojis.INFO}Target: {_format_target(target)}")
@@ -1309,11 +1313,10 @@ def run_arena_status(
         cooldown = f"{status.cooldown}s" if status.cooldown else "none"
         print(f"  {Emojis.INFO}Cooldown: {cooldown}")
     print(f"  {Emojis.INFO}Saved team: {_format_team(status.saved_team)}")
-    lower, upper = attackable_window(status.place)
-    if upper >= lower:
-        print(f"  {Emojis.INFO}Attackable above you: rank {lower}-{upper}")
-    else:
-        print(f"  {Emojis.INFO}Attackable above you: none (already rank 1)")
+    print(
+        f"  {Emojis.INFO}Attack window: rank/league-dependent; "
+        "use `arena attack --dry-run` to check a target"
+    )
     return status
 
 

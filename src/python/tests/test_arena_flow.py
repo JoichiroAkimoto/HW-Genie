@@ -484,7 +484,7 @@ def test_run_arena_attack_range_false_does_not_attack(mock_client, mock_sleep):
         run_arena_attack(client, _make_status(place=22), _target(), _team())
     message = str(exc.value)
     assert "22" in message
-    assert "1-21" in message
+    assert "rank/league-dependent" in message
     assert _call_names(mock_call) == [
         "arenaGetAll",
         "arenaFindEnemies",
@@ -533,8 +533,9 @@ def test_run_arena_attack_uses_fresh_place_for_window_message(
     ]
     with pytest.raises(ArenaError) as exc:
         run_arena_attack(client, _make_status(place=22), _target(), _team())
-    assert "rank 18" in str(exc.value)
-    assert "1-17" in str(exc.value)
+    message = str(exc.value)
+    assert "rank 18" in message
+    assert "rank/league-dependent" in message
 
 
 def test_run_arena_attack_rereads_own_place_after_candidate(mock_client, mock_sleep):
