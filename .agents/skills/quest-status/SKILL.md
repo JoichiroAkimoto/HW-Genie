@@ -97,7 +97,7 @@ description: HW-Genie を使用して未完了のデイリー等クエストの�
     # メモ（可読性専用。例: グリフの内容）
     uv run hw-genie quests -a <ACCOUNT> --set-default glyph note "Martha Magic Defense +10"
     ```
-    実行前に対象アカウントの **`clanGetInfo` の `stat.activityForRuneAvailable`** を読み、true（今日の分をまだ獲得可能）のときだけ `heroEnchantRune` を 1 回実行します。false（今日は獲得済み）や判定不能（項目欠損・API エラー）では実行しません（不明のままグリフ素材を消費しない）。日付・時刻ベースのガードは持たず、このサーバーフラグ自体を 1 日 1 回の判定に使います（実測: グリフ強化の直後に true → false へ変化）。クエスト `10050`（Earn 1750 Guild Activity points）はエナジー消費でも進むため、グリフ実施の判定には使いません。`quests --execute` / `--dry-run` / `multi quests` / `multi daily` / `multi full` のすべてに組み込まれています（`--dry-run` はフラグ確認の読み取りのみで操作しません。無効時は dry-run に `disabled`、獲得済みなら `already earned today` と表示）。
+    実行前に対象アカウントの **`clanGetInfo` の `response.stat.activityForRuneAvailable`** を読み、true（今日の分をまだ獲得可能）のときだけ `heroEnchantRune` を 1 回実行します。false（今日は獲得済み）や判定不能（項目欠損・API エラー）では実行しません（不明のままグリフ素材を消費しない）。さらに `serverResetTime` から求めた今日のサイクル開始時刻を境界に、成功時刻 `last_run_at`（内部記録）がサイクル内なら再実行しません（フラグ更新遅延・複数プロセスの近接実行による二重消費の保険）。クエスト `10050`（Earn 1750 Guild Activity points）はエナジー消費でも進むため、グリフ実施の判定には使いません。`quests --execute` / `--dry-run` / `multi quests` / `multi daily` / `multi full` のすべてに組み込まれています（`--dry-run` はフラグ確認の読み取りのみで操作しません。無効時は dry-run に `disabled`、獲得済みなら `already earned today` と表示）。設定値はキーと型を検証します（`enabled` は `true`/`false` のみ、`heroId`/`tier` は整数、`items` は JSON オブジェクト。未知キーや不正値はエラー終了）。
 
 ## 表示内容
 - カテゴリ別（Daily / Weekly / Guild / Main / Event / Battle Pass / One-time / Unclassified）に、クエスト ID・名前・進捗（progress/target）・報酬・createTime を表示。

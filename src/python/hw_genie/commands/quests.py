@@ -227,10 +227,13 @@ QUEST_GUILD_DEFAULTS_KEY = "quest_guild_defaults"
 #   スロット番号（0 始まり。実測: tier=2 が 3 番目のグリフ）。
 #   items はグリフ強化の消費素材（例: {"consumable": {"1": 1}}）。
 # ・note    … DB 可読性用メモ（例: "Martha Magic Defense +10"）
+# ・last_run_at … 最後に heroEnchantRune が成功した Unix 秒（内部記録）。
+#   clanGetInfo の serverResetTime から求めた今日のサイクル開始時刻以上なら
+#   「今日は実行済み」としてスキップする（フラグ更新遅延・複数プロセスの
+#   近接実行による二重消費の保険。成功時のみ記録）。
 # 実行前に対象アカウントの ``clanGetInfo`` を読み、
-# ``stat.activityForRuneAvailable`` が true のときだけ実行する
-# （false = 今日の分は獲得済みなので何もしない）。このフラグが 1 日 1 回の
-# 判定を兼ねるため、日付・時刻によるガードは持たない。
+# ``response.stat.activityForRuneAvailable`` が true のときだけ実行する
+# （false = 今日の分は獲得済みなので何もしない）。
 GUILD_GLYPH_DEFAULTS_KEY = "guild_glyph_defaults"
 
 # グリフ強化レシピの既定値（アカウントごとに ``guild_glyph_defaults`` で上書き可能）。
@@ -796,11 +799,37 @@ def ensure_quest_guild_defaults(account: str) -> dict[str, Any]:
     return SessionManager.repo.update_config_merged(account, QUEST_GUILD_DEFAULTS_KEY, _merge)
 
 
-def get_guild_glyph_defaults(account: str) -> dict[str, Any]:
-    """``account_configs`` の ``guild_glyph_defaults`` を読み込む（未設定は空 dict）。"""
-    data = SessionManager.load(account)
-    raw = data.get(GUILD_GLYPH_DEFAULTS_KEY)
-    return raw if isinstance(raw, dict) else {}
+# guild_glyph_defaults で受け付けるキー。
+# ``last_run_at`` は「同一リセットサイクル内の再実行防止」の内部記録
+# （最後に heroEnchantRune が成功した Unix 秒。手動変更は不要）。
+GUILD_GLYPH_KEYS = ("enabled", "heroId", "tier", "items", "note", "last_run_at")
+
+
+def _validate_guild_glyph_value(key: str, value: Any) -> None:
+    """``guild_glyph_defaults`` の 1 キーの値を検証する（不正は ValueError）。
+
+    破壊的 RPC（グリフ素材の消費）の設定なので、``quest_defaults`` より厳しく
+    検証する。特に ``enabled`` は bool のみ許可する（``"no"`` 等の真値文字列で
+    意図せず有効化されるのを防ぐ）。``items`` は JSON dict を要求する。
+    """
+    if key not in GUILD_GLYPH_KEYS:
+        allowed = ", ".join(GUILD_GLYPH_KEYS)
+        raise ValueError(f"unknown guild_glyph_defaults key {key!r} (allowed: {allowed})")
+    if key == "enabled":
+        if not isinstance(value, bool):
+            raise ValueError("guild_glyph_defaults['enabled'] must be true or false")
+    elif key in ("heroId", "tier", "last_run_at"):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"guild_glyph_defaults[{key!r}] must be an integer")
+    elif key == "items":
+        if not isinstance(value, dict) or not value:
+            raise ValueError(
+                "guild_glyph_defaults['items'] must be a non-empty JSON object "
+                "(e.g. '{\"consumable\": {\"1\": 1}}')"
+            )
+    elif key == "note":
+        if not isinstance(value, str):
+            raise ValueError("guild_glyph_defaults['note'] must be a string")
 
 
 def set_guild_glyph_defaults(account: str, key: str, value: Any) -> Any:
@@ -808,10 +837,13 @@ def set_guild_glyph_defaults(account: str, key: str, value: Any) -> Any:
 
     ``set_quest_defaults`` と同じく、CLI から渡される文字列値は
     ``_parse_config_value`` で解釈する（``items`` の JSON dict も登録可能）。
-    保存は ``update_config_merged`` によるロック付き read-modify-write で行う。
+    保存前に ``_validate_guild_glyph_value`` でキーと型を検証する（不正は
+    ValueError）。保存は ``update_config_merged`` によるロック付き
+    read-modify-write で行う。
     """
     if isinstance(value, str):
         value = _parse_config_value(value)
+    _validate_guild_glyph_value(key, value)
 
     def _merge(existing: Any) -> dict[str, Any]:
         defaults = existing if isinstance(existing, dict) else {}
@@ -1529,18 +1561,41 @@ def _guild_glyph_failure(account: str, step: str, error: str) -> dict[str, Any]:
     }
 
 
-def _guild_glyph_available(res: HWResponse) -> bool | None:
-    """``clanGetInfo`` レスポンスの ``stat.activityForRuneAvailable`` を返す。
+def _guild_glyph_response(res: HWResponse) -> dict[str, Any] | None:
+    """``clanGetInfo`` の ``result.response`` を取り出す（形式不正は None）。
 
-    取得できない（レスポンス形式不正・項目欠損・bool 以外）場合は None を
-    返し、呼び出し側で「判定不能＝実行しない」として扱う。
+    ``HWClient.call`` は単一コール時に ``results[0].result``（= ``{"response":
+    {...}}``）を ``detail`` に格納するため、``stat`` は ``detail["response"]``
+    配下にある。
     """
     detail = res.detail if isinstance(res.detail, dict) else {}
-    stat = detail.get("stat") if isinstance(detail, dict) else None
+    response = detail.get("response")
+    return response if isinstance(response, dict) else None
+
+
+def _guild_glyph_available(response: dict[str, Any]) -> bool | None:
+    """``clanGetInfo`` の ``response.stat.activityForRuneAvailable`` を返す。
+
+    取得できない（項目欠損・bool 以外）場合は None を返し、呼び出し側で
+    「判定不能＝実行しない」として扱う。
+    """
+    stat = response.get("stat")
     if not isinstance(stat, dict):
         return None
     value = stat.get("activityForRuneAvailable")
     return value if isinstance(value, bool) else None
+
+
+def _guild_glyph_cycle_boundary(response: dict[str, Any]) -> int | None:
+    """現在のギルド活動リセットサイクル開始時刻（Unix 秒）を返す。
+
+    ``clanGetInfo`` の ``serverResetTime``（次のサーバーリセット = 02:00 UTC）から
+    24 時間を引いた時刻。取得できない場合は None（サイクルガード無効）。
+    """
+    reset_time = _to_int(response.get("serverResetTime"))
+    if not reset_time:
+        return None
+    return reset_time - 86400
 
 
 def _guild_glyph_args(defaults: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -1574,10 +1629,16 @@ def _run_guild_glyph_phase(
 ) -> None:
     """ギルド活動の「グリフ強化で 700 アクティビティポイント獲得」を 1 日 1 回実行する。
 
-    - ``guild_glyph_defaults.enabled``（既定 false）が安全ゲート。
+    - ``guild_glyph_defaults.enabled`` が bool の true（既定 false）のときだけ
+      実行する（``"no"`` 等の真値文字列で誤って有効化されないよう ``is True``
+      で判定する安全ゲート）。
     - 実行前に対象アカウントの ``clanGetInfo`` を読み、
-      ``stat.activityForRuneAvailable`` が true のときだけ ``heroEnchantRune``
-      を呼ぶ（false = 今日の分は獲得済み。フラグ自体が 1 日 1 回ガード）。
+      ``response.stat.activityForRuneAvailable`` が true のときだけ
+      ``heroEnchantRune`` を呼ぶ（false = 今日の分は獲得済み）。
+    - 併せて ``serverResetTime`` から現在の活動リセットサイクル開始時刻を求め、
+      ``last_run_at`` がその時刻以降なら実行済みとしてスキップする
+      （フラグ更新遅延や複数プロセスの近接実行による二重消費を防ぐ保険。
+      記録は成功時のみ）。
     - フラグが取得できない（API エラー・項目欠損）場合は実行せず失敗報告する
       （判定不能のままグリフ素材を消費しない）。
     - ``dry_run=True`` では計画表示のみで、操作（書き込み）は行わない。
@@ -1589,7 +1650,7 @@ def _run_guild_glyph_phase(
     note = defaults.get("note")
     note_suffix = f" (note: {note})" if note else ""
 
-    if not defaults.get("enabled"):
+    if defaults.get("enabled") is not True:
         if dry_run:
             print(f"\n🔹 {GUILD_GLYPH_LABEL}: disabled (guild_glyph_defaults.enabled=false)")
         return
@@ -1601,14 +1662,30 @@ def _run_guild_glyph_phase(
         print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: clanGetInfo failed: {error}")
         return
 
-    available = _guild_glyph_available(res)
+    response = _guild_glyph_response(res)
+    if response is None:
+        error = "unexpected clanGetInfo response format"
+        failures.append(_guild_glyph_failure(account, "clanGetInfo", error))
+        print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: {error}; skipping.")
+        return
+
+    available = _guild_glyph_available(response)
     if available is None:
-        error = "stat.activityForRuneAvailable not found"
+        error = "response.stat.activityForRuneAvailable not found"
         failures.append(_guild_glyph_failure(account, "clanGetInfo", error))
         print(f"❌ [{account}] {GUILD_GLYPH_LABEL}: {error}; skipping.")
         return
     if not available:
         print(f"\nℹ️  [{account}] {GUILD_GLYPH_LABEL}: already earned today (activityForRuneAvailable=false); skipping.")
+        return
+
+    # フラグが true でも、同一リセットサイクル内に既に成功していれば再実行しない
+    # （フラグ更新遅延・複数プロセスの近接実行によるグリフ素材の二重消費防止）。
+    boundary = _guild_glyph_cycle_boundary(response)
+    last_run = _to_int(defaults.get("last_run_at"))
+    if boundary is not None and last_run is not None and last_run >= boundary:
+        at_label = format_create_time(last_run)
+        print(f"\nℹ️  [{account}] {GUILD_GLYPH_LABEL}: already ran this cycle ({at_label}); skipping.")
         return
 
     args, error = _guild_glyph_args(defaults)
@@ -1638,6 +1715,8 @@ def _run_guild_glyph_phase(
     resp = client.quest_operation(ApiAction.HERO_ENCHANT_RUNE, args)
     if resp.status == ResponseStatus.SUCCESS:
         succeeded.append({"account": account, "quest_id": None, "quest_name": GUILD_GLYPH_LABEL})
+        # 成功時のみサイクル内の実行記録を残す（失敗時は次回リトライできる）。
+        set_guild_glyph_defaults(account, "last_run_at", int(time.time()))
         print(f"   ✅ [{account}] {GUILD_GLYPH_LABEL} done (heroId={args['heroId']} tier={args['tier']}); +700 guild activity points.")
         return
     error = resp.error_name or "-"

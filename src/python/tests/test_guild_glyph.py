@@ -7,15 +7,24 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from hw_genie.commands.quests import (
+    GUILD_GLYPH_DEFAULTS_KEY,
     GUILD_GLYPH_LABEL,
+    _guild_glyph_available,
+    _guild_glyph_cycle_boundary,
+    _guild_glyph_response,
     ensure_guild_glyph_defaults,
-    get_guild_glyph_defaults,
     run_quest_execute,
     set_guild_glyph_defaults,
 )
 from hw_genie.core.client import ApiAction, HWClient, ResponseStatus
 from hw_genie.core.session_manager import SessionManager
+
+
+# 実測値（2026-10-30 02:00 UTC = 次のサーバーリセット時刻）
+SERVER_RESET_TIME = 1793325600
 
 
 # --- ヘルパー ---
@@ -41,6 +50,20 @@ def _register(account: str = "Alex") -> None:
     SessionManager.save(account, {"player": {"id": account, "name": account}, "headers": {"x-auth-token": "test"}})
 
 
+def _stored(account: str = "Alex") -> dict:
+    """保存済みの guild_glyph_defaults を読む（公開 getter は持たない）。"""
+    return SessionManager.load(account).get(GUILD_GLYPH_DEFAULTS_KEY) or {}
+
+
+def _force_config(account: str = "Alex", **values: object) -> None:
+    """検証を迂回して設定を直接書き込む（手編集 DB の再現用）。"""
+    SessionManager.repo.update_config_merged(
+        account,
+        GUILD_GLYPH_DEFAULTS_KEY,
+        lambda existing: {**(existing if isinstance(existing, dict) else {}), **values},
+    )
+
+
 def _enable(account: str = "Alex", **overrides: object) -> None:
     _register(account)
     set_guild_glyph_defaults(account, "enabled", True)
@@ -48,22 +71,30 @@ def _enable(account: str = "Alex", **overrides: object) -> None:
         set_guild_glyph_defaults(account, key, value)
 
 
-def _clan_response(flag: bool | None) -> MagicMock:
+def _clan_response(
+    flag: bool | None,
+    reset_time: int | None = SERVER_RESET_TIME,
+) -> MagicMock:
+    """実 API 形状（``result.response``）の clanGetInfo レスポンスを作る。"""
     stat = {} if flag is None else {"activityForRuneAvailable": flag}
-    return _ok_response({"stat": stat})
+    response: dict = {"stat": stat}
+    if reset_time is not None:
+        response["serverResetTime"] = reset_time
+    return _ok_response({"response": response})
 
 
 def _make_client(
     quests: list[dict] | None = None,
     flag: bool | None = True,
     account: str = "Alex",
+    reset_time: int | None = SERVER_RESET_TIME,
 ) -> HWClient:
     _register(account)
     client = HWClient(headers={"x-auth-token": "test"})
     client.quest_get_all = MagicMock(return_value=_ok_response({"response": quests or []}))
     client.quest_farm = MagicMock(return_value=_ok_response({}))
     client.call = MagicMock(return_value=_ok_response({"response": {}}))
-    client.clan_get_info = MagicMock(return_value=_clan_response(flag))
+    client.clan_get_info = MagicMock(return_value=_clan_response(flag, reset_time))
     client.quest_operation = MagicMock(return_value=_ok_response({}))
     return client
 
@@ -80,7 +111,7 @@ def test_ensure_seeds_disabled_with_recipe_defaults():
     assert defaults["tier"] == 2
     assert defaults["items"] == {"consumable": {"1": 1}}
     assert defaults["note"] == ApiAction.HERO_ENCHANT_RUNE.value
-    assert get_guild_glyph_defaults("Alex") == defaults
+    assert _stored("Alex") == defaults
 
 
 def test_ensure_preserves_existing_values():
@@ -119,7 +150,7 @@ def test_set_default_parses_json_items():
     stored = set_guild_glyph_defaults("Alex", "items", '{"consumable": {"1": 2}}')
 
     assert stored == {"consumable": {"1": 2}}
-    assert get_guild_glyph_defaults("Alex")["items"] == {"consumable": {"1": 2}}
+    assert _stored("Alex")["items"] == {"consumable": {"1": 2}}
 
 
 # --- 実行ゲート ---
@@ -241,9 +272,9 @@ def test_non_bool_flag_not_executed():
     assert failures[0]["step"] == "clanGetInfo"
 
 
-def test_invalid_items_not_executed(capsys):
+def test_invalid_items_in_db_not_executed(capsys):
     _enable()
-    set_guild_glyph_defaults("Alex", "items", "oops")
+    _force_config(items="oops")  # 手編集 DB の再現（setter は検証で拒否する）
     client = _make_client(flag=True)
 
     _, failures, _ = run_quest_execute(client, account_alias="Alex", confirm=True)
@@ -254,15 +285,28 @@ def test_invalid_items_not_executed(capsys):
     assert "cannot execute" in capsys.readouterr().out
 
 
-def test_invalid_hero_id_not_executed():
+def test_invalid_hero_id_in_db_not_executed():
     _enable()
-    set_guild_glyph_defaults("Alex", "heroId", "abc")
+    _force_config(heroId="abc")
     client = _make_client(flag=True)
 
     _, failures, _ = run_quest_execute(client, account_alias="Alex", confirm=True)
 
     client.quest_operation.assert_not_called()
     assert "heroId" in failures[0]["error"]
+
+
+def test_non_bool_enabled_in_db_not_executed():
+    """手編集で enabled が真値文字列になっていても実行しない（安全側）。"""
+    _enable()
+    _force_config(enabled="true")
+    client = _make_client(flag=True)
+
+    _, failures, _ = run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    client.clan_get_info.assert_not_called()
+    client.quest_operation.assert_not_called()
+    assert failures == []
 
 
 def test_non_dict_clan_detail_not_executed():
@@ -274,6 +318,203 @@ def test_non_dict_clan_detail_not_executed():
 
     client.quest_operation.assert_not_called()
     assert failures[0]["step"] == "clanGetInfo"
+    assert "unexpected clanGetInfo response format" in failures[0]["error"]
+
+
+# --- 設定の検証 ---
+
+
+def test_set_rejects_unknown_key():
+    _register()
+    with pytest.raises(ValueError, match="unknown guild_glyph_defaults key"):
+        set_guild_glyph_defaults("Alex", "heroid", 61)
+
+
+def test_set_rejects_non_bool_enabled():
+    _register()
+    with pytest.raises(ValueError, match="must be true or false"):
+        set_guild_glyph_defaults("Alex", "enabled", "no")
+
+
+def test_set_rejects_non_int_hero_id():
+    _register()
+    with pytest.raises(ValueError, match="must be an integer"):
+        set_guild_glyph_defaults("Alex", "heroId", "abc")
+
+
+def test_set_rejects_empty_items():
+    _register()
+    with pytest.raises(ValueError, match="items"):
+        set_guild_glyph_defaults("Alex", "items", {})
+
+
+def test_set_rejects_non_string_note():
+    _register()
+    with pytest.raises(ValueError, match="note"):
+        set_guild_glyph_defaults("Alex", "note", 123)
+
+
+# --- サイクル内の再実行防止（last_run_at） ---
+
+
+def test_last_run_at_blocks_rerun_even_if_flag_true(capsys):
+    _enable()
+    _force_config(last_run_at=SERVER_RESET_TIME - 86400 + 60)  # 今サイクル内
+    client = _make_client(flag=True)
+
+    succeeded, failures, _ = run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    client.quest_operation.assert_not_called()
+    assert succeeded == []
+    assert failures == []
+    assert "already ran this cycle" in capsys.readouterr().out
+
+
+def test_last_run_at_previous_cycle_allows_run():
+    _enable()
+    _force_config(last_run_at=SERVER_RESET_TIME - 86400 - 1)  # 前サイクル
+    client = _make_client(flag=True)
+
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    client.quest_operation.assert_called_once()
+
+
+def test_last_run_at_guard_disabled_without_reset_time():
+    _enable()
+    _force_config(last_run_at=SERVER_RESET_TIME + 10_000)
+    client = _make_client(flag=True, reset_time=None)
+
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    client.quest_operation.assert_called_once()
+
+
+def test_success_stores_last_run_at():
+    _enable()
+    client = _make_client(flag=True)
+
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    assert isinstance(_stored("Alex").get("last_run_at"), int)
+
+
+def test_failure_does_not_store_last_run_at():
+    _enable()
+    client = _make_client(flag=True)
+    client.quest_operation = MagicMock(return_value=_error_response("NotEnough"))
+
+    run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    assert _stored("Alex").get("last_run_at") is None
+
+
+# --- 実 API 形状（result.response）の取り回し ---
+
+
+def test_clan_get_info_unwraps_real_response_envelope():
+    """call() が返す ``{"response": {...}}`` から stat/serverResetTime を読む。"""
+    client = HWClient(headers={"x-auth-token": "test"})
+    http = MagicMock()
+    http.status_code = 200
+    http.raise_for_status = MagicMock()
+    http.json.return_value = {
+        "results": [
+            {
+                "ident": "body",
+                "result": {
+                    "response": {
+                        "stat": {"activityForRuneAvailable": True},
+                        "serverResetTime": SERVER_RESET_TIME,
+                    }
+                },
+            }
+        ]
+    }
+    client.session.post = MagicMock(return_value=http)
+
+    response = _guild_glyph_response(client.clan_get_info())
+
+    assert response is not None
+    assert _guild_glyph_available(response) is True
+    assert _guild_glyph_cycle_boundary(response) == SERVER_RESET_TIME - 86400
+
+
+def test_clan_get_info_real_envelope_drives_execution():
+    """実形状のレスポンスで heroEnchantRune まで到達する（BLOCKER 回帰防止）。"""
+    _enable()
+    client = _make_client(flag=True)
+    client.clan_get_info = MagicMock(return_value=_clan_response(True))
+
+    succeeded, failures, _ = run_quest_execute(client, account_alias="Alex", confirm=True)
+
+    client.quest_operation.assert_called_once()
+    assert failures == []
+    assert len(succeeded) == 1
+
+
+# --- CLI（--set-default glyph / --init-defaults） ---
+
+
+def test_cmd_quests_set_default_glyph_rejects_bad_value(capsys):
+    import hw_genie.main as main_mod
+
+    _register()
+
+    class _Args:
+        account = "Alex"
+        edit_defaults = False
+        init_defaults = False
+        set_default = ("glyph", "enabled", "no")
+        execute = False
+        dry_run = False
+        yes = False
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.cmd_quests(_Args())
+
+    assert exc_info.value.code == 1
+    assert "must be true or false" in capsys.readouterr().out
+
+
+def test_cmd_quests_set_default_glyph_stores_value(capsys):
+    import hw_genie.main as main_mod
+
+    _register()
+
+    class _Args:
+        account = "Alex"
+        edit_defaults = False
+        init_defaults = False
+        set_default = ("glyph", "enabled", "true")
+        execute = False
+        dry_run = False
+        yes = False
+
+    main_mod.cmd_quests(_Args())
+
+    assert _stored("Alex")["enabled"] is True
+    assert "Registered guild_glyph_defaults[enabled]" in capsys.readouterr().out
+
+
+def test_cmd_quests_init_defaults_seeds_glyph(capsys):
+    import hw_genie.main as main_mod
+
+    _register()
+
+    class _Args:
+        account = "Alex"
+        edit_defaults = False
+        init_defaults = True
+        set_default = None
+        execute = False
+        dry_run = False
+        yes = False
+
+    main_mod.cmd_quests(_Args())
+
+    assert _stored("Alex")["enabled"] is False
+    assert "guild glyph activity enabled=False" in capsys.readouterr().out
 
 
 # --- dry-run ---

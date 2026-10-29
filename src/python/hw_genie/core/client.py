@@ -426,8 +426,9 @@ class HWClient:
     def clan_get_info(self) -> HWResponse:
         """所属クラン（ギルド）の情報を取得する。
 
-        レスポンスの ``stat.activityForRuneAvailable`` が「今日のグリフ強化で
-        得られるギルド活動ポイントをまだ獲得できるか」を表す（実測で確認）。
+        レスポンス（``detail["response"]``）の ``stat.activityForRuneAvailable``
+        が「今日のグリフ強化で得られるギルド活動ポイントをまだ獲得できるか」を
+        表す（実測で確認）。``serverResetTime`` は次のサーバーリセット時刻。
         """
         payload = {"calls": [{"name": ApiAction.CLAN_GET_INFO, "args": {}, "ident": "body"}]}
         return self.call(payload)

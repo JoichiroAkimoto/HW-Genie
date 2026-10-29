@@ -817,7 +817,11 @@ def cmd_quests(args):
             stored = set_quest_guild_defaults(account, key, value)
             print(f"ℹ️  Registered quest_guild_defaults[{key}] = {stored} ({type(stored).__name__}) for {account}")
         elif str(quest_id) == "glyph":
-            stored = set_guild_glyph_defaults(account, key, value)
+            try:
+                stored = set_guild_glyph_defaults(account, key, value)
+            except ValueError as exc:
+                print(f"Error: {exc}")
+                sys.exit(1)
             print(f"ℹ️  Registered guild_glyph_defaults[{key}] = {stored} ({type(stored).__name__}) for {account}")
         else:
             stored = set_quest_defaults(account, int(quest_id), key, value)
