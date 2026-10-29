@@ -50,6 +50,19 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _non_negative_int(value: str) -> int:
+    """argparse type: an integer >= 0."""
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid non-negative int value: {value!r}"
+        ) from exc
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative: {value!r}")
+    return n
+
+
 def _run_host_identifier() -> str:
     """Return the execution environment identifier (``user@host``) for run_logs.
 
@@ -107,6 +120,19 @@ def _ensure_session(args) -> dict[str, str]:
         print(f"Error: Session not found for account '{resolved}'. Please provide a valid curl with --curl.")
         sys.exit(1)
     return headers
+
+
+def _require_registered_account(account: str) -> None:
+    """Exit with a clear error when the account has no DB row."""
+    from hw_genie.core.session_manager import SessionManager
+
+    if not SessionManager.load(account):
+        print(
+            f"Error: Account '{account}' is not registered in the database. "
+            "Use `auth --list` to see registered accounts.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def cmd_auth(args):
@@ -537,6 +563,217 @@ def cmd_seers_game(args):
         and not is_clean_depletion(result.last_error)
     ):
         print(f"Error: Seer's Game failed: {result.last_error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_status(args):
+    """Show Arena rank, attempts/cooldown, saved team, and attack window."""
+    from hw_genie.commands.arena import ArenaError, run_arena_status
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account) if args.account else None
+    try:
+        run_arena_status(client, account_alias=alias)
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_top(args):
+    """Show the top-50 Arena ranking."""
+    from hw_genie.commands.arena import ArenaError, run_arena_top
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        run_arena_top(client, limit=args.limit, raw=bool(args.raw))
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_find_enemies(args):
+    """Call arenaFindEnemies once and save the candidate snapshot."""
+    from hw_genie.commands.arena import ArenaError, run_arena_find_enemies
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_arena_find_enemies(client, account, raw=bool(args.raw))
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_snapshot(args):
+    """Show the saved snapshot alongside current own/target ranks."""
+    from hw_genie.commands.arena import ArenaError, run_arena_snapshot
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_arena_snapshot(client, account)
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_team_set(args):
+    """Create/update a named Arena team preset."""
+    from hw_genie.commands.arena import (
+        ArenaError,
+        parse_favor_args,
+        run_arena_team_set,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args)) if args.from_saved else None
+    try:
+        favor = parse_favor_args(args.favor)
+        run_arena_team_set(
+            account,
+            args.name,
+            client=client,
+            from_saved=bool(args.from_saved),
+            heroes=args.heroes,
+            pet=args.pet,
+            banner=args.banner,
+            favor=favor,
+        )
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_team_list(args):
+    """List stored Arena team presets."""
+    from hw_genie.commands.arena import ArenaError, run_arena_team_list
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        run_arena_team_list(account)
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_team_remove(args):
+    """Delete a stored Arena team preset."""
+    from hw_genie.commands.arena import ArenaError, run_arena_team_remove
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        run_arena_team_remove(account, args.name)
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_arena_attack(args):
+    """Attack a player ranked above the current account."""
+    from hw_genie.commands.arena import (
+        ArenaError,
+        fetch_arena_status,
+        load_arena_presets,
+        load_arena_snapshot,
+        parse_favor_args,
+        resolve_snapshot_target,
+        resolve_target,
+        resolve_team,
+        run_arena_attack,
+        run_arena_attack_from_snapshot,
+        validate_partial_team,
+    )
+
+    account = resolve_account(args.account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        from_snapshot = bool(getattr(args, "from_snapshot", False))
+        force = bool(getattr(args, "force", False))
+        if force and not from_snapshot:
+            raise ArenaError("--force is only valid with --from-snapshot.")
+
+        favor = parse_favor_args(args.favor)
+        # Validate direct flags before the first API call. Fields omitted here
+        # are filled from the preset/saved team later (favor merge included).
+        validate_partial_team(
+            heroes=args.heroes,
+            pet=args.pet,
+            banner=args.banner,
+            favor=favor,
+        )
+        preset = None
+        if args.team:
+            presets = load_arena_presets(account)
+            preset = presets.get(args.team)
+            if preset is None:
+                raise ArenaError(
+                    f"Unknown Arena team preset '{args.team}'. Use `arena team list`."
+                )
+        snapshot = None
+        if from_snapshot:
+            snapshot = load_arena_snapshot(account)
+            if snapshot is None:
+                raise ArenaError(
+                    "No saved Arena snapshot. Run `arena find-enemies` first."
+                )
+        status = fetch_arena_status(client)
+        if status.saved_team is None and preset is None and args.heroes is not None:
+            print(
+                "⚠️  Could not read the saved Arena team; pet/banner/favor fall "
+                "back to --pet/--banner/--favor only.",
+                file=sys.stderr,
+            )
+        team, missing = resolve_team(
+            heroes=args.heroes,
+            pet=args.pet,
+            banner=args.banner,
+            favor=favor,
+            preset=preset,
+            saved=status.saved_team,
+        )
+        if missing:
+            print(
+                f"⚠️  No favor entry for heroes: {', '.join(map(str, missing))}",
+                file=sys.stderr,
+            )
+        if from_snapshot:
+            target = resolve_snapshot_target(
+                snapshot, rank=args.rank, user_id=args.user_id
+            )
+            run_arena_attack_from_snapshot(
+                client,
+                status,
+                target,
+                team,
+                dry_run=bool(args.dry_run),
+                force=force,
+            )
+        else:
+            target = resolve_target(
+                client,
+                status,
+                rank=args.rank,
+                user_id=args.user_id,
+                candidate_retries=args.candidate_retries,
+            )
+            run_arena_attack(
+                client,
+                status,
+                target,
+                team,
+                dry_run=bool(args.dry_run),
+                candidate_retries=args.candidate_retries,
+            )
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1629,6 +1866,131 @@ def main():
         help="Max games to play (default: until coins run out)",
     )
     p_seers.set_defaults(func=cmd_seers_game)
+
+    # Arena (status / top / team presets / targeted attack)
+    # NOTE: do not put parents=[parent_parser] on the intermediate `arena` /
+    # `arena team` parsers. argparse would parse `-a` there and the leaf
+    # subparser's default (None) would overwrite it. Leaves inherit it instead.
+    p_arena = subparsers.add_parser(
+        "arena", help="Arena operations (status/top/team/attack)"
+    )
+    arena_sub = p_arena.add_subparsers(dest="arena_type", required=True)
+
+    p_arena_status = arena_sub.add_parser(
+        "status", parents=[parent_parser], help="Show Arena rank, attempts and saved team"
+    )
+    p_arena_status.set_defaults(func=cmd_arena_status)
+
+    p_arena_top = arena_sub.add_parser(
+        "top", parents=[parent_parser], help="Show the Arena top-50 ranking"
+    )
+    p_arena_top.add_argument(
+        "--limit", type=_positive_int, default=None, help="Max rows to show (default: all returned)"
+    )
+    p_arena_top.add_argument("--raw", action="store_true", help="Print the raw topGet response as JSON")
+    p_arena_top.set_defaults(func=cmd_arena_top)
+
+    p_arena_find = arena_sub.add_parser(
+        "find-enemies",
+        parents=[parent_parser],
+        help="(experimental) Call arenaFindEnemies once and save the candidate snapshot",
+    )
+    p_arena_find.add_argument(
+        "--raw", action="store_true", help="Print the saved snapshot as JSON"
+    )
+    p_arena_find.set_defaults(func=cmd_arena_find_enemies)
+
+    p_arena_snapshot = arena_sub.add_parser(
+        "snapshot",
+        parents=[parent_parser],
+        help="(experimental) Show the saved snapshot against current own/target ranks",
+    )
+    p_arena_snapshot.set_defaults(func=cmd_arena_snapshot)
+
+    p_arena_team = arena_sub.add_parser(
+        "team", help="Manage named Arena team presets"
+    )
+    arena_team_sub = p_arena_team.add_subparsers(dest="arena_team_action", required=True)
+
+    p_arena_team_set = arena_team_sub.add_parser(
+        "set", parents=[parent_parser], help="Create/update a team preset"
+    )
+    p_arena_team_set.add_argument("name", help="Preset name (e.g. atk1)")
+    team_source = p_arena_team_set.add_mutually_exclusive_group(required=True)
+    team_source.add_argument(
+        "--from-saved", action="store_true", help="Import the in-game saved Arena team"
+    )
+    team_source.add_argument(
+        "--heroes", nargs=5, type=int, metavar="HERO_ID", help="Exactly 5 hero IDs"
+    )
+    p_arena_team_set.add_argument("--pet", type=int, help="Pet ID (>= 6000)")
+    p_arena_team_set.add_argument("--banner", type=int, help="Banner ID")
+    p_arena_team_set.add_argument(
+        "--favor", action="append", metavar="HERO=PATRON", help="Favor patron (repeatable)"
+    )
+    p_arena_team_set.set_defaults(func=cmd_arena_team_set)
+
+    p_arena_team_list = arena_team_sub.add_parser(
+        "list", parents=[parent_parser], help="List team presets"
+    )
+    p_arena_team_list.set_defaults(func=cmd_arena_team_list)
+
+    p_arena_team_remove = arena_team_sub.add_parser(
+        "remove", parents=[parent_parser], help="Delete a team preset"
+    )
+    p_arena_team_remove.add_argument("name", help="Preset name")
+    p_arena_team_remove.set_defaults(func=cmd_arena_team_remove)
+
+    from hw_genie.commands.arena import DEFAULT_CANDIDATE_RETRIES
+
+    p_arena_attack = arena_sub.add_parser(
+        "attack", parents=[parent_parser], help="Attack a player ranked above you"
+    )
+    target_group = p_arena_attack.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--rank", type=_positive_int, help="Target rank (must be above yours)")
+    target_group.add_argument(
+        "--user-id", dest="user_id", type=_positive_int, help="Target userId (must be above yours)"
+    )
+    p_arena_attack.add_argument("--team", help="Team preset name (default: in-game saved Arena team)")
+    p_arena_attack.add_argument(
+        "--heroes", nargs=5, type=int, metavar="HERO_ID", help="Override with exactly 5 hero IDs"
+    )
+    p_arena_attack.add_argument("--pet", type=int, help="Override pet ID (>= 6000)")
+    p_arena_attack.add_argument("--banner", type=int, help="Override banner ID")
+    p_arena_attack.add_argument(
+        "--favor", action="append", metavar="HERO=PATRON", help="Override favor patron (repeatable)"
+    )
+    p_arena_attack.add_argument(
+        "--dry-run", action="store_true", help="Resolve target and check range without attacking"
+    )
+    p_arena_attack.add_argument(
+        "--from-snapshot",
+        action="store_true",
+        help=(
+            "Attack a target from the saved snapshot without calling "
+            "arenaFindEnemies (experimental)"
+        ),
+    )
+    p_arena_attack.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "With --from-snapshot, send even when arenaCheckTargetRange is false "
+            "(upper-only is still enforced)"
+        ),
+    )
+    p_arena_attack.add_argument(
+        "--candidate-retries",
+        type=_non_negative_int,
+        default=DEFAULT_CANDIDATE_RETRIES,
+        metavar="N",
+        help=(
+            "Extra arenaFindEnemies refreshes while waiting for the target to "
+            "appear in the current candidate list (default: "
+            f"{DEFAULT_CANDIDATE_RETRIES}; not used with --from-snapshot)"
+        ),
+    )
+    p_arena_attack.set_defaults(func=cmd_arena_attack)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES

@@ -61,6 +61,8 @@ Unique constraint: `(account_id, config_key)`
 | `"headers"` | `dict[str, str]` | 認証ヘッダー（x-auth-*） |
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
+| `"arena_team_presets"` | `dict[str, dict[str, dict]]` | Arena チームプリセット。`{"arena": {"atk1": {"heroes": [...], "pet": 6008, "favor": {"13": 6003}, "banners": [2]}}}` の形（`pet` / `banners` は任意、Grand Arena 用の `grand` キーは将来拡張） |
+| `"arena_snapshot"` | `dict[str, dict]` | 手動検証用の直近 `arenaFindEnemies` スナップショット。`{"arena": {"saved_at": "2026-10-29T16:10:15+09:00", "own_place": 16, "candidates": [{"user_id": 111, "place": 4, "name": "Bob", "power": 5000}]}}` |
 | `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
 
 ---

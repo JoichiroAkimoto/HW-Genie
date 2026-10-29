@@ -168,6 +168,16 @@ class PlayerStatus:
 
 class ApiAction(str, Enum):
     ARENA_GET_ALL = "arenaGetAll"
+    ARENA_FIND_ENEMIES = "arenaFindEnemies"
+    ARENA_CHECK_TARGET_RANGE = "arenaCheckTargetRange"
+    ARENA_ATTACK = "arenaAttack"
+    GRAND_FIND_ENEMIES = "grandFindEnemies"
+    GRAND_CHECK_TARGET_RANGE = "grandCheckTargetRange"
+    GRAND_ATTACK = "grandAttack"
+    TOP_GET = "topGet"
+    TEAM_GET_ALL = "teamGetAll"
+    TEAM_GET_FAVOR = "teamGetFavor"
+    TEAM_GET_BANNERS = "team_getBanners"
     MISSION_GET_ALL = "missionGetAll"
     MISSION_RAID = "missionRaid"
     QUEST_GET_ALL = "questGetAll"
@@ -206,6 +216,8 @@ class ErrorName(str, Enum):
     NOT_ENOUGH_STAMINA = "notEnoughStamina"
     LIMIT_REACHED = "limitReached"
     NOT_ENOUGH = "NotEnough"
+    TOO_MANY = "TooMany"
+    REFILLABLE = "Refillable"
 
 
 @dataclass
@@ -270,16 +282,26 @@ class HWClient:
         headers["x-request-id"] = str(self.request_id)
         return headers
 
-    def call(self, payload: dict[str, Any]) -> HWResponse:
+    def call(
+        self, payload: dict[str, Any], *, max_retries: int | None = None
+    ) -> HWResponse:
         """
         APIを呼び出し、統一されたエラーハンドリングを行う。
         一時的なネットワークエラーやレートリミットに対してはリトライを行う。
+
+        Args:
+            payload: RPC payload.
+            max_retries: Retry budget for transient errors. ``None`` keeps the
+                default :attr:`MAX_RETRIES` behaviour; ``0`` means a single
+                attempt (required for non-idempotent calls such as attacks,
+                where a retry could consume a second attempt).
 
         Returns:
             HWResponse オブジェクト
         Raises:
             HWAuthError: 認証エラーが発生した場合
         """
+        retries = self.MAX_RETRIES if max_retries is None else max(0, int(max_retries))
         headers = self.get_headers()
         current_request_id = self.request_id
 
@@ -372,7 +394,7 @@ class HWClient:
                         )
 
                 attempt += 1
-                if attempt > self.MAX_RETRIES:
+                if attempt > retries:
                     response_text = ""
                     if isinstance(e, HTTPError) and e.response is not None:
                         response_text = f" | Response: {e.response.text[:500]}"
