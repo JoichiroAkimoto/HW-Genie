@@ -658,7 +658,7 @@ def toe_routine(
     threshold: int = 250,
     auth_server_url: str = "http://127.0.0.1:8765",
     max_total_attempts: int | None = None,
-    end_on_loss: bool = True,
+    end_on_loss: bool | None = None,
     bank_best_loss: bool = True,
     progress: str = "verbose",
     probe_bridge: bool = True,
@@ -673,8 +673,15 @@ def toe_routine(
     queue entry (the server enforces the account match with a claimed_by
     guard), so parallel runs behave like the other modes: ``--parallel``
     wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
-    Losing sims bank ``EndBattle`` by default (``end_on_loss=True``);
-    pass ``False`` (CLI ``--no-end-on-loss``) for faster no-banking sweeps.
+    Loss banking follows ``end_on_loss``: ``None`` (CLI default) banks every
+    verified loss, ``False`` (``--no-end-on-loss``) abandons every
+    non-improving loss (faster sweeps, ``--no-bank-best-loss`` also disables
+    the improving-loss banking), ``True`` (``--end-on-loss``) banks them all.
+    A pass with no wins keeps sweeping while any banked EndBattle raised a
+    rival's attackScore (``earned`` > 0) and stops once a full pass makes no
+    progress. After each account the bridge's per-job timing breakdown is
+    printed (hybrid
+    only, ``quiet`` suppresses).
 
     ``progress`` selects output compactness (``quiet``/``line``/``verbose``;
     unknown values fall back to ``verbose``). In ``line`` mode all workers
@@ -691,7 +698,7 @@ def toe_routine(
         returned by ``run_titan_arena_tier``.
     """
     from hw_genie.battle.engine import get_default_engine
-    from hw_genie.commands.titan_arena import run_titan_arena_tier
+    from hw_genie.commands.titan_arena import report_bridge_timing, run_titan_arena_tier
 
     _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
     _dashboard = ToeProgressDashboard() if _mode == "line" else None
@@ -712,34 +719,37 @@ def toe_routine(
         else:
             eng = get_default_engine(mode=engine)
         try:
-            return run_titan_arena_tier(
-                client,
-                titans=None,
-                engine=eng,
-                attack_score_threshold=threshold,
-                seeds_per_team=seeds_per_team,
-                end_on_loss=end_on_loss,
-                bank_best_loss=bank_best_loss,
-                max_total_attempts=max_total_attempts,
-                account_label=account,
-                progress=_mode,
-                dashboard=_dashboard,
-            )
-        except TypeError:
-            # Backward compat: older/stubbed run_titan_arena_tier without
-            # progress/dashboard/bank_best_loss/end_on_loss kwargs (e.g. test
-            # doubles). The retry intentionally omits the new kwargs so old
-            # doubles keep working; the production path above already passes
-            # them (with the current defaults: banking enabled).
-            return run_titan_arena_tier(
-                client,
-                titans=None,
-                engine=eng,
-                attack_score_threshold=threshold,
-                seeds_per_team=seeds_per_team,
-                max_total_attempts=max_total_attempts,
-                account_label=account,
-            )
+            try:
+                return run_titan_arena_tier(
+                    client,
+                    titans=None,
+                    engine=eng,
+                    attack_score_threshold=threshold,
+                    seeds_per_team=seeds_per_team,
+                    end_on_loss=end_on_loss,
+                    bank_best_loss=bank_best_loss,
+                    max_total_attempts=max_total_attempts,
+                    account_label=account,
+                    progress=_mode,
+                    dashboard=_dashboard,
+                )
+            except TypeError:
+                # Backward compat: older/stubbed run_titan_arena_tier without
+                # progress/dashboard/bank_best_loss/end_on_loss kwargs (e.g. test
+                # doubles). The retry intentionally omits the new kwargs so old
+                # doubles keep working; the production path above already passes
+                # them (with the current defaults: banking enabled).
+                return run_titan_arena_tier(
+                    client,
+                    titans=None,
+                    engine=eng,
+                    attack_score_threshold=threshold,
+                    seeds_per_team=seeds_per_team,
+                    max_total_attempts=max_total_attempts,
+                    account_label=account,
+                )
+        finally:
+            report_bridge_timing(eng, account, _mode)
 
     run.dashboard = _dashboard  # type: ignore[attr-defined]
     return run
@@ -1269,6 +1279,10 @@ def summarize_toe(
       summary carries real ``errors``, or rivals were attempted but none
       was won and the tier did not complete.
 
+    A non-fatal ``⚠️ Raid errors (N)`` footer lists accounts whose raid
+    API/payload failed but whose per-rival fallback continued; those accounts
+    stay in the ``ok``/``interrupted``/``failed`` buckets above.
+
     The interrupt marker itself in ``errors`` never fails the account;
     only real bridge/API errors do. A summary with ``remaining_rivals
     == 0`` means fully cleared and counts as ok even without
@@ -1293,6 +1307,7 @@ def summarize_toe(
     ok = 0
     interrupted: list[str] = []
     failed: list[str] = []
+    raid_warn: list[str] = []
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is not None and _is_toe_interrupt_exc(err):
@@ -1305,6 +1320,11 @@ def summarize_toe(
             completed = "✅" if res.get("completed_tier") else "-"
             errors = res.get("errors", [])
             real_errors = _toe_real_errors(errors)
+            raid_errors = res.get("raid_errors") or []
+            if raid_errors:
+                # Raid API/payload failures are surfaced, but a working
+                # per-rival fallback must not fail the account.
+                raid_warn.append(f"{account} ({len(raid_errors)})")
             tier = res.get("final_tier")
             remaining = res.get("remaining_rivals")
             rows.append([
@@ -1356,6 +1376,8 @@ def summarize_toe(
             print(" | ".join(_pad(c, widths[i]) for i, c in enumerate(r)))
     if interrupted:
         print(f"⏸ Interrupted ({len(interrupted)}): {', '.join(interrupted)}")
+    if raid_warn:
+        print(f"⚠️ Raid errors ({len(raid_warn)}): {', '.join(raid_warn)}")
     if failed:
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
     print(rule)

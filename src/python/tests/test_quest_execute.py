@@ -2134,6 +2134,7 @@ def test_edit_defaults_wizard_tty_path(monkeypatch, capsys):
     from hw_genie.commands.quests import edit_quest_defaults_interactive
 
     _register("Alex")
+    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", _make_input_sequence("1", "1", "1", "q"))
@@ -2153,6 +2154,7 @@ def test_edit_defaults_wizard_stdout_redirect_no_clear_codes(monkeypatch, capsys
     from hw_genie.commands.quests import edit_quest_defaults_interactive
 
     _register("Alex")
+    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: False)
     monkeypatch.setattr("builtins.input", _make_input_sequence("q"))
@@ -2171,6 +2173,7 @@ def test_edit_defaults_wizard_tty_eof_raises_systemexit(monkeypatch, capsys):
     from hw_genie.commands.quests import edit_quest_defaults_interactive
 
     _register("Alex")
+    monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError()))
 

@@ -47,7 +47,9 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) &&
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 176kトークン規模の大型PR差分では Gemini のレート制限リトライだけで数分待つことがある。
+    # 10分だと成功しうる実行が切り捨てられるため 15分に緩和（タイムアウト時のみ失敗扱い）。
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -70,6 +72,8 @@ jobs:
 
       - name: Run AI Review
         env:
+          # stdout をリアルタイム化（打ち切り時にバッファ出力を失わないため）
+          PYTHONUNBUFFERED: 1
           # Backward compat: single key
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Key rotation: comma-separated (empty secrets become "" and are filtered in Python)

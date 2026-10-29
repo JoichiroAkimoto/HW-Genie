@@ -11,10 +11,14 @@
 //   3. Result is POSTed back to /toe/job/<id>/result and Python picks it up.
 
 const AUTH_SERVER_URL = "http://localhost:8765";
-// Players with no ToE job for many minutes can lower the poll rate. The 1s
-// cadence here keeps end-to-end latency low while staying well under the
-// hero-wars.com request rate (no XHR proxying in this path).
-const POLL_INTERVAL_MS = 1000;
+// The poll request only hits the local auth server (no XHR proxying in this
+// path), so a 250ms cadence is cheap and removes most of the queue wait a
+// battle would otherwise see between POST /toe/job and this script noticing it.
+const POLL_INTERVAL_MS = 250;
+// Jobs computed per poll tick. Raid simulations are queued all at once, so
+// draining several in one tick runs them back-to-back instead of paying one
+// poll interval per battle.
+const JOBS_PER_TICK = 4;
 const REQUEST_TIMEOUT_MS = 5000;
 
 // Build variant sentinel. Normal builds ship with the NORMAL value and never
@@ -732,32 +736,47 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
 }
 
-export async function tick(account: string, baseUrl: string): Promise<void> {
+export async function tick(
+  account: string,
+  baseUrl: string,
+  maxJobs = 1,
+  shouldStop?: () => boolean,
+): Promise<void> {
   // Engine-less frames must never claim: claiming without the ability to
   // compute would consume the job with a dummy loss before the engine frame
   // sees it. The auth-server reclaim timeout is only a safety net.
   if (!hasLocalEngine()) {
     return;
   }
-  const job = await pollNextJob(account, baseUrl);
-  if (!job) {
-    return;
+  const limit = Number.isFinite(maxJobs) ? Math.max(1, Math.floor(maxJobs)) : 1;
+  // Drain up to `limit` jobs: when Python queued a whole raid up front, the
+  // simulations run back-to-back instead of one per poll interval.
+  for (let handled = 0; handled < limit; handled += 1) {
+    // A drain can outlast the interval; stop() must interrupt it instead of
+    // claiming more jobs after teardown.
+    if (shouldStop?.()) {
+      return;
+    }
+    const job = await pollNextJob(account, baseUrl);
+    if (!job) {
+      return;
+    }
+    log(`claimed job ${job.id} (type=${(job.battle as { type?: unknown })?.type ?? "?"})`);
+    const computed = await computeBattle(job.battle);
+    if (!computed) {
+      // The engine exists but this battle failed to compute (calc error or
+      // timeout). Submit a fast loss so Python proceeds instead of waiting
+      // out its full bridge timeout.
+      log(`job ${job.id}: compute failed, submitting dummy loss`);
+      await submitWithRetry(job.id, account, {
+        progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
+        result: { win: false, stars: 0 },
+      }, baseUrl);
+      continue;
+    }
+    log(`job ${job.id}: complete win=${computed.result.win} stars=${computed.result.stars} rounds=${computed.progress.length}`);
+    await submitWithRetry(job.id, account, computed, baseUrl);
   }
-  log(`claimed job ${job.id} (type=${(job.battle as { type?: unknown })?.type ?? "?"})`);
-  const computed = await computeBattle(job.battle);
-  if (!computed) {
-    // The engine exists but this battle failed to compute (calc error or
-    // timeout). Submit a fast loss so Python proceeds instead of waiting
-    // out its full bridge timeout.
-    log(`job ${job.id}: compute failed, submitting dummy loss`);
-    await submitWithRetry(job.id, account, {
-      progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
-      result: { win: false, stars: 0 },
-    }, baseUrl);
-    return;
-  }
-  log(`job ${job.id}: complete win=${computed.result.win} stars=${computed.result.stars} rounds=${computed.progress.length}`);
-  await submitWithRetry(job.id, account, computed, baseUrl);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -784,7 +803,7 @@ export async function submitWithRetry(
   return ok;
 }
 
-export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number } = {}): () => void {
+export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number; jobsPerTick?: number } = {}): () => void {
   // Normal builds never poll (Goodwin separation). Return the stop handle
   // shape so callers need no variant branching.
   if (!TOE_ENABLED) {
@@ -792,7 +811,12 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   }
   const baseUrl = (opts.authServerUrl ?? AUTH_SERVER_URL).replace(/\/+$/, "");
   const interval = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const jobsPerTick = opts.jobsPerTick ?? JOBS_PER_TICK;
   let stopped = false;
+  // A drain of several jobs can outlast the poll interval; without this guard
+  // the next interval callback would start a second, concurrent drain that
+  // runs overlapping BattleInstantPlay calls in the same tab.
+  let running = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   // Capture game classes as the bundle registers them (HWH-independent).
@@ -851,32 +875,37 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   let lastNoEngineLog = 0;
   let engineLogged = false;
   async function loop(): Promise<void> {
-    if (stopped) {
+    if (stopped || running) {
       return;
     }
-    // Only engine frames poll. Non-engine frames stay silent so the server
-    // log shows polling if and only if a frame can actually compute.
-    if (!hasLocalEngine()) {
-      engineLogged = false;
-      // Throttled diagnostic: without this, a missing engine is invisible.
-      const now = Date.now();
-      if (now - lastNoEngineLog > 60000) {
-        lastNoEngineLog = now;
-        log("no battle engine in this frame (top/game url=" + location.href + ")");
+    running = true;
+    try {
+      // Only engine frames poll. Non-engine frames stay silent so the server
+      // log shows polling if and only if a frame can actually compute.
+      if (!hasLocalEngine()) {
+        engineLogged = false;
+        // Throttled diagnostic: without this, a missing engine is invisible.
+        const now = Date.now();
+        if (now - lastNoEngineLog > 60000) {
+          lastNoEngineLog = now;
+          log("no battle engine in this frame (top/game url=" + location.href + ")");
+        }
+        return;
       }
-      return;
+      if (!engineLogged) {
+        engineLogged = true;
+        log("battle engine detected, polling active");
+      }
+      if (!account) {
+        account = readAccount();
+        // Even if still empty, try polling without account (server will return any pending job).
+        // The tick gate above already guarantees this frame has an engine, so
+        // a claimed job can actually be computed.
+      }
+      await tick(account, baseUrl, jobsPerTick, () => stopped);
+    } finally {
+      running = false;
     }
-    if (!engineLogged) {
-      engineLogged = true;
-      log("battle engine detected, polling active");
-    }
-    if (!account) {
-      account = readAccount();
-      // Even if still empty, try polling without account (server will return any pending job).
-      // The tick gate above already guarantees this frame has an engine, so
-      // a claimed job can actually be computed.
-    }
-    await tick(account, baseUrl);
   }
 
   try {
