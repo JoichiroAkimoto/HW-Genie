@@ -20,7 +20,6 @@ import gzip
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -86,6 +85,7 @@ class HwaImportStats:
     duplicates: int = 0
     upgraded: int = 0
     team_configs_inserted: int = 0
+    filtered: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
     by_account: dict[str, int] = field(default_factory=dict)
@@ -427,6 +427,8 @@ def import_hwa_file(
     source: str | Path,
     *,
     types: tuple[str, ...] = ("arena", "grand"),
+    since: datetime | None = None,
+    offset: int = 0,
     limit: int | None = None,
     batch_size: int = 500,
     dry_run: bool = False,
@@ -437,10 +439,17 @@ def import_hwa_file(
     the attacker or defender, falling back to ``default_account``. Observation
     sources dedupe globally by replay id, so re-importing HWA after the API (or
     vice versa) does not double-count.
+
+    ``since`` drops battles older than the cutoff (counted in ``filtered``).
+    ``offset`` / ``limit`` paginate the remaining battles in file order so a
+    large snapshot can be imported in chunks.
     """
     aliases = _account_aliases()
     stats = HwaImportStats()
     buffers: dict[str, list[ParsedBattle]] = {}
+
+    if since is not None and since.tzinfo is not None:
+        since = since.astimezone(timezone.utc).replace(tzinfo=None)
 
     def _merge(result) -> None:
         stats.inserted += result.inserted
@@ -490,20 +499,23 @@ def import_hwa_file(
         stats.skipped += 1
         stats.errors.append(message)
 
-    battles = iter_hwa_battles(source, types=types, on_error=_on_error)
-    if limit is not None:
-        # Do not parse one extra record just to detect the limit.
-        battles = islice(battles, limit)
-
-    for battle in battles:
+    accepted = 0
+    for battle in iter_hwa_battles(source, types=types, on_error=_on_error):
+        stats.total += 1
+        if since is not None and battle.occurred_at < since:
+            stats.filtered += 1
+            continue
+        accepted += 1
+        if accepted <= offset:
+            continue
+        if limit is not None and accepted > offset + limit:
+            break
         alias = (
             aliases.get(battle.attacker_player_id or "")
             or aliases.get(battle.defender_player_id or "")
             or default_account
         )
-        # ``total`` / ``by_account`` count every parsed battle, including the
-        # duplicates and skips reported below.
-        stats.total += 1
+        # ``by_account`` counts battles that passed the cutoff/offset.
         stats.by_account[alias] = stats.by_account.get(alias, 0) + 1
         if battle.source_record_id in seen:
             stats.duplicates += 1

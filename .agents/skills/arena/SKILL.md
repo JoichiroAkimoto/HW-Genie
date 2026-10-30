@@ -78,9 +78,9 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
 # 1) 戦闘リプレイを取り込む（重複は自動スキップ）
 uv run hw-genie battle import -a Alice --type arena --limit 50
 
-# 1b) HWA の *.json.gz スナップショットから一括取り込み
+# 1b) HWA の *.json.gz スナップショットから一括取り込み（既定は直近90日）
 uv run hw-genie battle import-hwa -a Alice \
-  --source /path/to/hwa-db-2026-10-30.json.gz --types arena,grand --no-sync
+  --source /path/to/hwa-db-2026-10-30.json.gz --types arena,grand --days 90 --no-sync
 
 # 1c) 5分ごとに新規リプレイを自動取り込み（Ctrl+C で終了）
 uv run hw-genie battle watch -a Alice --interval 300

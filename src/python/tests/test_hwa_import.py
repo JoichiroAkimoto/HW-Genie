@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -927,3 +927,56 @@ def test_watch_once_all_errors_exits_nonzero(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert set(payload["results"]) == {"arena", "grand"}
     assert all("error" in result for result in payload["results"].values())
+
+
+def test_import_hwa_since_filters_old(tmp_path):
+    _create_account("Alice", "111")
+    old = _hwa_battle("old-1")
+    old["startTime"] = str(
+        int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+    )
+    new = _hwa_battle("new-1")
+    new["startTime"] = str(
+        int(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+    )
+    path = tmp_path / "hwa.json.gz"
+    _write_hwa(path, arena=[old, new])
+
+    stats = import_hwa_file(
+        "Alice",
+        path,
+        since=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+
+    assert stats.total == 2
+    assert stats.filtered == 1
+    assert stats.inserted == 1
+    with get_session_local()() as db:
+        ids = [
+            row.source_record_id
+            for row in db.query(BattleRecord).all()
+        ]
+    assert ids == ["new-1"]
+
+
+def test_import_hwa_offset_limit_paginates(tmp_path):
+    _create_account("Alice", "111")
+    path = tmp_path / "hwa.json.gz"
+    _write_hwa(
+        path,
+        arena=[
+            _hwa_battle("page-1"),
+            _hwa_battle("page-2"),
+            _hwa_battle("page-3"),
+        ],
+    )
+
+    stats = import_hwa_file("Alice", path, offset=1, limit=1)
+
+    assert stats.inserted == 1
+    with get_session_local()() as db:
+        ids = [
+            row.source_record_id
+            for row in db.query(BattleRecord).all()
+        ]
+    assert ids == ["page-2"]

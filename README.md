@@ -168,10 +168,17 @@ HWAssistant（HWA）の「DBを保存」で出力した `*.json.gz` をストリ
 ```bash
 uv run hw-genie battle import-hwa -a Alice \
   --source /path/to/hwa-db-2026-10-30.json.gz \
-  --types arena,grand --batch-size 5000 --no-sync
+  --types arena,grand --days 90 --no-sync
+
+# 大きいスナップショットを分割（日付フィルタ後の件数で offset/limit）
+uv run hw-genie battle import-hwa -a Alice \
+  --source /path/to/hwa-db-2026-10-30.json.gz \
+  --days 90 --offset 0 --limit 1000 --no-sync
 ```
 
-- `arena_replays` と `ga_replays`（Bo3 は各バトルに展開）を取り込みます。`other_replays` / war 系は対象外です。id を持たない GA サブバトルは `{series_key}-{index}-<startTime>-<seed>-<order>` 形式のコンテンツ依存フォールバック id で保存されます（リスト形式のセクションでは series key が `list-<position>` になります）。同じ key/index でも内容が異なれば id は衝突しません。
+- `arena_replays` と `ga_replays`（Bo3 は各バトルに展開）を取り込みます。`other_replays` / war 系は対象外です。id を持たない GA サブバトルは `{series_key}-{index}-<startTime>-<seed>-<order>` 形式のコンテンツ依存フォールバック id で保存されます（リスト形式のセクションでは series key が `list-<position>` になります）。
+- 既定では**直近90日**のみ取り込みます（`--days 90`）。全期間は `--days 0`、期間指定は `--since YYYY-MM-DD`。古いバトルは `filtered` として集計されます。
+- `--offset` / `--limit` は日付フィルタ後の件数で分割します。再実行しても重複はスキップされます。
 - アカウントは `userId` / `typeId` が登録済み `player_id` と一致するものに自動で紐付き、一致しない場合は `-a` のアカウントに紐付きます。
 - HWA のヒーローは圧縮配列のため、`lineup_key` は API 取り込みと一致しますが、`battle_records.completeness` と `team_configs.completeness` はともに `partial` になり、`config_hash` も partial 構成のハッシュです。
 - 観測ソース（`api_import` / `hwa_import` / `attack`）は replay id で重複排除します。`source='hwa_import'` の partial 行が先にあり、後から同じ replay id の**完全な**（`completeness='full'`）API リプレイを取り込んだ場合のみ、行を `api_import` の完全な構成へ in-place で upgrade します（`upgraded` として集計）。`ids_only` の API リプレイは HWA のデータを置き換えず重複として扱います。upgrade しても取り込み元アカウント（`account_id` / `viewer_role`）は元の行のまま保持します（統計は関与ベースで、`battle_comparisons` の FK も変わらないため）。

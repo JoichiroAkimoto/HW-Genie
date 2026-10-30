@@ -439,6 +439,8 @@ def run_battle_import_hwa(
     source: str,
     *,
     types: tuple[str, ...] = ("arena", "grand"),
+    since: datetime | None = None,
+    offset: int = 0,
     limit: int | None = None,
     batch_size: int = 500,
     dry_run: bool = False,
@@ -453,6 +455,8 @@ def run_battle_import_hwa(
         account_alias,
         path,
         types=types,
+        since=since,
+        offset=offset,
         limit=limit,
         batch_size=batch_size,
         dry_run=dry_run,
@@ -466,11 +470,15 @@ def run_battle_import_hwa(
                     "default_account": account_alias,
                     "dry_run": dry_run,
                     "types": list(types),
+                    "since": since.isoformat() if since else None,
+                    "offset": offset,
+                    "limit": limit,
                     "total": stats.total,
                     "inserted": stats.inserted,
                     "duplicates": stats.duplicates,
                     "upgraded": stats.upgraded,
                     "team_configs_inserted": stats.team_configs_inserted,
+                    "filtered": stats.filtered,
                     "skipped": stats.skipped,
                     "errors": stats.errors,
                     "by_account": stats.by_account,
@@ -485,11 +493,14 @@ def run_battle_import_hwa(
     print(
         f"{prefix}: {stats.inserted} HWA battle(s) "
         f"(parsed {stats.total} incl. duplicates/skips, "
-        f"duplicates {stats.duplicates}, upgraded {stats.upgraded}, "
+        f"filtered {stats.filtered}, duplicates {stats.duplicates}, "
+        f"upgraded {stats.upgraded}, "
         f"new team configs {stats.team_configs_inserted}, skipped {stats.skipped})"
     )
     for alias, count in sorted(stats.by_account.items()):
-        print(f"  {alias}: {count} parsed")
+        print(f"  {alias}: {count} processed")
+    if since is not None:
+        print(f"  cutoff: {since.date().isoformat()}")
     for error in stats.errors[:10]:
         print(f"  skip {error}")
     return stats

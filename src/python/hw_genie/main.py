@@ -1077,6 +1077,8 @@ def cmd_battle_config_getters(args):
 
 def cmd_battle_import_hwa(args):
     """Import an HWAssistant snapshot into the battle corpus."""
+    from datetime import datetime, timedelta, timezone
+
     from hw_genie.commands.battle import (
         BattleLogError,
         parse_battle_types,
@@ -1084,6 +1086,22 @@ def cmd_battle_import_hwa(args):
     )
 
     alias = resolve_account(args.account)
+    since = None
+    since_arg = getattr(args, "since", None)
+    if since_arg:
+        try:
+            since = datetime.strptime(since_arg, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            print("Error: --since must be YYYY-MM-DD", file=sys.stderr)
+            sys.exit(2)
+    else:
+        days = getattr(args, "days", None)
+        days = 90 if days is None else days
+        if days > 0:
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+
     if getattr(args, "no_sync", False):
         # Bulk imports write many local frames; the per-connection sync makes
         # each batch wait on the remote. Skip it and sync once at the end.
@@ -1095,7 +1113,9 @@ def cmd_battle_import_hwa(args):
                 alias,
                 args.source,
                 types=types,
-                limit=args.limit,
+                since=since,
+                offset=getattr(args, "offset", 0),
+                limit=getattr(args, "limit", None),
                 batch_size=args.batch_size,
                 dry_run=bool(args.dry_run),
                 as_json=bool(args.json),
@@ -2406,7 +2426,31 @@ def main():
         help="Comma-separated sections (default: arena,grand)",
     )
     p_battle_import_hwa.add_argument(
-        "--limit", type=_positive_int, default=None, help="Max battles to import"
+        "--limit",
+        type=_positive_int,
+        default=None,
+        help="Max battles to process after the cutoff/offset",
+    )
+    cutoff_group = p_battle_import_hwa.add_mutually_exclusive_group()
+    cutoff_group.add_argument(
+        "--days",
+        type=_non_negative_int,
+        default=None,
+        help=(
+            "Only battles from the last N days (default: 90; 0 = all). "
+            "Older battles are counted as filtered."
+        ),
+    )
+    cutoff_group.add_argument(
+        "--since",
+        default=None,
+        help="Only battles on/after YYYY-MM-DD (UTC)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--offset",
+        type=_non_negative_int,
+        default=0,
+        help="Skip this many battles after the cutoff (default: 0)",
     )
     p_battle_import_hwa.add_argument(
         "--batch-size",
