@@ -142,27 +142,28 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 ### Oracle パリティ（Phase 2-A）
 
 ```bash
-# ToE（既知の config getter）で取得済みリプレイを再シミュレーション
+# ToE（自動で get_titanPvpManual）
 uv run hw-genie battle simulate -a Alice --type titan_arena --limit 10
 
-# 書き込まずに比較だけ
-uv run hw-genie battle simulate -a Alice --type titan_arena --limit 10 --dry-run
+# Arena / Grand Arena（自動で get_pvp）
+uv run hw-genie battle simulate -a Alice --type arena --limit 10 --dry-run
 
-# アリーナの BattleConfigStorage getter を確認（要 Playwright + ゲームセッション）
-uv run hw-genie battle config-getters
+# getter 名を明示的に上書き
+uv run hw-genie battle simulate -a Alice --type arena --limit 1 \
+  --config-getter get_pvp --dry-run
 ```
 
 - 常駐ヘッドレスページを1つ使い回し、`--recycle-every`（既定100）ごとに再生成します。`0` を指定すると再生成しません。
 - 結果は `source='sim'` として保存され、`battle stats` / `arena plan` の集計には混ざりません。`battle_comparisons` に実結果との一致/不一致が記録されます。未取り込みのリプレイは比較の FK 用に `api_import` として自動取り込みされます。
 - 複数防衛チームを持つリプレイ（`completeness="partial"`）は先頭チームのみを比較対象にするため、Grand Arena の複数チーム戦では結果の解釈に注意してください。
 - 取得したリプレイがコーパスに未登録の場合、比較の FK を作るため `source='api_import'` として自動的に取り込みます（副作用）。
-- アリーナは `BattleConfigStorage` の getter が未検証です。`battle config-getters` で名前を確認し、`--config-getter <name>` で試してください。ToE 以外で既定の `get_titanPvpManual` を指定したまま実行すると、誤った結果を防ぐため停止します。
+- `BattleConfigStorage` の getter は battle type から自動解決します（**arena / grand → `get_pvp`**、titan_arena → `get_titanPvpManual`、pvp_manual / challenge → `get_pvpManual`）。`--config-getter` で上書きできます。`battle config-getters` はゲームページから一覧を取得しますが、ヘッドレス環境が WAF でブロックされる場合は失敗します。
 - アリーナの seed はサーバーが選ぶため、将来の予測は「全 seed で勝つ」ではなく統計的保証になります。
 
 ### Seed スイープ（統計的勝率）
 
 ```bash
-uv run hw-genie battle simulate -a Alice --type titan_arena --limit 5 --seeds 10
+uv run hw-genie battle simulate -a Alice --type arena --limit 5 --seeds 10 --dry-run
 ```
 
 - 観測 seed は実リプレイと比較し、追加 seed は決定的に生成して勝率を推定します。`--seeds N` は**観測分を含む合計 N 回**で、`sweep_*` も観測結果を含みます。

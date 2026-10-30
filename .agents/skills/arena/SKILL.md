@@ -94,8 +94,8 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 uv run hw-genie arena attack -a Alice --user-id 11111111 \
   --heroes 1 2 3 4 5 --pet 6001 --banner 2 --dry-run
 
-# 統計的勝率（ToE は既知の getter。Arena は getter 特定後に --config-getter を指定）
-uv run hw-genie battle simulate -a Alice --type titan_arena --limit 5 --seeds 10
+# 統計的勝率（Arena/Grand は get_pvp、ToE は get_titanPvpManual を自動使用）
+uv run hw-genie battle simulate -a Alice --type arena --limit 5 --seeds 10 --dry-run
 
 # 90日より古いデータを削除（まず dry-run）
 uv run hw-genie battle prune --days 90 --dry-run

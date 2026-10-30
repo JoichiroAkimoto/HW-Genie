@@ -464,6 +464,25 @@ PLAYWRIGHT_BATTLE_JS = """(arg) => {
                     }"""
 
 
+def config_getter_for(battle_type: str | None) -> str:
+    """Map a battle type to its ``BattleConfigStorage`` getter.
+
+    Arena / Grand Arena / regular PvP use ``get_pvp``; manual PvP and Combat
+    Training use ``get_pvpManual``; Titan Arena uses ``get_titanPvpManual``.
+    The mapping mirrors the public PvP corrector / HWHelper switch.
+    """
+    value = (battle_type or "").strip().lower()
+    if "titan_arena" in value or value in ("toe", "titan"):
+        return "get_titanPvpManual"
+    if value in ("pvp_manual", "challenge"):
+        return "get_pvpManual"
+    if value in ("arena", "grand", "pvp", "clan_domination"):
+        return "get_pvp"
+    if "titan" in value:
+        return "get_titanPvpManual"
+    return "get_pvp"
+
+
 class PlaywrightBattleEngine:
     """Headless browser battle engine via Playwright.
 
@@ -482,11 +501,13 @@ class PlaywrightBattleEngine:
         headless: bool = True,
         timeout: float = 30.0,
         game_url: str = "https://www.hero-wars.com/",
+        config_getter: str | None = None,
     ) -> None:
         self.headers = dict(headers or {})
         self.headless = headless
         self.timeout = timeout
         self.game_url = game_url
+        self.config_getter = config_getter
 
     def calc(self, battle: dict[str, Any]) -> BattleEstimate:  # pragma: no cover - browser
         try:
@@ -523,7 +544,11 @@ class PlaywrightBattleEngine:
                     js_battle = json.dumps(battle)
                     result_json = page.evaluate(
                         PLAYWRIGHT_BATTLE_JS,
-                        js_battle,
+                        {
+                            "battle": js_battle,
+                            "configGetter": self.config_getter
+                            or config_getter_for(battle.get("type")),
+                        },
                     )
                     if not result_json:
                         raise BridgeError("playwright battle engine returned null (engine unavailable or timeout)")
@@ -569,7 +594,7 @@ class PersistentPlaywrightBattleEngine:
         timeout: float = 30.0,
         game_url: str = "https://www.hero-wars.com/",
         recycle_every: int = 100,
-        config_getter: str = "get_titanPvpManual",
+        config_getter: str | None = None,
     ) -> None:
         self.headers = dict(headers or {})
         self.headless = headless
@@ -627,7 +652,11 @@ class PersistentPlaywrightBattleEngine:
         try:
             result_json = page.evaluate(
                 PLAYWRIGHT_BATTLE_JS,
-                {"battle": json.dumps(battle), "configGetter": self.config_getter},
+                {
+                    "battle": json.dumps(battle),
+                    "configGetter": self.config_getter
+                    or config_getter_for(battle.get("type")),
+                },
             )
         except Exception as exc:
             self.close()

@@ -238,7 +238,7 @@ def run_battle_simulate(
     dry_run: bool = False,
     as_json: bool = False,
     recycle_every: int = 100,
-    config_getter: str = "get_titanPvpManual",
+    config_getter: str | None = None,
     seeds: int = 1,
     oracle=None,
 ) -> list[SimulationComparison]:
@@ -260,9 +260,9 @@ def run_battle_simulate(
         and config_getter == "get_titanPvpManual"
     ):
         raise BattleLogError(
-            f"--type {battle_type} needs a verified --config-getter; the default "
-            "get_titanPvpManual is only verified for titan_arena. Run "
-            "`hw-genie battle config-getters` and pass --config-getter <name>."
+            f"--type {battle_type} cannot use the ToE getter get_titanPvpManual; "
+            "omit --config-getter to use the automatic mapping "
+            "(arena/grand -> get_pvp)."
         )
 
     res = client.battle_get_by_type(battle_type, limit=limit, offset=offset)

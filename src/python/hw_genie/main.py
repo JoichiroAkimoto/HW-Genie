@@ -1054,7 +1054,7 @@ def cmd_battle_simulate(args):
             dry_run=bool(args.dry_run),
             as_json=bool(args.json),
             recycle_every=args.recycle_every,
-            config_getter=args.config_getter,
+            config_getter=getattr(args, "config_getter", None),
             seeds=getattr(args, "seeds", 1),
         )
     except (BattleLogError, BridgeError) as e:
@@ -2423,10 +2423,11 @@ def main():
     )
     p_battle_simulate.add_argument(
         "--config-getter",
-        default="get_titanPvpManual",
+        default=None,
         help=(
-            "BattleConfigStorage getter (default: get_titanPvpManual). "
-            "Arena's getter is not verified yet."
+            "Override the BattleConfigStorage getter. Default: automatic "
+            "(arena/grand -> get_pvp, titan_arena -> get_titanPvpManual, "
+            "pvp_manual/challenge -> get_pvpManual)."
         ),
     )
     p_battle_simulate.add_argument(

@@ -11,6 +11,7 @@ from hw_genie.battle.engine import (
     BattleEstimate,
     BridgeError,
     PersistentPlaywrightBattleEngine,
+    config_getter_for,
 )
 from hw_genie.commands.battle import run_battle_simulate
 from hw_genie.core.battle_log import (
@@ -123,7 +124,23 @@ def test_build_battle_payload_keeps_seed_and_effects():
 def test_simulate_requires_config_getter_for_non_toe():
     client = FakeClient(_detail(_replay()))
     with pytest.raises(BattleLogError):
-        run_battle_simulate(client, "Alice", battle_type="arena", oracle=None)
+        run_battle_simulate(
+            client,
+            "Alice",
+            battle_type="arena",
+            config_getter="get_titanPvpManual",
+            oracle=None,
+        )
+
+
+def test_config_getter_for_battle_types():
+    assert config_getter_for("arena") == "get_pvp"
+    assert config_getter_for("grand") == "get_pvp"
+    assert config_getter_for("pvp") == "get_pvp"
+    assert config_getter_for("titan_arena") == "get_titanPvpManual"
+    assert config_getter_for("pvp_manual") == "get_pvpManual"
+    assert config_getter_for("challenge") == "get_pvpManual"
+    assert config_getter_for(None) == "get_pvp"
 
 
 def test_simulate_dry_run_writes_nothing():
