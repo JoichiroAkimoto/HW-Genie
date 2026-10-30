@@ -198,15 +198,18 @@ def _result_label(win: bool | None, stars: int | None) -> str:
     return f"{label} {stars}★" if stars is not None else label
 
 
-def run_battle_config_getters(client: HWClient, *, as_json: bool = False) -> dict:
-    """List ``BattleConfigStorage`` getters from the headless game page.
+def run_battle_config_getters(
+    client: HWClient, *, as_json: bool = False, headless: bool = True
+) -> dict:
+    """List ``BattleConfigStorage`` getters from the game page.
 
-    Used to discover the Arena config getter; the ToE getter
-    (``get_titanPvpManual``) is the only one verified so far.
+    Use ``headless=False`` when a WAF challenge blocks the headless browser.
     """
     from hw_genie.battle.engine import PersistentPlaywrightBattleEngine
 
-    engine = PersistentPlaywrightBattleEngine(headers=client.get_headers())
+    engine = PersistentPlaywrightBattleEngine(
+        headers=client.get_headers(), headless=headless
+    )
     try:
         data = engine.list_config_getters()
     finally:
@@ -240,6 +243,7 @@ def run_battle_simulate(
     recycle_every: int = 100,
     config_getter: str | None = None,
     seeds: int = 1,
+    headless: bool = True,
     oracle=None,
 ) -> list[SimulationComparison]:
     """Re-simulate fetched replays with the headless oracle and record parity.
@@ -308,6 +312,7 @@ def run_battle_simulate(
 
         engine = PersistentPlaywrightBattleEngine(
             headers=client.get_headers(),
+            headless=headless,
             recycle_every=recycle_every,
             config_getter=config_getter,
         )

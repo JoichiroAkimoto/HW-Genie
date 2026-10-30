@@ -157,7 +157,7 @@ uv run hw-genie battle simulate -a Alice --type arena --limit 1 \
 - 結果は `source='sim'` として保存され、`battle stats` / `arena plan` の集計には混ざりません。`battle_comparisons` に実結果との一致/不一致が記録されます。未取り込みのリプレイは比較の FK 用に `api_import` として自動取り込みされます。
 - 複数防衛チームを持つリプレイ（`completeness="partial"`）は先頭チームのみを比較対象にするため、Grand Arena の複数チーム戦では結果の解釈に注意してください。
 - 取得したリプレイがコーパスに未登録の場合、比較の FK を作るため `source='api_import'` として自動的に取り込みます（副作用）。
-- `BattleConfigStorage` の getter は battle type から自動解決します（**arena / grand → `get_pvp`**、titan_arena → `get_titanPvpManual`、pvp_manual / challenge → `get_pvpManual`）。`--config-getter` で上書きできます。`battle config-getters` はゲームページから一覧を取得しますが、ヘッドレス環境が WAF でブロックされる場合は失敗します。
+- `BattleConfigStorage` の getter は battle type から自動解決します（**arena / grand → `get_pvp`**、titan_arena → `get_titanPvpManual`、pvp_manual / challenge → `get_pvpManual`）。`--config-getter` で上書きできます。`battle config-getters` はゲームページから一覧を取得しますが、WAF でブロックされる場合は `--headed` を付けて通常ウィンドウで実行してください（`battle simulate --headed` も同様）。
 - アリーナの seed はサーバーが選ぶため、将来の予測は「全 seed で勝つ」ではなく統計的保証になります。
 
 ### Seed スイープ（統計的勝率）

@@ -1056,6 +1056,7 @@ def cmd_battle_simulate(args):
             recycle_every=args.recycle_every,
             config_getter=getattr(args, "config_getter", None),
             seeds=getattr(args, "seeds", 1),
+            headless=not getattr(args, "headed", False),
         )
     except (BattleLogError, BridgeError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1070,7 +1071,11 @@ def cmd_battle_config_getters(args):
     headers = _ensure_session(args)
     client = HWClient(headers)
     try:
-        run_battle_config_getters(client, as_json=bool(args.json))
+        run_battle_config_getters(
+            client,
+            as_json=bool(args.json),
+            headless=not getattr(args, "headed", False),
+        )
     except BridgeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -2440,6 +2445,11 @@ def main():
         ),
     )
     p_battle_simulate.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run the browser headed (use when WAF blocks headless Chromium)",
+    )
+    p_battle_simulate.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate but do not write sim/comparison rows",
@@ -2452,7 +2462,12 @@ def main():
     p_battle_getters = battle_sub.add_parser(
         "config-getters",
         parents=[parent_parser],
-        help="List BattleConfigStorage getters from the headless game page",
+        help="List BattleConfigStorage getters from the game page",
+    )
+    p_battle_getters.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run the browser headed (use when WAF blocks headless Chromium)",
     )
     p_battle_getters.add_argument(
         "--json", action="store_true", help="Print the getter list as JSON"
