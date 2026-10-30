@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import math
 import random
+import sys
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -199,16 +201,24 @@ def _result_label(win: bool | None, stars: int | None) -> str:
 
 
 def run_battle_config_getters(
-    client: HWClient, *, as_json: bool = False, headless: bool = True
+    client: HWClient,
+    *,
+    as_json: bool = False,
+    headless: bool = True,
+    timeout: float = 30.0,
 ) -> dict:
     """List ``BattleConfigStorage`` getters from the game page.
 
     Use ``headless=False`` when a WAF challenge blocks the headless browser.
     """
+    if not math.isfinite(timeout) or timeout < 1:
+        raise BattleLogError("--timeout must be a finite number >= 1 second")
     from hw_genie.battle.engine import PersistentPlaywrightBattleEngine
 
     engine = PersistentPlaywrightBattleEngine(
-        headers=client.get_headers(), headless=headless
+        headers=client.get_headers(),
+        headless=headless,
+        timeout=timeout,
     )
     try:
         data = engine.list_config_getters()
@@ -244,6 +254,7 @@ def run_battle_simulate(
     config_getter: str | None = None,
     seeds: int = 1,
     headless: bool = True,
+    timeout: float = 30.0,
     oracle=None,
 ) -> list[SimulationComparison]:
     """Re-simulate fetched replays with the headless oracle and record parity.
@@ -258,6 +269,8 @@ def run_battle_simulate(
     """
     if seeds < 1:
         raise BattleLogError("--seeds must be >= 1")
+    if not math.isfinite(timeout) or timeout < 1:
+        raise BattleLogError("--timeout must be a finite number >= 1 second")
     if (
         oracle is None
         and battle_type != "titan_arena"
@@ -313,11 +326,23 @@ def run_battle_simulate(
         engine = PersistentPlaywrightBattleEngine(
             headers=client.get_headers(),
             headless=headless,
+            timeout=timeout,
             recycle_every=recycle_every,
             config_getter=config_getter,
         )
         owns_engine = True
     engine_name = getattr(engine, "engine_name", type(engine).__name__)[:24]
+    if (
+        oracle is None
+        and config_getter is None
+        and battle_type in ("arena", "grand")
+    ):
+        print(
+            f"WARNING: using get_pvp for {battle_type} (mapped from the public "
+            "HWHelper/PvP corrector; live parity is not verified in this "
+            "environment).",
+            file=sys.stderr,
+        )
 
     comparisons: list[SimulationComparison] = []
     failures: list[tuple[str, str]] = []

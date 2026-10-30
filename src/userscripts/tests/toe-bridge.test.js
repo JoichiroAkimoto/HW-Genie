@@ -734,3 +734,13 @@ test("installToeBridge serializes overlapping interval ticks", async () => {
     __resetBridgeForTests();
   }
 });
+
+test("battleConfigFor maps PvP types and keeps ToE fallback", () => {
+  assert.strictEqual(battleConfigFor("arena"), "get_pvp");
+  assert.strictEqual(battleConfigFor("grand"), "get_pvp");
+  assert.strictEqual(battleConfigFor("pvp"), "get_pvp");
+  assert.strictEqual(battleConfigFor("pvp_manual"), "get_pvpManual");
+  assert.strictEqual(battleConfigFor("challenge"), "get_pvpManual");
+  assert.strictEqual(battleConfigFor("unknown"), "get_titanPvpManual");
+  assert.strictEqual(battleConfigFor(undefined), "get_titanPvpManual");
+});

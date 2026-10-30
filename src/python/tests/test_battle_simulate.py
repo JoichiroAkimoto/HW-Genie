@@ -13,7 +13,10 @@ from hw_genie.battle.engine import (
     PersistentPlaywrightBattleEngine,
     config_getter_for,
 )
-from hw_genie.commands.battle import run_battle_simulate
+from hw_genie.commands.battle import (
+    run_battle_config_getters,
+    run_battle_simulate,
+)
 from hw_genie.core.battle_log import (
     BattleLogError,
     build_battle_payload,
@@ -140,7 +143,8 @@ def test_config_getter_for_battle_types():
     assert config_getter_for("titan_arena") == "get_titanPvpManual"
     assert config_getter_for("pvp_manual") == "get_pvpManual"
     assert config_getter_for("challenge") == "get_pvpManual"
-    assert config_getter_for(None) == "get_pvp"
+    assert config_getter_for(None) == "get_titanPvpManual"
+    assert config_getter_for("unknown") == "get_titanPvpManual"
 
 
 def test_simulate_dry_run_writes_nothing():
@@ -609,4 +613,76 @@ def test_simulate_rejects_zero_seeds():
             battle_type="arena",
             oracle=FakeOracle(),
             seeds=0,
+        )
+
+
+def test_simulate_passes_headless_and_timeout_to_engine(monkeypatch):
+    _create_account()
+    import hw_genie.battle.engine as engine_mod
+
+    captured = {}
+
+    class FakeEngine:
+        engine_name = "fake-engine"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def calc(self, battle):
+            return BattleEstimate(win=True, stars=3, progress=[])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        engine_mod, "PersistentPlaywrightBattleEngine", FakeEngine
+    )
+    run_battle_simulate(
+        FakeClient(_detail(_replay())),
+        "Alice",
+        battle_type="arena",
+        oracle=None,
+        headless=False,
+        timeout=45,
+    )
+
+    assert captured["headless"] is False
+    assert captured["timeout"] == 45
+    assert captured["config_getter"] is None
+
+
+def test_config_getters_passes_headless_and_timeout(monkeypatch):
+    import hw_genie.battle.engine as engine_mod
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def list_config_getters(self):
+            return {"staticKeys": [], "properties": []}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        engine_mod, "PersistentPlaywrightBattleEngine", FakeEngine
+    )
+    run_battle_config_getters(
+        FakeClient(_detail(_replay())), headless=False, timeout=45
+    )
+
+    assert captured["headless"] is False
+    assert captured["timeout"] == 45
+
+
+def test_simulate_rejects_bad_timeout():
+    with pytest.raises(BattleLogError):
+        run_battle_simulate(
+            FakeClient(_detail(_replay())),
+            "Alice",
+            battle_type="arena",
+            oracle=FakeOracle(),
+            timeout=0,
         )

@@ -562,7 +562,7 @@ export function getProtoFn(classF: unknown, nF: number): string {
 /** Battle ``type`` -> ``BattleConfigStorage`` getter. */
 export function battleConfigFor(battleType: unknown): string {
   const value = typeof battleType === "string" ? battleType.toLowerCase() : "";
-  if (value.includes("titan_arena")) return "get_titanPvpManual";
+  if (value.includes("titan")) return "get_titanPvpManual";
   if (value === "pvp_manual" || value === "challenge") return "get_pvpManual";
   if (
     value === "arena" ||
@@ -572,7 +572,9 @@ export function battleConfigFor(battleType: unknown): string {
   ) {
     return "get_pvp";
   }
-  return "get_pvp";
+  // This bridge is ToE-only: an unknown type must not silently use the arena
+  // config, because its result is submitted to EndBattle.
+  return "get_titanPvpManual";
 }
 
 async function fetchWithTimeout(

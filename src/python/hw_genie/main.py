@@ -1043,6 +1043,9 @@ def cmd_battle_simulate(args):
     client = HWClient(headers)
     alias = resolve_account(args.account)
     battle_type = "titan_arena" if args.battle_type == "toe" else args.battle_type
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = 120.0 if getattr(args, "headed", False) else 30.0
     try:
         run_battle_simulate(
             client,
@@ -1057,6 +1060,7 @@ def cmd_battle_simulate(args):
             config_getter=getattr(args, "config_getter", None),
             seeds=getattr(args, "seeds", 1),
             headless=not getattr(args, "headed", False),
+            timeout=timeout,
         )
     except (BattleLogError, BridgeError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1064,19 +1068,23 @@ def cmd_battle_simulate(args):
 
 
 def cmd_battle_config_getters(args):
-    """List BattleConfigStorage getters from the headless game page."""
+    """List BattleConfigStorage getters from the game page."""
     from hw_genie.battle.engine import BridgeError
-    from hw_genie.commands.battle import run_battle_config_getters
+    from hw_genie.commands.battle import BattleLogError, run_battle_config_getters
 
     headers = _ensure_session(args)
     client = HWClient(headers)
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = 120.0 if getattr(args, "headed", False) else 30.0
     try:
         run_battle_config_getters(
             client,
             as_json=bool(args.json),
             headless=not getattr(args, "headed", False),
+            timeout=timeout,
         )
-    except BridgeError as e:
+    except (BridgeError, BattleLogError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -2404,8 +2412,8 @@ def main():
         default="titan_arena",
         choices=["arena", "grand", "titan_arena", "toe"],
         help=(
-            "Replay type to simulate (default: titan_arena; 'toe' is an alias). "
-            "Arena needs the correct --config-getter, which is not verified yet."
+            "Replay type to simulate (default: titan_arena; 'toe' is an "
+            "alias). Arena/grand auto-use get_pvp; --config-getter overrides."
         ),
     )
     p_battle_simulate.add_argument(
@@ -2450,6 +2458,15 @@ def main():
         help="Run the browser headed (use when WAF blocks headless Chromium)",
     )
     p_battle_simulate.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help=(
+            "Page load timeout in seconds (default: 30; 120 with --headed). "
+            "The in-page simulation has its own 10s timeout."
+        ),
+    )
+    p_battle_simulate.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate but do not write sim/comparison rows",
@@ -2468,6 +2485,12 @@ def main():
         "--headed",
         action="store_true",
         help="Run the browser headed (use when WAF blocks headless Chromium)",
+    )
+    p_battle_getters.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Page load timeout in seconds (default: 30; 120 with --headed)",
     )
     p_battle_getters.add_argument(
         "--json", action="store_true", help="Print the getter list as JSON"

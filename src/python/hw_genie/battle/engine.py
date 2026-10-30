@@ -12,8 +12,11 @@ Pluggable interface so we can swap implementations:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -425,7 +428,8 @@ class BridgeDeadError(BridgeError):
 #: ``TypeError: Cannot read properties of undefined`` inside ``evaluate``.
 PLAYWRIGHT_BATTLE_JS = """(arg) => {
                         const battleJson = typeof arg === "string" ? arg : arg.battle;
-                        const configGetter = (typeof arg === "string" ? null : arg.configGetter) || "get_titanPvpManual";
+                        const configGetter = typeof arg === "string" ? null : arg.configGetter;
+                        if (!configGetter) throw new Error("BattleConfigStorage getter is required");
                         const getF = (cls, name) => {
                             const found = Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop();
                             if (!found) throw new Error("Property " + name + " not found in Haxe class prototype");
@@ -471,16 +475,18 @@ def config_getter_for(battle_type: str | None) -> str:
     Training use ``get_pvpManual``; Titan Arena uses ``get_titanPvpManual``.
     The mapping mirrors the public PvP corrector / HWHelper switch.
     """
-    value = (battle_type or "").strip().lower()
-    if "titan_arena" in value or value in ("toe", "titan"):
+    value = str(battle_type or "").strip().lower()
+    if "titan" in value or value == "toe":
         return "get_titanPvpManual"
     if value in ("pvp_manual", "challenge"):
         return "get_pvpManual"
     if value in ("arena", "grand", "pvp", "clan_domination"):
         return "get_pvp"
-    if "titan" in value:
-        return "get_titanPvpManual"
-    return "get_pvp"
+    logger.warning(
+        "unknown battle type %r; defaulting to get_titanPvpManual",
+        battle_type,
+    )
+    return "get_titanPvpManual"
 
 
 class PlaywrightBattleEngine:
@@ -750,5 +756,9 @@ def get_default_engine(
     if mode in ("estimate", "offline", "python"):
         return PythonBattleEngine()
     if mode == "playwright":
-        return PlaywrightBattleEngine(headers=headers)
+        # This engine is used by ToE, whose StartBattle payload may omit type;
+        # pin the ToE getter so an omitted type cannot use the arena config.
+        return PlaywrightBattleEngine(
+            headers=headers, config_getter="get_titanPvpManual"
+        )
     return JsBridgeBattleEngine(auth_server_url=auth_server_url, user_id=user_id)

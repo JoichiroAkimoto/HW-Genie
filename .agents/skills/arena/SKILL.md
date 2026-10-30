@@ -97,6 +97,9 @@ uv run hw-genie arena attack -a Alice --user-id 11111111 \
 # 統計的勝率（Arena/Grand は get_pvp、ToE は get_titanPvpManual を自動使用）
 uv run hw-genie battle simulate -a Alice --type arena --limit 5 --seeds 10 --dry-run
 
+# WAF で headless が止まる環境では通常ウィンドウ（timeout 既定120秒）
+uv run hw-genie battle simulate -a Alice --type arena --limit 1 --dry-run --headed
+
 # 90日より古いデータを削除（まず dry-run）
 uv run hw-genie battle prune --days 90 --dry-run
 ```
