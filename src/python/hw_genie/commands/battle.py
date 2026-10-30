@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, replace
 from datetime import datetime
+from pathlib import Path
 from time import perf_counter
 
 from rich import box
@@ -25,6 +27,7 @@ from hw_genie.core.battle_log import (
     upsert_simulation,
 )
 from hw_genie.core.client import HWClient
+from hw_genie.core.hwa_log import HwaImportStats, import_hwa_file
 
 _console = Console()
 
@@ -68,6 +71,7 @@ def run_battle_import(
                     "total": stats.total,
                     "inserted": stats.inserted,
                     "duplicates": stats.duplicates,
+                    "upgraded": stats.upgraded,
                     "team_configs_inserted": stats.team_configs_inserted,
                     "skipped": stats.skipped,
                     "errors": stats.errors,
@@ -81,6 +85,7 @@ def run_battle_import(
     print(
         f"{prefix}: {stats.inserted} battle(s) "
         f"(fetched {stats.total}, duplicates {stats.duplicates}, "
+        f"upgraded {stats.upgraded}, "
         f"new team configs {stats.team_configs_inserted}, skipped {stats.skipped})"
     )
     if stats.total == 0:
@@ -317,9 +322,10 @@ def run_battle_simulate(
                     )
                 else:
                     # Ensure the observed row exists so the comparison has an
-                    # FK target (duplicates are skipped by import_battles).
+                    # FK target (duplicates are skipped by import_battles, and
+                    # an HWA partial row may be upgraded in place instead).
                     stats = import_battles(account_alias, [parsed])
-                    if stats.inserted + stats.duplicates < 1:
+                    if stats.inserted + stats.duplicates + stats.upgraded < 1:
                         detail = "; ".join(stats.errors) or "unknown import error"
                         raise BattleLogError(
                             f"battle {parsed.source_record_id}: replay could not "
@@ -411,3 +417,160 @@ def run_battle_simulate(
         detail = "; ".join(f"{failed_id}: {error}" for failed_id, error in failures)
         raise BattleLogError(f"all simulations failed: {detail}")
     return comparisons
+
+
+def parse_battle_types(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated ``--types`` value (``ga`` aliases ``grand``)."""
+    allowed = {"arena", "grand", "ga"}
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise BattleLogError("--types must list at least one of arena,grand")
+    invalid = [item for item in items if item not in allowed]
+    if invalid:
+        raise BattleLogError(f"unsupported --types value(s): {', '.join(invalid)}")
+    # Normalize before deduping so ``grand,ga`` collapses to one type.
+    return tuple(
+        dict.fromkeys("grand" if item == "ga" else item for item in items)
+    )
+
+
+def run_battle_import_hwa(
+    account_alias: str,
+    source: str,
+    *,
+    types: tuple[str, ...] = ("arena", "grand"),
+    limit: int | None = None,
+    batch_size: int = 500,
+    dry_run: bool = False,
+    as_json: bool = False,
+) -> HwaImportStats:
+    """Import an HWAssistant ``*.json.gz`` snapshot."""
+    path = Path(source).expanduser()
+    if not path.exists():
+        raise BattleLogError(f"HWA source not found: {path}")
+
+    stats = import_hwa_file(
+        account_alias,
+        path,
+        types=types,
+        limit=limit,
+        batch_size=batch_size,
+        dry_run=dry_run,
+    )
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "source": str(path),
+                    "default_account": account_alias,
+                    "dry_run": dry_run,
+                    "types": list(types),
+                    "total": stats.total,
+                    "inserted": stats.inserted,
+                    "duplicates": stats.duplicates,
+                    "upgraded": stats.upgraded,
+                    "team_configs_inserted": stats.team_configs_inserted,
+                    "skipped": stats.skipped,
+                    "errors": stats.errors,
+                    "by_account": stats.by_account,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return stats
+
+    prefix = "[dry-run] would import" if dry_run else "imported"
+    print(
+        f"{prefix}: {stats.inserted} HWA battle(s) "
+        f"(parsed {stats.total} incl. duplicates/skips, "
+        f"duplicates {stats.duplicates}, upgraded {stats.upgraded}, "
+        f"new team configs {stats.team_configs_inserted}, skipped {stats.skipped})"
+    )
+    for alias, count in sorted(stats.by_account.items()):
+        print(f"  {alias}: {count} parsed")
+    for error in stats.errors[:10]:
+        print(f"  skip {error}")
+    return stats
+
+
+def run_battle_watch(
+    client: HWClient,
+    account_alias: str,
+    *,
+    types: tuple[str, ...] = ("arena", "grand"),
+    interval: int = 300,
+    limit: int = 50,
+    offset: int = 0,
+    once: bool = False,
+    as_json: bool = False,
+) -> list[dict]:
+    """Poll arena/grand replays and import new battles until interrupted.
+
+    ``once`` performs a single pass (cron/tests). With ``as_json`` each pass is
+    printed as one JSON object per line. The returned history is capped at the
+    most recent 100 passes so a long-running watcher does not grow unbounded.
+    """
+    max_passes = 100
+    passes: list[dict] = []
+    pass_number = 0
+    sleep = getattr(client, "sleep", None)
+
+    while True:
+        results: dict[str, dict] = {}
+        for battle_type in types:
+            try:
+                res = client.battle_get_by_type(
+                    battle_type, limit=limit, offset=offset
+                )
+                parsed = parse_battle_get_response(_payload(res), battle_type)
+                stats = import_battles(
+                    account_alias,
+                    parsed,
+                    source="api_import",
+                    engine="game-server",
+                )
+                results[battle_type] = {
+                    "fetched": stats.total,
+                    "inserted": stats.inserted,
+                    "duplicates": stats.duplicates,
+                    "upgraded": stats.upgraded,
+                    "errors": stats.errors,
+                }
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                results[battle_type] = {"error": str(exc)}
+            if callable(sleep):
+                sleep()
+
+        pass_number += 1
+        payload = {
+            "pass": pass_number,
+            "account": account_alias,
+            "results": results,
+        }
+        passes.append(payload)
+        if len(passes) > max_passes:
+            del passes[: len(passes) - max_passes]
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False))
+        else:
+            parts = []
+            for battle_type, result in results.items():
+                if "error" in result:
+                    parts.append(f"{battle_type}: error ({result['error']})")
+                else:
+                    parts.append(
+                        f"{battle_type}: fetched {result['fetched']}, "
+                        f"new {result['inserted']}, dup {result['duplicates']}"
+                    )
+            print(f"[pass {pass_number}] " + " | ".join(parts))
+
+        if once:
+            return passes
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            raise

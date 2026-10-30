@@ -96,6 +96,7 @@ class ImportStats:
     total: int = 0
     inserted: int = 0
     duplicates: int = 0
+    upgraded: int = 0
     team_configs_inserted: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
@@ -490,15 +491,79 @@ def _resolve_account(db, alias: str) -> Account:
 def _existing_source_ids(db, source: str, ids: list[str]) -> set[str]:
     if not ids:
         return set()
-    rows = (
-        db.query(BattleRecord.source_record_id)
-        .filter(
-            BattleRecord.source == source,
-            BattleRecord.source_record_id.in_(ids),
+    # Observation sources (api_import / hwa_import / attack) dedupe globally by
+    # replay id so importing the same battle from HWA and the API does not
+    # double-count. Simulations are a separate stream keyed by their own source.
+    found: set[str] = set()
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        query = db.query(BattleRecord.source_record_id).filter(
+            BattleRecord.source_record_id.in_(chunk)
         )
-        .all()
-    )
-    return {row[0] for row in rows}
+        if source == "sim":
+            query = query.filter(BattleRecord.source == "sim")
+        else:
+            query = query.filter(BattleRecord.source != "sim")
+        found.update(row[0] for row in query.all())
+    return found
+
+
+def _existing_observation_rows(db, ids: list[str]) -> dict[str, BattleRecord]:
+    """Existing non-sim rows for ``ids`` keyed by replay id."""
+    if not ids:
+        return {}
+    found: dict[str, BattleRecord] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        rows = (
+            db.query(BattleRecord)
+            .filter(
+                BattleRecord.source != "sim",
+                BattleRecord.source_record_id.in_(chunk),
+            )
+            .all()
+        )
+        for row in rows:
+            found[row.source_record_id] = row
+    return found
+
+
+def _apply_battle_row(
+    row: BattleRecord,
+    battle: ParsedBattle,
+    *,
+    account_id: int,
+    source: str,
+    player_id: str | None,
+    authoritative: bool,
+    engine: str,
+    attacker_config_id: int | None,
+    defender_config_id: int | None,
+) -> None:
+    """Copy all replay-derived fields onto a battle row (insert or upgrade)."""
+    row.account_id = account_id
+    row.battle_type = battle.battle_type
+    row.source = source
+    row.source_record_id = battle.source_record_id
+    row.battle_id = battle.source_record_id
+    row.occurred_at = battle.occurred_at
+    row.ended_at = battle.ended_at
+    row.game_version = battle.game_version
+    row.attacker_config_id = attacker_config_id
+    row.defender_config_id = defender_config_id
+    row.attacker_lineup_key = battle.attacker.lineup_key
+    row.defender_lineup_key = battle.defender.lineup_key
+    row.matchup_key = battle.matchup_key
+    row.attacker_player_id = battle.attacker_player_id
+    row.defender_player_id = battle.defender_player_id
+    row.viewer_role = _viewer_role(battle, player_id)
+    row.seed = battle.seed
+    row.win = battle.win
+    row.stars = battle.stars
+    row.deterministic = None
+    row.authoritative = authoritative
+    row.engine = engine
+    row.completeness = battle.completeness
 
 
 def _upsert_team(db, team: TeamComponents, cache: dict[str, TeamConfig]) -> tuple[TeamConfig, bool]:
@@ -561,8 +626,12 @@ def import_battles(
     Duplicates are detected by ``(source, source_record_id)``. The unique key
     is global, so the first import wins and an identical replay imported under
     a second account is reported as a duplicate (its ``team_configs`` are still
-    usable from the first row). ``dry_run`` performs all reads but rolls back,
-    reporting what would be inserted.
+    usable from the first row). An HWA row that only has a partial config is
+    upgraded in place (source becomes ``api_import``) when the *full* API replay
+    with the same id arrives; an ``ids_only`` replay is treated as a duplicate
+    so it cannot replace HWA data with less information. The upgrade keeps the
+    original ``account_id`` / ``viewer_role``. ``dry_run`` performs all reads
+    but rolls back, reporting what would be inserted.
 
     The batch runs in one outer transaction. Each battle is inserted inside its
     own SAVEPOINT so a non-transient failure (e.g. ``IntegrityError``) rolls
@@ -590,14 +659,99 @@ def import_battles(
                 account = _resolve_account(db, account_alias)
                 account_id = int(account.id)
                 player_id = _as_optional_str(account.player_id)
-                existing = _existing_source_ids(
-                    db, source, [b.source_record_id for b in items]
+                ids = [b.source_record_id for b in items]
+                # Observation sources share one id space; keep the row objects
+                # so an HWA partial row can be upgraded in place by a later API
+                # import. Simulations are a separate stream.
+                existing_rows = (
+                    _existing_observation_rows(db, ids) if source != "sim" else {}
+                )
+                existing = (
+                    set(existing_rows)
+                    if source != "sim"
+                    else _existing_source_ids(db, source, ids)
                 )
                 seen: set[str] = set()
                 cache: dict[str, TeamConfig] = {}
                 for battle in items:
                     record_id = battle.source_record_id
-                    if record_id in existing or record_id in seen:
+                    if record_id in seen:
+                        stats.duplicates += 1
+                        continue
+
+                    existing_row = existing_rows.get(record_id)
+                    if existing_row is not None:
+                        # An HWA row only has the compact/partial config. When
+                        # the full API replay arrives, replace it in place so
+                        # stats/config FKs point at the complete team configs.
+                        # Only a *full* API replay may replace HWA data: an
+                        # ids_only replay would discard the HWA hero stats that
+                        # are already stored.
+                        upgrade = (
+                            source == "api_import"
+                            and existing_row.source == "hwa_import"
+                            and (existing_row.completeness or "") != "full"
+                            and battle.completeness == "full"
+                        )
+                        if not upgrade:
+                            stats.duplicates += 1
+                            continue
+                        seen.add(record_id)
+                        cached_before = set(cache)
+                        created = 0
+                        try:
+                            with db.begin_nested():
+                                attacker_row, attacker_created = _upsert_team(
+                                    db, battle.attacker, cache
+                                )
+                                defender_row, defender_created = _upsert_team(
+                                    db, battle.defender, cache
+                                )
+                                created = int(attacker_created) + int(
+                                    defender_created
+                                )
+                                # Keep the original importer/ownership: stats
+                                # are involvement-based (not account_id-based),
+                                # and battle_comparisons FKs point at this row,
+                                # so flipping ownership would only misattribute
+                                # the battle without changing any result.
+                                original_account_id = existing_row.account_id
+                                original_viewer_role = existing_row.viewer_role
+                                _apply_battle_row(
+                                    existing_row,
+                                    battle,
+                                    account_id=account_id,
+                                    source=source,
+                                    player_id=player_id,
+                                    authoritative=authoritative,
+                                    engine=engine,
+                                    attacker_config_id=attacker_row.id,
+                                    defender_config_id=defender_row.id,
+                                )
+                                existing_row.account_id = original_account_id
+                                existing_row.viewer_role = original_viewer_role
+                                db.flush()
+                            stats.upgraded += 1
+                            stats.team_configs_inserted += created
+                            existing_rows[record_id] = existing_row
+                        except Exception as exc:  # keep importing the rest
+                            if is_transient_db_error(exc):
+                                raise
+                            logger.exception(
+                                "Failed to upgrade battle %s", record_id
+                            )
+                            for key in set(cache) - cached_before:
+                                cache.pop(key, None)
+                            stats.skipped += 1
+                            detail = (
+                                exc.orig
+                                if isinstance(exc, IntegrityError) and exc.orig
+                                else exc
+                            )
+                            stats.errors.append(f"{record_id}: {detail}")
+                        continue
+
+                    if record_id in existing:
                         stats.duplicates += 1
                         continue
                     seen.add(record_id)
@@ -612,33 +766,19 @@ def import_battles(
                                 db, battle.defender, cache
                             )
                             created = int(attacker_created) + int(defender_created)
-                            db.add(
-                                BattleRecord(
-                                    account_id=account_id,
-                                    battle_type=battle.battle_type,
-                                    source=source,
-                                    source_record_id=record_id,
-                                    battle_id=record_id,
-                                    occurred_at=battle.occurred_at,
-                                    ended_at=battle.ended_at,
-                                    game_version=battle.game_version,
-                                    attacker_config_id=attacker_row.id,
-                                    defender_config_id=defender_row.id,
-                                    attacker_lineup_key=battle.attacker.lineup_key,
-                                    defender_lineup_key=battle.defender.lineup_key,
-                                    matchup_key=battle.matchup_key,
-                                    attacker_player_id=battle.attacker_player_id,
-                                    defender_player_id=battle.defender_player_id,
-                                    viewer_role=_viewer_role(battle, player_id),
-                                    seed=battle.seed,
-                                    win=battle.win,
-                                    stars=battle.stars,
-                                    deterministic=None,
-                                    authoritative=authoritative,
-                                    engine=engine,
-                                    completeness=battle.completeness,
-                                )
+                            row = BattleRecord()
+                            _apply_battle_row(
+                                row,
+                                battle,
+                                account_id=account_id,
+                                source=source,
+                                player_id=player_id,
+                                authoritative=authoritative,
+                                engine=engine,
+                                attacker_config_id=attacker_row.id,
+                                defender_config_id=defender_row.id,
                             )
+                            db.add(row)
                             db.flush()
                         stats.inserted += 1
                         stats.team_configs_inserted += created
@@ -664,6 +804,164 @@ def import_battles(
                     db.rollback()
                 else:
                     db.commit()
+                return stats
+
+    return retry_on_wal_contention(_attempt, logger=logger)
+
+
+def _existing_config_ids(db, hashes: list[str]) -> dict[str, int]:
+    found: dict[str, int] = {}
+    for start in range(0, len(hashes), 500):
+        chunk = hashes[start : start + 500]
+        rows = (
+            db.query(TeamConfig.config_hash, TeamConfig.id)
+            .filter(TeamConfig.config_hash.in_(chunk))
+            .all()
+        )
+        for row in rows:
+            found[row.config_hash] = row.id
+    return found
+
+
+def bulk_import_battles(
+    account_alias: str,
+    battles: Iterable[ParsedBattle],
+    *,
+    source: str,
+    engine: str,
+    authoritative: bool = True,
+    dry_run: bool = False,
+) -> ImportStats:
+    """Bulk insert one batch with a single commit (no per-battle savepoints).
+
+    Intended for large one-shot imports (HWA snapshots). A unique conflict
+    aborts the batch; ``retry_on_wal_contention`` retries it, and the retry
+    dedupes rows committed by a previous partial attempt.
+    """
+    items = list(battles)
+
+    def _attempt() -> ImportStats:
+        stats = ImportStats(total=len(items))
+        if not items:
+            return stats
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                if not db.in_transaction():
+                    db.begin()
+                connection = db.connection()
+                dbapi_connection = connection.connection.dbapi_connection
+                if getattr(dbapi_connection, "in_transaction", True) is False:
+                    connection.exec_driver_sql("BEGIN")
+
+                account = _resolve_account(db, account_alias)
+                player_id = _as_optional_str(account.player_id)
+                existing = _existing_source_ids(
+                    db, source, [battle.source_record_id for battle in items]
+                )
+                # A batch can repeat an id (e.g. a malformed snapshot); keep
+                # only the first occurrence so rows are not inserted twice.
+                seen: set[str] = set()
+                new_battles: list[ParsedBattle] = []
+                duplicates = 0
+                for battle in items:
+                    record_id = battle.source_record_id
+                    if record_id in existing or record_id in seen:
+                        duplicates += 1
+                        continue
+                    seen.add(record_id)
+                    new_battles.append(battle)
+                stats.duplicates = duplicates
+                if not new_battles:
+                    db.rollback()
+                    return stats
+
+                configs: dict[str, TeamComponents] = {}
+                for battle in new_battles:
+                    configs.setdefault(battle.attacker.config_hash, battle.attacker)
+                    configs.setdefault(battle.defender.config_hash, battle.defender)
+                config_ids = _existing_config_ids(db, list(configs))
+                new_configs = {
+                    config_hash: team
+                    for config_hash, team in configs.items()
+                    if config_hash not in config_ids
+                }
+                stats.team_configs_inserted = len(new_configs)
+
+                if dry_run:
+                    db.rollback()
+                    stats.inserted = len(new_battles)
+                    return stats
+
+                config_rows = [
+                    {
+                        "config_hash": config_hash,
+                        "lineup_key": team.lineup_key,
+                        "format": team.format,
+                        "heroes_summary": team.heroes_summary,
+                        "pet_id": team.pet_id,
+                        "banner_id": team.banner_id,
+                        "config_json": team.config,
+                        "completeness": team.completeness,
+                    }
+                    for config_hash, team in new_configs.items()
+                ]
+                if config_rows:
+                    db.execute(TeamConfig.__table__.insert(), config_rows)
+                    config_ids.update(_existing_config_ids(db, list(new_configs)))
+
+                hero_rows = []
+                for config_hash, team in new_configs.items():
+                    team_config_id = config_ids[config_hash]
+                    for hero in team.heroes:
+                        hero_rows.append(
+                            {
+                                "team_config_id": team_config_id,
+                                "slot": hero["slot"],
+                                "hero_id": hero["hero_id"],
+                                "level": hero["level"],
+                                "star": hero["star"],
+                                "power": hero["power"],
+                            }
+                        )
+                if hero_rows:
+                    db.execute(TeamConfigHero.__table__.insert(), hero_rows)
+
+                battle_rows = [
+                    {
+                        "account_id": int(account.id),
+                        "battle_type": battle.battle_type,
+                        "source": source,
+                        "source_record_id": battle.source_record_id,
+                        "battle_id": battle.source_record_id,
+                        "occurred_at": battle.occurred_at,
+                        "ended_at": battle.ended_at,
+                        "game_version": battle.game_version,
+                        "attacker_config_id": config_ids[
+                            battle.attacker.config_hash
+                        ],
+                        "defender_config_id": config_ids[
+                            battle.defender.config_hash
+                        ],
+                        "attacker_lineup_key": battle.attacker.lineup_key,
+                        "defender_lineup_key": battle.defender.lineup_key,
+                        "matchup_key": battle.matchup_key,
+                        "attacker_player_id": battle.attacker_player_id,
+                        "defender_player_id": battle.defender_player_id,
+                        "viewer_role": _viewer_role(battle, player_id),
+                        "seed": battle.seed,
+                        "win": battle.win,
+                        "stars": battle.stars,
+                        "deterministic": None,
+                        "authoritative": authoritative,
+                        "engine": engine,
+                        "completeness": battle.completeness,
+                    }
+                    for battle in new_battles
+                ]
+                if battle_rows:
+                    db.execute(BattleRecord.__table__.insert(), battle_rows)
+                db.commit()
+                stats.inserted = len(new_battles)
                 return stats
 
     return retry_on_wal_contention(_attempt, logger=logger)

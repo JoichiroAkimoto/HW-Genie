@@ -161,6 +161,34 @@ uv run hw-genie battle config-getters
 
 `lineup_key` は「ヒーロー（リプレイ順）＋ペット＋バナー」だけで作り、パワーやステータスの変化を無視します。`config_hash` はステータス込みの完全一致用です。ヒーローの並び順はリプレイの dict 順を採用しています（ゲームが明示的な位置フィールドを返さないため）。
 
+### HWA スナップショットの取り込み
+
+HWAssistant（HWA）の「DBを保存」で出力した `*.json.gz` をストリーミングで取り込めます。
+
+```bash
+uv run hw-genie battle import-hwa -a Alice \
+  --source /path/to/hwa-db-2026-10-30.json.gz \
+  --types arena,grand --batch-size 5000 --no-sync
+```
+
+- `arena_replays` と `ga_replays`（Bo3 は各バトルに展開）を取り込みます。`other_replays` / war 系は対象外です。id を持たない GA サブバトルは `{series_key}-{index}-<startTime>-<seed>-<order>` 形式のコンテンツ依存フォールバック id で保存されます（リスト形式のセクションでは series key が `list-<position>` になります）。同じ key/index でも内容が異なれば id は衝突しません。
+- アカウントは `userId` / `typeId` が登録済み `player_id` と一致するものに自動で紐付き、一致しない場合は `-a` のアカウントに紐付きます。
+- HWA のヒーローは圧縮配列のため、`lineup_key` は API 取り込みと一致しますが、`battle_records.completeness` と `team_configs.completeness` はともに `partial` になり、`config_hash` も partial 構成のハッシュです。
+- 観測ソース（`api_import` / `hwa_import` / `attack`）は replay id で重複排除します。`source='hwa_import'` の partial 行が先にあり、後から同じ replay id の**完全な**（`completeness='full'`）API リプレイを取り込んだ場合のみ、行を `api_import` の完全な構成へ in-place で upgrade します（`upgraded` として集計）。`ids_only` の API リプレイは HWA のデータを置き換えず重複として扱います。upgrade しても取り込み元アカウント（`account_id` / `viewer_role`）は元の行のまま保持します（統計は関与ベースで、`battle_comparisons` の FK も変わらないため）。
+- 大規模取り込みでは `--no-sync` を推奨します（接続ごとの Turso 同期を止め、最後に1回同期）。終了後に `hw-genie sync` でも構いません。`--json --no-sync` では stdout は JSON のみに保たれ、同期に失敗しても元の例外を隠さず、`replica sync failed; run \`hw-genie sync\`` を stderr に出力します。
+
+### 自動取り込み（watch）
+
+```bash
+# 5分ごとに arena/grand を巡回して新規分だけ取り込む（Ctrl+C で終了）
+uv run hw-genie battle watch -a Alice --types arena,grand --interval 300
+
+# 1回だけ（cron 用）
+uv run hw-genie battle watch -a Alice --once
+```
+
+HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` はそのまま `battleGetByType` に渡します。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。
+
 勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
 
 ### Tips: direnv による自動有効化

@@ -1075,6 +1075,79 @@ def cmd_battle_config_getters(args):
         sys.exit(1)
 
 
+def cmd_battle_import_hwa(args):
+    """Import an HWAssistant snapshot into the battle corpus."""
+    from hw_genie.commands.battle import (
+        BattleLogError,
+        parse_battle_types,
+        run_battle_import_hwa,
+    )
+
+    alias = resolve_account(args.account)
+    if getattr(args, "no_sync", False):
+        # Bulk imports write many local frames; the per-connection sync makes
+        # each batch wait on the remote. Skip it and sync once at the end.
+        os.environ["TURSO_SYNC_ON_CONNECT"] = "false"
+    try:
+        try:
+            types = parse_battle_types(args.types)
+            run_battle_import_hwa(
+                alias,
+                args.source,
+                types=types,
+                limit=args.limit,
+                batch_size=args.batch_size,
+                dry_run=bool(args.dry_run),
+                as_json=bool(args.json),
+            )
+        finally:
+            # Sync whatever batches were committed even if the import failed
+            # part-way through; dry runs never write. The quiet sync never
+            # exits, so a sync failure neither masks the original exception nor
+            # pollutes stdout (which must stay pure JSON for --json).
+            if getattr(args, "no_sync", False) and not args.dry_run:
+                if not _sync_replica(quiet=True):
+                    print(
+                        "replica sync failed; run `hw-genie sync`",
+                        file=sys.stderr,
+                    )
+    except (BattleLogError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_watch(args):
+    """Poll arena/grand replays and import new battles."""
+    from hw_genie.commands.battle import (
+        BattleLogError,
+        parse_battle_types,
+        run_battle_watch,
+    )
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account)
+    try:
+        types = parse_battle_types(args.types)
+        passes = run_battle_watch(
+            client,
+            alias,
+            types=types,
+            interval=args.interval,
+            limit=args.limit,
+            offset=getattr(args, "offset", 0),
+            once=bool(args.once),
+            as_json=bool(args.json),
+        )
+        if args.once and passes:
+            results = passes[-1].get("results", {})
+            if results and all("error" in result for result in results.values()):
+                sys.exit(1)
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_chat(args):
     """ギルドチャット（chatGetAll）の取得・表示"""
     from hw_genie.commands.chat import run_chat
@@ -1237,12 +1310,20 @@ def cmd_daily(args):
     )
 
 
-def cmd_sync(args):
-    """Sync the local Turso replica with the remote cloud database."""
+def _sync_replica(quiet: bool = False) -> bool:
+    """Sync the local Turso replica with the remote cloud database.
+
+    Never raises or calls ``sys.exit``: returns ``True`` on success (including
+    "nothing to sync") and ``False`` on failure. ``quiet`` suppresses both the
+    success line and the failure message, so callers that own the output (e.g.
+    ``battle import-hwa --json``) can keep stdout JSON-clean and report the
+    failure themselves on stderr.
+    """
     sync_url = os.environ.get("TURSO_SYNC_URL")
     if not sync_url:
-        print("TURSO_SYNC_URL is not set — nothing to sync.")
-        return
+        if not quiet:
+            print("TURSO_SYNC_URL is not set — nothing to sync.")
+        return True
 
     from hw_genie.core.database import (
         get_engine,
@@ -1269,10 +1350,19 @@ def cmd_sync(args):
 
                 conn.execute(text("SELECT 1"))
     except Exception as e:
-        print(f"✗ Sync failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        if not quiet:
+            print(f"✗ Sync failed: {e}", file=sys.stderr)
+        return False
 
-    print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+    if not quiet:
+        print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+    return True
+
+
+def cmd_sync(args):
+    """Sync the local Turso replica with the remote cloud database."""
+    if not _sync_replica(quiet=False):
+        sys.exit(1)
 
 
 def cmd_db_check(args):
@@ -2302,6 +2392,80 @@ def main():
     )
     p_battle_getters.set_defaults(func=cmd_battle_config_getters)
 
+    p_battle_import_hwa = battle_sub.add_parser(
+        "import-hwa",
+        parents=[parent_parser],
+        help="Import an HWAssistant *.json.gz snapshot (arena/GA)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--source", required=True, help="Path to hwa-db-*.json.gz"
+    )
+    p_battle_import_hwa.add_argument(
+        "--types",
+        default="arena,grand",
+        help="Comma-separated sections (default: arena,grand)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--limit", type=_positive_int, default=None, help="Max battles to import"
+    )
+    p_battle_import_hwa.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        default=500,
+        help="DB batch size (default: 500)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--dry-run", action="store_true", help="Parse and validate without writing"
+    )
+    p_battle_import_hwa.add_argument(
+        "--no-sync",
+        action="store_true",
+        help=(
+            "Skip the per-connection Turso replica sync during the import and "
+            "sync once at the end (recommended for large snapshots)"
+        ),
+    )
+    p_battle_import_hwa.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_import_hwa.set_defaults(func=cmd_battle_import_hwa)
+
+    p_battle_watch = battle_sub.add_parser(
+        "watch",
+        parents=[parent_parser],
+        help="Poll arena/grand replays and import new battles",
+    )
+    p_battle_watch.add_argument(
+        "--types",
+        default="arena,grand",
+        help="Comma-separated types (default: arena,grand)",
+    )
+    p_battle_watch.add_argument(
+        "--interval",
+        type=_positive_int,
+        default=300,
+        help="Seconds between passes (default: 300)",
+    )
+    p_battle_watch.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=50,
+        help="Replays per type per pass (default: 50)",
+    )
+    p_battle_watch.add_argument(
+        "--offset",
+        type=_non_negative_int,
+        default=0,
+        help="Pagination offset passed to battleGetByType (default: 0)",
+    )
+    p_battle_watch.add_argument(
+        "--once", action="store_true", help="Run one pass and exit"
+    )
+    p_battle_watch.add_argument(
+        "--json", action="store_true", help="One JSON object per pass"
+    )
+    p_battle_watch.set_defaults(func=cmd_battle_watch)
+
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
@@ -2620,6 +2784,11 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # The replica-connection sync must be disabled before init_db() opens the
+    # engine, otherwise the first connection still performs a remote sync.
+    if getattr(args, "no_sync", False):
+        os.environ["TURSO_SYNC_ON_CONNECT"] = "false"
 
     from hw_genie.core.client import HWAuthError
     from hw_genie.core.database import init_db

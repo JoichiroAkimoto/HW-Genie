@@ -631,6 +631,7 @@ class BattleRecord(Base):
             "battle_type",
             "defender_lineup_key",
         ),
+        Index("ix_battle_records_source_record_id", "source_record_id"),
     )
 
 
@@ -1066,6 +1067,11 @@ _ADDITIONAL_COLUMNS: dict[str, dict[str, str]] = {
 _ADDITIONAL_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_battle_records_type_defender_lineup "
     "ON battle_records (battle_type, defender_lineup_key)",
+    # Restores fast (source != 'sim') dedupe lookups by replay id; the unique
+    # constraint on (source, source_record_id) is not usable when only the
+    # second column is filtered.
+    "CREATE INDEX IF NOT EXISTS ix_battle_records_source_record_id "
+    "ON battle_records (source_record_id)",
 )
 
 
