@@ -39,6 +39,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Guild Chat**: ギルドチャット（`chatGetAll` / `chatType=clan`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`、`docs/api/CHAT_API.md` 参照）。
 - **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。`--progress line` の進捗は Tier 内の rival 位置（例: `T7 3/9`）を表示。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 - **Arena (targeted attack)**: 自分より上位の指定プレイヤーをチーム指定で攻撃（`hw-genie arena status` / `top` / `find-enemies` / `snapshot` / `team` / `attack`。`--rank` または `--user-id`、`--team` プリセット / `--heroes`・`--pet`・`--banner`・`--favor` の直接指定、`--dry-run` で攻撃なしの候補確認、`--candidate-retries` で候補リスト更新回数を指定。`topGet` はトップ50のみ。通常攻撃は「最新の `arenaFindEnemies` 候補」かつ「`arenaCheckTargetRange` が true」の両方を満たす相手のみ。範囲チェックのウィンドウは順位/リーグ依存（22位/34位では ±21、GA 51位では5〜50位）。手動検証用の `find-enemies` は候補を1回取得して保存し、`snapshot` / `attack --from-snapshot`（実験用）は `arenaFindEnemies` を呼ばず保存候補を比較・攻撃する（上位のみは現在の `topGet` で強制、range false は `--force` 時のみ送信）。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）。
+- **Battle Log Corpus**: `battleGetByType` から Arena / Grand Arena / ToE の完全な戦闘リプレイ（攻撃・防衛の全編成/ステータス、seed、結果）を取り込み、編成単位の勝率を集計（`hw-genie battle import` / `battle stats`。`--type` / `--limit` / `--offset` / `--dry-run`、`--by defender|matchup` / `--min-samples` / `--json`）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
 - **DB Sync**: `hw-genie sync` でローカル Turso レプリカをクラウドと明示的に同期。
 - **DB Check**: `hw-genie db-check` で全アカウントの `account_configs` を走査し、壊れた config JSON（手動編集ミス等）を検出・一覧表示（壊れがあれば exit 1）。壊れた行は読み取り時に警告付きでスキップされるため日常操作は続行可能。
@@ -115,6 +116,32 @@ uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
 ```
 
 `--from-snapshot --rank N` は**保存済みスナップショットの順位**に対して `N` を解決します（現在の `arena top` の順位ではないため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください（`--from-snapshot` との併用時のみ有効。上位のみの制約は解除されません）。`--candidate-retries` は使いません。
+
+### 戦闘ログコーパス（battle）
+
+`battleGetByType` は Arena / Grand Arena / ToE の戦闘リプレイを返します。リプレイには攻撃側・防衛側の完全な構成（ヒーロー、アーティファクト、ルーン、スキン、ペット、バナー効果）、`seed`、`serverVersion`、勝敗が含まれるため、シミュレーションなしで「同じ編成で勝てたか」を集計できます。
+
+```bash
+# 直近20件のアリーナ戦闘を取り込み（重複は自動スキップ）
+uv run hw-genie battle import -a Alice --type arena --limit 20
+
+# 取り込まずに解析だけ行う
+uv run hw-genie battle import -a Alice --limit 20 --dry-run
+
+# 防衛者ごとの勝率（デフォルト）。--by matchup で編成の組み合わせ単位に集計
+# -a は「関与」ベース（そのアカウントが攻撃側/防衛側にいる行）。--game-version で版を絞り込み
+uv run hw-genie battle stats -a Alice --min-samples 2
+uv run hw-genie battle stats -a Alice --by matchup --game-version 298 --json
+
+# 対象の防衛編成に対する攻撃編成ランキング（読み取り専用）
+uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
+```
+
+`arena plan` は同一防衛者の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。順位付けは Wilson 下限で、`--min-samples` / `--min-win-rate` を満たす候補だけ `REC` になり、`arenaAttack` は送りません。
+
+`lineup_key` は「ヒーロー（リプレイ順）＋ペット＋バナー」だけで作り、パワーやステータスの変化を無視します。`config_hash` はステータス込みの完全一致用です。ヒーローの並び順はリプレイの dict 順を採用しています（ゲームが明示的な位置フィールドを返さないため）。
+
+勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
 
 ### Tips: direnv による自動有効化
 

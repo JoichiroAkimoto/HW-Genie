@@ -201,6 +201,7 @@ class ApiAction(str, Enum):
     CHAT_GET_ALL = "chatGetAll"
     # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
     CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
+    BATTLE_GET_BY_TYPE = "battleGetByType"
     TITAN_ARENA_GET_STATUS = "titanArenaGetStatus"
     TITAN_ARENA_START_BATTLE = "titanArenaStartBattle"
     TITAN_ARENA_END_BATTLE = "titanArenaEndBattle"
@@ -443,6 +444,30 @@ class HWClient:
     def quest_operation(self, action: ApiAction, args: dict[str, Any]) -> HWResponse:
         """デイリークエストを進めるゲーム操作（強化/召喚/購入等）を実行"""
         payload = {"calls": [{"name": action, "args": args, "ident": "body"}]}
+        return self.call(payload)
+
+    def battle_get_by_type(
+        self,
+        battle_type: str = "arena",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> HWResponse:
+        """戦闘リプレイ履歴を取得する（battleGetByType）。
+
+        レスポンスの ``response.replays`` には attackers/defenders の完全な
+        構成と ``result``（win/stars/serverVersion）、``seed`` が含まれる。
+        ``response.users`` は replay に登場する userId のプロフィール。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.BATTLE_GET_BY_TYPE,
+                    "args": {"type": battle_type, "limit": int(limit), "offset": int(offset)},
+                    "ident": "body",
+                }
+            ]
+        }
         return self.call(payload)
 
     def clan_get_info(self) -> HWResponse:

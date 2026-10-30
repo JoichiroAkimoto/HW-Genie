@@ -83,6 +83,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ### 6. ゲームモード（PvP / PvE）
 各コンテンツの攻略状況です。
 *   **`arenaGetAll`**: アリーナの順位、防衛編成、報酬タイム。
+*   **`battleGetByType`**: 戦闘リプレイ履歴を取得。攻撃/防衛の全編成・ステータス、`seed`、勝敗を含み、コーパス取り込みと編成別勝率集計に使う（詳細は ARENA_API.md）。
 *   **`towerGetInfo`**: タワーの登頂状況。
 *   **`expeditionGet`**: 飛行船（遠征）の進行状況と回収可能な報酬。
 *   **`adventure_getActiveData`**: ペットアドベンチャーの進行状況。

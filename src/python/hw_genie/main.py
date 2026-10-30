@@ -844,6 +844,29 @@ def _sanitize_progress_log_text(text: str | None) -> str | None:
         )
 
 
+def cmd_arena_plan(args):
+    """Recommend attacker lineups from the imported battle corpus."""
+    from hw_genie.commands.arena import ArenaError, run_arena_plan
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        run_arena_plan(
+            client,
+            rank=args.rank,
+            user_id=args.user_id,
+            min_samples=args.min_samples,
+            min_win_rate=args.min_win_rate,
+            limit=args.limit,
+            candidate_retries=args.candidate_retries,
+            game_version=args.game_version,
+            as_json=bool(args.json),
+        )
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_toe_attack(args):
     """Titan Arena attack with arbitrary titans (app-native, no browser)."""
     headers = _ensure_session(args)
@@ -962,6 +985,53 @@ def cmd_toe_status(args):
     status = fetch_titan_arena_status(client)
     import json
     print(json.dumps(status, indent=2, ensure_ascii=False))
+
+
+def cmd_battle_import(args):
+    """Import battle replays into the local corpus."""
+    from hw_genie.commands.battle import BattleLogError, run_battle_import
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account)
+    battle_type = "titan_arena" if args.battle_type == "toe" else args.battle_type
+    try:
+        run_battle_import(
+            client,
+            alias,
+            battle_type=battle_type,
+            limit=args.limit,
+            offset=args.offset,
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+        )
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_stats(args):
+    """Show win rates from the imported battle corpus."""
+    from hw_genie.commands.battle import BattleLogError, run_battle_stats
+
+    alias = resolve_account(args.account) if args.account else None
+    battle_type = None
+    if args.battle_type:
+        battle_type = "titan_arena" if args.battle_type == "toe" else args.battle_type
+    try:
+        run_battle_stats(
+            account_alias=alias,
+            battle_type=battle_type,
+            defender_id=args.defender_id,
+            game_version=args.game_version,
+            by=args.by,
+            min_samples=args.min_samples,
+            limit=args.limit,
+            as_json=bool(args.json),
+        )
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_chat(args):
@@ -1907,6 +1977,50 @@ def main():
     p_arena_top.add_argument("--raw", action="store_true", help="Print the raw topGet response as JSON")
     p_arena_top.set_defaults(func=cmd_arena_top)
 
+    p_arena_plan = arena_sub.add_parser(
+        "plan",
+        parents=[parent_parser],
+        help="Recommend attacker lineups from the imported battle corpus",
+    )
+    plan_target = p_arena_plan.add_mutually_exclusive_group(required=True)
+    plan_target.add_argument(
+        "--rank", type=_positive_int, default=None, help="Target rank"
+    )
+    plan_target.add_argument(
+        "--user-id", type=_positive_int, default=None, help="Target userId"
+    )
+    p_arena_plan.add_argument(
+        "--min-samples",
+        type=_positive_int,
+        default=3,
+        help="Minimum battles for the gate (default: 3)",
+    )
+    p_arena_plan.add_argument(
+        "--min-win-rate",
+        type=float,
+        default=1.0,
+        help="Minimum win rate for the gate (default: 1.0)",
+    )
+    p_arena_plan.add_argument(
+        "--limit", type=_positive_int, default=10, help="Max plans to show (default: 10)"
+    )
+    p_arena_plan.add_argument(
+        "--candidate-retries",
+        type=_non_negative_int,
+        default=None,
+        help="Candidate list refresh attempts (default: 10)",
+    )
+    p_arena_plan.add_argument(
+        "--game-version",
+        dest="game_version",
+        default=None,
+        help="Only use battles from this server version (default: all)",
+    )
+    p_arena_plan.add_argument(
+        "--json", action="store_true", help="Print the plans as JSON"
+    )
+    p_arena_plan.set_defaults(func=cmd_arena_plan)
+
     p_arena_find = arena_sub.add_parser(
         "find-enemies",
         parents=[parent_parser],
@@ -2008,6 +2122,83 @@ def main():
         ),
     )
     p_arena_attack.set_defaults(func=cmd_arena_attack)
+
+    # Battle log corpus (import replays / aggregate win rates)
+    p_battle = subparsers.add_parser(
+        "battle", help="Battle log corpus (import replays / matchup stats)"
+    )
+    battle_sub = p_battle.add_subparsers(dest="battle_command", required=True)
+
+    p_battle_import = battle_sub.add_parser(
+        "import", parents=[parent_parser], help="Import battle replays from the game API"
+    )
+    p_battle_import.add_argument(
+        "--type",
+        dest="battle_type",
+        default="arena",
+        choices=["arena", "grand", "titan_arena", "toe"],
+        help="Replay type to fetch (default: arena; 'toe' is an alias for titan_arena)",
+    )
+    p_battle_import.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=50,
+        help="Replays to fetch (default: 50)",
+    )
+    p_battle_import.add_argument(
+        "--offset",
+        type=_non_negative_int,
+        default=0,
+        help="Pagination offset (default: 0)",
+    )
+    p_battle_import.add_argument(
+        "--dry-run", action="store_true", help="Parse and validate without writing"
+    )
+    p_battle_import.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_import.set_defaults(func=cmd_battle_import)
+
+    p_battle_stats = battle_sub.add_parser(
+        "stats",
+        parents=[parent_parser],
+        help="Show win rates by defender or lineup matchup",
+    )
+    p_battle_stats.add_argument(
+        "--type",
+        dest="battle_type",
+        default=None,
+        choices=["arena", "grand", "titan_arena", "toe"],
+        help="Filter by battle type ('toe' is an alias for titan_arena)",
+    )
+    p_battle_stats.add_argument(
+        "--defender-id", dest="defender_id", default=None, help="Filter by defender player id"
+    )
+    p_battle_stats.add_argument(
+        "--by",
+        choices=["defender", "matchup"],
+        default="defender",
+        help="Group by defender (default) or lineup matchup",
+    )
+    p_battle_stats.add_argument(
+        "--min-samples",
+        type=_positive_int,
+        default=1,
+        help="Only show groups with at least N battles",
+    )
+    p_battle_stats.add_argument(
+        "--game-version",
+        dest="game_version",
+        default=None,
+        help="Only count battles from this server version (default: all)",
+    )
+    p_battle_stats.add_argument(
+        "--limit", type=_positive_int, default=25, help="Max rows (default: 25)"
+    )
+    p_battle_stats.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_stats.set_defaults(func=cmd_battle_stats)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
