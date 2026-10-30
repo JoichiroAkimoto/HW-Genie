@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, replace
 from datetime import datetime
+from time import perf_counter
 
 from rich import box
 from rich.console import Console
@@ -12,9 +14,15 @@ from hw_genie.core.battle_log import (
     BattleLogError,
     ImportStats,
     MatchupStat,
+    SimulationComparison,
+    build_battle_payload,
+    compare_result,
     import_battles,
     parse_battle_get_response,
+    parse_battle_replays,
     query_matchups,
+    record_comparison,
+    upsert_simulation,
 )
 from hw_genie.core.client import HWClient
 
@@ -172,3 +180,234 @@ def run_battle_stats(
         return rows
     _render_stats(rows, by=by, battle_type=battle_type)
     return rows
+
+
+def _result_label(win: bool | None, stars: int | None) -> str:
+    if win is None:
+        return "-"
+    label = "W" if win else "L"
+    return f"{label} {stars}★" if stars is not None else label
+
+
+def run_battle_config_getters(client: HWClient, *, as_json: bool = False) -> dict:
+    """List ``BattleConfigStorage`` getters from the headless game page.
+
+    Used to discover the Arena config getter; the ToE getter
+    (``get_titanPvpManual``) is the only one verified so far.
+    """
+    from hw_genie.battle.engine import PersistentPlaywrightBattleEngine
+
+    engine = PersistentPlaywrightBattleEngine(headers=client.get_headers())
+    try:
+        data = engine.list_config_getters()
+    finally:
+        engine.close()
+
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return data
+
+    static_keys = data.get("staticKeys") or []
+    properties = data.get("properties") or []
+    print(f"staticKeys ({len(static_keys)}):")
+    for key in static_keys:
+        print(f"  {key}")
+    print(f"properties ({len(properties)}):")
+    for prop in properties:
+        print(f"  {prop}")
+    return data
+
+
+def run_battle_simulate(
+    client: HWClient,
+    account_alias: str,
+    *,
+    battle_type: str = "arena",
+    limit: int = 20,
+    offset: int = 0,
+    battle_id: str | None = None,
+    dry_run: bool = False,
+    as_json: bool = False,
+    recycle_every: int = 100,
+    config_getter: str = "get_titanPvpManual",
+    oracle=None,
+) -> list[SimulationComparison]:
+    """Re-simulate fetched replays with the headless oracle and record parity.
+
+    The raw replay is used as the oracle input (including ``effects`` and
+    ``seed``). Recorded runs write a ``source='sim'`` row plus a
+    ``battle_comparisons`` row; historical stats/planning ignore sim rows.
+    """
+    if (
+        oracle is None
+        and battle_type != "titan_arena"
+        and config_getter == "get_titanPvpManual"
+    ):
+        raise BattleLogError(
+            f"--type {battle_type} needs a verified --config-getter; the default "
+            "get_titanPvpManual is only verified for titan_arena. Run "
+            "`hw-genie battle config-getters` and pass --config-getter <name>."
+        )
+
+    res = client.battle_get_by_type(battle_type, limit=limit, offset=offset)
+    pairs = parse_battle_replays(_payload(res), battle_type)
+    if battle_id is not None:
+        pairs = [
+            (raw, parsed)
+            for raw, parsed in pairs
+            if parsed.source_record_id == str(battle_id)
+        ]
+        if not pairs:
+            raise BattleLogError(
+                f"battle {battle_id!r} was not found in the fetched replays."
+            )
+    if not pairs:
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "account": account_alias,
+                        "battle_type": battle_type,
+                        "dry_run": dry_run,
+                        "engine": None,
+                        "processed": 0,
+                        "succeeded": 0,
+                        "matched": 0,
+                        "total": 0,
+                        "results": [],
+                        "failures": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print("No replays returned. Check --type / --limit / --offset.")
+        return []
+
+    engine = oracle
+    owns_engine = False
+    if engine is None:
+        from hw_genie.battle.engine import PersistentPlaywrightBattleEngine
+
+        engine = PersistentPlaywrightBattleEngine(
+            headers=client.get_headers(),
+            recycle_every=recycle_every,
+            config_getter=config_getter,
+        )
+        owns_engine = True
+    engine_name = getattr(engine, "engine_name", type(engine).__name__)[:24]
+
+    comparisons: list[SimulationComparison] = []
+    failures: list[tuple[str, str]] = []
+    try:
+        for raw, parsed in pairs:
+            # One bad battle (oracle crash, DB error) must not abort the rest.
+            try:
+                payload = build_battle_payload(raw, battle_type)
+                started = perf_counter()
+                estimate = engine.calc(payload)
+                elapsed = perf_counter() - started
+                if dry_run:
+                    comparison = compare_result(
+                        parsed,
+                        estimate.win,
+                        estimate.stars,
+                        elapsed_seconds=elapsed,
+                    )
+                else:
+                    # Ensure the observed row exists so the comparison has an
+                    # FK target (duplicates are skipped by import_battles).
+                    stats = import_battles(account_alias, [parsed])
+                    if stats.inserted + stats.duplicates < 1:
+                        detail = "; ".join(stats.errors) or "unknown import error"
+                        raise BattleLogError(
+                            f"battle {parsed.source_record_id}: replay could not "
+                            f"be stored in the corpus ({detail})"
+                        )
+                    upsert_simulation(
+                        account_alias,
+                        replace(parsed, win=estimate.win, stars=estimate.stars),
+                        engine=engine_name,
+                    )
+                    comparison = record_comparison(parsed.source_record_id)
+                    if comparison is None:
+                        raise BattleLogError(
+                            f"battle {parsed.source_record_id}: comparison could "
+                            "not be recorded (imported or sim row is missing)"
+                        )
+                    comparison = replace(comparison, elapsed_seconds=elapsed)
+            except (KeyboardInterrupt, InterruptedError):
+                raise
+            except Exception as exc:
+                failures.append((parsed.source_record_id, str(exc)))
+                continue
+            comparisons.append(comparison)
+    finally:
+        if owns_engine:
+            close = getattr(engine, "close", None)
+            if callable(close):
+                close()
+
+    matched = sum(1 for comparison in comparisons if comparison.matched)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "account": account_alias,
+                    "battle_type": battle_type,
+                    "dry_run": dry_run,
+                    "engine": engine_name,
+                    "processed": len(pairs),
+                    "succeeded": len(comparisons),
+                    "matched": matched,
+                    "total": len(comparisons),
+                    "results": [asdict(comparison) for comparison in comparisons],
+                    "failures": [
+                        {"battle_id": failed_id, "error": error}
+                        for failed_id, error in failures
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        table = Table(
+            title=(
+                f"Oracle parity ({battle_type}, "
+                f"{'dry-run' if dry_run else 'recorded'})"
+            ),
+            box=box.SIMPLE_HEAVY,
+        )
+        table.add_column("Battle", style="cyan", no_wrap=True)
+        table.add_column("Actual", justify="center")
+        table.add_column("Simulated", justify="center")
+        table.add_column("Match", justify="center")
+        table.add_column("Mismatch", style="yellow")
+        table.add_column("ms", justify="right")
+        for comparison in comparisons:
+            table.add_row(
+                comparison.battle_id,
+                _result_label(comparison.actual_win, comparison.actual_stars),
+                _result_label(comparison.simulated_win, comparison.simulated_stars),
+                "yes" if comparison.matched else "no",
+                comparison.mismatch_type,
+                f"{comparison.elapsed_seconds * 1000:.0f}",
+            )
+        _console.print(table)
+        rate = (matched / len(comparisons) * 100) if comparisons else 0.0
+        print(f"Matched {matched}/{len(comparisons)} ({rate:.0f}%) with {engine_name}")
+        print(
+            f"Processed {len(pairs)} battle(s): {len(comparisons)} succeeded, "
+            f"{len(failures)} failed"
+        )
+        for failed_id, error in failures:
+            print(f"  failed {failed_id}: {error}")
+        if dry_run:
+            print("[dry-run] no simulation rows or comparisons were written")
+
+    if failures and not comparisons:
+        detail = "; ".join(f"{failed_id}: {error}" for failed_id, error in failures)
+        raise BattleLogError(f"all simulations failed: {detail}")
+    return comparisons

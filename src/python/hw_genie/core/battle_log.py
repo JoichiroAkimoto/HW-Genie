@@ -31,6 +31,7 @@ from sqlalchemy.orm import aliased
 
 from .database import (
     Account,
+    BattleComparison,
     BattleRecord,
     TeamConfig,
     TeamConfigHero,
@@ -128,6 +129,21 @@ class PlanCandidate:
     last_seen: datetime | None
     tier: str
     recommended: bool
+
+
+@dataclass(frozen=True)
+class SimulationComparison:
+    """Parity result for one re-simulated replay."""
+
+    battle_id: str
+    actual_win: bool | None
+    actual_stars: int | None
+    simulated_win: bool | None
+    simulated_stars: int | None
+    matched: bool
+    mismatch_type: str
+    delta_stars: int
+    elapsed_seconds: float = 0.0
 
 
 def _canonical_dumps(obj: Any) -> str:
@@ -407,6 +423,17 @@ def parse_battle_get_response(detail: Any, battle_type: str | None = None) -> li
     wrapped ``{"response": {...}}`` and bare response shapes are accepted.
     ``battle_type`` is used when a replay omits its own ``type`` field.
     """
+    return [parsed for _, parsed in parse_battle_replays(detail, battle_type)]
+
+
+def parse_battle_replays(
+    detail: Any, battle_type: str | None = None
+) -> list[tuple[dict[str, Any], ParsedBattle]]:
+    """Return ``(raw replay, ParsedBattle)`` pairs.
+
+    The raw replay is kept so the oracle can re-simulate with the original
+    payload (including ``effects`` and ``seed``) without storing it in the DB.
+    """
     if not isinstance(detail, dict):
         return []
     response = detail.get("response", detail)
@@ -415,12 +442,32 @@ def parse_battle_get_response(detail: Any, battle_type: str | None = None) -> li
     replays = response.get("replays")
     if not isinstance(replays, list):
         return []
-    parsed: list[ParsedBattle] = []
-    for replay in replays:
-        battle = _parse_replay(replay, battle_type=battle_type)
-        if battle is not None:
-            parsed.append(battle)
-    return parsed
+    pairs: list[tuple[dict[str, Any], ParsedBattle]] = []
+    for raw in replays:
+        if not isinstance(raw, dict):
+            continue
+        parsed = _parse_replay(raw, battle_type)
+        if parsed is not None:
+            pairs.append((raw, parsed))
+    return pairs
+
+
+def build_battle_payload(
+    replay: dict[str, Any], battle_type: str | None = None
+) -> dict[str, Any]:
+    """Build the payload the in-page oracle expects from a raw replay.
+
+    Start from the raw replay so fields this module does not know about are
+    forwarded unchanged; only the fields the oracle requires are normalized.
+    """
+    payload = dict(replay)
+    payload["seed"] = _as_int(replay.get("seed"), 0) or 0
+    payload["startTime"] = _as_int(replay.get("startTime"), 0) or 0
+    if not payload.get("type"):
+        payload["type"] = battle_type or "arena"
+    payload.setdefault("progress", [])
+    payload.setdefault("reward", [])
+    return payload
 
 
 def _resolve_account(db, alias: str) -> Account:
@@ -505,6 +552,8 @@ def import_battles(
     battles: Iterable[ParsedBattle],
     *,
     source: str = "api_import",
+    authoritative: bool = True,
+    engine: str = "game-server",
     dry_run: bool = False,
 ) -> ImportStats:
     """Insert battle rows and their team configs idempotently.
@@ -585,8 +634,8 @@ def import_battles(
                                     win=battle.win,
                                     stars=battle.stars,
                                     deterministic=None,
-                                    authoritative=True,
-                                    engine="game-server",
+                                    authoritative=authoritative,
+                                    engine=engine,
                                     completeness=battle.completeness,
                                 )
                             )
@@ -616,6 +665,254 @@ def import_battles(
                 else:
                     db.commit()
                 return stats
+
+    return retry_on_wal_contention(_attempt, logger=logger)
+
+
+def _classify_result(
+    actual_win: bool | None,
+    actual_stars: int | None,
+    simulated_win: bool | None,
+    simulated_stars: int | None,
+) -> tuple[str, int]:
+    """Classify a sim-vs-actual result; returns ``(mismatch_type, delta_stars)``.
+
+    A missing star count on either side is "unknown parity" for stars, not a
+    delta: only two known, differing star counts count as ``star_delta``.
+    """
+    if actual_win is None or simulated_win is None:
+        mismatch = "unknown"
+    elif simulated_win != actual_win:
+        mismatch = "win_flip"
+    elif (
+        actual_stars is not None
+        and simulated_stars is not None
+        and simulated_stars != actual_stars
+    ):
+        mismatch = "star_delta"
+    else:
+        mismatch = "match"
+    if actual_stars is not None and simulated_stars is not None:
+        delta = int(simulated_stars) - int(actual_stars)
+    else:
+        delta = 0
+    return mismatch, delta
+
+
+def compare_result(
+    battle: ParsedBattle,
+    simulated_win: bool | None,
+    simulated_stars: int | None,
+    *,
+    elapsed_seconds: float = 0.0,
+) -> SimulationComparison:
+    """Classify a simulated result against the replay's recorded result."""
+    mismatch, delta = _classify_result(
+        battle.win, battle.stars, simulated_win, simulated_stars
+    )
+    return SimulationComparison(
+        battle_id=battle.source_record_id,
+        actual_win=battle.win,
+        actual_stars=battle.stars,
+        simulated_win=simulated_win,
+        simulated_stars=simulated_stars,
+        matched=mismatch == "match",
+        mismatch_type=mismatch,
+        delta_stars=delta,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+
+def upsert_simulation(
+    account_alias: str,
+    battle: ParsedBattle,
+    *,
+    engine: str,
+) -> int:
+    """Insert or refresh the ``source='sim'`` row for one replay.
+
+    Simulations live in ``battle_records`` for comparison/audit, but they are
+    excluded from historical stats and planning queries (``source != 'sim'``).
+    Re-running the same battle refreshes the row instead of duplicating it.
+    """
+
+    def _attempt() -> int:
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                if not db.in_transaction():
+                    db.begin()
+                # pysqlite (legacy isolation mode) defers BEGIN until the first
+                # DML, so a SAVEPOINT issued first would commit on RELEASE.
+                # Force the driver-level transaction before savepoints, exactly
+                # like import_battles.
+                connection = db.connection()
+                dbapi_connection = connection.connection.dbapi_connection
+                if getattr(dbapi_connection, "in_transaction", True) is False:
+                    connection.exec_driver_sql("BEGIN")
+                account = _resolve_account(db, account_alias)
+                player_id = _as_optional_str(account.player_id)
+                cache: dict[str, TeamConfig] = {}
+                try:
+                    with db.begin_nested():
+                        attacker_row, _ = _upsert_team(db, battle.attacker, cache)
+                        defender_row, _ = _upsert_team(db, battle.defender, cache)
+                        row = (
+                            db.query(BattleRecord)
+                            .filter(
+                                BattleRecord.source == "sim",
+                                BattleRecord.source_record_id
+                                == battle.source_record_id,
+                                BattleRecord.battle_type == battle.battle_type,
+                            )
+                            .order_by(BattleRecord.id.desc())
+                            .first()
+                        )
+                        if row is None:
+                            # (source, source_record_id) is unique, so a replay
+                            # re-simulated under a different type must update
+                            # the existing row rather than insert a duplicate.
+                            row = (
+                                db.query(BattleRecord)
+                                .filter(
+                                    BattleRecord.source == "sim",
+                                    BattleRecord.source_record_id
+                                    == battle.source_record_id,
+                                )
+                                .order_by(BattleRecord.id.desc())
+                                .first()
+                            )
+                        if row is None:
+                            row = BattleRecord(
+                                account_id=int(account.id),
+                                battle_type=battle.battle_type,
+                                source="sim",
+                                source_record_id=battle.source_record_id,
+                                battle_id=battle.source_record_id,
+                                occurred_at=battle.occurred_at,
+                                ended_at=battle.ended_at,
+                                game_version=battle.game_version,
+                                attacker_config_id=attacker_row.id,
+                                defender_config_id=defender_row.id,
+                                attacker_lineup_key=battle.attacker.lineup_key,
+                                defender_lineup_key=battle.defender.lineup_key,
+                                matchup_key=battle.matchup_key,
+                                attacker_player_id=battle.attacker_player_id,
+                                defender_player_id=battle.defender_player_id,
+                                viewer_role=_viewer_role(battle, player_id),
+                                seed=battle.seed,
+                                win=battle.win,
+                                stars=battle.stars,
+                                deterministic=None,
+                                authoritative=False,
+                                engine=engine,
+                                completeness=battle.completeness,
+                            )
+                            db.add(row)
+                        else:
+                            # Keep the row addressable by record_comparison:
+                            # a type change also changes battle_type, the
+                            # lineup keys and the matchup key.
+                            row.battle_type = battle.battle_type
+                            row.matchup_key = battle.matchup_key
+                            row.attacker_lineup_key = battle.attacker.lineup_key
+                            row.defender_lineup_key = battle.defender.lineup_key
+                            row.win = battle.win
+                            row.stars = battle.stars
+                            row.engine = engine
+                            row.authoritative = False
+                            row.attacker_config_id = attacker_row.id
+                            row.defender_config_id = defender_row.id
+                        db.flush()
+                        sim_id = int(row.id)
+                    db.commit()
+                    return sim_id
+                except Exception:
+                    db.rollback()
+                    raise
+
+    return retry_on_wal_contention(_attempt, logger=logger)
+
+
+def record_comparison(
+    source_record_id: str,
+) -> SimulationComparison | None:
+    """Upsert a ``battle_comparisons`` row linking a sim row to its replay.
+
+    Replay ids are globally unique, so the lookup deliberately ignores
+    ``battle_type`` (a re-simulation may correct a previously mis-typed row).
+    """
+
+    def _attempt() -> SimulationComparison | None:
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                if not db.in_transaction():
+                    db.begin()
+                actual = (
+                    db.query(BattleRecord)
+                    .filter(
+                        BattleRecord.source != "sim",
+                        BattleRecord.source_record_id == source_record_id,
+                    )
+                    .order_by(BattleRecord.id.desc())
+                    .first()
+                )
+                sim = (
+                    db.query(BattleRecord)
+                    .filter(
+                        BattleRecord.source == "sim",
+                        BattleRecord.source_record_id == source_record_id,
+                    )
+                    .order_by(BattleRecord.id.desc())
+                    .first()
+                )
+                if actual is None or sim is None:
+                    return None
+                mismatch, delta = _classify_result(
+                    actual.win, actual.stars, sim.win, sim.stars
+                )
+                row = (
+                    db.query(BattleComparison)
+                    .filter(
+                        BattleComparison.predicted_battle_id == sim.id,
+                        BattleComparison.actual_battle_id == actual.id,
+                    )
+                    .first()
+                )
+                if row is None:
+                    db.add(
+                        BattleComparison(
+                            account_id=actual.account_id,
+                            predicted_battle_id=sim.id,
+                            actual_battle_id=actual.id,
+                            expected_win=sim.win,
+                            actual_win=actual.win,
+                            expected_stars=sim.stars,
+                            actual_stars=actual.stars,
+                            mismatch_type=mismatch,
+                            delta_stars=delta,
+                        )
+                    )
+                else:
+                    row.expected_win = sim.win
+                    row.actual_win = actual.win
+                    row.expected_stars = sim.stars
+                    row.actual_stars = actual.stars
+                    row.mismatch_type = mismatch
+                    row.delta_stars = delta
+                    row.evaluated_at = datetime.now(timezone.utc).replace(
+                        tzinfo=None
+                    )
+                db.commit()
+                return SimulationComparison(
+                    battle_id=source_record_id,
+                    actual_win=actual.win,
+                    actual_stars=actual.stars,
+                    simulated_win=sim.win,
+                    simulated_stars=sim.stars,
+                    matched=mismatch == "match",
+                    mismatch_type=mismatch,
+                    delta_stars=delta,
+                )
 
     return retry_on_wal_contention(_attempt, logger=logger)
 
@@ -680,6 +977,7 @@ def query_matchups(
             .join(atk, atk.id == BattleRecord.attacker_config_id)
             .join(dfn, dfn.id == BattleRecord.defender_config_id)
             .filter(BattleRecord.win.isnot(None))
+            .filter(BattleRecord.source != "sim")
         )
         if battle_type:
             query = query.filter(BattleRecord.battle_type == battle_type)
@@ -757,6 +1055,7 @@ def _query_plan_rows(
             BattleRecord.battle_type == battle_type,
             BattleRecord.defender_lineup_key == defender_lineup_key,
             BattleRecord.win.isnot(None),
+            BattleRecord.source != "sim",
         )
     )
     if defender_id is not None:

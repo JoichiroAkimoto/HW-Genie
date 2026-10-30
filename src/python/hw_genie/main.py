@@ -1034,6 +1034,47 @@ def cmd_battle_stats(args):
         sys.exit(1)
 
 
+def cmd_battle_simulate(args):
+    """Re-simulate fetched replays with the headless oracle."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.battle import BattleLogError, run_battle_simulate
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account)
+    battle_type = "titan_arena" if args.battle_type == "toe" else args.battle_type
+    try:
+        run_battle_simulate(
+            client,
+            alias,
+            battle_type=battle_type,
+            limit=args.limit,
+            offset=args.offset,
+            battle_id=args.battle_id,
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+            recycle_every=args.recycle_every,
+            config_getter=args.config_getter,
+        )
+    except (BattleLogError, BridgeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_config_getters(args):
+    """List BattleConfigStorage getters from the headless game page."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.battle import run_battle_config_getters
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        run_battle_config_getters(client, as_json=bool(args.json))
+    except BridgeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_chat(args):
     """ギルドチャット（chatGetAll）の取得・表示"""
     from hw_genie.commands.chat import run_chat
@@ -2199,6 +2240,67 @@ def main():
         "--json", action="store_true", help="Print the result as JSON"
     )
     p_battle_stats.set_defaults(func=cmd_battle_stats)
+
+    p_battle_simulate = battle_sub.add_parser(
+        "simulate",
+        parents=[parent_parser],
+        help="Re-simulate fetched replays with the headless oracle and record parity",
+    )
+    p_battle_simulate.add_argument(
+        "--type",
+        dest="battle_type",
+        default="titan_arena",
+        choices=["arena", "grand", "titan_arena", "toe"],
+        help=(
+            "Replay type to simulate (default: titan_arena; 'toe' is an alias). "
+            "Arena needs the correct --config-getter, which is not verified yet."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--limit", type=_positive_int, default=20, help="Replays to simulate (default: 20)"
+    )
+    p_battle_simulate.add_argument(
+        "--offset", type=_non_negative_int, default=0, help="Pagination offset (default: 0)"
+    )
+    p_battle_simulate.add_argument(
+        "--battle-id", default=None, help="Simulate only this replay id"
+    )
+    p_battle_simulate.add_argument(
+        "--recycle-every",
+        type=_non_negative_int,
+        default=100,
+        help=(
+            "Recreate the headless page after N battles "
+            "(default: 100; 0 = never recycle)"
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--config-getter",
+        default="get_titanPvpManual",
+        help=(
+            "BattleConfigStorage getter (default: get_titanPvpManual). "
+            "Arena's getter is not verified yet."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate but do not write sim/comparison rows",
+    )
+    p_battle_simulate.add_argument(
+        "--json", action="store_true", help="Print the parity results as JSON"
+    )
+    p_battle_simulate.set_defaults(func=cmd_battle_simulate)
+
+    p_battle_getters = battle_sub.add_parser(
+        "config-getters",
+        parents=[parent_parser],
+        help="List BattleConfigStorage getters from the headless game page",
+    )
+    p_battle_getters.add_argument(
+        "--json", action="store_true", help="Print the getter list as JSON"
+    )
+    p_battle_getters.set_defaults(func=cmd_battle_config_getters)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES

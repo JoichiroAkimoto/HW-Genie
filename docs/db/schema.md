@@ -125,14 +125,14 @@ Unique constraint: `(team_config_id, slot)`
 
 ### `battle_records`
 
-1 戦闘 = 1 行。`source` は現状 `api_import`（サーバーが生成したリプレイ）で、将来の `sim` / `attack` も同じ表に載せます。
+1 戦闘 = 1 行。`source` は `api_import`（サーバーが生成したリプレイ）/ `sim`（`battle simulate` の再シミュレーション）/ 将来の `attack` を同じ表に載せます。
 
 | カラム | 型 | 制約 | 説明 |
 |--------|----|------|------|
 | `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
 | `account_id` | INTEGER | FK -> accounts.id (CASCADE), NOT NULL | 取り込み元アカウント |
 | `battle_type` | VARCHAR(16) | NOT NULL | `arena` / `grand` / `titan_arena`（`toe` は CLI の別名で、保存値は `titan_arena`） |
-| `source` | VARCHAR(16) | NOT NULL | `api_import`（将来: `sim` / `attack`） |
+| `source` | VARCHAR(16) | NOT NULL | `api_import` / `sim`（`battle simulate`）/ 将来: `attack`。`sim` 行は stats / plan の集計から除外 |
 | `source_record_id` | VARCHAR(64) | NOT NULL | リプレイID（重複排除キー） |
 | `battle_id` | VARCHAR(64) | | 元の battle ID |
 | `occurred_at` | DATETIME | NOT NULL | `startTime`（naive UTC） |
@@ -164,7 +164,7 @@ Indexes: `(battle_type, matchup_key, game_version)`, `(defender_player_id, occur
 
 ### `battle_comparisons`
 
-予測（sim）と実攻撃の突き合わせ。Oracle 導入後に使用します（現状は空）。
+予測（sim）と実攻撃の突き合わせ。`hw-genie battle simulate` が `source='sim'` 行と取り込み済みリプレイを比較して記録します。
 
 | カラム | 型 | 制約 | 説明 |
 |--------|----|------|------|

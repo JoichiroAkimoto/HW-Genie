@@ -423,7 +423,9 @@ class BridgeDeadError(BridgeError):
 #: Haxe-minified names and must throw a descriptive error (naming the missing
 #: key) when resolution fails — otherwise a game update surfaces only as
 #: ``TypeError: Cannot read properties of undefined`` inside ``evaluate``.
-PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
+PLAYWRIGHT_BATTLE_JS = """(arg) => {
+                        const battleJson = typeof arg === "string" ? arg : arg.battle;
+                        const configGetter = (typeof arg === "string" ? null : arg.configGetter) || "get_titanPvpManual";
                         const getF = (cls, name) => {
                             const found = Object.entries(cls.prototype.__properties__ || {}).filter(e => e[1] === name).pop();
                             if (!found) throw new Error("Property " + name + " not found in Haxe class prototype");
@@ -443,7 +445,7 @@ PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
                         const game = window.Game;
                         if (!game || !game.BattlePresets || !game.BattleInstantPlay || !game.DataStorage) return null;
                         const ds = game.DataStorage;
-                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanPvpManual')]();
+                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, configGetter)]();
                         const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
                         const instant = new game.BattleInstantPlay(battle, presets);
                         return new Promise((resolve) => {
@@ -539,6 +541,163 @@ class PlaywrightBattleEngine:
             raise BridgeError(str(exc)) from exc
 
 
+CONFIG_GETTERS_JS = """() => {
+                        const g = window.Game;
+                        if (!g || !g.BattleConfigStorage) return null;
+                        const cls = g.BattleConfigStorage;
+                        const props = cls.prototype && cls.prototype.__properties__
+                            ? Object.entries(cls.prototype.__properties__).map(([k, v]) => k + "=" + v)
+                            : [];
+                        return JSON.stringify({staticKeys: Object.keys(cls), properties: props});
+                    }"""
+
+
+class PersistentPlaywrightBattleEngine:
+    """Reuse one headless game page across many battles.
+
+    ``PlaywrightBattleEngine`` launches and closes Chromium for every battle,
+    which is slow and fragments memory. This engine keeps a single page alive,
+    recycles it every ``recycle_every`` battles, and must be closed by the
+    caller. It is not thread-safe.
+    """
+
+    def __init__(
+        self,
+        headers: dict[str, str] | None = None,
+        *,
+        headless: bool = True,
+        timeout: float = 30.0,
+        game_url: str = "https://www.hero-wars.com/",
+        recycle_every: int = 100,
+        config_getter: str = "get_titanPvpManual",
+    ) -> None:
+        self.headers = dict(headers or {})
+        self.headless = headless
+        self.timeout = timeout
+        self.game_url = game_url
+        self.recycle_every = max(0, int(recycle_every))
+        self.config_getter = config_getter
+        self.engine_name = "oracle-playwright"
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        # Counts every calc() call, including failures: a failed attempt may
+        # leave the page in an unknown state, so it must advance the recycle
+        # schedule exactly like a success.
+        self._attempts = 0
+
+    def _ensure_page(self):  # pragma: no cover - browser
+        if self._page is not None:
+            return self._page
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+        except ImportError as exc:
+            raise BridgeError(
+                "playwright not installed; run `pip install playwright && playwright install chromium`"
+            ) from exc
+        try:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(headless=self.headless)
+            self._context = self._browser.new_context(
+                extra_http_headers=self.headers or None
+            )
+            self._page = self._context.new_page()
+            self._page.goto(
+                self.game_url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout * 1000),
+            )
+            self._page.wait_for_function(
+                "() => window.Game && window.Game.BattlePresets",
+                timeout=int(self.timeout * 1000),
+            )
+        except Exception as exc:
+            self.close()
+            raise BridgeError(
+                f"failed to start persistent Playwright page: {exc}"
+            ) from exc
+        return self._page
+
+    def calc(self, battle: dict[str, Any]) -> BattleEstimate:  # pragma: no cover - browser
+        import json
+
+        self._attempts += 1
+        page = self._ensure_page()
+        try:
+            result_json = page.evaluate(
+                PLAYWRIGHT_BATTLE_JS,
+                {"battle": json.dumps(battle), "configGetter": self.config_getter},
+            )
+        except Exception as exc:
+            self.close()
+            raise BridgeError(str(exc)) from exc
+        if not result_json:
+            # A null result usually means the game failed to load or the sim
+            # timed out; the page may be suspect, so drop it before raising.
+            self.close()
+            raise BridgeError(
+                "playwright battle engine returned null (engine unavailable or timeout)"
+            )
+        try:
+            result = (
+                json.loads(result_json)
+                if isinstance(result_json, str)
+                else result_json
+            )
+        except Exception as exc:
+            self.close()
+            raise BridgeError(f"invalid oracle response: {exc}") from exc
+        estimate = BattleEstimate(
+            win=bool(result.get("result", {}).get("win", False)),
+            stars=_safe_int(result.get("result", {}).get("stars", 0)),
+            progress=result.get("progress") or [],
+        )
+        if self.recycle_every and self._attempts % self.recycle_every == 0:
+            self.close()
+        return estimate
+
+    def close(self) -> None:
+        for obj in (self._context, self._browser):
+            if obj is not None:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+
+    def list_config_getters(self) -> dict[str, Any]:  # pragma: no cover - browser
+        """Return ``BattleConfigStorage`` getter names for the loaded build."""
+        import json
+
+        page = self._ensure_page()
+        try:
+            raw = page.evaluate(CONFIG_GETTERS_JS)
+            if not raw:
+                raise BridgeError(
+                    "could not read BattleConfigStorage from the game page"
+                )
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+
 def get_default_engine(
     mode: str = "estimate",
     *,
@@ -554,6 +713,10 @@ def get_default_engine(
       server job queue. Falls back to the estimator if the bridge fails.
     * ``playwright``: headless Chromium via Playwright, auto-navigates to
       the game and runs the battle. No manual screen operation required.
+
+    The persistent (``oracle``) engine is not exposed here: ``battle
+    simulate`` instantiates :class:`PersistentPlaywrightBattleEngine` itself
+    so it can close the long-lived page deterministically.
     """
     if mode in ("estimate", "offline", "python"):
         return PythonBattleEngine()

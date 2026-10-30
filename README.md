@@ -139,6 +139,26 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 
 `arena plan` は同一防衛者の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。順位付けは Wilson 下限で、`--min-samples` / `--min-win-rate` を満たす候補だけ `REC` になり、`arenaAttack` は送りません。
 
+### Oracle パリティ（Phase 2-A）
+
+```bash
+# ToE（既知の config getter）で取得済みリプレイを再シミュレーション
+uv run hw-genie battle simulate -a Alice --type titan_arena --limit 10
+
+# 書き込まずに比較だけ
+uv run hw-genie battle simulate -a Alice --type titan_arena --limit 10 --dry-run
+
+# アリーナの BattleConfigStorage getter を確認（要 Playwright + ゲームセッション）
+uv run hw-genie battle config-getters
+```
+
+- 常駐ヘッドレスページを1つ使い回し、`--recycle-every`（既定100）ごとに再生成します。`0` を指定すると再生成しません。
+- 結果は `source='sim'` として保存され、`battle stats` / `arena plan` の集計には混ざりません。`battle_comparisons` に実結果との一致/不一致が記録されます。未取り込みのリプレイは比較の FK 用に `api_import` として自動取り込みされます。
+- 複数防衛チームを持つリプレイ（`completeness="partial"`）は先頭チームのみを比較対象にするため、Grand Arena の複数チーム戦では結果の解釈に注意してください。
+- 取得したリプレイがコーパスに未登録の場合、比較の FK を作るため `source='api_import'` として自動的に取り込みます（副作用）。
+- アリーナは `BattleConfigStorage` の getter が未検証です。`battle config-getters` で名前を確認し、`--config-getter <name>` で試してください。ToE 以外で既定の `get_titanPvpManual` を指定したまま実行すると、誤った結果を防ぐため停止します。
+- アリーナの seed はサーバーが選ぶため、将来の予測は「全 seed で勝つ」ではなく統計的保証になります。
+
 `lineup_key` は「ヒーロー（リプレイ順）＋ペット＋バナー」だけで作り、パワーやステータスの変化を無視します。`config_hash` はステータス込みの完全一致用です。ヒーローの並び順はリプレイの dict 順を採用しています（ゲームが明示的な位置フィールドを返さないため）。
 
 勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
