@@ -145,6 +145,19 @@ class SimulationComparison:
     mismatch_type: str
     delta_stars: int
     elapsed_seconds: float = 0.0
+    sweep_seeds: int = 0
+    sweep_wins: int = 0
+    sweep_win_rate: float = 0.0
+
+
+@dataclass
+class PruneStats:
+    """How many old battle rows (and comparisons) a prune matched/deleted."""
+
+    before: datetime
+    matched: int = 0
+    deleted: int = 0
+    comparisons: int = 0
 
 
 def _canonical_dumps(obj: Any) -> str:
@@ -967,6 +980,77 @@ def bulk_import_battles(
     return retry_on_wal_contention(_attempt, logger=logger)
 
 
+def _chunks(values: list[int], size: int = 500):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
+def prune_battles(before: datetime, *, dry_run: bool = False) -> PruneStats:
+    """Delete battle rows (and their comparisons) older than ``before``.
+
+    ``team_configs`` are left in place: they may still be referenced by newer
+    battles. They are small and can be reclaimed by a future vacuum/GC pass.
+    """
+    if before.tzinfo is not None:
+        before = before.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def _attempt() -> PruneStats:
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                if not db.in_transaction():
+                    db.begin()
+                ids = [
+                    row[0]
+                    for row in db.query(BattleRecord.id)
+                    .filter(BattleRecord.occurred_at < before)
+                    .all()
+                ]
+                stats = PruneStats(before=before, matched=len(ids))
+                if not ids:
+                    db.rollback()
+                    return stats
+
+                comparison_ids: set[int] = set()
+                comparison_count = 0
+                for chunk in _chunks(ids):
+                    comparison_filter = or_(
+                        BattleComparison.predicted_battle_id.in_(chunk),
+                        BattleComparison.actual_battle_id.in_(chunk),
+                    )
+                    if dry_run:
+                        comparison_ids.update(
+                            row[0]
+                            for row in db.query(BattleComparison.id)
+                            .filter(comparison_filter)
+                            .all()
+                        )
+                    else:
+                        comparison_count += (
+                            db.query(BattleComparison)
+                            .filter(comparison_filter)
+                            .delete(synchronize_session=False)
+                        )
+                stats.comparisons = (
+                    len(comparison_ids) if dry_run else comparison_count
+                )
+                if dry_run:
+                    db.rollback()
+                    return stats
+
+                deleted = 0
+                for chunk in _chunks(ids):
+                    deleted += (
+                        db.query(BattleRecord)
+                        .filter(BattleRecord.id.in_(chunk))
+                        .delete(synchronize_session=False)
+                    )
+                db.commit()
+                stats.deleted = deleted
+                return stats
+
+    return retry_on_wal_contention(_attempt, logger=logger)
+
+
 def _classify_result(
     actual_win: bool | None,
     actual_stars: int | None,
@@ -1080,12 +1164,15 @@ def upsert_simulation(
                                 .first()
                             )
                         if row is None:
+                            base_battle_id = battle.source_record_id.split(
+                                "#seed=", 1
+                            )[0]
                             row = BattleRecord(
                                 account_id=int(account.id),
                                 battle_type=battle.battle_type,
                                 source="sim",
                                 source_record_id=battle.source_record_id,
-                                battle_id=battle.source_record_id,
+                                battle_id=base_battle_id,
                                 occurred_at=battle.occurred_at,
                                 ended_at=battle.ended_at,
                                 game_version=battle.game_version,
@@ -1111,9 +1198,13 @@ def upsert_simulation(
                             # a type change also changes battle_type, the
                             # lineup keys and the matchup key.
                             row.battle_type = battle.battle_type
+                            row.battle_id = battle.source_record_id.split(
+                                "#seed=", 1
+                            )[0]
                             row.matchup_key = battle.matchup_key
                             row.attacker_lineup_key = battle.attacker.lineup_key
                             row.defender_lineup_key = battle.defender.lineup_key
+                            row.seed = battle.seed
                             row.win = battle.win
                             row.stars = battle.stars
                             row.engine = engine
@@ -1127,6 +1218,30 @@ def upsert_simulation(
                 except Exception:
                     db.rollback()
                     raise
+
+    return retry_on_wal_contention(_attempt, logger=logger)
+
+
+def delete_stale_sim_seeds(battle_id: str, keep_ids: set[str]) -> int:
+    """Delete ``<battle_id>#seed=...`` sim rows not in ``keep_ids``."""
+    prefix = f"{battle_id}#seed="
+
+    def _attempt() -> int:
+        with _wal_io_lock:
+            with get_write_session_local()() as db:
+                if not db.in_transaction():
+                    db.begin()
+                query = db.query(BattleRecord).filter(
+                    BattleRecord.source == "sim",
+                    BattleRecord.source_record_id.like(f"{prefix}%"),
+                )
+                if keep_ids:
+                    query = query.filter(
+                        ~BattleRecord.source_record_id.in_(keep_ids)
+                    )
+                deleted = query.delete(synchronize_session=False)
+                db.commit()
+                return deleted
 
     return retry_on_wal_contention(_attempt, logger=logger)
 

@@ -133,7 +133,7 @@ Unique constraint: `(team_config_id, slot)`
 | `account_id` | INTEGER | FK -> accounts.id (CASCADE), NOT NULL | 取り込み元アカウント |
 | `battle_type` | VARCHAR(16) | NOT NULL | `arena` / `grand` / `titan_arena`（`toe` は CLI の別名で、保存値は `titan_arena`） |
 | `source` | VARCHAR(16) | NOT NULL | `api_import` / `hwa_import` / `sim`（`battle simulate`）/ 将来: `attack`。`sim` 行は stats / plan の集計から除外 |
-| `source_record_id` | VARCHAR(64) | NOT NULL | リプレイID（重複排除キー） |
+| `source_record_id` | VARCHAR(64) | NOT NULL | リプレイID（重複排除キー）。sim の追加 seed 行は `<battle_id>#seed=<seed>` |
 | `battle_id` | VARCHAR(64) | | 元の battle ID |
 | `occurred_at` | DATETIME | NOT NULL | `startTime`（naive UTC） |
 | `ended_at` | DATETIME | | `endTime` |
@@ -143,7 +143,7 @@ Unique constraint: `(team_config_id, slot)`
 | `matchup_key` | VARCHAR(64) | NOT NULL | `(type, attacker lineup, defender lineup)` のハッシュ |
 | `attacker_player_id` / `defender_player_id` | VARCHAR(32) | | プレイヤーID |
 | `viewer_role` | VARCHAR(16) | | 取り込み元アカウントの立場: `attacker` / `defender` / `unknown`（リプレイの `userId` / `typeId` と `accounts.player_id` を比較。既存行は `NULL`） |
-| `seed` | BIGINT | | リプレイの seed |
+| `seed` | BIGINT | | リプレイ／シミュレーションの seed（sim の追加 seed 行はその seed） |
 | `win` / `stars` | BOOLEAN / INTEGER | | 結果（`win` はリプレイの `result.win`。攻撃側 `userId` 視点と仮定） |
 | `deterministic` | BOOLEAN | | 決定性の検証結果（未検証は NULL） |
 | `authoritative` | BOOLEAN | NOT NULL | サーバー生成なら true |

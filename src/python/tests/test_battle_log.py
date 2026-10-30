@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +15,7 @@ from hw_genie.core.battle_log import (
     import_battles,
     lineup_key_from_ids,
     parse_battle_get_response,
+    prune_battles,
     query_matchups,
     query_plans,
     wilson_lower_bound,
@@ -21,6 +23,7 @@ from hw_genie.core.battle_log import (
 from hw_genie.core.client import ApiAction, HWClient
 from hw_genie.core.database import (
     Account,
+    BattleComparison,
     BattleRecord,
     TeamConfig,
     get_session_local,
@@ -561,3 +564,48 @@ def test_light_migration_adds_viewer_role_and_index():
         }
     assert "viewer_role" in columns
     assert "ix_battle_records_type_defender_lineup" in indexes
+
+
+def test_prune_deletes_old_battles_and_comparisons():
+    _create_account()
+    old = _replay(battle_id="old-1")
+    old["startTime"] = str(
+        int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+    )
+    new = _replay(battle_id="new-1")
+    new["startTime"] = str(
+        int(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+    )
+    parsed = parse_battle_get_response(
+        {"response": {"replays": [old, new], "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    with get_session_local()() as db:
+        rows = {row.source_record_id: row for row in db.query(BattleRecord).all()}
+        db.add(
+            BattleComparison(
+                account_id=rows["old-1"].account_id,
+                predicted_battle_id=rows["old-1"].id,
+                actual_battle_id=rows["new-1"].id,
+                mismatch_type="match",
+            )
+        )
+        db.commit()
+
+    cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    dry = prune_battles(cutoff, dry_run=True)
+    assert dry.matched == 1
+    assert dry.deleted == 0
+    assert dry.comparisons == 1
+    with get_session_local()() as db:
+        assert db.query(BattleRecord).count() == 2
+        assert db.query(BattleComparison).count() == 1
+
+    real = prune_battles(cutoff)
+    assert real.deleted == 1
+    assert real.comparisons == 1
+    with get_session_local()() as db:
+        remaining = db.query(BattleRecord).all()
+        assert [row.source_record_id for row in remaining] == ["new-1"]
+        assert db.query(BattleComparison).count() == 0

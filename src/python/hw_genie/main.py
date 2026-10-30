@@ -1055,6 +1055,7 @@ def cmd_battle_simulate(args):
             as_json=bool(args.json),
             recycle_every=args.recycle_every,
             config_getter=args.config_getter,
+            seeds=getattr(args, "seeds", 1),
         )
     except (BattleLogError, BridgeError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1163,6 +1164,42 @@ def cmd_battle_watch(args):
             results = passes[-1].get("results", {})
             if results and all("error" in result for result in results.values()):
                 sys.exit(1)
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_prune(args):
+    """Delete old battle-corpus rows (and comparisons)."""
+    from datetime import datetime, timedelta, timezone
+
+    from hw_genie.commands.battle import BattleLogError, run_battle_prune
+
+    before = None
+    if getattr(args, "before", None):
+        try:
+            before = datetime.strptime(args.before, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            print("Error: --before must be YYYY-MM-DD", file=sys.stderr)
+            sys.exit(2)
+    else:
+        days = getattr(args, "days", None)
+        days = 90 if days is None else days
+        if days == 0 and not args.dry_run:
+            print(
+                "WARNING: --days 0 deletes ALL battle rows in the corpus",
+                file=sys.stderr,
+            )
+        before = datetime.now(timezone.utc) - timedelta(days=days)
+
+    try:
+        run_battle_prune(
+            before,
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+        )
     except BattleLogError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -2393,6 +2430,15 @@ def main():
         ),
     )
     p_battle_simulate.add_argument(
+        "--seeds",
+        type=_positive_int,
+        default=1,
+        help=(
+            "Total simulations per replay including the observed seed "
+            "(default: 1). Extra deterministic seeds estimate the win rate."
+        ),
+    )
+    p_battle_simulate.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate but do not write sim/comparison rows",
@@ -2509,6 +2555,31 @@ def main():
         "--json", action="store_true", help="One JSON object per pass"
     )
     p_battle_watch.set_defaults(func=cmd_battle_watch)
+
+    p_battle_prune = battle_sub.add_parser(
+        "prune",
+        parents=[parent_parser],
+        help="Delete battle rows older than a cutoff",
+    )
+    prune_cutoff = p_battle_prune.add_mutually_exclusive_group()
+    prune_cutoff.add_argument(
+        "--days",
+        type=_non_negative_int,
+        default=None,
+        help="Delete battles older than N days (default: 90; 0 = all)",
+    )
+    prune_cutoff.add_argument(
+        "--before",
+        default=None,
+        help="Delete battles before YYYY-MM-DD (UTC)",
+    )
+    p_battle_prune.add_argument(
+        "--dry-run", action="store_true", help="Only report what would be deleted"
+    )
+    p_battle_prune.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_prune.set_defaults(func=cmd_battle_prune)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES

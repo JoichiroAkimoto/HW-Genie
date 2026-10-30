@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
@@ -16,12 +17,15 @@ from hw_genie.core.battle_log import (
     BattleLogError,
     ImportStats,
     MatchupStat,
+    PruneStats,
     SimulationComparison,
     build_battle_payload,
     compare_result,
+    delete_stale_sim_seeds,
     import_battles,
     parse_battle_get_response,
     parse_battle_replays,
+    prune_battles,
     query_matchups,
     record_comparison,
     upsert_simulation,
@@ -235,6 +239,7 @@ def run_battle_simulate(
     as_json: bool = False,
     recycle_every: int = 100,
     config_getter: str = "get_titanPvpManual",
+    seeds: int = 1,
     oracle=None,
 ) -> list[SimulationComparison]:
     """Re-simulate fetched replays with the headless oracle and record parity.
@@ -242,7 +247,13 @@ def run_battle_simulate(
     The raw replay is used as the oracle input (including ``effects`` and
     ``seed``). Recorded runs write a ``source='sim'`` row plus a
     ``battle_comparisons`` row; historical stats/planning ignore sim rows.
+
+    ``seeds > 1`` re-simulates the same battle with the observed seed plus
+    additional deterministic seeds; the observed seed is compared with the
+    replay, and ``sweep_*`` fields report the statistical win rate.
     """
+    if seeds < 1:
+        raise BattleLogError("--seeds must be >= 1")
     if (
         oracle is None
         and battle_type != "titan_arena"
@@ -310,15 +321,34 @@ def run_battle_simulate(
             # One bad battle (oracle crash, DB error) must not abort the rest.
             try:
                 payload = build_battle_payload(raw, battle_type)
-                started = perf_counter()
-                estimate = engine.calc(payload)
-                elapsed = perf_counter() - started
+                base_seed = int(payload.get("seed") or 0)
+                if seeds > 1:
+                    rng = random.Random(base_seed)
+                    seed_values = [base_seed] + [
+                        rng.getrandbits(32) for _ in range(seeds - 1)
+                    ]
+                else:
+                    seed_values = [base_seed]
+
+                estimates = []
+                for seed_value in seed_values:
+                    sim_payload = dict(payload)
+                    sim_payload["seed"] = seed_value
+                    started = perf_counter()
+                    estimate = engine.calc(sim_payload)
+                    elapsed = perf_counter() - started
+                    estimates.append((seed_value, estimate, elapsed))
+
+                _, observed, observed_elapsed = estimates[0]
+                sweep_total = len(estimates)
+                sweep_wins = sum(1 for _, estimate, _ in estimates if estimate.win)
+
                 if dry_run:
                     comparison = compare_result(
                         parsed,
-                        estimate.win,
-                        estimate.stars,
-                        elapsed_seconds=elapsed,
+                        observed.win,
+                        observed.stars,
+                        elapsed_seconds=observed_elapsed,
                     )
                 else:
                     # Ensure the observed row exists so the comparison has an
@@ -333,16 +363,52 @@ def run_battle_simulate(
                         )
                     upsert_simulation(
                         account_alias,
-                        replace(parsed, win=estimate.win, stars=estimate.stars),
+                        replace(
+                            parsed,
+                            seed=base_seed,
+                            win=observed.win,
+                            stars=observed.stars,
+                        ),
                         engine=engine_name,
                     )
+                    # Extra seeds are stored as separate sim rows (excluded
+                    # from stats/planning) so the sweep is auditable.
+                    for seed_value, estimate, _ in estimates[1:]:
+                        upsert_simulation(
+                            account_alias,
+                            replace(
+                                parsed,
+                                source_record_id=(
+                                    f"{parsed.source_record_id}#seed={seed_value}"
+                                ),
+                                seed=seed_value,
+                                win=estimate.win,
+                                stars=estimate.stars,
+                            ),
+                            engine=engine_name,
+                        )
+                    keep_ids = {
+                        f"{parsed.source_record_id}#seed={seed}"
+                        for seed in seed_values[1:]
+                    }
+                    delete_stale_sim_seeds(parsed.source_record_id, keep_ids)
                     comparison = record_comparison(parsed.source_record_id)
                     if comparison is None:
                         raise BattleLogError(
                             f"battle {parsed.source_record_id}: comparison could "
                             "not be recorded (imported or sim row is missing)"
                         )
-                    comparison = replace(comparison, elapsed_seconds=elapsed)
+                    comparison = replace(
+                        comparison, elapsed_seconds=observed_elapsed
+                    )
+                comparison = replace(
+                    comparison,
+                    sweep_seeds=sweep_total,
+                    sweep_wins=sweep_wins,
+                    sweep_win_rate=(
+                        sweep_wins / sweep_total if sweep_total else 0.0
+                    ),
+                )
             except (KeyboardInterrupt, InterruptedError):
                 raise
             except Exception as exc:
@@ -392,18 +458,34 @@ def run_battle_simulate(
         table.add_column("Match", justify="center")
         table.add_column("Mismatch", style="yellow")
         table.add_column("ms", justify="right")
+        if seeds > 1:
+            table.add_column("Sweep", justify="center")
         for comparison in comparisons:
-            table.add_row(
+            row = [
                 comparison.battle_id,
                 _result_label(comparison.actual_win, comparison.actual_stars),
                 _result_label(comparison.simulated_win, comparison.simulated_stars),
                 "yes" if comparison.matched else "no",
                 comparison.mismatch_type,
                 f"{comparison.elapsed_seconds * 1000:.0f}",
-            )
+            ]
+            if seeds > 1:
+                row.append(
+                    f"{comparison.sweep_wins}/{comparison.sweep_seeds} "
+                    f"({comparison.sweep_win_rate * 100:.0f}%)"
+                )
+            table.add_row(*row)
         _console.print(table)
         rate = (matched / len(comparisons) * 100) if comparisons else 0.0
         print(f"Matched {matched}/{len(comparisons)} ({rate:.0f}%) with {engine_name}")
+        if seeds > 1:
+            total_wins = sum(comparison.sweep_wins for comparison in comparisons)
+            total_seeds = sum(comparison.sweep_seeds for comparison in comparisons)
+            sweep_rate = (total_wins / total_seeds * 100) if total_seeds else 0.0
+            print(
+                f"Sweep: {total_wins}/{total_seeds} wins "
+                f"({sweep_rate:.0f}%) across {seeds} seed(s) per battle"
+            )
         print(
             f"Processed {len(pairs)} battle(s): {len(comparisons)} succeeded, "
             f"{len(failures)} failed"
@@ -417,6 +499,38 @@ def run_battle_simulate(
         detail = "; ".join(f"{failed_id}: {error}" for failed_id, error in failures)
         raise BattleLogError(f"all simulations failed: {detail}")
     return comparisons
+
+
+def run_battle_prune(
+    before: datetime, *, dry_run: bool = False, as_json: bool = False
+) -> PruneStats:
+    """Delete battle rows (and comparisons) older than ``before``."""
+    stats = prune_battles(before, dry_run=dry_run)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "before": stats.before.replace(
+                        tzinfo=timezone.utc
+                    ).isoformat(),
+                    "dry_run": dry_run,
+                    "matched": stats.matched,
+                    "deleted": stats.deleted,
+                    "comparisons": stats.comparisons,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return stats
+
+    count = stats.matched if dry_run else stats.deleted
+    prefix = "[dry-run] would delete" if dry_run else "deleted"
+    print(
+        f"{prefix}: {count} battle(s) and {stats.comparisons} comparison(s) "
+        f"older than {stats.before.date().isoformat()}"
+    )
+    return stats
 
 
 def parse_battle_types(value: str) -> tuple[str, ...]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 from types import SimpleNamespace
 
 import pytest
@@ -420,3 +421,175 @@ def test_build_battle_payload_keeps_unknown_fields():
     assert isinstance(payload["seed"], int)
     assert isinstance(payload["startTime"], int)
     assert parsed.source_record_id == "9001"
+
+
+def test_simulate_seed_sweep_records_extra_rows():
+    _create_account()
+    oracle = FakeOracle(win=True, stars=3)
+    client = FakeClient(_detail(_replay()))
+
+    comparisons = run_battle_simulate(
+        client,
+        "Alice",
+        battle_type="arena",
+        dry_run=False,
+        oracle=oracle,
+        seeds=3,
+    )
+
+    rng = random.Random(1234567890)
+    expected_seeds = [1234567890] + [rng.getrandbits(32) for _ in range(2)]
+    assert [call["seed"] for call in oracle.calls] == expected_seeds
+    assert len(set(expected_seeds)) == 3
+    assert comparisons[0].sweep_seeds == 3
+    assert comparisons[0].sweep_wins == 3
+    assert comparisons[0].sweep_win_rate == 1.0
+    with get_session_local()() as db:
+        rows = db.query(BattleRecord).all()
+        sim_rows = [row for row in rows if row.source == "sim"]
+        assert len(sim_rows) == 3  # observed + 2 extra seeds
+        assert len([row for row in rows if row.source == "api_import"]) == 1
+        assert db.query(BattleComparison).count() == 1
+        observed = next(
+            row for row in sim_rows if row.source_record_id == "9001"
+        )
+        assert observed.seed == 1234567890
+        extra = [row for row in sim_rows if "#seed=" in row.source_record_id]
+        assert len(extra) == 2
+        assert sorted(row.seed for row in extra) == sorted(expected_seeds[1:])
+        for row in extra:
+            assert row.battle_type == "arena"
+            assert row.matchup_key == observed.matchup_key
+            assert row.viewer_role == "attacker"
+            assert row.completeness == observed.completeness
+
+
+def test_simulate_seed_sweep_is_deterministic():
+    _create_account()
+    client = FakeClient(_detail(_replay()))
+    first = FakeOracle(win=True)
+    second = FakeOracle(win=True)
+
+    run_battle_simulate(
+        client, "Alice", battle_type="arena", dry_run=True, oracle=first, seeds=4
+    )
+    run_battle_simulate(
+        client, "Alice", battle_type="arena", dry_run=True, oracle=second, seeds=4
+    )
+
+    assert [call["seed"] for call in first.calls] == [
+        call["seed"] for call in second.calls
+    ]
+
+
+def test_simulate_seed_sweep_mixed_wins():
+    _create_account()
+    rng = random.Random(1234567890)
+    seeds = [1234567890] + [rng.getrandbits(32) for _ in range(3)]
+    expected_wins = sum(1 for seed in seeds if seed % 2 == 0)
+
+    class SeedParityOracle:
+        engine_name = "seed-parity"
+
+        def calc(self, battle):
+            return BattleEstimate(
+                win=battle["seed"] % 2 == 0, stars=3, progress=[]
+            )
+
+    comparisons = run_battle_simulate(
+        FakeClient(_detail(_replay())),
+        "Alice",
+        battle_type="arena",
+        dry_run=False,
+        oracle=SeedParityOracle(),
+        seeds=4,
+    )
+
+    assert comparisons[0].sweep_seeds == 4
+    assert comparisons[0].sweep_wins == expected_wins
+    assert comparisons[0].sweep_win_rate == expected_wins / 4
+    with get_session_local()() as db:
+        rows = db.query(BattleRecord).all()
+        observed = next(
+            row for row in rows if row.source_record_id == "9001"
+        )
+        assert observed.seed == 1234567890
+        assert observed.win == (1234567890 % 2 == 0)
+        extra = [row for row in rows if "#seed=" in row.source_record_id]
+        assert len(extra) == 3
+        for row in extra:
+            assert row.seed in seeds[1:]
+            assert row.win == (row.seed % 2 == 0)
+
+
+def test_simulate_seed_sweep_removes_stale_extra_rows():
+    _create_account()
+    client = FakeClient(_detail(_replay()))
+
+    run_battle_simulate(
+        client,
+        "Alice",
+        battle_type="arena",
+        dry_run=False,
+        oracle=FakeOracle(),
+        seeds=3,
+    )
+    with get_session_local()() as db:
+        assert len(
+            [
+                row
+                for row in db.query(BattleRecord).all()
+                if row.source == "sim"
+            ]
+        ) == 3
+
+    run_battle_simulate(
+        client,
+        "Alice",
+        battle_type="arena",
+        dry_run=False,
+        oracle=FakeOracle(),
+        seeds=1,
+    )
+    with get_session_local()() as db:
+        sim_rows = [
+            row
+            for row in db.query(BattleRecord).all()
+            if row.source == "sim"
+        ]
+        assert len(sim_rows) == 1
+        assert sim_rows[0].source_record_id == "9001"
+        assert sim_rows[0].seed == 1234567890
+        assert db.query(BattleComparison).count() == 1
+
+
+def test_simulate_seed_sweep_dry_run_writes_nothing():
+    _create_account()
+    oracle = FakeOracle(win=True, stars=3)
+    client = FakeClient(_detail(_replay()))
+
+    comparisons = run_battle_simulate(
+        client,
+        "Alice",
+        battle_type="arena",
+        dry_run=True,
+        oracle=oracle,
+        seeds=3,
+    )
+
+    assert len(oracle.calls) == 3
+    assert comparisons[0].sweep_seeds == 3
+    with get_session_local()() as db:
+        assert db.query(BattleRecord).count() == 0
+        assert db.query(BattleComparison).count() == 0
+
+
+def test_simulate_rejects_zero_seeds():
+    with pytest.raises(BattleLogError):
+        run_battle_simulate(
+            FakeClient(_detail(_replay())),
+            "Alice",
+            battle_type="arena",
+            oracle=FakeOracle(),
+            seeds=0,
+        )

@@ -159,6 +159,16 @@ uv run hw-genie battle config-getters
 - アリーナは `BattleConfigStorage` の getter が未検証です。`battle config-getters` で名前を確認し、`--config-getter <name>` で試してください。ToE 以外で既定の `get_titanPvpManual` を指定したまま実行すると、誤った結果を防ぐため停止します。
 - アリーナの seed はサーバーが選ぶため、将来の予測は「全 seed で勝つ」ではなく統計的保証になります。
 
+### Seed スイープ（統計的勝率）
+
+```bash
+uv run hw-genie battle simulate -a Alice --type titan_arena --limit 5 --seeds 10
+```
+
+- 観測 seed は実リプレイと比較し、追加 seed は決定的に生成して勝率を推定します。`--seeds N` は**観測分を含む合計 N 回**で、`sweep_*` も観測結果を含みます。
+- 追加 seed の結果は `source='sim'` の別行（`<battle_id>#seed=<seed>`）として保存され、`battle stats` / `arena plan` には混ざりません。
+- Arena は seed をクライアントが選べないため、`--seeds` の結果は統計的推定です。
+
 `lineup_key` は「ヒーロー（リプレイ順）＋ペット＋バナー」だけで作り、パワーやステータスの変化を無視します。`config_hash` はステータス込みの完全一致用です。ヒーローの並び順はリプレイの dict 順を採用しています（ゲームが明示的な位置フィールドを返さないため）。
 
 ### HWA スナップショットの取り込み
@@ -184,8 +194,21 @@ uv run hw-genie battle import-hwa -a Alice \
 - 観測ソース（`api_import` / `hwa_import` / `attack`）は replay id で重複排除します。`source='hwa_import'` の partial 行が先にあり、後から同じ replay id の**完全な**（`completeness='full'`）API リプレイを取り込んだ場合のみ、行を `api_import` の完全な構成へ in-place で upgrade します（`upgraded` として集計）。`ids_only` の API リプレイは HWA のデータを置き換えず重複として扱います。upgrade しても取り込み元アカウント（`account_id` / `viewer_role`）は元の行のまま保持します（統計は関与ベースで、`battle_comparisons` の FK も変わらないため）。
 - 大規模取り込みでは `--no-sync` を推奨します（接続ごとの Turso 同期を止め、最後に1回同期）。終了後に `hw-genie sync` でも構いません。`--json --no-sync` では stdout は JSON のみに保たれ、同期に失敗しても元の例外を隠さず、`replica sync failed; run \`hw-genie sync\`` を stderr に出力します。
 
-### 自動取り込み（watch）
+### 古いデータの削除（prune）
 
+```bash
+# まず dry-run で件数確認
+uv run hw-genie battle prune --days 90 --dry-run
+
+# 90日より古い battle 行と comparison を削除
+uv run hw-genie battle prune --days 90
+```
+
+- 既定は90日より古い `battle_records` と、それに紐づく `battle_comparisons` を削除します。`--before YYYY-MM-DD` でも指定できます。
+- `--days 0` は**全件削除**です（実行時に警告を表示）。通常は `--dry-run` で件数を確認してください。
+- `team_configs` は新しい battle から参照され得るため残します。
+
+### 自動取り込み（watch）
 ```bash
 # 5分ごとに arena/grand を巡回して新規分だけ取り込む（Ctrl+C で終了）
 uv run hw-genie battle watch -a Alice --types arena,grand --interval 300

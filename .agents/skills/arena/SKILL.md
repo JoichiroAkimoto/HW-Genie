@@ -70,7 +70,9 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
    uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
    ```
 
-## 事前計算（任意・読み取りのみ）
+## 事前計算（読み取り）とメンテナンス（書き込み）
+
+> 注意: `battle simulate` は sim/comparison 行を書き込み、`battle prune` は古い行を削除します。まず `--dry-run` で確認してください。
 
 過去の戦闘ログから「この防衛編成にはこの攻撃編成が勝っている」を引けます。`arenaAttack` は送りません。
 
@@ -91,6 +93,12 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 # 3) REC が出たら、表示されたコマンドで攻撃（まず --dry-run）
 uv run hw-genie arena attack -a Alice --user-id 11111111 \
   --heroes 1 2 3 4 5 --pet 6001 --banner 2 --dry-run
+
+# 統計的勝率（ToE は既知の getter。Arena は getter 特定後に --config-getter を指定）
+uv run hw-genie battle simulate -a Alice --type titan_arena --limit 5 --seeds 10
+
+# 90日より古いデータを削除（まず dry-run）
+uv run hw-genie battle prune --days 90 --dry-run
 ```
 
 - 同一防衛者（`defender_player_id`）の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。
