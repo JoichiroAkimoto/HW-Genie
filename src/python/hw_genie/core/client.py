@@ -188,12 +188,14 @@ class ApiAction(str, Enum):
     HERO_SKIN_UPGRADE = "heroSkinUpgrade"
     HERO_TITAN_GIFT_LEVEL_UP = "heroTitanGiftLevelUp"
     HERO_TITAN_GIFT_DROP = "heroTitanGiftDrop"
+    HERO_ENCHANT_RUNE = "heroEnchantRune"
     CONSUMABLE_USE_STAMINA = "consumableUseStamina"
     INVENTORY_GET = "inventoryGet"
     INVENTORY_EXCHANGE_STONES = "inventoryExchangeStones"
     SHOP_GET_ALL = "shopGetAll"
     SHOP_BUY = "shopBuy"
     USER_GET_INFO = "userGetInfo"
+    CLAN_GET_INFO = "clanGetInfo"
     CLAN_RAID_GET_INFO = "clanRaid_getInfo"
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
     CHAT_GET_ALL = "chatGetAll"
@@ -466,6 +468,16 @@ class HWClient:
                 }
             ]
         }
+        return self.call(payload)
+
+    def clan_get_info(self) -> HWResponse:
+        """所属クラン（ギルド）の情報を取得する。
+
+        レスポンス（``detail["response"]``）の ``stat.activityForRuneAvailable``
+        が「今日のグリフ強化で得られるギルド活動ポイントをまだ獲得できるか」を
+        表す（実測で確認）。``serverResetTime`` は次のサーバーリセット時刻。
+        """
+        payload = {"calls": [{"name": ApiAction.CLAN_GET_INFO, "args": {}, "ident": "body"}]}
         return self.call(payload)
 
     def chat_get_all(
