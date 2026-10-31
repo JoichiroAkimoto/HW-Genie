@@ -987,6 +987,29 @@ def cmd_toe_status(args):
     print(json.dumps(status, indent=2, ensure_ascii=False))
 
 
+def cmd_arena_auto(args):
+    """Pick the highest non-guild candidate and attack if the log gate passes."""
+    from hw_genie.commands.arena import ArenaError, run_arena_auto
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        run_arena_auto(
+            client,
+            execute=bool(args.execute),
+            max_attacks=args.max_attacks,
+            min_samples=args.min_samples,
+            min_win_rate=args.min_win_rate,
+            game_version=args.game_version,
+            candidate_retries=args.candidate_retries,
+            stop_on_loss=not args.no_stop_on_loss,
+            allow_same_lineup=bool(args.allow_same_lineup),
+        )
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_battle_import(args):
     """Import battle replays into the local corpus."""
     from hw_genie.commands.battle import BattleLogError, run_battle_import
@@ -1027,6 +1050,196 @@ def cmd_battle_stats(args):
             by=args.by,
             min_samples=args.min_samples,
             limit=args.limit,
+            as_json=bool(args.json),
+        )
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_simulate(args):
+    """Re-simulate fetched replays with the headless oracle."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.battle import BattleLogError, run_battle_simulate
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account)
+    battle_type = "titan_arena" if args.battle_type == "toe" else args.battle_type
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = 120.0 if getattr(args, "headed", False) else 30.0
+    try:
+        run_battle_simulate(
+            client,
+            alias,
+            battle_type=battle_type,
+            limit=args.limit,
+            offset=args.offset,
+            battle_id=args.battle_id,
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+            recycle_every=args.recycle_every,
+            config_getter=getattr(args, "config_getter", None),
+            seeds=getattr(args, "seeds", 1),
+            headless=not getattr(args, "headed", False),
+            timeout=timeout,
+        )
+    except (BattleLogError, BridgeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_config_getters(args):
+    """List BattleConfigStorage getters from the game page."""
+    from hw_genie.battle.engine import BridgeError
+    from hw_genie.commands.battle import BattleLogError, run_battle_config_getters
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = 120.0 if getattr(args, "headed", False) else 30.0
+    try:
+        run_battle_config_getters(
+            client,
+            as_json=bool(args.json),
+            headless=not getattr(args, "headed", False),
+            timeout=timeout,
+        )
+    except (BridgeError, BattleLogError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_import_hwa(args):
+    """Import an HWAssistant snapshot into the battle corpus."""
+    from datetime import datetime, timedelta, timezone
+
+    from hw_genie.commands.battle import (
+        BattleLogError,
+        parse_battle_types,
+        run_battle_import_hwa,
+    )
+
+    alias = resolve_account(args.account)
+    since = None
+    since_arg = getattr(args, "since", None)
+    if since_arg:
+        try:
+            since = datetime.strptime(since_arg, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            print("Error: --since must be YYYY-MM-DD", file=sys.stderr)
+            sys.exit(2)
+    else:
+        days = getattr(args, "days", None)
+        days = 90 if days is None else days
+        if days > 0:
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    if getattr(args, "no_sync", False):
+        # Bulk imports write many local frames; the per-connection sync makes
+        # each batch wait on the remote. Skip it and sync once at the end.
+        os.environ["TURSO_SYNC_ON_CONNECT"] = "false"
+    try:
+        try:
+            types = parse_battle_types(args.types)
+            run_battle_import_hwa(
+                alias,
+                args.source,
+                types=types,
+                since=since,
+                offset=getattr(args, "offset", 0),
+                limit=getattr(args, "limit", None),
+                batch_size=args.batch_size,
+                dry_run=bool(args.dry_run),
+                as_json=bool(args.json),
+            )
+        finally:
+            # Sync whatever batches were committed even if the import failed
+            # part-way through; dry runs never write. The quiet sync never
+            # exits, so a sync failure neither masks the original exception nor
+            # pollutes stdout (which must stay pure JSON for --json).
+            if getattr(args, "no_sync", False) and not args.dry_run:
+                if not _sync_replica(quiet=True):
+                    print(
+                        "replica sync failed; run `hw-genie sync`",
+                        file=sys.stderr,
+                    )
+    except (BattleLogError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_watch(args):
+    """Poll arena/grand replays and import new battles."""
+    from hw_genie.commands.battle import (
+        BattleLogError,
+        parse_battle_types,
+        run_battle_watch,
+    )
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    alias = resolve_account(args.account)
+    try:
+        types = parse_battle_types(args.types)
+        keep_days = (
+            None
+            if getattr(args, "no_prune", False)
+            else getattr(args, "keep_days", 90)
+        )
+        passes = run_battle_watch(
+            client,
+            alias,
+            types=types,
+            interval=args.interval,
+            limit=args.limit,
+            offset=getattr(args, "offset", 0),
+            once=bool(args.once),
+            keep_days=keep_days,
+            as_json=bool(args.json),
+        )
+        if args.once and passes:
+            results = passes[-1].get("results", {})
+            if results and all("error" in result for result in results.values()):
+                sys.exit(1)
+    except BattleLogError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_battle_prune(args):
+    """Delete old battle-corpus rows (and comparisons)."""
+    from datetime import datetime, timedelta, timezone
+
+    from hw_genie.commands.battle import BattleLogError, run_battle_prune
+
+    before = None
+    if getattr(args, "before", None):
+        try:
+            before = datetime.strptime(args.before, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            print("Error: --before must be YYYY-MM-DD", file=sys.stderr)
+            sys.exit(2)
+    else:
+        days = getattr(args, "days", None)
+        days = 90 if days is None else days
+        if days == 0 and not args.dry_run:
+            print(
+                "WARNING: --days 0 deletes ALL battle rows in the corpus",
+                file=sys.stderr,
+            )
+        before = datetime.now(timezone.utc) - timedelta(days=days)
+
+    try:
+        run_battle_prune(
+            before,
+            dry_run=bool(args.dry_run),
             as_json=bool(args.json),
         )
     except BattleLogError as e:
@@ -1196,12 +1409,20 @@ def cmd_daily(args):
     )
 
 
-def cmd_sync(args):
-    """Sync the local Turso replica with the remote cloud database."""
+def _sync_replica(quiet: bool = False) -> bool:
+    """Sync the local Turso replica with the remote cloud database.
+
+    Never raises or calls ``sys.exit``: returns ``True`` on success (including
+    "nothing to sync") and ``False`` on failure. ``quiet`` suppresses both the
+    success line and the failure message, so callers that own the output (e.g.
+    ``battle import-hwa --json``) can keep stdout JSON-clean and report the
+    failure themselves on stderr.
+    """
     sync_url = os.environ.get("TURSO_SYNC_URL")
     if not sync_url:
-        print("TURSO_SYNC_URL is not set — nothing to sync.")
-        return
+        if not quiet:
+            print("TURSO_SYNC_URL is not set — nothing to sync.")
+        return True
 
     from hw_genie.core.database import (
         get_engine,
@@ -1228,10 +1449,19 @@ def cmd_sync(args):
 
                 conn.execute(text("SELECT 1"))
     except Exception as e:
-        print(f"✗ Sync failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        if not quiet:
+            print(f"✗ Sync failed: {e}", file=sys.stderr)
+        return False
 
-    print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+    if not quiet:
+        print(f"✓ Local replica synced with Turso cloud ({sync_url})")
+    return True
+
+
+def cmd_sync(args):
+    """Sync the local Turso replica with the remote cloud database."""
+    if not _sync_replica(quiet=False):
+        sys.exit(1)
 
 
 def cmd_db_check(args):
@@ -1322,6 +1552,7 @@ def cmd_multi(args):
     from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
         asgard_shop_routine,
+        battle_import_routine,
         consumable_routine,
         daily_routine,
         full_routine,
@@ -1332,6 +1563,7 @@ def cmd_multi(args):
         reset_cancel,
         seers_game_routine,
         summarize_asgard_shop,
+        summarize_battle,
         summarize_consumable,
         summarize_quests,
         summarize_seers_game,
@@ -1361,7 +1593,7 @@ def cmd_multi(args):
     if mode not in ("quests", "consumable", "seers-game") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests', 'consumable' and 'seers-game' modes "
-            "(daily/full/asgard-shop/toe routines always execute their operations).",
+            "(daily/full/asgard-shop/toe/battle routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1414,6 +1646,22 @@ def cmd_multi(args):
         # フォールバックする（run_all_accounts 内の resolve_max_parallel が
         # 解決）。bridge の job キューは account 照合＋claimed_by ガード済み
         # のため並列実行可。
+        max_parallel = args.parallel
+    elif mode == "battle":
+        from hw_genie.commands.battle import BattleLogError, parse_battle_types
+
+        try:
+            battle_types = parse_battle_types(
+                getattr(args, "battle_types", "arena,grand")
+            )
+        except BattleLogError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        routine = partial(
+            battle_import_routine,
+            types=battle_types,
+            limit=int(getattr(args, "battle_limit", 20)),
+        )
         max_parallel = args.parallel
     else:
         routine = partial(
@@ -1525,6 +1773,36 @@ def cmd_multi(args):
                     results.update(worker_results)
                 # Preserve the original (registration/request) account order.
                 results = {acc: results[acc] for acc in accounts if acc in results}
+                if (
+                    mode == "battle"
+                    and accounts
+                    and not getattr(args, "no_prune", False)
+                ):
+                    keep_days = int(getattr(args, "keep_days", 90) or 0)
+                    if keep_days > 0:
+                        from datetime import timedelta
+
+                        from hw_genie.core.battle_log import prune_battles
+
+                        cutoff = datetime.now(timezone.utc) - timedelta(
+                            days=keep_days
+                        )
+                        try:
+                            pruned = prune_battles(cutoff)
+                        except Exception as exc:
+                            print(
+                                f"warning: battle prune failed ({exc}); "
+                                "continuing with the summary.",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"🧹 Pruned {pruned.deleted} battle(s), "
+                                f"{pruned.comparisons} comparison(s) older than "
+                                f"{pruned.before.date().isoformat()}",
+                                flush=True,
+                            )
                 if mode == "quests":
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
@@ -1533,6 +1811,8 @@ def cmd_multi(args):
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode == "battle":
+                    failed = summarize_battle(results.items())
                 elif mode == "toe":
                     failed = summarize_toe(results.items())
                 else:
@@ -1688,6 +1968,16 @@ def _run_log_account_failure(
             )
             return f"{errors} consumable use(s) failed" if errors else None
         return "consumable result unavailable"
+    if mode == "battle":
+        from hw_genie.core.battle_log import ImportStats
+
+        if isinstance(result, ImportStats):
+            return (
+                f"{len(result.errors)} battle import error(s)"
+                if result.errors
+                else None
+            )
+        return "battle result unavailable"
     if mode == "asgard-shop":
         from hw_genie.commands.asgard_shop import AsgardRunResult
 
@@ -2021,6 +2311,60 @@ def main():
     )
     p_arena_plan.set_defaults(func=cmd_arena_plan)
 
+    p_arena_auto = arena_sub.add_parser(
+        "auto",
+        parents=[parent_parser],
+        help="Pick the highest non-guild candidate and attack when the log gate passes",
+    )
+    p_arena_auto.add_argument(
+        "--execute",
+        action="store_true",
+        help="Send arenaAttack (default: dry-run; no attack is sent)",
+    )
+    p_arena_auto.add_argument(
+        "--max-attacks",
+        type=_positive_int,
+        default=1,
+        help="Maximum attacks per invocation (default: 1)",
+    )
+    p_arena_auto.add_argument(
+        "--min-samples",
+        type=_positive_int,
+        default=3,
+        help="Minimum battles for the plan gate (default: 3)",
+    )
+    p_arena_auto.add_argument(
+        "--min-win-rate",
+        type=float,
+        default=1.0,
+        help="Minimum win rate for the plan gate (default: 1.0)",
+    )
+    p_arena_auto.add_argument(
+        "--game-version",
+        default=None,
+        help="Only use battles from this game version",
+    )
+    p_arena_auto.add_argument(
+        "--candidate-retries",
+        type=_non_negative_int,
+        default=None,
+        help="Candidate list refresh attempts (default: 10)",
+    )
+    p_arena_auto.add_argument(
+        "--allow-same-lineup",
+        action="store_true",
+        help=(
+            "Also use plans from other defenders with the same defense lineup "
+            "(default: same-defender plans only)"
+        ),
+    )
+    p_arena_auto.add_argument(
+        "--no-stop-on-loss",
+        action="store_true",
+        help="Continue to the next target after a loss (default: stop)",
+    )
+    p_arena_auto.set_defaults(func=cmd_arena_auto)
+
     p_arena_find = arena_sub.add_parser(
         "find-enemies",
         parents=[parent_parser],
@@ -2142,8 +2486,8 @@ def main():
     p_battle_import.add_argument(
         "--limit",
         type=_positive_int,
-        default=50,
-        help="Replays to fetch (default: 50)",
+        default=20,
+        help="Replays to fetch (default: 20, the API maximum for battleGetByType)",
     )
     p_battle_import.add_argument(
         "--offset",
@@ -2199,6 +2543,236 @@ def main():
         "--json", action="store_true", help="Print the result as JSON"
     )
     p_battle_stats.set_defaults(func=cmd_battle_stats)
+
+    p_battle_simulate = battle_sub.add_parser(
+        "simulate",
+        parents=[parent_parser],
+        help="Re-simulate fetched replays with the headless oracle and record parity",
+    )
+    p_battle_simulate.add_argument(
+        "--type",
+        dest="battle_type",
+        default="titan_arena",
+        choices=["arena", "grand", "titan_arena", "toe"],
+        help=(
+            "Replay type to simulate (default: titan_arena; 'toe' is an "
+            "alias). Arena/grand auto-use get_pvp; --config-getter overrides."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--limit", type=_positive_int, default=20, help="Replays to simulate (default: 20)"
+    )
+    p_battle_simulate.add_argument(
+        "--offset", type=_non_negative_int, default=0, help="Pagination offset (default: 0)"
+    )
+    p_battle_simulate.add_argument(
+        "--battle-id", default=None, help="Simulate only this replay id"
+    )
+    p_battle_simulate.add_argument(
+        "--recycle-every",
+        type=_non_negative_int,
+        default=100,
+        help=(
+            "Recreate the headless page after N battles "
+            "(default: 100; 0 = never recycle)"
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--config-getter",
+        default=None,
+        help=(
+            "Override the BattleConfigStorage getter. Default: automatic "
+            "(arena/grand -> get_pvp, titan_arena -> get_titanPvpManual, "
+            "pvp_manual/challenge -> get_pvpManual)."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--seeds",
+        type=_positive_int,
+        default=1,
+        help=(
+            "Total simulations per replay including the observed seed "
+            "(default: 1). Extra deterministic seeds estimate the win rate."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run the browser headed (use when WAF blocks headless Chromium)",
+    )
+    p_battle_simulate.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help=(
+            "Page load timeout in seconds (default: 30; 120 with --headed). "
+            "The in-page simulation has its own 10s timeout."
+        ),
+    )
+    p_battle_simulate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate but do not write sim/comparison rows",
+    )
+    p_battle_simulate.add_argument(
+        "--json", action="store_true", help="Print the parity results as JSON"
+    )
+    p_battle_simulate.set_defaults(func=cmd_battle_simulate)
+
+    p_battle_getters = battle_sub.add_parser(
+        "config-getters",
+        parents=[parent_parser],
+        help="List BattleConfigStorage getters from the game page",
+    )
+    p_battle_getters.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run the browser headed (use when WAF blocks headless Chromium)",
+    )
+    p_battle_getters.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Page load timeout in seconds (default: 30; 120 with --headed)",
+    )
+    p_battle_getters.add_argument(
+        "--json", action="store_true", help="Print the getter list as JSON"
+    )
+    p_battle_getters.set_defaults(func=cmd_battle_config_getters)
+
+    p_battle_import_hwa = battle_sub.add_parser(
+        "import-hwa",
+        parents=[parent_parser],
+        help="Import an HWAssistant *.json.gz snapshot (arena/GA)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--source", required=True, help="Path to hwa-db-*.json.gz"
+    )
+    p_battle_import_hwa.add_argument(
+        "--types",
+        default="arena,grand",
+        help="Comma-separated sections (default: arena,grand)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        help="Max battles to process after the cutoff/offset",
+    )
+    cutoff_group = p_battle_import_hwa.add_mutually_exclusive_group()
+    cutoff_group.add_argument(
+        "--days",
+        type=_non_negative_int,
+        default=None,
+        help=(
+            "Only battles from the last N days (default: 90; 0 = all). "
+            "Older battles are counted as filtered."
+        ),
+    )
+    cutoff_group.add_argument(
+        "--since",
+        default=None,
+        help="Only battles on/after YYYY-MM-DD (UTC)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--offset",
+        type=_non_negative_int,
+        default=0,
+        help="Skip this many battles after the cutoff (default: 0)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        default=500,
+        help="DB batch size (default: 500)",
+    )
+    p_battle_import_hwa.add_argument(
+        "--dry-run", action="store_true", help="Parse and validate without writing"
+    )
+    p_battle_import_hwa.add_argument(
+        "--no-sync",
+        action="store_true",
+        help=(
+            "Skip the per-connection Turso replica sync during the import and "
+            "sync once at the end (recommended for large snapshots)"
+        ),
+    )
+    p_battle_import_hwa.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_import_hwa.set_defaults(func=cmd_battle_import_hwa)
+
+    p_battle_watch = battle_sub.add_parser(
+        "watch",
+        parents=[parent_parser],
+        help="Poll arena/grand replays and import new battles",
+    )
+    p_battle_watch.add_argument(
+        "--types",
+        default="arena,grand",
+        help="Comma-separated types (default: arena,grand)",
+    )
+    p_battle_watch.add_argument(
+        "--interval",
+        type=_positive_int,
+        default=300,
+        help="Seconds between passes (default: 300)",
+    )
+    p_battle_watch.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=20,
+        help="Replays per type per pass (default: 20, the API maximum)",
+    )
+    p_battle_watch.add_argument(
+        "--offset",
+        type=_non_negative_int,
+        default=0,
+        help="Pagination offset passed to battleGetByType (default: 0)",
+    )
+    p_battle_watch.add_argument(
+        "--once", action="store_true", help="Run one pass and exit"
+    )
+    p_battle_watch.add_argument(
+        "--keep-days",
+        type=_non_negative_int,
+        default=90,
+        help="Auto-prune battles older than N days after each pass (default: 90; 0 = keep all)",
+    )
+    p_battle_watch.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="Disable the per-pass battle prune",
+    )
+    p_battle_watch.add_argument(
+        "--json", action="store_true", help="One JSON object per pass"
+    )
+    p_battle_watch.set_defaults(func=cmd_battle_watch)
+
+    p_battle_prune = battle_sub.add_parser(
+        "prune",
+        parents=[parent_parser],
+        help="Delete battle rows older than a cutoff",
+    )
+    prune_cutoff = p_battle_prune.add_mutually_exclusive_group()
+    prune_cutoff.add_argument(
+        "--days",
+        type=_non_negative_int,
+        default=None,
+        help="Delete battles older than N days (default: 90; 0 = all)",
+    )
+    prune_cutoff.add_argument(
+        "--before",
+        default=None,
+        help="Delete battles before YYYY-MM-DD (UTC)",
+    )
+    p_battle_prune.add_argument(
+        "--dry-run", action="store_true", help="Only report what would be deleted"
+    )
+    p_battle_prune.add_argument(
+        "--json", action="store_true", help="Print the result as JSON"
+    )
+    p_battle_prune.set_defaults(func=cmd_battle_prune)
 
     # Chat (guild chat)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
@@ -2380,10 +2954,10 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game"],
+        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game", "battle"],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), or 'seers-game' (play Seer's Game until coins run out)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), or 'battle' (import arena/grand replays and prune old battles)",
     )
     p_multi.add_argument(
         "--engine",
@@ -2443,6 +3017,28 @@ def main():
         dest="gold_buffs",
         action="store_false",
         help="Skip gold buff purchases (slot 1-5) in the 'asgard-shop' mode",
+    )
+    p_multi.add_argument(
+        "--battle-types",
+        default="arena,grand",
+        help="Replay types imported by the 'battle' mode (default: arena,grand)",
+    )
+    p_multi.add_argument(
+        "--battle-limit",
+        type=_positive_int,
+        default=20,
+        help="Replays fetched per type per account in the 'battle' mode (default: 20, the API maximum)",
+    )
+    p_multi.add_argument(
+        "--keep-days",
+        type=_non_negative_int,
+        default=90,
+        help="Battle retention for the 'battle' mode auto-prune (default: 90; 0 = keep all)",
+    )
+    p_multi.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="Disable the post-run battle prune in the 'battle' mode",
     )
     p_multi.add_argument(
         "--lib",
@@ -2518,6 +3114,11 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # The replica-connection sync must be disabled before init_db() opens the
+    # engine, otherwise the first connection still performs a remote sync.
+    if getattr(args, "no_sync", False):
+        os.environ["TURSO_SYNC_ON_CONNECT"] = "false"
 
     from hw_genie.core.client import HWAuthError
     from hw_genie.core.database import init_db

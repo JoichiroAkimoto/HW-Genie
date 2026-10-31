@@ -559,11 +559,21 @@ export function getProtoFn(classF: unknown, nF: number): string {
   return Object.keys((classF as { prototype?: object })?.prototype ?? {})[nF];
 }
 
-/** Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE. */
+/** Battle ``type`` -> ``BattleConfigStorage`` getter. */
 export function battleConfigFor(battleType: unknown): string {
-  if (typeof battleType === "string" && battleType.includes("titan_arena")) {
-    return "get_titanPvpManual";
+  const value = typeof battleType === "string" ? battleType.toLowerCase() : "";
+  if (value.includes("titan")) return "get_titanPvpManual";
+  if (value === "pvp_manual" || value === "challenge") return "get_pvpManual";
+  if (
+    value === "arena" ||
+    value === "grand" ||
+    value === "pvp" ||
+    value === "clan_domination"
+  ) {
+    return "get_pvp";
   }
+  // This bridge is ToE-only: an unknown type must not silently use the arena
+  // config, because its result is submitted to EndBattle.
   return "get_titanPvpManual";
 }
 

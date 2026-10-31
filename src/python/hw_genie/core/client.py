@@ -450,7 +450,7 @@ class HWClient:
         self,
         battle_type: str = "arena",
         *,
-        limit: int = 50,
+        limit: int = 20,
         offset: int = 0,
     ) -> HWResponse:
         """戦闘リプレイ履歴を取得する（battleGetByType）。

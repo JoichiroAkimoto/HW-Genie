@@ -106,7 +106,7 @@ Unique constraint: `(account_id, config_key)`
 | `pet_id` | INTEGER | | ペットID（API が「なし」を `0` で返す場合は `NULL`） |
 | `banner_id` | INTEGER | | バナーID（API が「なし」を `0` で返す場合は `NULL`） |
 | `config_json` | JSON | NOT NULL | 正規化した完全構成（ハッシュの元データ） |
-| `completeness` | VARCHAR(16) | NOT NULL | `full`（ステータスあり）/ `ids_only`（ID のみ） |
+| `completeness` | VARCHAR(16) | NOT NULL | `full`（ステータスあり）/ `ids_only`（ID のみ）/ `partial`（HWA の圧縮取り込みなど一部フィールド欠落） |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 作成日時 |
 
 ### `team_config_heroes`
@@ -125,15 +125,15 @@ Unique constraint: `(team_config_id, slot)`
 
 ### `battle_records`
 
-1 戦闘 = 1 行。`source` は現状 `api_import`（サーバーが生成したリプレイ）で、将来の `sim` / `attack` も同じ表に載せます。
+1 戦闘 = 1 行。`source` は `api_import`（サーバーが生成したリプレイ）/ `sim`（`battle simulate` の再シミュレーション）/ 将来の `attack` を同じ表に載せます。
 
 | カラム | 型 | 制約 | 説明 |
 |--------|----|------|------|
 | `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
 | `account_id` | INTEGER | FK -> accounts.id (CASCADE), NOT NULL | 取り込み元アカウント |
 | `battle_type` | VARCHAR(16) | NOT NULL | `arena` / `grand` / `titan_arena`（`toe` は CLI の別名で、保存値は `titan_arena`） |
-| `source` | VARCHAR(16) | NOT NULL | `api_import`（将来: `sim` / `attack`） |
-| `source_record_id` | VARCHAR(64) | NOT NULL | リプレイID（重複排除キー） |
+| `source` | VARCHAR(16) | NOT NULL | `api_import` / `hwa_import` / `sim`（`battle simulate`）/ 将来: `attack`。`sim` 行は stats / plan の集計から除外 |
+| `source_record_id` | VARCHAR(64) | NOT NULL | リプレイID（重複排除キー）。sim の追加 seed 行は `<battle_id>#seed=<seed>` |
 | `battle_id` | VARCHAR(64) | | 元の battle ID |
 | `occurred_at` | DATETIME | NOT NULL | `startTime`（naive UTC） |
 | `ended_at` | DATETIME | | `endTime` |
@@ -143,28 +143,34 @@ Unique constraint: `(team_config_id, slot)`
 | `matchup_key` | VARCHAR(64) | NOT NULL | `(type, attacker lineup, defender lineup)` のハッシュ |
 | `attacker_player_id` / `defender_player_id` | VARCHAR(32) | | プレイヤーID |
 | `viewer_role` | VARCHAR(16) | | 取り込み元アカウントの立場: `attacker` / `defender` / `unknown`（リプレイの `userId` / `typeId` と `accounts.player_id` を比較。既存行は `NULL`） |
-| `seed` | BIGINT | | リプレイの seed |
+| `seed` | BIGINT | | リプレイ／シミュレーションの seed（sim の追加 seed 行はその seed） |
 | `win` / `stars` | BOOLEAN / INTEGER | | 結果（`win` はリプレイの `result.win`。攻撃側 `userId` 視点と仮定） |
 | `deterministic` | BOOLEAN | | 決定性の検証結果（未検証は NULL） |
 | `authoritative` | BOOLEAN | NOT NULL | サーバー生成なら true |
 | `engine` | VARCHAR(24) | NOT NULL | `game-server` など |
-| `completeness` | VARCHAR(16) | NOT NULL | `full` / `ids_only` / `partial`（`partial` は防衛側が複数編成で先頭のみ保存した場合） |
+| `completeness` | VARCHAR(16) | NOT NULL | `full` / `ids_only` / `partial`（`partial` は防衛側が複数編成で先頭のみ保存した場合や HWA の圧縮取り込み） |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 作成日時 |
 
 Unique constraint: `(source, source_record_id)`（**グローバル**。アカウント単位ではない。
-同一リプレイは最初に取り込んだ 1 行だけが残り、別アカウントでの再取り込みは重複として
-スキップされる。このため `battle stats -a <account>` は取り込み元 `account_id` ではなく、
-`attacker_player_id` / `defender_player_id` がそのアカウントの `player_id` と一致する行
-（関与ベース）を集計する）
+観測ソース（`api_import` / `hwa_import` / `attack`）は replay id で重複排除され、
+同一リプレイは最初に取り込んだ 1 行だけが残る。ただし `source='hwa_import'` の
+`completeness != 'full'` な行に同一 replay id の**完全な**（`completeness = 'full'`）
+`api_import` リプレイが後から届いた場合のみ、その行を `api_import` の完全な構成へ
+in-place で upgrade する（新しい行は増やさない）。`ids_only` の API リプレイは
+HWA のデータを置き換えず重複として扱い、`account_id` / `viewer_role` は upgrade
+後も元の HWA 行の値を保持する。別アカウントでの再取り込みは重複としてスキップ
+される。このため `battle stats -a <account>` は取り込み元 `account_id` ではなく、
+`attacker_player_id` / `defender_player_id` がそのアカウントの `player_id` と
+一致する行（関与ベース）を集計する）
 
-Indexes: `(battle_type, matchup_key, game_version)`, `(defender_player_id, occurred_at)`, `(attacker_lineup_key, defender_lineup_key)`, `(battle_type, defender_lineup_key)`
+Indexes: `(battle_type, matchup_key, game_version)`, `(defender_player_id, occurred_at)`, `(attacker_lineup_key, defender_lineup_key)`, `(battle_type, defender_lineup_key)`, `(source_record_id)`（`source != 'sim'` の重複判定用）
 
 複数の防衛編成（`defenders` が 2 件以上のリスト）を含むリプレイは、先頭の編成のみを
 保存し、`completeness` を `partial` にして警告ログを出します。
 
 ### `battle_comparisons`
 
-予測（sim）と実攻撃の突き合わせ。Oracle 導入後に使用します（現状は空）。
+予測（sim）と実攻撃の突き合わせ。`hw-genie battle simulate` が `source='sim'` 行と取り込み済みリプレイを比較して記録します。
 
 | カラム | 型 | 制約 | 説明 |
 |--------|----|------|------|

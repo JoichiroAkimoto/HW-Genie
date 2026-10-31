@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,10 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from hw_genie.core import battle_log
 from hw_genie.core.battle_log import (
     BattleLogError,
+    ImportStats,
     build_team,
     import_battles,
     lineup_key_from_ids,
     parse_battle_get_response,
+    prune_battles,
     query_matchups,
     query_plans,
     wilson_lower_bound,
@@ -21,6 +24,7 @@ from hw_genie.core.battle_log import (
 from hw_genie.core.client import ApiAction, HWClient
 from hw_genie.core.database import (
     Account,
+    BattleComparison,
     BattleRecord,
     TeamConfig,
     get_session_local,
@@ -280,6 +284,71 @@ def test_query_plans_prefers_same_defender_tier():
     assert weak.tier == "same_defender"
     assert weak.battles == 2
     assert weak.recommended is False
+
+
+def test_query_plans_uses_latest_observed_favor():
+    _create_account()
+    old = _replay(battle_id="7001")
+    new = _replay(battle_id="7002")
+    old["startTime"] = "1793075300"
+    new["startTime"] = "1793075400"
+    for hero_id in range(1, 6):
+        old["attackers"][str(hero_id)]["favorPetId"] = 6002
+        new["attackers"][str(hero_id)]["favorPetId"] = 6011
+    parsed = parse_battle_get_response(
+        {"response": {"replays": [old, new], "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    key = lineup_key_from_ids([11, 12, 13, 14, 15], 6002, 1)
+    plans = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+    )
+
+    plan = next(p for p in plans if p.heroes_summary == "1,2,3,4,5")
+    assert plan.favor == {hero_id: 6011 for hero_id in range(1, 6)}
+
+
+def test_query_plans_tier_filter_runs_before_limit():
+    _create_account()
+    replays = [
+        _replay(battle_id="7101", win=True),
+        *[
+            _replay(
+                battle_id=f"71{i:02d}",
+                win=True,
+                defender_id="333",
+                heroes=_team([6, 7, 8, 9, 10], 6003),
+            )
+            for i in range(2, 7)
+        ],
+    ]
+    parsed = parse_battle_get_response(
+        {"response": {"replays": replays, "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    key = lineup_key_from_ids([11, 12, 13, 14, 15], 6002, 1)
+    unfiltered = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+        limit=1,
+    )
+    assert unfiltered[0].heroes_summary == "6,7,8,9,10"
+    assert unfiltered[0].tier == "same_lineup"
+
+    filtered = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+        limit=1,
+        tiers=("same_defender",),
+    )
+    assert filtered[0].heroes_summary == "1,2,3,4,5"
+    assert filtered[0].tier == "same_defender"
 
 
 def test_query_plans_falls_back_to_same_lineup():
@@ -561,3 +630,70 @@ def test_light_migration_adds_viewer_role_and_index():
         }
     assert "viewer_role" in columns
     assert "ix_battle_records_type_defender_lineup" in indexes
+
+
+def test_prune_deletes_old_battles_and_comparisons():
+    _create_account()
+    old = _replay(battle_id="old-1")
+    old["startTime"] = str(
+        int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+    )
+    new = _replay(battle_id="new-1")
+    new["startTime"] = str(
+        int(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+    )
+    parsed = parse_battle_get_response(
+        {"response": {"replays": [old, new], "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    with get_session_local()() as db:
+        rows = {row.source_record_id: row for row in db.query(BattleRecord).all()}
+        db.add(
+            BattleComparison(
+                account_id=rows["old-1"].account_id,
+                predicted_battle_id=rows["old-1"].id,
+                actual_battle_id=rows["new-1"].id,
+                mismatch_type="match",
+            )
+        )
+        db.commit()
+
+    cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    dry = prune_battles(cutoff, dry_run=True)
+    assert dry.matched == 1
+    assert dry.deleted == 0
+    assert dry.comparisons == 1
+    with get_session_local()() as db:
+        assert db.query(BattleRecord).count() == 2
+        assert db.query(BattleComparison).count() == 1
+
+    real = prune_battles(cutoff)
+    assert real.deleted == 1
+    assert real.comparisons == 1
+    with get_session_local()() as db:
+        remaining = db.query(BattleRecord).all()
+        assert [row.source_record_id for row in remaining] == ["new-1"]
+        assert db.query(BattleComparison).count() == 0
+
+
+def test_summarize_battle_reports_errors_and_account(capsys):
+    from hw_genie.runner import summarize_battle
+
+    stats = ImportStats(total=2, inserted=1, duplicates=1, errors=["boom"])
+
+    failed = summarize_battle([("Alice", (stats, None))])
+
+    assert failed == 1
+    out = capsys.readouterr().out
+    assert "Multi battle import summary" in out
+    assert "Alice" in out
+
+
+def test_summarize_battle_clean_result_returns_zero(capsys):
+    from hw_genie.runner import summarize_battle
+
+    failed = summarize_battle([("Bob", (ImportStats(total=1, inserted=1), None))])
+
+    assert failed == 0
+    assert "Bob" in capsys.readouterr().out

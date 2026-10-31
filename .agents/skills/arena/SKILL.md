@@ -70,25 +70,51 @@ Arena の順位・攻撃回数・保存チームを確認し、名前付きチ�
    uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
    ```
 
-## 事前計算（任意・読み取りのみ）
+## 事前計算（読み取り）とメンテナンス（書き込み）
+
+> 注意: `battle simulate` は sim/comparison 行を書き込み、`battle prune` は古い行を削除します。まず `--dry-run` で確認してください。
 
 過去の戦闘ログから「この防衛編成にはこの攻撃編成が勝っている」を引けます。`arenaAttack` は送りません。
 
 ```bash
 # 1) 戦闘リプレイを取り込む（重複は自動スキップ）
-uv run hw-genie battle import -a Alice --type arena --limit 50
+uv run hw-genie battle import -a Alice --type arena --limit 20
+
+# 1b) HWA の *.json.gz スナップショットから一括取り込み（既定は直近90日）
+uv run hw-genie battle import-hwa -a Alice \
+  --source /path/to/hwa-db-2026-10-30.json.gz --types arena,grand --days 90 --no-sync
+
+# 1c) 5分ごとに新規リプレイを自動取り込み（既定90日 prune、Ctrl+C で終了）
+uv run hw-genie battle watch -a Alice --interval 300
+
+# 1d) 全アカウント一括（取り込み後に1回 prune）
+uv run hw-genie multi battle --parallel 2 --keep-days 90
 
 # 2) 対象の現在の防衛編成に対する攻撃編成ランキング
 uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 
-# 3) REC が出たら、表示されたコマンドで攻撃（まず --dry-run）
+# 3) ギルド除外＋最上位ターゲットで gate を満たすときだけ攻撃（既定 dry-run）
+uv run hw-genie arena auto -a Alice --min-samples 3 --min-win-rate 1.0
+uv run hw-genie arena auto -a Alice --execute --max-attacks 5
+
+# 4) REC が出たら、表示されたコマンドで攻撃（まず --dry-run）
 uv run hw-genie arena attack -a Alice --user-id 11111111 \
   --heroes 1 2 3 4 5 --pet 6001 --banner 2 --dry-run
+
+# 統計的勝率（Arena/Grand は get_pvp、ToE は get_titanPvpManual を自動使用）
+uv run hw-genie battle simulate -a Alice --type arena --limit 5 --seeds 10 --dry-run
+
+# WAF で headless が止まる環境では通常ウィンドウ（timeout 既定120秒）
+uv run hw-genie battle simulate -a Alice --type arena --limit 1 --dry-run --headed
+
+# 90日より古いデータを削除（まず dry-run）
+uv run hw-genie battle prune --days 90 --dry-run
 ```
 
 - 同一防衛者（`defender_player_id`）の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。
 - 順位付けは Wilson 下限です（1勝0敗の「100%」が3勝0敗より上に来ないようにするため）。
 - ゲートは `--min-samples`（既定3）と `--min-win-rate`（既定1.0）。満たさない候補は `REC` になりません。
+- `arena auto` は最新候補から**ギルドメンバーを除外**し、上位順にゲートを満たす攻撃編成を探します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。既定では **`same_defender` プランのみ**を使い、同一防衛編成の他プレイヤー戦しかない場合は攻撃しません（`--allow-same-lineup` でフォールバック可。編成が同じでも実ステータス/favorが異なると勝率は再現されません）。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、解決後の編成が `attacker_lineup_key` と一致した最初のプランを使います。すべての推奨プランが使用できない場合のみそのターゲットをスキップします。攻撃編成はプランのヒーロー・ペット・バナー・favor をそのまま使います（favor はプランが参照した最新の勝利編成の `favorPetId`。ログに無いヒーローは favor なしで送信し、保存済みチームの favor は流用しません。勝率は `lineup_key` 単位の集計で favor が異なる観測も含むため、favor は最新勝利編成による再現である点に注意）。クラン情報が取れない・形式不正の場合は攻撃しません。`--execute` を付けるまで攻撃しません。攻撃済み・gate を満たすプランなし・編成不一致のターゲットは同じ実行内で再選択・再クエリしません。`NotEnough` / `Refillable` で送信されなかった攻撃は回数に数えず停止、結果不明の通信エラーは即中断します。負けは既定で停止（`--no-stop-on-loss` で継続）。
 - `--game-version` で特定のサーバーバージョンの戦闘だけに絞り込めます（既定は全バージョン）。
 - 防衛編成は `topGet` を優先し、見つからなければ `arenaFindEnemies`（候補）にフォールバックして取得します（`--json` を汚さないよう候補更新の進捗表示は抑制）。どちらにも編成が無い場合のみエラーになります。
 - コーパスが空の場合は `battle import` を先に実行してください。
