@@ -1805,6 +1805,10 @@ def run_arena_plan(
                             "heroes": plan.heroes_summary,
                             "pet": plan.pet_id,
                             "banner": plan.banner_id,
+                            "favor": {
+                                str(hero_id): int(patron_id)
+                                for hero_id, patron_id in plan.favor.items()
+                            },
                             "battles": plan.battles,
                             "wins": plan.wins,
                             "win_rate": round(plan.win_rate, 4),
@@ -1882,6 +1886,8 @@ def run_arena_plan(
         parts.append(f"--pet {best.pet_id}")
     if best.banner_id is not None:
         parts.append(f"--banner {best.banner_id}")
+    for hero_id, patron_id in sorted(best.favor.items()):
+        parts.append(f"--favor {hero_id}={patron_id}")
     print(f"{Emojis.SUCCESS}Recommended: {' '.join(parts)}")
     return plans
 
@@ -2076,13 +2082,11 @@ def run_arena_auto(
                     )
                     continue
 
-                saved_favor: dict[int, int] = {}
-                if status.saved_team is not None:
-                    saved_favor = {
-                        hero_id: patron_id
-                        for hero_id, patron_id in status.saved_team.favor.items()
-                        if hero_id in heroes
-                    }
+                favor = {
+                    int(hero_id): int(patron_id)
+                    for hero_id, patron_id in (best.favor or {}).items()
+                    if int(hero_id) in heroes and int(patron_id) > 0
+                }
                 try:
                     team, missing = resolve_team(
                         heroes=heroes,
@@ -2090,7 +2094,7 @@ def run_arena_auto(
                         # 0 is the explicit "no banner" sentinel; saved=None keeps
                         # the saved pet/banner from leaking into the plan lineup.
                         banner=best.banner_id if best.banner_id is not None else 0,
-                        favor=saved_favor,
+                        favor=favor,
                         saved=None,
                     )
                 except ArenaError as exc:
@@ -2148,6 +2152,7 @@ def run_arena_auto(
             "win_rate": plan.win_rate,
             "wilson_low": plan.wilson_low,
             "tier": plan.tier,
+            "favor": favor,
             "attacked": False,
             "win": None,
         }
@@ -2163,9 +2168,16 @@ def run_arena_auto(
         )
         if missing:
             print(
-                f"{Emojis.WARNING}No favor for hero(es) {missing}; "
-                "the attack will use the saved favor where available."
+                f"{Emojis.WARNING}The observed plan has no favor for hero(es) "
+                f"{missing}; those heroes will attack without favor."
             )
+        print(
+            f"{Emojis.INFO}Favor: "
+            + (
+                ", ".join(f"{hero_id}={patron_id}" for hero_id, patron_id in sorted(favor.items()))
+                or "-"
+            )
+        )
 
         if not execute:
             print(f"{Emojis.INFO}Dry-run: no arenaAttack sent (use --execute).")

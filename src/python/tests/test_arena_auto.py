@@ -49,6 +49,7 @@ def _plan(
     pet: int | None = PLAN_PET,
     banner: int | None = PLAN_BANNER,
     key: str | None = None,
+    favor: dict[int, int] | None = None,
 ) -> PlanCandidate:
     lineup = list(heroes if heroes is not None else PLAN_HEROES)
     return PlanCandidate(
@@ -65,6 +66,7 @@ def _plan(
         last_seen=None,
         tier="same_defender",
         recommended=recommended,
+        favor=dict(favor or {}),
     )
 
 
@@ -266,7 +268,7 @@ def test_run_arena_auto_dry_run_chooses_highest_non_guild(monkeypatch, capsys):
     assert "Dry-run: no arenaAttack sent" in out
 
 
-def test_run_arena_auto_team_matches_plan_and_reuses_saved_favor(
+def test_run_arena_auto_team_matches_plan_and_uses_plan_favor(
     monkeypatch, capsys
 ):
     saved = ArenaTeam(
@@ -275,7 +277,13 @@ def test_run_arena_auto_team_matches_plan_and_reuses_saved_favor(
         favor={1: 6002, 9: 6003},
         banners=[7],
     )
-    _patch_auto(monkeypatch, candidates=[_entry(5, 222)], saved_team=saved)
+    plan_favor = {1: 6011}
+    _patch_auto(
+        monkeypatch,
+        candidates=[_entry(5, 222)],
+        saved_team=saved,
+        plans=lambda _defender_id: [_plan(favor=plan_favor)],
+    )
     calls = []
 
     def fake_attack(client, status, target, team, **kwargs):
@@ -301,12 +309,44 @@ def test_run_arena_auto_team_matches_plan_and_reuses_saved_favor(
     assert lineup_key_from_ids(team.heroes, team.pet, banner) == (
         lineup_key_from_ids(PLAN_HEROES, PLAN_PET, PLAN_BANNER)
     )
-    # Saved favor is reused for plan heroes only (hero 9 is filtered out).
-    assert team.favor == {1: 6002}
+    # The observed plan's favor wins; saved favor is not inherited.
+    assert team.favor == plan_favor
     assert history[0]["attacked"] is True
+    assert history[0]["favor"] == plan_favor
     assert history[0]["pet"] == PLAN_PET
     assert history[0]["banner"] == PLAN_BANNER
-    assert "No favor for hero(es) [2, 3, 4, 5]" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "The observed plan has no favor for hero(es) [2, 3, 4, 5]" in out
+    assert "Favor: 1=6011" in out
+
+
+def test_run_arena_auto_does_not_fall_back_to_saved_favor(monkeypatch, capsys):
+    saved = ArenaTeam(
+        heroes=list(PLAN_HEROES),
+        pet=6009,
+        favor={1: 6002},
+        banners=[7],
+    )
+    _patch_auto(
+        monkeypatch,
+        candidates=[_entry(5, 222)],
+        saved_team=saved,
+        plans=lambda _defender_id: [_plan(favor={})],
+    )
+    attacked = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack",
+        lambda *a, **k: attacked.append((a, k)),
+    )
+
+    history = run_arena_auto(MagicMock(), execute=False)
+
+    assert attacked == []
+    assert history[0]["favor"] == {}
+    out = capsys.readouterr().out
+    assert "The observed plan has no favor for hero(es) [1, 2, 3, 4, 5]" in out
+    assert "Favor: -" in out
 
 
 def test_run_arena_auto_executes_once(monkeypatch, capsys):

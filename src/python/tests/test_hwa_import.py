@@ -180,6 +180,8 @@ def test_expand_compact_hero_maps_combat_stats():
     assert hero["power"] == 5678
     assert hero["level"] == 130
     assert hero["star"] == 6
+    assert hero["favorPetId"] == 6001
+    assert hero["favorPower"] == 0
 
     pet = expand_hwa_hero(_compact(6001, hero_type="pet", pet_id=None))
     assert pet["type"] == "pet"

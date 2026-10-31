@@ -286,6 +286,31 @@ def test_query_plans_prefers_same_defender_tier():
     assert weak.recommended is False
 
 
+def test_query_plans_uses_latest_observed_favor():
+    _create_account()
+    old = _replay(battle_id="7001")
+    new = _replay(battle_id="7002")
+    old["startTime"] = "1793075300"
+    new["startTime"] = "1793075400"
+    for hero_id in range(1, 6):
+        old["attackers"][str(hero_id)]["favorPetId"] = 6002
+        new["attackers"][str(hero_id)]["favorPetId"] = 6011
+    parsed = parse_battle_get_response(
+        {"response": {"replays": [old, new], "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    key = lineup_key_from_ids([11, 12, 13, 14, 15], 6002, 1)
+    plans = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+    )
+
+    plan = next(p for p in plans if p.heroes_summary == "1,2,3,4,5")
+    assert plan.favor == {hero_id: 6011 for hero_id in range(1, 6)}
+
+
 def test_query_plans_falls_back_to_same_lineup():
     _create_account()
     replays = [

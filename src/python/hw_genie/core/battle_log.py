@@ -130,6 +130,9 @@ class PlanCandidate:
     last_seen: datetime | None
     tier: str
     recommended: bool
+    # hero id -> patron pet id, taken from the most recent winning config for
+    # this lineup. Used to reproduce the attacker's favor in arenaAttack.
+    favor: dict[int, int] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)
@@ -1485,8 +1488,79 @@ def _query_plan_rows(
     ).all()
 
 
+def _favor_from_config(config_json: Any) -> dict[int, int]:
+    """Extract ``hero id -> patron pet id`` from a stored team config."""
+    if isinstance(config_json, str):
+        try:
+            config = json.loads(config_json)
+        except (TypeError, ValueError):
+            return {}
+    elif isinstance(config_json, dict):
+        config = config_json
+    else:
+        return {}
+    heroes = config.get("heroes")
+    if not isinstance(heroes, list):
+        return {}
+    favor: dict[int, int] = {}
+    for hero in heroes:
+        if not isinstance(hero, dict):
+            continue
+        hero_id = _as_int(hero.get("id"))
+        patron_id = _as_int(hero.get("favorPetId"))
+        if hero_id is not None and hero_id > 0 and patron_id is not None and patron_id > 0:
+            favor[hero_id] = patron_id
+    return favor
+
+
+def _latest_favor_by_lineup(
+    session,
+    *,
+    defender_lineup_key: str,
+    defender_id: str | None,
+    battle_type: str,
+    account_alias: str | None,
+    game_version: str | None = None,
+) -> dict[str, dict[int, int]]:
+    """Favor of the most recent winning config per attacker lineup."""
+    rank = func.row_number().over(
+        partition_by=BattleRecord.attacker_lineup_key,
+        order_by=(BattleRecord.occurred_at.desc(), BattleRecord.id.desc()),
+    )
+    ranked = session.query(
+        BattleRecord.attacker_lineup_key.label("lineup_key"),
+        BattleRecord.attacker_config_id.label("config_id"),
+        rank.label("rn"),
+    ).filter(
+        BattleRecord.battle_type == battle_type,
+        BattleRecord.defender_lineup_key == defender_lineup_key,
+        BattleRecord.win.is_(True),
+        BattleRecord.source != "sim",
+        BattleRecord.attacker_config_id.isnot(None),
+    )
+    if defender_id is not None:
+        ranked = ranked.filter(BattleRecord.defender_player_id == str(defender_id))
+    if game_version:
+        ranked = ranked.filter(BattleRecord.game_version == str(game_version))
+    if account_alias:
+        ranked = ranked.filter(_account_player_filter(session, account_alias))
+    sub = ranked.subquery()
+    rows = (
+        session.query(sub.c.lineup_key, TeamConfig.config_json)
+        .join(TeamConfig, TeamConfig.id == sub.c.config_id)
+        .filter(sub.c.rn == 1)
+        .all()
+    )
+    return {str(row[0]): _favor_from_config(row[1]) for row in rows}
+
+
 def _plan_candidate(
-    row, tier: str, *, min_samples: int, min_win_rate: float
+    row,
+    tier: str,
+    *,
+    min_samples: int,
+    min_win_rate: float,
+    favor: dict[int, int] | None = None,
 ) -> PlanCandidate:
     battles = int(row.battles or 0)
     wins = int(row.wins or 0)
@@ -1503,6 +1577,7 @@ def _plan_candidate(
         last_seen=row.last_seen,
         tier=tier,
         recommended=battles >= min_samples and rate >= min_win_rate,
+        favor=dict(favor or {}),
     )
 
 
@@ -1550,6 +1625,26 @@ def query_plans(
             account_alias=account_alias,
             game_version=game_version,
         )
+        same_favor = (
+            _latest_favor_by_lineup(
+                session,
+                defender_lineup_key=defender_lineup_key,
+                defender_id=defender_id,
+                battle_type=battle_type,
+                account_alias=account_alias,
+                game_version=game_version,
+            )
+            if defender_id is not None
+            else {}
+        )
+        broad_favor = _latest_favor_by_lineup(
+            session,
+            defender_lineup_key=defender_lineup_key,
+            defender_id=None,
+            battle_type=battle_type,
+            account_alias=account_alias,
+            game_version=game_version,
+        )
     finally:
         session.close()
 
@@ -1561,7 +1656,11 @@ def query_plans(
         if int(row.battles or 0) >= min_samples:
             candidates.append(
                 _plan_candidate(
-                    row, "same_defender", min_samples=min_samples, min_win_rate=min_win_rate
+                    row,
+                    "same_defender",
+                    min_samples=min_samples,
+                    min_win_rate=min_win_rate,
+                    favor=same_favor.get(key),
                 )
             )
             continue
@@ -1569,13 +1668,21 @@ def query_plans(
         if alt is not None and int(alt.battles or 0) > int(row.battles or 0):
             candidates.append(
                 _plan_candidate(
-                    alt, "same_lineup", min_samples=min_samples, min_win_rate=min_win_rate
+                    alt,
+                    "same_lineup",
+                    min_samples=min_samples,
+                    min_win_rate=min_win_rate,
+                    favor=broad_favor.get(key),
                 )
             )
         else:
             candidates.append(
                 _plan_candidate(
-                    row, "same_defender", min_samples=min_samples, min_win_rate=min_win_rate
+                    row,
+                    "same_defender",
+                    min_samples=min_samples,
+                    min_win_rate=min_win_rate,
+                    favor=same_favor.get(key),
                 )
             )
 
@@ -1583,7 +1690,11 @@ def query_plans(
         if key not in same:
             candidates.append(
                 _plan_candidate(
-                    row, "same_lineup", min_samples=min_samples, min_win_rate=min_win_rate
+                    row,
+                    "same_lineup",
+                    min_samples=min_samples,
+                    min_win_rate=min_win_rate,
+                    favor=broad_favor.get(key),
                 )
             )
 
