@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from hw_genie.core import battle_log
 from hw_genie.core.battle_log import (
     BattleLogError,
+    ImportStats,
     build_team,
     import_battles,
     lineup_key_from_ids,
@@ -609,3 +610,25 @@ def test_prune_deletes_old_battles_and_comparisons():
         remaining = db.query(BattleRecord).all()
         assert [row.source_record_id for row in remaining] == ["new-1"]
         assert db.query(BattleComparison).count() == 0
+
+
+def test_summarize_battle_reports_errors_and_account(capsys):
+    from hw_genie.runner import summarize_battle
+
+    stats = ImportStats(total=2, inserted=1, duplicates=1, errors=["boom"])
+
+    failed = summarize_battle([("Alice", (stats, None))])
+
+    assert failed == 1
+    out = capsys.readouterr().out
+    assert "Multi battle import summary" in out
+    assert "Alice" in out
+
+
+def test_summarize_battle_clean_result_returns_zero(capsys):
+    from hw_genie.runner import summarize_battle
+
+    failed = summarize_battle([("Bob", (ImportStats(total=1, inserted=1), None))])
+
+    assert failed == 0
+    assert "Bob" in capsys.readouterr().out

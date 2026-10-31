@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -320,7 +321,12 @@ def test_run_battle_watch_once_imports_new_battles():
     client = FakeWatchClient(detail)
 
     passes = run_battle_watch(
-        client, "Alice", types=("arena",), once=True, limit=10
+        client,
+        "Alice",
+        types=("arena",),
+        once=True,
+        limit=10,
+        keep_days=None,
     )
 
     assert len(passes) == 1
@@ -331,6 +337,57 @@ def test_run_battle_watch_once_imports_new_battles():
         row = db.query(BattleRecord).one()
         assert row.source_record_id == "watch-1"
         assert row.source == "api_import"
+
+
+def test_run_battle_watch_once_prunes_old_battles(monkeypatch):
+    _create_account("Alice", "111")
+    old = _api_replay("watch-old")
+    old["startTime"] = "1000000000"
+    old["endTime"] = "1000000001"
+    recent = _api_replay("watch-recent")
+    now = int(time.time())
+    recent["startTime"] = str(now)
+    recent["endTime"] = str(now + 1)
+    client = FakeWatchClient(
+        {"response": {"replays": [old, recent], "users": {}}}
+    )
+
+    passes = run_battle_watch(
+        client,
+        "Alice",
+        types=("arena",),
+        once=True,
+        limit=10,
+        keep_days=1,
+    )
+
+    assert passes[0]["results"]["arena"]["inserted"] == 2
+    assert passes[0]["pruned"] == {"battles": 1, "comparisons": 0}
+    with get_session_local()() as db:
+        remaining = {
+            row.source_record_id for row in db.query(BattleRecord).all()
+        }
+    assert remaining == {"watch-recent"}
+
+
+def test_run_battle_watch_survives_prune_error(monkeypatch, capsys):
+    _create_account("Alice", "111")
+    detail = {"response": {"replays": [_api_replay("watch-fail-prune")]}}
+    client = FakeWatchClient(detail)
+
+    def boom(_cutoff):
+        raise RuntimeError("prune unavailable")
+
+    monkeypatch.setattr("hw_genie.commands.battle.prune_battles", boom)
+
+    passes = run_battle_watch(
+        client, "Alice", types=("arena",), once=True, limit=10, keep_days=1
+    )
+
+    assert passes[0]["results"]["arena"]["inserted"] == 1
+    assert passes[0]["pruned"] is None
+    assert passes[0]["prune_error"] == "prune unavailable"
+    assert "prune failed" in capsys.readouterr().err
 
 
 def test_parse_battle_types():
@@ -526,6 +583,7 @@ def test_run_battle_watch_once_reports_partial_failure():
         once=True,
         limit=5,
         offset=10,
+        keep_days=None,
     )
 
     results = passes[0]["results"]

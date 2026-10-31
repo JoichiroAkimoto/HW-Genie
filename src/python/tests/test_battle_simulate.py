@@ -82,6 +82,9 @@ class FakeClient:
     def get_headers(self) -> dict[str, str]:
         return {"x-auth-token": "test"}
 
+    def sleep(self) -> None:
+        pass
+
 
 class FakeOracle:
     engine_name = "fake-oracle"
@@ -686,3 +689,18 @@ def test_simulate_rejects_bad_timeout():
             oracle=FakeOracle(),
             timeout=0,
         )
+
+
+def test_battle_import_routine_imports_and_dedupes():
+    from hw_genie.runner import battle_import_routine
+
+    _create_account()
+    client = FakeClient(_detail(_replay()))
+
+    first = battle_import_routine(client, "Alice", types=("arena",), limit=10)
+    assert first.inserted == 1
+    assert first.duplicates == 0
+
+    second = battle_import_routine(client, "Alice", types=("arena",), limit=10)
+    assert second.inserted == 0
+    assert second.duplicates == 1

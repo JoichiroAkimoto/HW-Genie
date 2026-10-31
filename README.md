@@ -139,6 +139,27 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 
 `arena plan` は同一防衛者の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。順位付けは Wilson 下限で、`--min-samples` / `--min-win-rate` を満たす候補だけ `REC` になり、`arenaAttack` は送りません。
 
+### 自動攻略（arena auto）
+
+```bash
+# ギルド除外＋最上位ターゲットの提案（既定 dry-run、攻撃しない）
+uv run hw-genie arena auto -a Alice --min-samples 3 --min-win-rate 1.0
+
+# ゲートを満たした候補に攻撃（1回だけ）
+uv run hw-genie arena auto -a Alice --execute
+
+# 攻撃回数の上限を上げて連続で順位を上げる
+uv run hw-genie arena auto -a Alice --execute --max-attacks 5
+```
+
+- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。
+- ギルドメンバーは `clanGetInfo.members` で除外します。クラン情報の形式が不正・取得失敗の場合は攻撃せず停止します。
+- 最上位に gate を満たすプランがなければ、次の上位候補へフォールバックします。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、最初に編成が一致したプランを使います。攻撃した／gate を満たすプランがなかった／編成が一致しなかったターゲットは、同じ実行内で再選択・再クエリされません。
+- 攻撃編成はプラン（`attacker_lineup_key`）のヒーロー・ペット・バナーをそのまま使い、解決後の編成がプランと一致しない場合は攻撃しません。保存済みチームの favor はプランのヒーロー分だけ不足分の補完に使います。
+- `--min-samples` / `--min-win-rate` / `--game-version` が gate です。負けは既定で停止（`--no-stop-on-loss` で継続）。
+- `NotEnough` / `Refillable` で攻撃が送られなかった場合は攻撃回数に数えず、そのまま停止します。結果が不明な通信エラーは、二重攻撃を避けるため即座に中断します。
+- `--execute` を付けない限り `arenaAttack` は送りません。
+
 ### Oracle パリティ（Phase 2-A）
 
 ```bash
@@ -214,11 +235,17 @@ uv run hw-genie battle prune --days 90
 # 5分ごとに arena/grand を巡回して新規分だけ取り込む（Ctrl+C で終了）
 uv run hw-genie battle watch -a Alice --types arena,grand --interval 300
 
+# 既定90日より古い行を各パス後に自動削除（--no-prune で無効）
+uv run hw-genie battle watch -a Alice --interval 300 --keep-days 90
+
 # 1回だけ（cron 用）
 uv run hw-genie battle watch -a Alice --once
+
+# 全アカウント一括（取り込み後に1回 prune）
+uv run hw-genie multi battle --parallel 2 --keep-days 90
 ```
 
-HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` はそのまま `battleGetByType` に渡します。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。
+HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` はそのまま `battleGetByType` に渡します。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。`battle watch` は各パス後に `--keep-days`（既定90日）より古い行を自動削除します。`multi battle` は全アカウント分を取り込んだ後に1回だけ prune します。
 
 勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
 
@@ -320,6 +347,7 @@ bin/hwsa
 - `multi asgard-shop`: 全アカウントの Asgard ショップ自動購入のみ（Osh / Maestro 週を自動判定、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off）
 - `multi seers-game`: 全アカウントの Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応、`--dry-run` で予行確認可）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
+- `multi battle`: 全アカウントの arena/grand 戦闘ログを一括取り込みし、実行後に1回 prune（`--battle-types` / `--battle-limit` / `--keep-days` / `--no-prune` 対応）
 - `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 

@@ -7,7 +7,7 @@ import random
 import sys
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 
@@ -659,6 +659,7 @@ def run_battle_watch(
     limit: int = 50,
     offset: int = 0,
     once: bool = False,
+    keep_days: int | None = 90,
     as_json: bool = False,
 ) -> list[dict]:
     """Poll arena/grand replays and import new battles until interrupted.
@@ -701,11 +702,31 @@ def run_battle_watch(
                 sleep()
 
         pass_number += 1
+        pruned = None
+        prune_error = None
+        if keep_days is not None and keep_days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+            try:
+                pruned_stats = prune_battles(cutoff)
+            except Exception as exc:
+                prune_error = str(exc)
+                print(
+                    f"warning: battle prune failed ({exc}); continuing.",
+                    file=sys.stderr,
+                )
+            else:
+                pruned = {
+                    "battles": pruned_stats.deleted,
+                    "comparisons": pruned_stats.comparisons,
+                }
         payload = {
             "pass": pass_number,
             "account": account_alias,
             "results": results,
+            "pruned": pruned,
         }
+        if prune_error is not None:
+            payload["prune_error"] = prune_error
         passes.append(payload)
         if len(passes) > max_passes:
             del passes[: len(passes) - max_passes]
@@ -721,6 +742,8 @@ def run_battle_watch(
                         f"{battle_type}: fetched {result['fetched']}, "
                         f"new {result['inserted']}, dup {result['duplicates']}"
                     )
+            if pruned is not None:
+                parts.append(f"pruned {pruned['battles']} old battle(s)")
             print(f"[pass {pass_number}] " + " | ".join(parts))
 
         if once:

@@ -20,11 +20,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
 from hw_genie.core.client import HWAuthError, HWClient, load_session_headers
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import display_width, pad, rank_color, style
+
+if TYPE_CHECKING:
+    from hw_genie.core.battle_log import ImportStats
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +555,50 @@ def full_routine(
     return daily_routine(client, account, item_max_iterations=item_max_iterations)
 
 
+def battle_import_routine(
+    client: HWClient,
+    account: str,
+    *,
+    types: tuple[str, ...] = ("arena", "grand"),
+    limit: int = 50,
+) -> "ImportStats":
+    """Import the account's latest battle replays into the corpus.
+
+    One ``battleGetByType`` pass per requested type. Safe to run repeatedly:
+    duplicate replay ids are skipped. Used by ``multi battle``.
+    """
+    from hw_genie.core.battle_log import (
+        ImportStats,
+        import_battles,
+        parse_battle_get_response,
+    )
+
+    total = ImportStats()
+    for battle_type in types:
+        res = client.battle_get_by_type(battle_type, limit=limit)
+        client.sleep()
+        if not res.is_success:
+            raise RuntimeError(
+                f"battleGetByType({battle_type}) failed: "
+                f"{res.error_name or res.status.value}"
+            )
+        parsed = parse_battle_get_response(res.detail, battle_type)
+        result = import_battles(
+            account,
+            parsed,
+            source="api_import",
+            engine="game-server",
+        )
+        total.total += result.total
+        total.inserted += result.inserted
+        total.duplicates += result.duplicates
+        total.upgraded += result.upgraded
+        total.team_configs_inserted += result.team_configs_inserted
+        total.skipped += result.skipped
+        total.errors.extend(result.errors)
+    return total
+
+
 def _probe_host_label(auth_server_url: str) -> str:
     """Host[:port] of ``auth_server_url`` without path/query (for warnings)."""
     try:
@@ -1018,6 +1065,61 @@ def _render_quest_table(rows: list[list[str]]) -> str:
     return _render_table(_QUEST_SUMMARY_HEADERS, rows, _quest_cell_styler)
 
 
+_BATTLE_HEADERS = ["Account", "Fetched", "New", "Dup", "Upgraded", "Errors"]
+
+
+def _battle_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the battle import summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    if i == len(_BATTLE_HEADERS) - 1 and cell not in ("0", ""):
+        return style(padded, fg="red", dim=False)
+    return style(padded, dim=dim)
+
+
+def summarize_battle(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+) -> int:
+    """Print a per-account battle import table and return the failed count."""
+    from hw_genie.core.battle_log import ImportStats
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, ImportStats):
+            rows.append(
+                [
+                    account,
+                    str(res.total),
+                    str(res.inserted),
+                    str(res.duplicates),
+                    str(res.upgraded),
+                    str(len(res.errors)),
+                ]
+            )
+            if res.errors:
+                failed.append(f"{account} ({len(res.errors)} error(s))")
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (battle result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_BATTLE_HEADERS, rows)[1] if rows else 48
+    print("\n" + "=" * width)
+    print("📊 --- Multi battle import summary ---")
+    if rows:
+        print(_render_table(_BATTLE_HEADERS, rows, _battle_cell_styler))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    print(f"✅ {ok} account(s) imported, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 def summarize_quests(
     results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
     dry_run: bool = False,
@@ -1402,6 +1504,7 @@ __all__ = [
     "_toe_real_errors",
     "daily_routine",
     "full_routine",
+    "battle_import_routine",
     "quests_routine",
     "asgard_shop_routine",
     "seers_game_routine",
@@ -1413,4 +1516,5 @@ __all__ = [
     "summarize_asgard_shop",
     "summarize_seers_game",
     "summarize_consumable",
+    "summarize_battle",
 ]
