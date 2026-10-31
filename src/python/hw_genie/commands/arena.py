@@ -1999,6 +1999,7 @@ def run_arena_auto(
     game_version: str | None = None,
     candidate_retries: int | None = None,
     stop_on_loss: bool = True,
+    allow_same_lineup: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
     """Attack the highest non-guild candidate whose log plan passes the gate.
@@ -2008,6 +2009,10 @@ def run_arena_auto(
     gate-passing attacker lineup, and (with ``execute``) sends exactly one
     ``arenaAttack``. If the highest target has no gate-passing plan, the next
     eligible target is tried. Stop on a loss by default.
+
+    By default only ``same_defender`` plans are used: a plan from the same
+    lineup against other defenders can win at the lineup level while losing to
+    this defender's actual stats. Pass ``allow_same_lineup`` to include them.
     """
     _require_arena_mode(mode)
     if max_attacks < 1:
@@ -2031,105 +2036,139 @@ def run_arena_auto(
             print(f"{Emojis.INFO}No arena attack attempts left; stopping.")
             break
 
-        candidates = fetch_arena_candidates(client, mode)
-        eligible = select_auto_targets(
-            candidates,
-            status.place,
-            clan_member_ids,
-            own_user_id=status.user_id,
-            exclude_user_ids=attempted_user_ids,
-        )
-        if not eligible:
-            print(
-                f"{Emojis.WARNING}No eligible target above rank {status.place} "
-                "(non-guild, 5-hero lineup, current candidates)."
-            )
-            break
-
+        candidate_pool: dict[int, ArenaTopEntry] = {}
+        saw_eligible = False
         chosen: tuple[ArenaTopEntry, PlanCandidate, ArenaTeam, list[int]] | None = None
-        for entry in eligible:
-            plans = query_plans(
-                defender_lineup_key=lineup_key_from_ids(
-                    entry.heroes, entry.pet, entry.banner
-                ),
-                defender_id=str(entry.user_id),
-                battle_type=mode.key,
-                game_version=game_version,
-                min_samples=min_samples,
-                min_win_rate=min_win_rate,
-                limit=10,
+        for refresh in range(retries + 1):
+            source = fetch_arena_candidates(client, mode)
+            for candidate in source:
+                candidate_pool[candidate.user_id] = candidate
+            eligible = select_auto_targets(
+                list(candidate_pool.values()),
+                status.place,
+                clan_member_ids,
+                own_user_id=status.user_id,
+                exclude_user_ids=attempted_user_ids,
             )
-            recommended = [plan for plan in plans if plan.recommended]
-            if not recommended:
-                print(
-                    f"{Emojis.INFO}skip rank {entry.place} (userId {entry.user_id}): "
-                    "no plan meets the gate"
+            if eligible:
+                saw_eligible = True
+            for entry in eligible:
+                plans = query_plans(
+                    defender_lineup_key=lineup_key_from_ids(
+                        entry.heroes, entry.pet, entry.banner
+                    ),
+                    defender_id=str(entry.user_id),
+                    battle_type=mode.key,
+                    game_version=game_version,
+                    min_samples=min_samples,
+                    min_win_rate=min_win_rate,
+                    limit=10,
+                    tiers=None if allow_same_lineup else ("same_defender",),
                 )
-                attempted_user_ids.add(entry.user_id)
-                continue
-
-            for best in recommended:
-                heroes = [
-                    int(value)
-                    for value in best.heroes_summary.split(",")
-                    if value.strip()
+                recommended = [
+                    plan
+                    for plan in plans
+                    if plan.recommended
+                    and (allow_same_lineup or plan.tier == "same_defender")
                 ]
-                if len(heroes) != 5 or len(set(heroes)) != 5:
-                    print(
-                        f"{Emojis.WARNING}Plan for userId {entry.user_id} has an "
-                        f"invalid lineup ({best.heroes_summary}); trying the next "
-                        "recommended plan."
+                if not recommended:
+                    suffix = (
+                        ""
+                        if allow_same_lineup
+                        else " (same-lineup history ignored; use --allow-same-lineup)"
                     )
+                    print(
+                        f"{Emojis.INFO}skip rank {entry.place} "
+                        f"(userId {entry.user_id}): no plan meets the gate{suffix}"
+                    )
+                    attempted_user_ids.add(entry.user_id)
                     continue
 
-                favor = {
-                    int(hero_id): int(patron_id)
-                    for hero_id, patron_id in (best.favor or {}).items()
-                    if int(hero_id) in heroes and int(patron_id) > 0
-                }
-                try:
-                    team, missing = resolve_team(
-                        heroes=heroes,
-                        pet=best.pet_id,
-                        # 0 is the explicit "no banner" sentinel; saved=None keeps
-                        # the saved pet/banner from leaking into the plan lineup.
-                        banner=best.banner_id if best.banner_id is not None else 0,
-                        favor=favor,
-                        saved=None,
-                    )
-                except ArenaError as exc:
-                    print(
-                        f"{Emojis.WARNING}skip plan for rank {entry.place} "
-                        f"(userId {entry.user_id}): could not build the plan team "
-                        f"({exc}); trying the next recommended plan."
-                    )
-                    continue
+                for best in recommended:
+                    heroes = [
+                        int(value)
+                        for value in best.heroes_summary.split(",")
+                        if value.strip()
+                    ]
+                    if len(heroes) != 5 or len(set(heroes)) != 5:
+                        print(
+                            f"{Emojis.WARNING}Plan for userId {entry.user_id} has "
+                            f"an invalid lineup ({best.heroes_summary}); trying the "
+                            "next recommended plan."
+                        )
+                        continue
 
-                resolved_banner = team.banners[0] if team.banners else None
-                if (
-                    lineup_key_from_ids(team.heroes, team.pet, resolved_banner)
-                    != best.attacker_lineup_key
-                ):
-                    print(
-                        f"{Emojis.WARNING}skip plan for rank {entry.place} "
-                        f"(userId {entry.user_id}): resolved team "
-                        f"({_format_team(team)}) does not match the plan lineup "
-                        f"({best.attacker_lineup_key}); trying the next "
-                        "recommended plan."
-                    )
-                    continue
+                    favor = {
+                        int(hero_id): int(patron_id)
+                        for hero_id, patron_id in (best.favor or {}).items()
+                        if int(hero_id) in heroes and int(patron_id) > 0
+                    }
+                    try:
+                        team, missing = resolve_team(
+                            heroes=heroes,
+                            pet=best.pet_id,
+                            # 0 is the explicit "no banner" sentinel; saved=None
+                            # keeps the saved pet/banner from leaking into the
+                            # plan lineup.
+                            banner=(
+                                best.banner_id if best.banner_id is not None else 0
+                            ),
+                            favor=favor,
+                            saved=None,
+                        )
+                    except ArenaError as exc:
+                        print(
+                            f"{Emojis.WARNING}skip plan for rank {entry.place} "
+                            f"(userId {entry.user_id}): could not build the plan "
+                            f"team ({exc}); trying the next recommended plan."
+                        )
+                        continue
 
-                chosen = (entry, best, team, missing)
-                break
+                    resolved_banner = team.banners[0] if team.banners else None
+                    if (
+                        lineup_key_from_ids(team.heroes, team.pet, resolved_banner)
+                        != best.attacker_lineup_key
+                    ):
+                        print(
+                            f"{Emojis.WARNING}skip plan for rank {entry.place} "
+                            f"(userId {entry.user_id}): resolved team "
+                            f"({_format_team(team)}) does not match the plan "
+                            f"lineup ({best.attacker_lineup_key}); trying the "
+                            "next recommended plan."
+                        )
+                        continue
+
+                    chosen = (entry, best, team, missing)
+                    break
+
+                if chosen is not None:
+                    break
+                # Every recommended plan for this defender was unusable; do not
+                # re-query it during the rest of this invocation.
+                attempted_user_ids.add(entry.user_id)
 
             if chosen is not None:
                 break
-            # Every recommended plan for this defender was unusable; do not
-            # re-query it during the rest of this invocation.
-            attempted_user_ids.add(entry.user_id)
+            if refresh < retries:
+                print(
+                    f"{Emojis.INFO}No usable target yet; refreshing candidates "
+                    f"({refresh + 1}/{retries})..."
+                )
 
         if chosen is None:
-            print(f"{Emojis.WARNING}No target has a plan that meets the gate.")
+            if saw_eligible:
+                refreshed = (
+                    f" after {retries} candidate refresh(es)" if retries else ""
+                )
+                print(
+                    f"{Emojis.WARNING}No target has a plan that meets the gate"
+                    f"{refreshed}."
+                )
+            else:
+                print(
+                    f"{Emojis.WARNING}No eligible target above rank {status.place} "
+                    "(non-guild, 5-hero lineup, current candidates)."
+                )
             break
 
         entry, plan, team, missing = chosen

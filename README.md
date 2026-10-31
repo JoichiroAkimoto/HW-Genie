@@ -152,7 +152,8 @@ uv run hw-genie arena auto -a Alice --execute
 uv run hw-genie arena auto -a Alice --execute --max-attacks 5
 ```
 
-- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。
+- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。
+- 既定では **`same_defender`（同一防衛者の実戦データ）プランのみ**を使います。同一防衛編成の他プレイヤー戦しかない場合は攻撃せず、`--allow-same-lineup` を付けたときだけフォールバックします（編成は同じでも実ステータスやfavorが異なるため、勝率が再現しないことがあります）。
 - ギルドメンバーは `clanGetInfo.members` で除外します。クラン情報の形式が不正・取得失敗の場合は攻撃せず停止します。
 - 最上位に gate を満たすプランがなければ、次の上位候補へフォールバックします。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、最初に編成が一致したプランを使います。攻撃した／gate を満たすプランがなかった／編成が一致しなかったターゲットは、同じ実行内で再選択・再クエリされません。
 - 攻撃編成はプラン（`attacker_lineup_key`）のヒーロー・ペット・バナーをそのまま使います。favor もプランが参照した最新の勝利編成（`favorPetId`）から取得し、解決後の編成がプランと一致しない場合は攻撃しません。ログに favor が無いヒーローは favor なしで送信します（保存済みチームの favor は流用しません）。勝率は `lineup_key` 単位の集計で、favor が異なる観測も含みます。favor は最新勝利編成による再現です。
@@ -245,7 +246,7 @@ uv run hw-genie battle watch -a Alice --once
 uv run hw-genie multi battle --parallel 2 --keep-days 90
 ```
 
-HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` はそのまま `battleGetByType` に渡します。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。`battle watch` は各パス後に `--keep-days`（既定90日）より古い行を自動削除します。`multi battle` は全アカウント分を取り込んだ後に1回だけ prune します。
+HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` は `battleGetByType` に渡します（`limit` はAPI上限の20まで。CLI既定も20）。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。`battle watch` は各パス後に `--keep-days`（既定90日）より古い行を自動削除します。`multi battle` は全アカウント分を取り込んだ後に1回だけ prune します。
 
 勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
 

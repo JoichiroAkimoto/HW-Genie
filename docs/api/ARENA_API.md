@@ -330,7 +330,7 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 | 引数 | 説明 |
 |------|------|
 | `type` | `arena` / `grand` / `titan_arena`（すべて実測済み。CLI の `toe` は `titan_arena` のエイリアス） |
-| `limit` / `offset` | ページング |
+| `limit` / `offset` | ページング。`limit` は **最大20**（21以上は `ArgumentError: value overflow/underflow`） |
 
 ### Response Structure
 ```json

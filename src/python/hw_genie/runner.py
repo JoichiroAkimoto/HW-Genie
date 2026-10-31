@@ -560,19 +560,21 @@ def battle_import_routine(
     account: str,
     *,
     types: tuple[str, ...] = ("arena", "grand"),
-    limit: int = 50,
+    limit: int = 20,
 ) -> "ImportStats":
     """Import the account's latest battle replays into the corpus.
 
     One ``battleGetByType`` pass per requested type. Safe to run repeatedly:
     duplicate replay ids are skipped. Used by ``multi battle``.
     """
+    from hw_genie.commands.battle import validate_battle_limit
     from hw_genie.core.battle_log import (
         ImportStats,
         import_battles,
         parse_battle_get_response,
     )
 
+    limit = validate_battle_limit(limit)
     total = ImportStats()
     for battle_type in types:
         res = client.battle_get_by_type(battle_type, limit=limit)

@@ -52,17 +52,35 @@ def _payload(res) -> dict:
     return res.detail if isinstance(res.detail, dict) else {}
 
 
+# The live RPC rejects limit > 20 with ArgumentError; keep the CLI aligned.
+BATTLE_GET_MAX_LIMIT = 20
+
+
+def validate_battle_limit(limit: int) -> int:
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= BATTLE_GET_MAX_LIMIT
+    ):
+        raise BattleLogError(
+            "battleGetByType --limit must be between "
+            f"1 and {BATTLE_GET_MAX_LIMIT} (got {limit!r})."
+        )
+    return limit
+
+
 def run_battle_import(
     client: HWClient,
     account_alias: str,
     *,
     battle_type: str = "arena",
-    limit: int = 50,
+    limit: int = 20,
     offset: int = 0,
     dry_run: bool = False,
     as_json: bool = False,
 ) -> ImportStats:
     """Fetch replays from the API and store them in the corpus."""
+    limit = validate_battle_limit(limit)
     res = client.battle_get_by_type(battle_type, limit=limit, offset=offset)
     parsed = parse_battle_get_response(_payload(res), battle_type=battle_type)
     stats = import_battles(account_alias, parsed, dry_run=dry_run)
@@ -269,6 +287,7 @@ def run_battle_simulate(
     """
     if seeds < 1:
         raise BattleLogError("--seeds must be >= 1")
+    limit = validate_battle_limit(limit)
     if not math.isfinite(timeout) or timeout < 1:
         raise BattleLogError("--timeout must be a finite number >= 1 second")
     if (
@@ -656,7 +675,7 @@ def run_battle_watch(
     *,
     types: tuple[str, ...] = ("arena", "grand"),
     interval: int = 300,
-    limit: int = 50,
+    limit: int = 20,
     offset: int = 0,
     once: bool = False,
     keep_days: int | None = 90,
@@ -668,6 +687,7 @@ def run_battle_watch(
     printed as one JSON object per line. The returned history is capped at the
     most recent 100 passes so a long-running watcher does not grow unbounded.
     """
+    limit = validate_battle_limit(limit)
     max_passes = 100
     passes: list[dict] = []
     pass_number = 0

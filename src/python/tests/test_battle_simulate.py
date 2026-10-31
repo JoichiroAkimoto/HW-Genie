@@ -16,6 +16,7 @@ from hw_genie.battle.engine import (
 from hw_genie.commands.battle import (
     run_battle_config_getters,
     run_battle_simulate,
+    validate_battle_limit,
 )
 from hw_genie.core.battle_log import (
     BattleLogError,
@@ -704,3 +705,10 @@ def test_battle_import_routine_imports_and_dedupes():
     second = battle_import_routine(client, "Alice", types=("arena",), limit=10)
     assert second.inserted == 0
     assert second.duplicates == 1
+
+
+def test_validate_battle_limit_rejects_api_overflow():
+    assert validate_battle_limit(20) == 20
+    for bad in (0, 21, True):
+        with pytest.raises(BattleLogError, match="--limit"):
+            validate_battle_limit(bad)

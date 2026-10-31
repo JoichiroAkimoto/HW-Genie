@@ -1003,6 +1003,7 @@ def cmd_arena_auto(args):
             game_version=args.game_version,
             candidate_retries=args.candidate_retries,
             stop_on_loss=not args.no_stop_on_loss,
+            allow_same_lineup=bool(args.allow_same_lineup),
         )
     except ArenaError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1659,7 +1660,7 @@ def cmd_multi(args):
         routine = partial(
             battle_import_routine,
             types=battle_types,
-            limit=int(getattr(args, "battle_limit", 50)),
+            limit=int(getattr(args, "battle_limit", 20)),
         )
         max_parallel = args.parallel
     else:
@@ -2350,6 +2351,14 @@ def main():
         help="Candidate list refresh attempts (default: 10)",
     )
     p_arena_auto.add_argument(
+        "--allow-same-lineup",
+        action="store_true",
+        help=(
+            "Also use plans from other defenders with the same defense lineup "
+            "(default: same-defender plans only)"
+        ),
+    )
+    p_arena_auto.add_argument(
         "--no-stop-on-loss",
         action="store_true",
         help="Continue to the next target after a loss (default: stop)",
@@ -2477,8 +2486,8 @@ def main():
     p_battle_import.add_argument(
         "--limit",
         type=_positive_int,
-        default=50,
-        help="Replays to fetch (default: 50)",
+        default=20,
+        help="Replays to fetch (default: 20, the API maximum for battleGetByType)",
     )
     p_battle_import.add_argument(
         "--offset",
@@ -2712,8 +2721,8 @@ def main():
     p_battle_watch.add_argument(
         "--limit",
         type=_positive_int,
-        default=50,
-        help="Replays per type per pass (default: 50)",
+        default=20,
+        help="Replays per type per pass (default: 20, the API maximum)",
     )
     p_battle_watch.add_argument(
         "--offset",
@@ -3017,8 +3026,8 @@ def main():
     p_multi.add_argument(
         "--battle-limit",
         type=_positive_int,
-        default=50,
-        help="Replays fetched per type per account in the 'battle' mode (default: 50)",
+        default=20,
+        help="Replays fetched per type per account in the 'battle' mode (default: 20, the API maximum)",
     )
     p_multi.add_argument(
         "--keep-days",

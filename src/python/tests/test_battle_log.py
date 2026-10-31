@@ -311,6 +311,46 @@ def test_query_plans_uses_latest_observed_favor():
     assert plan.favor == {hero_id: 6011 for hero_id in range(1, 6)}
 
 
+def test_query_plans_tier_filter_runs_before_limit():
+    _create_account()
+    replays = [
+        _replay(battle_id="7101", win=True),
+        *[
+            _replay(
+                battle_id=f"71{i:02d}",
+                win=True,
+                defender_id="333",
+                heroes=_team([6, 7, 8, 9, 10], 6003),
+            )
+            for i in range(2, 7)
+        ],
+    ]
+    parsed = parse_battle_get_response(
+        {"response": {"replays": replays, "users": {}}}
+    )
+    import_battles("Alice", parsed)
+
+    key = lineup_key_from_ids([11, 12, 13, 14, 15], 6002, 1)
+    unfiltered = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+        limit=1,
+    )
+    assert unfiltered[0].heroes_summary == "6,7,8,9,10"
+    assert unfiltered[0].tier == "same_lineup"
+
+    filtered = query_plans(
+        defender_lineup_key=key,
+        defender_id="222",
+        min_samples=1,
+        limit=1,
+        tiers=("same_defender",),
+    )
+    assert filtered[0].heroes_summary == "1,2,3,4,5"
+    assert filtered[0].tier == "same_defender"
+
+
 def test_query_plans_falls_back_to_same_lineup():
     _create_account()
     replays = [

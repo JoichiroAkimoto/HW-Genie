@@ -50,6 +50,7 @@ def _plan(
     banner: int | None = PLAN_BANNER,
     key: str | None = None,
     favor: dict[int, int] | None = None,
+    tier: str = "same_defender",
 ) -> PlanCandidate:
     lineup = list(heroes if heroes is not None else PLAN_HEROES)
     return PlanCandidate(
@@ -64,7 +65,7 @@ def _plan(
         win_rate=1.0,
         wilson_low=0.4,
         last_seen=None,
-        tier="same_defender",
+        tier=tier,
         recommended=recommended,
         favor=dict(favor or {}),
     )
@@ -501,6 +502,79 @@ def test_run_arena_auto_falls_back_to_next_target_without_plan(
     assert "No eligible target" in capsys.readouterr().out
 
 
+def test_run_arena_auto_requires_same_defender_by_default(
+    monkeypatch, capsys
+):
+    _patch_auto(
+        monkeypatch,
+        candidates=[_entry(5, 222)],
+        plans=lambda _defender_id: [_plan(tier="same_lineup")],
+    )
+    attacked = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack",
+        lambda *a, **k: attacked.append((a, k)),
+    )
+
+    history = run_arena_auto(MagicMock(), execute=True)
+
+    assert history == []
+    assert attacked == []
+    assert "same-lineup history ignored; use --allow-same-lineup" in (
+        capsys.readouterr().out
+    )
+
+
+def test_run_arena_auto_allows_same_lineup_when_requested(monkeypatch):
+    plan_calls = _patch_auto(
+        monkeypatch,
+        candidates=[_entry(5, 222)],
+        plans=lambda _defender_id: [_plan(tier="same_lineup")],
+    )
+
+    history = run_arena_auto(MagicMock(), execute=False, allow_same_lineup=True)
+
+    assert history[0]["target_user_id"] == 222
+    assert plan_calls[0]["tiers"] is None
+
+
+def test_run_arena_auto_refreshes_candidates_until_plan(monkeypatch, capsys):
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *a, **k: _status(None)
+    )
+    monkeypatch.setattr(arena_mod, "fetch_clan_member_ids", lambda *a, **k: set())
+
+    def fake_candidates(*_args, **_kwargs):
+        calls["n"] += 1
+        return [_entry(5, 333)] if calls["n"] == 1 else [_entry(6, 222)]
+
+    monkeypatch.setattr(arena_mod, "fetch_arena_candidates", fake_candidates)
+    monkeypatch.setattr(
+        arena_mod,
+        "query_plans",
+        lambda **kwargs: (
+            [_plan(recommended=False)]
+            if kwargs["defender_id"] == "333"
+            else [_plan()]
+        ),
+    )
+    attacked = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack",
+        lambda *a, **k: attacked.append((a, k)),
+    )
+
+    history = run_arena_auto(MagicMock(), execute=False, candidate_retries=2)
+
+    assert calls["n"] == 2
+    assert attacked == []
+    assert history[0]["target_user_id"] == 222
+    assert "refreshing candidates (1/2)" in capsys.readouterr().out
+
+
 def test_run_arena_auto_forwards_gate_kwargs(monkeypatch):
     plan_calls = _patch_auto(
         monkeypatch, candidates=[_entry(5, 222)], saved_team=None
@@ -528,6 +602,7 @@ def test_run_arena_auto_forwards_gate_kwargs(monkeypatch):
     assert kwargs["game_version"] == "1.2.3"
     assert kwargs["battle_type"] == "arena"
     assert kwargs["defender_id"] == "222"
+    assert kwargs["tiers"] == ("same_defender",)
 
 
 def test_run_arena_auto_no_stop_on_loss_skips_attempted_target(

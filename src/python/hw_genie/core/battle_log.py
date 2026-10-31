@@ -1591,6 +1591,7 @@ def query_plans(
     min_samples: int = 3,
     min_win_rate: float = 1.0,
     limit: int = 10,
+    tiers: tuple[str, ...] | None = None,
 ) -> list[PlanCandidate]:
     """Rank attacker lineups against a defender lineup from observed battles.
 
@@ -1598,7 +1599,9 @@ def query_plans(
     the broader same-lineup history (other accounts/defenders) is used. Results
     are ordered by the Wilson lower bound so small perfect samples do not
     automatically outrank well-supported lineups. ``game_version`` (None = all
-    versions) restricts the corpus to one server version.
+    versions) restricts the corpus to one server version. ``tiers`` filters
+    before sorting/slicing, so a lower-ranked same-defender plan is not lost
+    behind many same-lineup plans.
     """
     if not 0.0 <= min_win_rate <= 1.0:
         raise ValueError("min_win_rate must be between 0.0 and 1.0")
@@ -1697,6 +1700,9 @@ def query_plans(
                     favor=broad_favor.get(key),
                 )
             )
+
+    if tiers is not None:
+        candidates = [candidate for candidate in candidates if candidate.tier in tiers]
 
     candidates.sort(
         key=lambda candidate: (
