@@ -784,6 +784,63 @@ def consumable_routine(
     return run
 
 
+def gift_up_routine(limit: int | None = None, dry_run: bool = False) -> Callable[[HWClient, str], object]:
+    """Build a routine that maxes the element gift for any account.
+
+    Wraps :func:`hw_genie.commands.element_gift.run_gift_up` with
+    ``confirm=True`` (multi is non-interactive). The explicit ``--yes`` on the
+    ``multi gift-up`` command is the safety gate instead of a stored
+    ``enabled`` flag, because the gift level is server-side state and is
+    re-read before every plan.
+
+    Args:
+        limit: Upgrade at most this many heroes per account.
+        dry_run: Show the per-account plan without sending gift operations.
+
+    Returns:
+        A routine whose result per account is the ``GiftRunResult`` returned
+        by ``run_gift_up``.
+    """
+    from hw_genie.commands.element_gift import run_gift_up
+
+    def run(client: HWClient, account: str) -> object:
+        return run_gift_up(
+            client, account_alias=account, dry_run=dry_run, confirm=True, limit=limit
+        )
+
+    return run
+
+
+def gift_reset_routine(
+    max_power: int | None = None, limit: int | None = None, dry_run: bool = False
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that drops low-power heroes' gifts to refund the coins.
+
+    ``max_power`` が None の場合は ``element_gift.DEFAULT_MAX_POWER``（10 万）を
+    使う。drop は消費コインを全額返すので 1 体の失敗も資源を消費せず、他の体を
+    続行できる（``multi gift-reset`` は実行時に ``--yes`` を要求する）。
+
+    Returns:
+        A routine whose result per account is the ``GiftRunResult`` returned
+        by ``run_gift_reset``.
+    """
+    from hw_genie.commands.element_gift import DEFAULT_MAX_POWER, run_gift_reset
+
+    threshold = DEFAULT_MAX_POWER if max_power is None else max_power
+
+    def run(client: HWClient, account: str) -> object:
+        return run_gift_reset(
+            client,
+            account_alias=account,
+            dry_run=dry_run,
+            confirm=True,
+            max_power=threshold,
+            limit=limit,
+        )
+
+    return run
+
+
 def _status_cells(account: str, result: object) -> list[str] | None:
     """Return the column cells for one account, or None if status is unavailable."""
     from hw_genie.core.client import PlayerStatus
@@ -1003,6 +1060,78 @@ def summarize_consumable(
     verb = "planned" if dry_run else "consumed"
     print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
+_GIFT_HEADERS = ["Account", "✅ Done", "💰 Coins", "🪙 Left", "⏭️ Blocked", "❌ Failed"]
+
+
+def _gift_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the element gift summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_gift_table(rows: list[list[str]]) -> str:
+    """Render the per-account element gift summary table."""
+    return _render_table(_GIFT_HEADERS, rows, _gift_cell_styler)
+
+
+def summarize_gift(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+    mode: str = "gift",
+) -> int:
+    """Print a per-account element gift table and return the failed count.
+
+    Results come from routines built by :func:`gift_up_routine` /
+    :func:`gift_reset_routine`: per account a ``GiftRunResult``. ``mode`` is
+    the multi mode label (``"up"`` / ``"reset"``) and names the table.
+    "Coins" is the spent amount for ``up`` and the refunded amount for
+    ``reset``; "Blocked" only counts the heroes ``up`` could not afford (reset
+    has no such gate). Accounts whose routine errored, or whose result reports
+    an error or any failed hero, count as failed.
+    """
+    from hw_genie.commands.element_gift import GiftRunResult
+    from hw_genie.core.utils import format_number_with_suffix
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, GiftRunResult):
+            rows.append(
+                [
+                    account,
+                    str(res.changed),
+                    format_number_with_suffix(res.coins),
+                    format_number_with_suffix(res.balance) if res.balance is not None else "-",
+                    str(res.blocked) if res.mode == "up" else "-",
+                    str(res.failed),
+                ]
+            )
+            if res.is_failure:
+                failed.append(account)
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (gift result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_GIFT_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print(f"📊 --- Multi gift {mode} summary ---")
+    if rows:
+        print(_render_gift_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else ("maxed" if mode == "up" else "reset")
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 _QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "⏭️ Skipped", "❌ Failed"]
 
 
@@ -1406,6 +1535,8 @@ __all__ = [
     "asgard_shop_routine",
     "seers_game_routine",
     "consumable_routine",
+    "gift_up_routine",
+    "gift_reset_routine",
     "toe_routine",
     "summarize_toe",
     "summarize",
@@ -1413,4 +1544,5 @@ __all__ = [
     "summarize_asgard_shop",
     "summarize_seers_game",
     "summarize_consumable",
+    "summarize_gift",
 ]

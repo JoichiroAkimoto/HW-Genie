@@ -566,6 +566,59 @@ def cmd_seers_game(args):
         sys.exit(1)
 
 
+def cmd_gift(args):
+    """エレメントギフトの現況表示 / 一括 MAX 化 / 一括リセット"""
+    from hw_genie.commands.element_gift import (
+        DEFAULT_MAX_POWER,
+        GiftReadError,
+        print_status,
+        run_gift_reset,
+        run_gift_up,
+    )
+
+    limit = getattr(args, "limit", None)
+    if limit is not None and limit < 1:
+        print("Error: --limit must be 1 or more", file=sys.stderr)
+        sys.exit(2)
+    max_power = getattr(args, "max_power", None)
+    if max_power is not None and max_power < 0:
+        print("Error: --max-power must be 0 or more", file=sys.stderr)
+        sys.exit(2)
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    account = resolve_account(args.account) if args.account else None
+
+    if args.action == "status":
+        try:
+            print_status(client, account or "<account>", raw=bool(args.raw))
+        except GiftReadError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.action == "up":
+        result = run_gift_up(
+            client,
+            account_alias=account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+            limit=limit,
+        )
+    else:
+        result = run_gift_reset(
+            client,
+            account_alias=account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+            max_power=DEFAULT_MAX_POWER if max_power is None else max_power,
+            limit=limit,
+        )
+    if result.is_failure:
+        print(f"Error: gift {result.mode} failed: {result.error or f'{result.failed} hero(es)'}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_arena_status(args):
     """Show Arena rank, attempts/cooldown, saved team, and attack window."""
     from hw_genie.commands.arena import ArenaError, run_arena_status
@@ -1255,6 +1308,8 @@ def cmd_multi(args):
         consumable_routine,
         daily_routine,
         full_routine,
+        gift_reset_routine,
+        gift_up_routine,
         is_cancelled,
         list_account_aliases,
         quests_routine,
@@ -1263,6 +1318,7 @@ def cmd_multi(args):
         seers_game_routine,
         summarize_asgard_shop,
         summarize_consumable,
+        summarize_gift,
         summarize_quests,
         summarize_seers_game,
         summarize_toe,
@@ -1288,12 +1344,32 @@ def cmd_multi(args):
     accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable", "seers-game") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset") and dry_run:
         print(
-            "Error: --dry-run is only supported with the 'quests', 'consumable' and 'seers-game' modes "
+            "Error: --dry-run is only supported with the 'quests', 'consumable', 'seers-game', "
+            "'gift-up' and 'gift-reset' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
+        sys.exit(2)
+
+    if mode in ("gift-up", "gift-reset") and not dry_run and not getattr(args, "yes", False):
+        # multi は非対話なので確認プロンプトが無く、ギフトコインは全アカウント分を
+        # 一度に動かす。既存モードの `enabled` 相当の明示ゲートとして --yes を要求する。
+        print(
+            f"Error: multi {mode} changes every selected account without asking. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    _gift_limit = getattr(args, "limit", None)
+    if _gift_limit is not None and _gift_limit < 1:
+        print("Error: --limit must be 1 or more", file=sys.stderr)
+        sys.exit(2)
+    _gift_max_power = getattr(args, "max_power", None)
+    if _gift_max_power is not None and _gift_max_power < 0:
+        print("Error: --max-power must be 0 or more", file=sys.stderr)
         sys.exit(2)
 
     if mode == "quests":
@@ -1322,6 +1398,15 @@ def cmd_multi(args):
     elif mode == "consumable":
         routine = consumable_routine(
             lib_ids=args.lib, method_override=args.method, dry_run=dry_run
+        )
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "gift-up":
+        routine = gift_up_routine(limit=_gift_limit, dry_run=dry_run)
+        # dry-run は read-only の計画表示なので逐次実行（アカウント順に並べる）
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "gift-reset":
+        routine = gift_reset_routine(
+            max_power=_gift_max_power, limit=_gift_limit, dry_run=dry_run
         )
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "toe":
@@ -1463,6 +1548,12 @@ def cmd_multi(args):
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode in ("gift-up", "gift-reset"):
+                    failed = summarize_gift(
+                        results.items(),
+                        dry_run=dry_run,
+                        mode="up" if mode == "gift-up" else "reset",
+                    )
                 elif mode == "toe":
                     failed = summarize_toe(results.items())
                 else:
@@ -2166,6 +2257,40 @@ def main():
     p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 
+    # Gift (element gift: heroTitanGiftLevelUp / heroTitanGiftDrop)
+    p_gift = subparsers.add_parser(
+        "gift",
+        parents=[parent_parser],
+        help="Element gift batch operations (status / up / reset)",
+    )
+    gift_sub = p_gift.add_subparsers(dest="action", required=True)
+    p_gift_status = gift_sub.add_parser(
+        "status", parents=[parent_parser], help="Show gift levels, coin balance and what up/reset would do"
+    )
+    p_gift_status.add_argument("--raw", action="store_true", help="Print the parsed gift state as JSON")
+    p_gift_status.set_defaults(func=cmd_gift)
+    p_gift_up = gift_sub.add_parser(
+        "up",
+        parents=[parent_parser],
+        help="Max the gift for all heroes, strongest first, as far as the coins allow",
+    )
+    p_gift_up.add_argument("--limit", type=int, help="Upgrade at most N heroes in this run")
+    p_gift_up.add_argument("--dry-run", action="store_true", help="Show the plan without sending any gift operation")
+    p_gift_up.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p_gift_up.set_defaults(func=cmd_gift)
+    p_gift_reset = gift_sub.add_parser(
+        "reset",
+        parents=[parent_parser],
+        help="Drop the gift of low-power heroes to recover the coins (gift coins are refunded in full)",
+    )
+    p_gift_reset.add_argument(
+        "--max-power", type=int, help="Drop heroes whose current power is at or below this value (default: 100000)"
+    )
+    p_gift_reset.add_argument("--limit", type=int, help="Drop at most N heroes in this run")
+    p_gift_reset.add_argument("--dry-run", action="store_true", help="Show the plan without sending any gift operation")
+    p_gift_reset.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p_gift_reset.set_defaults(func=cmd_gift)
+
     # Sync
     p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
     p_sync.set_defaults(func=cmd_sync)
@@ -2189,10 +2314,20 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game"],
+        choices=[
+            "daily",
+            "full",
+            "quests",
+            "asgard-shop",
+            "consumable",
+            "toe",
+            "seers-game",
+            "gift-up",
+            "gift-reset",
+        ],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), or 'seers-game' (play Seer's Game until coins run out)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes) or 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes)",
     )
     p_multi.add_argument(
         "--engine",
@@ -2262,6 +2397,21 @@ def main():
     p_multi.add_argument(
         "--method",
         help="Override the RPC method for the 'consumable' mode (e.g. consumableUseLootBox)",
+    )
+    p_multi.add_argument(
+        "--limit",
+        type=int,
+        help="Max heroes per account for the 'gift-up' / 'gift-reset' modes (default: as many as the coins allow)",
+    )
+    p_multi.add_argument(
+        "--max-power",
+        type=int,
+        help="Power ceiling for the 'gift-reset' mode: drop gifts of heroes at or below this power (default: 100000)",
+    )
+    p_multi.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' modes",
     )
     p_multi.add_argument(
         "--pick",

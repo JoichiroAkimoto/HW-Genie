@@ -183,6 +183,7 @@ class ApiAction(str, Enum):
     QUEST_GET_ALL = "questGetAll"
     QUEST_FARM = "questFarm"
     GACHA_OPEN = "gacha_open"
+    HERO_GET_ALL = "heroGetAll"
     HERO_ARTIFACT_LEVEL_UP = "heroArtifactLevelUp"
     TITAN_ARTIFACT_LEVEL_UP = "titanArtifactLevelUp"
     HERO_SKIN_UPGRADE = "heroSkinUpgrade"
@@ -420,6 +421,20 @@ class HWClient:
     def mission_get_all(self) -> HWResponse:
         """キャンペーン（ストーリーモード）の各ステージクリア状況を取得"""
         payload = {"calls": [{"name": ApiAction.MISSION_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def hero_get_all(self) -> HWResponse:
+        """所持全ヒーローの育成状況（power / level / titanGiftLevel / titanCoinsSpent 等）を取得"""
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.HERO_GET_ALL,
+                    "args": {},
+                    "context": {"actionTs": 0},
+                    "ident": "heroes",
+                }
+            ]
+        }
         return self.call(payload)
 
     def quest_get_all(self) -> HWResponse:
