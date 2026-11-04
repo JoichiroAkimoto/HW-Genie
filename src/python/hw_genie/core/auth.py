@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
 import requests
-from hw_genie.core.client import PlayerStatus, load_session_headers
+from hw_genie.core.client import AUTH_ERROR_NAMES, PlayerStatus, load_session_headers
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -92,7 +92,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
         if isinstance(res_data, dict):
             error = res_data.get("error")
             error_name = error.get("name") if isinstance(error, dict) else error
-            if error_name in ("auth", "InvalidSession"):
+            if str(error_name) in AUTH_ERROR_NAMES:
                 return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
         if "results" in res_data:
             user_info = {}

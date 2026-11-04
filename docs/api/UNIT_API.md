@@ -129,6 +129,12 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 - 応答の `response` は `null`、`quests`（デイリー 10023 等の進捗）のみ返ります。
   実際の消費額・到達レベルは `heroGetAll` / `inventoryGet` を読み直して確認します。
 - コイン不足などの失敗はコール単位で `error` を返します。
+- HW-Genie は返されたエラー名を `core/client.py` の共有集合で分類します:
+  `auth` / `InvalidSession`（`AUTH_ERROR_NAMES`、batch 内 per-call でも認証経路に合流）、
+  `NotEnough`（`RESOURCE_EXHAUSTED_ERROR_NAMES`＝コイン枯れ、次の体も買えないので打ち切り）、
+  `NotAvailable`（`HERO_SPECIFIC_ERROR_NAMES`＝そのヒーローだけ受理されないので継続）。
+  **継続するのは実在を確認したヒーロー個別名のみ**で、未知の名前・エラー名が読めない形・
+  transport 失敗（`network_or_parse_error`）は全対象に共通の事故として打ち切ります。
 
 ### heroTitanGiftDrop - ギフトを降ろす（全額返却）
 

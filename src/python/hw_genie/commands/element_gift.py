@@ -15,24 +15,24 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 from hw_genie.core.client import (
     ApiAction,
+    AUTH_ERROR_NAMES,
     Emojis,
+    HERO_SPECIFIC_ERROR_NAMES,
     HWAuthError,
     HWClient,
     Messages,
+    RESOURCE_EXHAUSTED_ERROR_NAMES,
     ResponseStatus,
     _safe_int,
 )
 
 logger = logging.getLogger(__name__)
-
-#: `core/client.py` が単一コール／グローバルエラーで HWAuthError に変換する
-#: のと同一の名前（batch 内 per-call エラーは変換されないためここで拾う）。
-AUTH_ERROR_NAMES = frozenset({"auth", "InvalidSession"})
 
 #: ギフトの MAX レベル（実測: level 130 のヒーローは全員 30 で頭打ち）。
 GIFT_MAX_LEVEL = 30
@@ -45,11 +45,13 @@ GIFT_COIN_LIB_ID = 24
 DEFAULT_MAX_POWER = 100000
 
 class GiftReadError(Exception):
-    """`heroGetAll` / `inventoryGet` の読み取り・パース失敗（認証エラーは除く）。"""
+    """`heroGetAll` / `inventoryGet` の読み取り・パース失敗（認証エラーは除く）。
 
-    def __init__(self, message: str, error_name: str | None = None):
-        super().__init__(message)
-        self.error_name = error_name
+    認証系の名前（`core.client.AUTH_ERROR_NAMES`）はここで `HWAuthError` に
+    合流させるため、この例外になる時点で「認証以外の読み取り失敗」だけを意味する。
+    エラー名はメッセージ文字列に埋め込んで報告する（属性として持たせず、
+    誰も読まない状態を作らない）。
+    """
 
 
 @dataclass(frozen=True)
@@ -96,15 +98,24 @@ class GiftUpAction:
 
 @dataclass
 class GiftRunResult:
-    """1 アカウント 1 実行の結果。`multi` のサマリー表と run_logs に載せる。"""
+    """1 アカウント 1 実行の結果。`multi` のサマリー表と run_logs に載せる。
 
-    account: str
+    アカウント名は持たない：表示・run_logs とも呼び出し側が保持する
+    （`multi` は results の key、単体実行は解決済みのエイリアス）が正で、
+    ここに写すと同じ値の二重管理になる。
+    """
+
     mode: str  # "up" / "reset"
     changed: int = 0  # up: MAX 化できた体数 / reset: drop した体数
     levels: int = 0  # up で実際に上げたレベル合計
-    coins: int = 0  # up: 実消費（実行前後の残高差） / reset: 実返却合計
-    balance: int | None = None  # 実行後のコイン残高
-    blocked: int = 0  # コイン不足で対象外になった体数
+    #: up: 実消費コイン（実行前後の残高差。最終再読に失敗したときは完全成功体の計画値）
+    #: / reset: 実返却合計 / dry-run: いずれも**計画値**（Nothing to run なら 0）
+    coins: int = 0
+    balance: int | None = None  # 実行後のコイン残高（dry-run は実行前残高）
+    #: 計画時点でコイン／`--limit` の打ち切り地点より後になり、**試行されなかった**体数。
+    #: 実行中に非コイン系のヒーロー個別エラーで継続した体はコスト未消費のこともあり、
+    #: 打ち切り地点以降が実際に買えたかどうかは示さない（計画ベースの見積もり）。
+    blocked: int = 0
     failed: int = 0  # RPC 失敗した体数
     dry_run: bool = False
     error: str | None = None
@@ -124,16 +135,27 @@ def _read_power(raw: Any) -> tuple[int, bool]:
     `_safe_int` は欠損・非数値を 0 に丸めてしまうため、`gift reset` の閾値判定が
     「読めない＝power 0＝主力でも対象にする」に化けないよう、成否を別途返す
     （モジュール方針「読めなければ対象にしない＋警告」）。
+
+    `requests` の JSON デコードは `NaN` / `Infinity` を許容するため、非有限 float は
+    「読めた 0」でなく「読めない」（`_safe_int` だと 0 になり、reset 判定で主力を
+    落とす事故につながる）。文字列の `"inf"` / `"nan"` も同じ理由で対象外。
     """
     if isinstance(raw, bool) or raw is None:
         return 0, False
-    if isinstance(raw, (int, float)):
+    if isinstance(raw, float):
+        if not math.isfinite(raw):
+            return 0, False
+        return _safe_int(raw), True
+    if isinstance(raw, int):
         return _safe_int(raw), True
     if isinstance(raw, str):
         try:
-            return int(float(raw)), True
+            value = float(raw)
         except (TypeError, ValueError, OverflowError):
             return 0, False
+        if not math.isfinite(value):
+            return 0, False
+        return int(value), True
     return 0, False
 
 
@@ -183,13 +205,27 @@ def parse_heroes(payload: Any) -> list[GiftHero]:
 
 
 def parse_coin_balance(payload: Any) -> int:
-    """`inventoryGet` の `response.consumable` からギフトコイン残高を取り出す。"""
+    """`inventoryGet` の `response.consumable` からギフトコイン残高を取り出す。
+
+    lenient に読む（形が読めなければ 0）。個数が欠けている通常の 0 は本当に 0 なので
+    これで正しく、`consumable` マップ自体が無い「API 形変更」の 0 とは区別できない。
+    よって**状態読み取り側（:func:`fetch_state`）で `consumable` が dict であることを
+    検証してから**使うこと。drop 応答の返却額（:func:`_drop_refund`。読めなければ 0
+    ＋「no refund reported」で続行して害がない）だけが lenient なまま使ってよい。
+    """
     if not isinstance(payload, dict):
         return 0
     consumable = payload.get("consumable")
     if not isinstance(consumable, dict):
         return 0
     return _safe_int(consumable.get(str(GIFT_COIN_LIB_ID)))
+
+
+def _error_name(error: Any) -> str:
+    """エラー項目（dict / 生文字列）から表示用のエラー名を取り出す（常に str）。"""
+    if isinstance(error, dict):
+        return str(error.get("name") or error.get("message") or "unknown")
+    return str(error)
 
 
 def _unwrap(detail: Any, ident: str | None) -> dict[str, Any]:
@@ -204,6 +240,11 @@ def _unwrap(detail: Any, ident: str | None) -> dict[str, Any]:
     `parse_coin_balance` と組み合わさって「API の形変更」が「残高 0 ＝
     コイン不足」に化けて無音で握りつぶされる（`gift up` が exit 0 になる）。
     形変更は失敗として報告する。
+
+    batch 内の per-call エラーが認証系（`core.client.AUTH_ERROR_NAMES`）のときは
+    `HWAuthError` に合流させる。`HWClient.call` は単一コールとグローバルエラーしか
+    自動変換しないため、ここで拾わないと「Session expired … auth-server / curl で
+    再同期」の共通案内が出ず、run_logs も認証事故として分類できない。
     """
     if not isinstance(detail, dict):
         raise GiftReadError(f"unexpected response format for {ident or 'call'}")
@@ -211,11 +252,12 @@ def _unwrap(detail: Any, ident: str | None) -> dict[str, Any]:
         entry = detail.get(ident)
         if not isinstance(entry, dict):
             raise GiftReadError(f"missing {ident} in batched response")
-        inner = entry.get("result")
         if "error" in entry and entry.get("error") is not None:
-            error = entry["error"]
-            name = error.get("name") if isinstance(error, dict) else str(error)
-            raise GiftReadError(f"{ident} failed ({name})", error_name=str(name))
+            name = _error_name(entry["error"])
+            if name in AUTH_ERROR_NAMES:
+                raise HWAuthError(Messages.AUTH_ERROR)
+            raise GiftReadError(f"{ident} failed ({name})")
+        inner = entry.get("result")
     else:
         inner = detail
     if not isinstance(inner, dict):
@@ -230,8 +272,11 @@ def fetch_state(client: HWClient) -> tuple[list[GiftHero], int]:
     """`heroGetAll` と `inventoryGet` を 1 リクエストで読み、(ヒーロー, コイン残高) を返す。
 
     Raises:
-        HWAuthError: 認証エラー（呼び出し側で中断扱いにするため再送出）
+        HWAuthError: 認証エラー（単一コール・グローバルだけでなく batch 内 per-call
+            の `auth` / `InvalidSession` も含む。呼び出し側で中断扱いにするため再送出）
         GiftReadError: 通信・API エラー、または想定外のレスポンス形式
+            （`inventoryGet` の `consumable` マップが読めない形も含む。残高 0 の
+            「コイン不足」＝ exit 0 に化けないよう失敗として返す）
     """
     payload = {
         "calls": [
@@ -248,10 +293,14 @@ def fetch_state(client: HWClient) -> tuple[list[GiftHero], int]:
     if res.status != ResponseStatus.SUCCESS:
         raise GiftReadError(
             f"gift state read failed ({res.error_name or res.status.value})",
-            error_name=res.error_name,
         )
     heroes = parse_heroes(_unwrap(res.detail, "heroes"))
-    balance = parse_coin_balance(_unwrap(res.detail, "inventory"))
+    inventory = _unwrap(res.detail, "inventory")
+    if not isinstance(inventory.get("consumable"), dict):
+        # `consumable` が無い/list/非 dict の形は「残高 0」ではなく読み取り失敗。
+        # さもないと gift up が "Nothing to run: not enough coins" で exit 0 になる。
+        raise GiftReadError("inventoryGet response has no consumable map")
+    balance = parse_coin_balance(inventory)
     if not heroes:
         raise GiftReadError("heroGetAll returned no heroes")
     return heroes, balance
@@ -267,6 +316,10 @@ def plan_up(
 
     見積残高が次の 1 体を MAX にできなくなった時点で打ち切る（全員に薄く
     分配しない方針）。打ち切り地点以降の体数は ``blocked`` で返す。
+    計画時点の打ち切りなので、**計画した全体が cost を消費する前提**で境界を決める。
+    実行中にヒーロー個別の業務エラーで継続した体がコストを消費しなかった場合、
+    打ち切り地点より後にある「実際には買えた体」は試行されない（``blocked`` は
+    計画ベースの見積もりのまま）。実行後に `gift status` を見て再実行すること。
 
     Returns:
         ``(actions, blocked, beyond_limit)``
@@ -313,6 +366,29 @@ def plan_reset(
 def unknown_power_gifted_heroes(heroes: list[GiftHero]) -> list[GiftHero]:
     """power が読めなくて reset 対象から黙って除外された gifted 体を返す。"""
     return [h for h in heroes if h.gift_level > 0 and not h.power_known]
+
+
+def unknown_power_unmaxed_heroes(heroes: list[GiftHero]) -> list[GiftHero]:
+    """未 MAX のうち power が読めない体を返す（`gift up` の計画順の警告用）。"""
+    return [h for h in heroes if not h.is_max and not h.power_known]
+
+
+def warn_unknown_power_up_candidates(targets: list[GiftHero]) -> None:
+    """与えた候補体の中に power が読めない体がいれば警告 1 行出す。
+
+    `plan_up` は power 降順なので読めない体（値 0 扱い）は末尾に回るだけ黙って
+    後回しになる。`gift reset` の `power unreadable (...)` 警告行と同じ趣旨で、
+    順序の前提が崩れている体を明示する（`_read_power` が欠損・非数値・非有限 float
+    を `power_known=False` にする）。
+    """
+    unknown = [h for h in targets if not h.power_known]
+    if not unknown:
+        return
+    ids = ", ".join(str(h.hero_id) for h in unknown)
+    print(
+        f"  {Emojis.WARNING}{len(unknown)} unmaxed hero(es) planned last: "
+        f"power unreadable ({ids})."
+    )
 
 
 # ---------------------------------------------------------------- 送信
@@ -377,12 +453,6 @@ def _call_results(res: Any, expected: int) -> tuple[int, str | None]:
     if first_error is None and res.status != ResponseStatus.SUCCESS:
         first_error = res.error_name or res.status.value
     return succeeded, first_error
-
-
-def _error_name(error: Any) -> str:
-    if isinstance(error, dict):
-        return str(error.get("name") or error.get("message") or "unknown")
-    return str(error)
 
 
 def _drop_refund(res: Any) -> int:
@@ -466,10 +536,18 @@ def print_status(client: HWClient, account: str, raw: bool = False) -> None:
         f"(cost {sum(a.cost for a in actions):,} of {needed:,} needed for all; "
         f"{blocked} blocked by coins)"
     )
+    warn_unknown_power_up_candidates(unknown_power_unmaxed_heroes(heroes))
     print(
         f"  reset : {len(reset_targets)} hero(es) with gift at power <= "
         f"{DEFAULT_MAX_POWER:,} (refund {sum(h.refundable for h in reset_targets):,})"
     )
+    skipped = unknown_power_gifted_heroes(heroes)
+    if skipped:
+        ids = ", ".join(str(h.hero_id) for h in skipped)
+        print(
+            f"  {Emojis.WARNING}{len(skipped)} gifted hero(es) excluded from reset: "
+            f"power unreadable ({ids})."
+        )
     for hero in heroes:
         print(_hero_row(hero))
 
@@ -490,24 +568,29 @@ def run_gift_up(
     - 計画は読んだ直後の実残高で立てるので、打ち切り地点は原則正しい。実コストが
       見積（MAX まで = 65,150 − 消費済み）より安い場合は、`gift status` を見てから
       再実行すれば追加の体を拾える。
-    - バッチ内エラーは理由で分岐する（`quests.FALLBACK_ERROR_NAMES` の資源枯渇名
-      ＝コイン枯れは同じ残高では次の体も失敗するため打ち切り、それ以外の
-      1 体個別エラー（`notAvailable` 等）は drop と同じ契約で「その体だけ失敗」と
-      して記録し次の体へ継続する）。
-    - バッチ内の per-call エラーが `auth` / `InvalidSession` の場合は HWAuthError
-      として扱う（`HWClient.call` は単一コール・グローバルエラーしか自動変換
-      しないため、ここで合流させる）。
+    - バッチ内エラーは理由で 3 分岐する:
+        1. 資源枯渇名（`core.client.RESOURCE_EXHAUSTED_ERROR_NAMES` ＝コイン枯れ）は
+           同じ残高では次の体も失敗するため**打ち切り**。
+        2. ヒーロー単位の業務エラー名（`core.client.HERO_SPECIFIC_ERROR_NAMES`、
+           実在が確認できた `NotAvailable` のみ）だけ「その体は失敗」として**継続**。
+        3. それ以外（未知のエラー名、`None` ＝ 応答が読めない形、
+           `ResponseStatus.UNEXPECTED` 由来の transport 名）は「その体だけ」でなく
+           全アカウント共通の事故なので**打ち切り**（up は資源を消費するため安全側）。
+           読み取り側が同じ状況で止まるのとも揃える。
+    - 状態読み取り（`fetch_state`）と書き込みの双方で、認証系エラー名（`auth` /
+      `InvalidSession`）は `HWAuthError` として扱う（`HWClient.call` は単一コール・
+      グローバルエラーしか自動変換しないため、batch 内 per-call はここで合流させる）。
+      読み取り段階のそれは部分結果を持たないので、そのまま送出して `main` の共通
+      ハンドラに「セッション再同期」案内を出させる。
     - 書き込みの途中で `HWAuthError`（認証切れ）が出たら、そこまでの部分結果で
       最終レポートを出してから例外を再送出する（`multi` はそれをアカウント単位の
       失敗として記録する）。
     - 終了時に `heroGetAll` + `inventoryGet` を 1 回読み直し、消費コイン・MAX 体数・
-      合計 power を実測値で報告する。
+      合計 power を実測値で報告する。再読に失敗したときの消費コインは**完全成功体の
+      計画額の合計**だけで、部分適用分は入らない（実消費はそれ以上）。
     """
     account = account_alias or "<account>"
-    # コイン枯れ（資源不足）を示す既存エラー名集合を流用する（新規集合を作らない）。
-    from hw_genie.commands.quests import FALLBACK_ERROR_NAMES as COIN_ERROR_NAMES
-
-    result = GiftRunResult(account=account, mode="up", dry_run=dry_run)
+    result = GiftRunResult(mode="up", dry_run=dry_run)
     try:
         heroes, balance = fetch_state(client)
     except GiftReadError as exc:
@@ -531,6 +614,8 @@ def run_gift_up(
           f"{total_cost:,} coins"
           + (f" | {blocked} blocked by coins" if blocked else "")
           + (f" | {beyond_limit} beyond --limit" if beyond_limit else ""))
+    # power が読めない体は 0 扱いで計画の末尾に回る（黙って後回しせず警告する）。
+    warn_unknown_power_up_candidates([a.hero for a in actions])
     for action in actions:
         hero = action.hero
         print(
@@ -570,7 +655,10 @@ def run_gift_up(
             print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
                   f"auth error; stopping.")
             break
-        succeeded, error_name = _call_results(res, action.levels)
+        succeeded, raw_error_name = _call_results(res, action.levels)
+        # `HWResponse.error_name` は元レスポンス由来で str とは限らない
+        # （非 hashable なら frozenset 判定が TypeError になる）ので正規化する。
+        error_name = None if raw_error_name is None else str(raw_error_name)
         client.sleep()
         if error_name is None and succeeded == action.levels:
             result.changed += 1
@@ -593,18 +681,29 @@ def run_gift_up(
                   f"auth error; stopping.")
             break
 
-        reason = error_name or "error"
+        reason = error_name or "unknown"
         result.failed += 1
         result.levels += succeeded
         result.details.append(f"hero {hero.hero_id} partial: {succeeded}/{action.levels} ({reason})")
-        if error_name in COIN_ERROR_NAMES:
+        if error_name in RESOURCE_EXHAUSTED_ERROR_NAMES:
             # コイン枯れ: 同じ残高では次の体も失敗するため打ち切る。
             print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
                   f"{succeeded}/{action.levels} level(s) applied ({reason}); stopping.")
             result.error = f"hero {hero.hero_id}: {reason}"
             break
-        # コインと無関係な 1 体個別エラー（notAvailable 等）: この体だけを失敗と
-        # して記録し、次の体は買える可能性があるので継続する（drop と同じ契約）。
+        if error_name not in HERO_SPECIFIC_ERROR_NAMES:
+            # ヒーロー単位の業務エラー名（`core.client.HERO_SPECIFIC_ERROR_NAMES`）以
+            # 外は「その体だけ」の事故ではない: transport 名（`network_or_parse_error`）、
+            # `ResponseStatus.UNEXPECTED`、`error_name` が読めない（応答の形変更）など
+            # は全アカウント共通の事故なので、資源を消費する書き込みを 40 体 x 30 calls
+            # 積み続けず安全側に打ち切る（読み取り側が同じ状況で止まるのとも揃える）。
+            print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
+                  f"{succeeded}/{action.levels} level(s) applied ({reason}); "
+                  f"not a hero-specific error, stopping.")
+            result.error = f"hero {hero.hero_id}: {reason} (unrecoverable)"
+            break
+        # 既知のヒーロー個別業務エラーのみ: この体だけを失敗として記録し、
+        # 次の体は買える可能性があるので継続する（drop と同じ契約）。
         print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
               f"{succeeded}/{action.levels} level(s) applied ({reason}); continuing.")
 
@@ -674,9 +773,11 @@ def run_gift_reset(
 
     書き込みの途中で `HWAuthError` が出たら、drop 済み・回収済みの部分結果で
     最終レポートを出してから例外を再送出する（`up` と同じ契約）。
+    状態読み取り（`fetch_state`）での認証エラーは、書くものも持っていないので
+    そのまま `HWAuthError` を送出する（`main` の共通ハンドラが再同期案内を出す）。
     """
     account = account_alias or "<account>"
-    result = GiftRunResult(account=account, mode="reset", dry_run=dry_run)
+    result = GiftRunResult(mode="reset", dry_run=dry_run)
     try:
         heroes, balance = fetch_state(client)
     except GiftReadError as exc:

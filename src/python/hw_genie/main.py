@@ -2426,7 +2426,11 @@ def main():
     p_multi.add_argument(
         "--limit",
         type=int,
-        help="Max heroes per account for the 'gift-up' / 'gift-reset' modes (default: as many as the coins allow)",
+        help=(
+            "Max heroes per account for the 'gift-up' / 'gift-reset' modes "
+            "(gift-up default: every hero the coins allow, strongest first; "
+            "gift-reset default: every hero at or below --max-power, power desc)"
+        ),
     )
     p_multi.add_argument(
         "--max-power",
