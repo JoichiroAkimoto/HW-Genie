@@ -216,6 +216,7 @@ bin/hwsa
 - `multi seers-game`: 全アカウントの Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応、`--dry-run` で予行確認可）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
 - `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
+- `multi gift-up` / `multi gift-reset`: 全アカウントのエレメントギフト一括 MAX 化／低 power ヒーローのギフト drop（コイン全額回収）のみ（未 MAX は power 降順に 1 体ずつレベル 30 まで。`--limit` / `--max-power`（既定 100,000）対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、`--dry-run` で予行確認可。書き込みは非対話で全アカウントに及ぶため **`--yes` 必須**（無いと worker を起動せず exit 2）、dry-run は読み取りのみなので `--yes` 不要で逐次実行に強制、実行中のコイン枯れによる部分失敗も失敗計上なので exit 1）
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用

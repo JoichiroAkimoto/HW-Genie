@@ -157,6 +157,7 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 ---
 
 ## titanGetAll - 全タイタン情報取得
+
 所持している全タイタンのステータス、レベル、星ランク等の情報を取得します。
 
 ### curl 実行例

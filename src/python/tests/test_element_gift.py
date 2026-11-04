@@ -114,6 +114,20 @@ def test_parse_heroes_tolerates_missing_spend_and_junk():
     assert parse_heroes(None) == []
 
 
+def test_parse_heroes_treats_non_dict_consumable_as_zero():
+    """`titanCoinsSpent: {"consumable": null}` 等の形でも落ちない（消費済み 0 扱い）。"""
+    payload = _heroes_payload((7, 10, 0))
+    payload["7"]["titanCoinsSpent"] = {"consumable": None}
+    heroes = parse_heroes(payload)
+    assert heroes[0].coins_spent == 0
+    assert heroes[0].remaining_cost == GIFT_FULL_COST
+
+    # 辞書でない他の形（list / 文字列）も同じく 0
+    for junk in ({"consumable": []}, {"consumable": "24"}, [], "null", 5):
+        payload["7"]["titanCoinsSpent"] = junk
+        assert parse_heroes(payload)[0].coins_spent == 0
+
+
 def test_parse_coin_balance():
     assert parse_coin_balance({"consumable": {"24": 3705543}}) == 3705543
     assert parse_coin_balance({"consumable": {}}) == 0
@@ -262,7 +276,9 @@ def _up_client(mock_call, states, up_details):
     mock_call.side_effect = lambda payload: queue.pop(0)
 
 
-def test_run_gift_up_maxes_heroes_strongest_first_and_reports_measured_spend(mock_client):
+def test_run_gift_up_maxes_heroes_strongest_first_and_reports_measured_spend(
+    mock_client, mock_sleep
+):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
     # 初回: 残高 140,000（2 体分は 130,300 → 2 体とも MAX 可能）
@@ -286,7 +302,7 @@ def test_run_gift_up_maxes_heroes_strongest_first_and_reports_measured_spend(moc
     assert [p["calls"][0]["args"]["heroId"] for p in sent] == [1, 2]
 
 
-def test_run_gift_up_stops_on_partial_batch(mock_client):
+def test_run_gift_up_stops_on_partial_batch(mock_client, mock_sleep):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
     _up_client(
@@ -366,7 +382,7 @@ def test_run_gift_up_state_read_failure_is_reported(mock_client):
 # --- run_gift_reset ---
 
 
-def test_run_gift_reset_drops_targets_and_sums_refunds(mock_client):
+def test_run_gift_reset_drops_targets_and_sums_refunds(mock_client, mock_sleep):
     client, mock_call = mock_client
     heroes = _heroes_payload(
         (1, 150000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
@@ -427,7 +443,7 @@ def test_run_gift_reset_dry_run_and_empty_target_list(mock_client):
     assert mock_call.call_count == 1
 
 
-def test_run_gift_reset_honours_max_power_and_limit(mock_client):
+def test_run_gift_reset_honours_max_power_and_limit(mock_client, mock_sleep):
     client, mock_call = mock_client
     heroes = _heroes_payload(
         (1, 90000, 30, 65150), (2, 80000, 30, 65150), (3, 70000, 30, 65150)
@@ -451,7 +467,7 @@ def test_run_gift_reset_honours_max_power_and_limit(mock_client):
 # --- runner routines / summary ---
 
 
-def test_gift_routines_run_non_interactively(mock_client):
+def test_gift_routines_run_non_interactively(mock_client, mock_sleep):
     from hw_genie.runner import gift_reset_routine, gift_up_routine
 
     client, mock_call = mock_client
@@ -619,7 +635,7 @@ def test_run_gift_up_malformed_state_read_is_not_coin_shortage(mock_client, caps
     assert "Nothing to run" not in out
 
 
-def test_drop_refund_survives_malformed_drop_response(mock_client, capsys):
+def test_drop_refund_survives_malformed_drop_response(mock_client, mock_sleep, capsys):
     """strict な `_unwrap` でも drop 側は壊れない（読めなければ返却 0 で続行）。"""
     client, mock_call = mock_client
     gifted = _heroes_payload((1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST))
@@ -676,12 +692,12 @@ def test_call_results_still_counts_ident_shapes_missing_from_the_payload():
 # --- print_status ---
 
 
-def test_print_status_reports_counts_and_returns_none(mock_client, capsys):
+def test_print_status_reports_counts(mock_client, capsys):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST))
     mock_call.return_value = _res(_state_detail(heroes, GIFT_FULL_COST))
 
-    assert print_status(client, "Alice") is None
+    print_status(client, "Alice")
 
     out = capsys.readouterr().out
     assert "Element gift status: Alice" in out
@@ -704,7 +720,7 @@ def test_print_status_raw_json_returns_none(mock_client, capsys):
 # --- 認証切れは部分レポートを出してから上げる ---
 
 
-def test_run_gift_up_reports_partial_summary_before_auth_error(mock_client, capsys):
+def test_run_gift_up_reports_partial_summary_before_auth_error(mock_client, mock_sleep, capsys):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
     mock_call.side_effect = [
@@ -724,7 +740,7 @@ def test_run_gift_up_reports_partial_summary_before_auth_error(mock_client, caps
     assert "auth error" in out
 
 
-def test_run_gift_up_uses_measured_spend_when_final_read_survives(mock_client, capsys):
+def test_run_gift_up_uses_measured_spend_when_final_read_survives(mock_client, mock_sleep, capsys):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
     mock_call.side_effect = [
@@ -742,7 +758,7 @@ def test_run_gift_up_uses_measured_spend_when_final_read_survives(mock_client, c
     assert "balance 130,000" in out
 
 
-def test_run_gift_reset_reports_partial_summary_before_auth_error(mock_client, capsys):
+def test_run_gift_reset_reports_partial_summary_before_auth_error(mock_client, mock_sleep, capsys):
     client, mock_call = mock_client
     heroes = _heroes_payload(
         (1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
@@ -969,10 +985,14 @@ def test_multi_gift_dry_run_without_yes_is_allowed(mode_name, monkeypatch):
     from hw_genie import main
 
     captured = {}
+    result_mode = "up" if mode_name == "gift-up" else "reset"
 
     def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["max_parallel"] = max_parallel
-        return {acc: (GiftRunResult(account=acc, mode="up"), None) for acc in (accounts or [])}
+        return {
+            acc: (GiftRunResult(account=acc, mode=result_mode, dry_run=True), None)
+            for acc in (accounts or [])
+        }
 
     records = _patch_multi_gift_workers(monkeypatch, fake_run)
     main.cmd_multi(_multi_gift_args(mode_name, dry_run=True))

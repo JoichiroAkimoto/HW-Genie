@@ -115,6 +115,9 @@ def parse_heroes(payload: Any) -> list[GiftHero]:
 
     dict でない項目・`type` が明示的に `hero` 以外（ペット等）は対象外。
     `titanCoinsSpent` は未活性化ヒーローでは `{"consumable": {}}` のため欠損扱い 0。
+    `consumable` が辞書でない形（`null` 等）も 0 として扱い、クラッシュせず続行する
+    （モジュールの方針「読めれば続行／読めなければ GiftReadError」の「読めれば」側で、
+    そのヒーローは消費済み 0＝MAX まで 65,150 として計画に載る）。
     """
     if not isinstance(payload, dict):
         return []
@@ -131,7 +134,9 @@ def parse_heroes(payload: Any) -> list[GiftHero]:
         spent = data.get("titanCoinsSpent")
         coins = 0
         if isinstance(spent, dict):
-            coins = _safe_int(spent.get("consumable", {}).get(str(GIFT_COIN_LIB_ID)))
+            consumable = spent.get("consumable")
+            if isinstance(consumable, dict):
+                coins = _safe_int(consumable.get(str(GIFT_COIN_LIB_ID)))
         heroes.append(
             GiftHero(
                 hero_id=hero_id,

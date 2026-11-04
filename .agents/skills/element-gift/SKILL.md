@@ -16,7 +16,7 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 - **0 → MAX（レベル 30）= 65,150 コイン**。MAX ヒーローは全員 `titanCoinsSpent.consumable.24 = 65150` で一致し、実行的にも見積 65,150 と実消費が同額でした。
 - **drop の返却 = 消費額と同一**（65,150 を消費 → 65,150 が返り、残高が実行前に復旧することを確認）。
 - **MAX で power +約 4,000**（39,382 → 43,342、+10% 前後）。弱いヒーローは MAX でも 10 万を超えないため、既定の `--max-power 100000` で回収対象になります。
-- 30  calls を 1 リクエストに並べる送信形式（`ident`: `body`, `body_1`, …）はゲームクライアントと同じ形で受理されます。
+- 30 calls を 1 リクエストに並べる送信形式（`ident`: `body`, `body_1`, …）はゲームクライアントと同じ形で受理されます。
 
 ## ワークフロー
 > **Tip**: 先に `uv run hw-genie auth --list` でアカウント別名を確認してください。
@@ -59,14 +59,19 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 | `multi gift-up` / `multi gift-reset` | `--limit` / `--max-power` / `--parallel` / `--dry-run` / `--yes` | | 全アカウント対象。`--yes` なしの実行は exit 2 |
 
 ## 出力と終了コード
-- `up` の最終行は実測値です: `N hero(es) maxed (MAX 前 -> 後 of 総数), L level(s), C coins spent, balance B, total power A -> B`。消費額と MAX 体数は実行後に `heroGetAll` + `inventoryGet` を 1 回読み直して確定させます（見積で報告しない）。
+- `up` の最終行は実測値です: `N hero(es) maxed (MAX 前 -> 後 of 総数), L level(s), C coins spent, balance B, total power A -> B`。消費額と MAX 体数は実行後に `heroGetAll` + `inventoryGet` を 1 回読み直して確定させます（見積では報告しません。唯一の例外が次項）。
+- **最終再読自体が失敗したときだけ見積にフォールバックします**。認証切れ（`HWAuthError`）に限らず、API 形変更などの `GiftReadError` でも同じ経路です。warning ログを出したうえで、`up` は消費コイン＝「実行前残高 − 計画消費額」、`MAX 後` は `?`、`total power` の前後は省略。`reset` は残高＝「実行前残高 + drop 応答から読めた返却額」、`gift on 後` は `?`（返却額自体は drop 応答の実測値なので不変）。書き込みは成功しているため、このフォールバックで終了コードは変わりません（実測が要るときは `gift status` を読み直してください）。
 - `reset` の最終行: `N hero(es) dropped, C coins recovered (balance B), gift on 前 -> 後, total power A -> B`。返却額は drop 応答の `response.consumable.24` の合計です。
-- 終了コード: 対象 0 体・コイン不足で打ち切り（実行自体は成功）は **0**。RPC 失敗・状態読み取り失敗・確認で中断は **1**。`--limit < 1` / `--max-power < 0` / `multi gift-up`・`multi gift-reset` を書き込みモードで `--yes` なしに実行（`run_all_accounts` を呼ぶ前に停止）は **2**。
+- 終了コード:
+  - **0**: 計画時点で対象 0 体のとき。`up` は「全員 MAX 済み」または「実行前残高で次の 1 体を MAX にできるコインが無い」（`blocked` として表示し実行 nothing）。`reset` は drop 対象 0 体。どちらも**失敗ではありません**。
+  - **1**: 実行中のバッチ内エラー（ほぼコイン不足）で 1 体が部分失敗して打ち切ったとき（`result.error` / `failed` に計上し、単体も `multi` のそのアカウントも失敗扱い）。他に RPC 失敗・状態読み取り失敗・y/N 確認での中断（`skipped by user`）も 1。
+  - **2**: `--limit < 1` / `--max-power < 0` / `multi gift-up`・`multi gift-reset` を書き込みモードで `--yes` なしに実行（`run_all_accounts` を呼ぶ前に停止）。
+  - 「コイン不足」は**計画時点で出て止まれば 0、実行中に RPC が `NotEnough` を返して止まれば 1**に分かれる点に注意してください（計画は読み取った実残高で立てるため、実行中のコイン不足は手動操作や他タスクが挟まった場合に限られます）。
 - 実行の途中で認証切れ（HWAuthError）が出ても、そこまでの部分結果で最終レポートを出してからエラー終了します（`multi` ではそのアカウントだけが失敗し、他アカウントは続行します）。
 - 状態読み取りが厳しいことを忘れないでください: `heroGetAll` / `inventoryGet` の `response` が辞書として読めない形に変更されたら「残高 0」として扱わず `GiftReadError` で失敗（exit 1 / multi ではそのアカウントの失敗）になります。0 円のコイン不足（終了コード 0）として握りつぶしません。
 
 ## 制限事項
-- **打ち切りはpower降順の先頭で途切れた地点**です。1 体の実コストが見積（65,150 − 消費済み）より安い場合、その実行では打ち切り以降を拾いません。`gift status` を見てから再実行すれば追加で上げられます。
+- **打ち切りは power 降順の先頭で途切れた地点**です。1 体の実コストが見積（65,150 − 消費済み）より安い場合、その実行では打ち切り以降を拾いません。`gift status` を見てから再実行すれば追加で上げられます。
 - バッチ内で 1 つでもエラー（ほぼコイン不足）が出たヒーローは**部分成功**として記録し、同じ残高では次の体も失敗するため打ち切ります。部分上昇分も drop で全額回収できます。
 - MAX レベル 30 / コスト 65,150 はコード内定数（`GIFT_MAX_LEVEL` / `GIFT_FULL_COST`）です。サーバー側の上限がヒーローレベル等で変わる場合は実測して定数を更新してください。
 - ギフトの**表示名・ヒーロー名解決は持っていません**（`heroGetAll` は ID のみ）。出力は `hero 61 power=...` のような ID 表記です。
@@ -80,7 +85,9 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
   `HWClient.call` の `detail` の形が変わるため持たない）。操作 RPC は
   `heroTitanGiftLevelUp` / `heroTitanGiftDrop`
 - multi: `runner.gift_up_routine` / `gift_reset_routine` / `summarize_gift`（結果は `run_logs` に保存される）
-- API 仕様: `docs/api/UNIT_API.md`（`heroGetAll` のギフト項目と `heroTitanGift*`）、生キャプチャは `docs/superpowers/ElementGift.md`
+- API 仕様: `docs/api/UNIT_API.md`（`heroGetAll` のギフト項目と `heroTitanGift*`）。実機の生キャプチャは
+  `docs/superpowers/ElementGift.md` に置していますが、`docs/superpowers/` は `.gitignore` 済み（追跡外）で
+  fresh clone には存在しません。仕様の正は `docs/api/UNIT_API.md` です。
 
 ## 完了後の報告
 実行体数・消費／返却コイン・実行後の残高・合計 power の前後を報告し、打ち切り（コイン不足）や部分成功があればそのヒーロー ID と理由を明記してください。実在アカウント名は報告に含めず、`Alice` 等のプレースホルダを使ってください。

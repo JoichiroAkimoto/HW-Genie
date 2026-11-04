@@ -2449,7 +2449,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable/seers-game modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game/gift-up/gift-reset modes only)",
     )
     p_multi.add_argument(
         "--iterations",
