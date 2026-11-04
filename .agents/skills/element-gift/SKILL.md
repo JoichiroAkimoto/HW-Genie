@@ -37,7 +37,7 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
    ```bash
    uv run hw-genie gift reset -a Alice --dry-run              # 回収対象を確認
    uv run hw-genie gift reset -a Alice --yes                  # power 10 万以下を drop
-   uv run hw-genie gift reset -a Alice --max-power 43342 --limit 1 --yes   # 特定体だけを返す
+   uv run hw-genie gift reset -a Alice --max-power 43342 --limit 1 --yes   # 閾値以内の対象から power 最高の 1 体を降ろす
    ```
 4. 全アカウント一括（`multi` は非対話なので **`--yes` 必須**。無いと exit 2 で説明を出します）:
    ```bash
@@ -56,7 +56,8 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 | `gift reset` | `--max-power N` | 100000 | この power **以下**（ギフト込みの現在値）を drop 対象にする |
 | `gift reset` | `--limit N` | 無制限 | drop する体数を N 体に制限（power 降順で先頭 N 体） |
 | `gift reset` | `--dry-run` / `--yes` | off | 上と同じ |
-| `multi gift-up` / `multi gift-reset` | `--limit` / `--max-power` / `--parallel` / `--dry-run` / `--yes` | | 全アカウント対象。`--yes` なしの実行は exit 2 |
+| `multi gift-up` / `multi gift-reset` | `--limit` / `--parallel` / `--dry-run` / `--yes` | | 全アカウント対象。`--yes` なしの実行は exit 2 |
+| `multi gift-reset` | `--max-power` | 100000 | `gift-reset` のみ対応。`multi gift-up` に指定すると worker 起動前に exit 2（`gift-up` に power 閾値はない） |
 
 ## 出力と終了コード
 - `up` の最終行は実測値です: `N hero(es) maxed (MAX 前 -> 後 of 総数), L level(s), C coins spent, balance B, total power A -> B`。消費額と MAX 体数は実行後に `heroGetAll` + `inventoryGet` を 1 回読み直して確定させます（見積では報告しません。唯一の例外が次項）。
@@ -64,18 +65,19 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 - `reset` の最終行: `N hero(es) dropped, C coins recovered (balance B), gift on 前 -> 後, total power A -> B`。返却額は drop 応答の `response.consumable.24` の合計です。
 - 終了コード:
   - **0**: 計画時点で対象 0 体のとき。`up` は「全員 MAX 済み」または「実行前残高で次の 1 体を MAX にできるコインが無い」（`blocked` として表示し実行 nothing）。`reset` は drop 対象 0 体。どちらも**失敗ではありません**。
-  - **1**: 実行中のバッチ内エラー（ほぼコイン不足）で 1 体が部分失敗して打ち切ったとき（`result.error` / `failed` に計上し、単体も `multi` のそのアカウントも失敗扱い）。他に RPC 失敗・状態読み取り失敗・y/N 確認での中断（`skipped by user`）も 1。
-  - **2**: `--limit < 1` / `--max-power < 0` / `multi gift-up`・`multi gift-reset` を書き込みモードで `--yes` なしに実行（`run_all_accounts` を呼ぶ前に停止）。
+  - **1**: 実行中のバッチ内エラー。コイン枯れを示すエラー（`NotEnough`）は「同じ残高では次の体も買えない」として**打ち切り**、コインと無関係な個別エラー（`notAvailable` 等）は**その体だけ失敗として次の体へ継続**します（どちらも失敗計上。単体も `multi` のそのアカウントも失敗扱い）。他に RPC 失敗・状態読み取り失敗・y/N 確認での中断（`skipped by user`）も 1。
+  - **2**: `--limit < 1` / `--max-power < 0` / `multi gift-up` への `--max-power` 指定（`gift-reset` 専用フラグのため） / `multi gift-up`・`multi gift-reset` を書き込みモードで `--yes` なしに実行（いずれも `run_all_accounts` を呼ぶ前に停止）。
   - 「コイン不足」は**計画時点で出て止まれば 0、実行中に RPC が `NotEnough` を返して止まれば 1**に分かれる点に注意してください（計画は読み取った実残高で立てるため、実行中のコイン不足は手動操作や他タスクが挟まった場合に限られます）。
 - 実行の途中で認証切れ（HWAuthError）が出ても、そこまでの部分結果で最終レポートを出してからエラー終了します（`multi` ではそのアカウントだけが失敗し、他アカウントは続行します）。
 - 状態読み取りが厳しいことを忘れないでください: `heroGetAll` / `inventoryGet` の `response` が辞書として読めない形に変更されたら「残高 0」として扱わず `GiftReadError` で失敗（exit 1 / multi ではそのアカウントの失敗）になります。0 円のコイン不足（終了コード 0）として握りつぶしません。
 
 ## 制限事項
 - **打ち切りは power 降順の先頭で途切れた地点**です。1 体の実コストが見積（65,150 − 消費済み）より安い場合、その実行では打ち切り以降を拾いません。`gift status` を見てから再実行すれば追加で上げられます。
-- バッチ内で 1 つでもエラー（ほぼコイン不足）が出たヒーローは**部分成功**として記録し、同じ残高では次の体も失敗するため打ち切ります。部分上昇分も drop で全額回収できます。
+- バッチ内でエラーが出たヒーローは**部分成功**として記録します。エラーがコイン枯れ（`NotEnough`）なら同じ残高では次の体も失敗するため**打ち切り**、コインと無関係な個別エラー（`notAvailable` 等）なら**その体だけ失敗にして次の体へ継続**します（drop と同じ契約）。部分上昇分も drop で全額回収できます。
+- **`power` が読めないヒーローは reset 対象にしません**（欠損・非数値を 0 に丸めて「閾値以下」に化けると、イベント当日に主力のギフトが落ちるため）。gift が载っていて power が読めない体が 1 体でもあれば `gift reset` 実行時に警告 1 行（`power unreadable (hero …)`）を出します。
 - MAX レベル 30 / コスト 65,150 はコード内定数（`GIFT_MAX_LEVEL` / `GIFT_FULL_COST`）です。サーバー側の上限がヒーローレベル等で変わる場合は実測して定数を更新してください。
 - ギフトの**表示名・ヒーロー名解決は持っていません**（`heroGetAll` は ID のみ）。出力は `hero 61 power=...` のような ID 表記です。
-- `multi gift-up --dry-run` / `multi gift-reset --dry-run` は逐次実行に強制されます（他の dry-run モードと同じ）。
+- `multi gift-up --dry-run` / `multi gift-reset --dry-run` は逐次実行に強制されます（他の dry-run モードと同じ）。アカウント別サマリ表には**計画体数（Done 列）と計画コイン（Coins 列）**が載ります（`multi consumable --dry-run` と同じ慣習。失敗列には実行時エラーのみ載る）。
 - 消費は大きめです（例: 75 体中 42 体の MAX 化 = 2,736,300 コイン）。先に `--limit 1` で 1 体検証してから流し込むことをおすすめします。
 
 ## 実装

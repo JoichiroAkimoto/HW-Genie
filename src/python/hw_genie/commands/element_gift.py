@@ -23,11 +23,16 @@ from hw_genie.core.client import (
     Emojis,
     HWAuthError,
     HWClient,
+    Messages,
     ResponseStatus,
     _safe_int,
 )
 
 logger = logging.getLogger(__name__)
+
+#: `core/client.py` が単一コール／グローバルエラーで HWAuthError に変換する
+#: のと同一の名前（batch 内 per-call エラーは変換されないためここで拾う）。
+AUTH_ERROR_NAMES = frozenset({"auth", "InvalidSession"})
 
 #: ギフトの MAX レベル（実測: level 130 のヒーローは全員 30 で頭打ち）。
 GIFT_MAX_LEVEL = 30
@@ -57,6 +62,9 @@ class GiftHero:
     star: int
     gift_level: int
     coins_spent: int
+    #: `power` が実際に読めたか（欠損・非数値なら False）。`_safe_int` の 0 への
+    #: 丸めと区別するため、読み取り成否をここで保持する。
+    power_known: bool = True
 
     @property
     def is_max(self) -> bool:
@@ -110,6 +118,25 @@ class GiftRunResult:
 # ---------------------------------------------------------------- 読み取り
 
 
+def _read_power(raw: Any) -> tuple[int, bool]:
+    """`heroGetAll` の `power` を (値, 読めたか) に分離する。
+
+    `_safe_int` は欠損・非数値を 0 に丸めてしまうため、`gift reset` の閾値判定が
+    「読めない＝power 0＝主力でも対象にする」に化けないよう、成否を別途返す
+    （モジュール方針「読めなければ対象にしない＋警告」）。
+    """
+    if isinstance(raw, bool) or raw is None:
+        return 0, False
+    if isinstance(raw, (int, float)):
+        return _safe_int(raw), True
+    if isinstance(raw, str):
+        try:
+            return int(float(raw)), True
+        except (TypeError, ValueError, OverflowError):
+            return 0, False
+    return 0, False
+
+
 def parse_heroes(payload: Any) -> list[GiftHero]:
     """`heroGetAll` の `response`（ヒーロー ID 辞書）を `GiftHero` 一覧にする。
 
@@ -118,6 +145,8 @@ def parse_heroes(payload: Any) -> list[GiftHero]:
     `consumable` が辞書でない形（`null` 等）も 0 として扱い、クラッシュせず続行する
     （モジュールの方針「読めれば続行／読めなければ GiftReadError」の「読めれば」側で、
     そのヒーローは消費済み 0＝MAX まで 65,150 として計画に載る）。
+    `power` が読めない（欠損・非数値）場合は `power_known=False` を持つ
+    （`gift reset` の閾値判定で黙って 0 として扱わず、対象から除外＋警告）。
     """
     if not isinstance(payload, dict):
         return []
@@ -137,10 +166,12 @@ def parse_heroes(payload: Any) -> list[GiftHero]:
             consumable = spent.get("consumable")
             if isinstance(consumable, dict):
                 coins = _safe_int(consumable.get(str(GIFT_COIN_LIB_ID)))
+        power, power_known = _read_power(data.get("power"))
         heroes.append(
             GiftHero(
                 hero_id=hero_id,
-                power=_safe_int(data.get("power")),
+                power=power,
+                power_known=power_known,
                 level=_safe_int(data.get("level")),
                 star=_safe_int(data.get("star")),
                 gift_level=_safe_int(data.get("titanGiftLevel")),
@@ -265,13 +296,23 @@ def plan_reset(
     """ギフトが載っていて power が `max_power` 以下のヒーローを drop 対象にする。
 
     power は実行時点の `heroGetAll` 値（ギフト込み）で判定する。gift_level が 0
-    のものは降ろすものがないので対象外。
+    のものは降ろすものがないので対象外。`power` が読めない体（`power_known=False`）は
+    閾値を判定できないため対象外にする（`_safe_int` の 0 丸めで「主力でも閾値以下」に
+    化してイベント当日にパワーが飛ぶ事故を防ぐ）。除外した gifted 体は
+    :func:`unknown_power_gifted_heroes` で取り出し、実行時に警告行を出す。
     """
-    targets = [h for h in heroes if h.gift_level > 0 and h.power <= max_power]
+    targets = [
+        h for h in heroes if h.gift_level > 0 and h.power_known and h.power <= max_power
+    ]
     targets.sort(key=lambda h: (-h.power, h.hero_id))
     if limit is not None:
         return targets[:limit]
     return targets
+
+
+def unknown_power_gifted_heroes(heroes: list[GiftHero]) -> list[GiftHero]:
+    """power が読めなくて reset 対象から黙って除外された gifted 体を返す。"""
+    return [h for h in heroes if h.gift_level > 0 and not h.power_known]
 
 
 # ---------------------------------------------------------------- 送信
@@ -449,8 +490,13 @@ def run_gift_up(
     - 計画は読んだ直後の実残高で立てるので、打ち切り地点は原則正しい。実コストが
       見積（MAX まで = 65,150 − 消費済み）より安い場合は、`gift status` を見てから
       再実行すれば追加の体を拾える。
-    - バッチ内に 1 つでもエラー（ほぼコイン不足）がある体を部分成功として記録し、
-      同じ残高では次の体も失敗するため打ち切る。
+    - バッチ内エラーは理由で分岐する（`quests.FALLBACK_ERROR_NAMES` の資源枯渇名
+      ＝コイン枯れは同じ残高では次の体も失敗するため打ち切り、それ以外の
+      1 体個別エラー（`notAvailable` 等）は drop と同じ契約で「その体だけ失敗」と
+      して記録し次の体へ継続する）。
+    - バッチ内の per-call エラーが `auth` / `InvalidSession` の場合は HWAuthError
+      として扱う（`HWClient.call` は単一コール・グローバルエラーしか自動変換
+      しないため、ここで合流させる）。
     - 書き込みの途中で `HWAuthError`（認証切れ）が出たら、そこまでの部分結果で
       最終レポートを出してから例外を再送出する（`multi` はそれをアカウント単位の
       失敗として記録する）。
@@ -458,6 +504,9 @@ def run_gift_up(
       合計 power を実測値で報告する。
     """
     account = account_alias or "<account>"
+    # コイン枯れ（資源不足）を示す既存エラー名集合を流用する（新規集合を作らない）。
+    from hw_genie.commands.quests import FALLBACK_ERROR_NAMES as COIN_ERROR_NAMES
+
     result = GiftRunResult(account=account, mode="up", dry_run=dry_run)
     try:
         heroes, balance = fetch_state(client)
@@ -490,6 +539,11 @@ def run_gift_up(
         )
     result.blocked = blocked
     if dry_run:
+        # multi のサマリ表に計画を反映する（consumable / seers-game の dry-run と同じ慣習）。
+        # is_failure は error / failed しか見ないので、計画値を載せても ok 判定は変わらない。
+        result.changed = len(actions)
+        result.coins = total_cost
+        result.balance = balance
         print(f"  {Emojis.INFO}dry-run: nothing executed.")
         return result
 
@@ -526,14 +580,33 @@ def run_gift_up(
                   f"+{succeeded} levels (gift MAX)")
             continue
 
-        # 部分失敗（ほぼコイン不足）。同じ残高で次の体を送っても失敗するため打ち切る。
+        if error_name in AUTH_ERROR_NAMES:
+            # batch 内の per-call 認証エラーは `HWClient.call` が HWAuthError に
+            # 変換しない（単一コール・グローバルのみ変換）ため、ここで `except
+            # HWAuthError` と同じ部分レポート経路に合流させる。
+            auth_error = HWAuthError(Messages.AUTH_ERROR)
+            result.failed += 1
+            result.levels += succeeded
+            result.details.append(f"hero {hero.hero_id}: auth error")
+            result.error = f"hero {hero.hero_id}: auth error"
+            print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
+                  f"auth error; stopping.")
+            break
+
+        reason = error_name or "error"
         result.failed += 1
         result.levels += succeeded
+        result.details.append(f"hero {hero.hero_id} partial: {succeeded}/{action.levels} ({reason})")
+        if error_name in COIN_ERROR_NAMES:
+            # コイン枯れ: 同じ残高では次の体も失敗するため打ち切る。
+            print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
+                  f"{succeeded}/{action.levels} level(s) applied ({reason}); stopping.")
+            result.error = f"hero {hero.hero_id}: {reason}"
+            break
+        # コインと無関係な 1 体個別エラー（notAvailable 等）: この体だけを失敗と
+        # して記録し、次の体は買える可能性があるので継続する（drop と同じ契約）。
         print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
-              f"{succeeded}/{action.levels} level(s) applied ({error_name or 'error'}); stopping.")
-        result.details.append(f"hero {hero.hero_id} partial: {succeeded}/{action.levels} ({error_name})")
-        result.error = f"hero {hero.hero_id}: {error_name}"
-        break
+              f"{succeeded}/{action.levels} level(s) applied ({reason}); continuing.")
 
     # 見積ではなく実測で報告する（heroGetAll + inventoryGet を 1 リクエストで再読）。
     # 認証切れのときはこの再読も失敗するため、レポート自体は見積で出す。
@@ -559,6 +632,7 @@ def run_gift_up(
             if power_now is not None
             else ""
         )
+        + (f", {result.failed} failed" if result.failed else "")
     )
     if result.error:
         print(f"  {Emojis.WARNING}Stopped early: {result.error}. Re-run `gift status` to see the rest.")
@@ -595,6 +669,9 @@ def run_gift_reset(
     1 体が失敗しても他を続行して問題ない（資源を消費しない）。返却額は応答の
     `response.consumable.24` を実測値として合計する。
 
+    `power` が読めない gifted 体は閾値判定できないので対象外にし、警告行で
+    黙って除外された体数を明示する（API 形変更時に主力のギフトが落ちる事故防止）。
+
     書き込みの途中で `HWAuthError` が出たら、drop 済み・回収済みの部分結果で
     最終レポートを出してから例外を再送出する（`up` と同じ契約）。
     """
@@ -608,10 +685,18 @@ def run_gift_reset(
         return result
 
     targets = plan_reset(heroes, max_power, limit)
+    skipped_power = unknown_power_gifted_heroes(heroes)
     print(
         f"\n{Emojis.START}[{account}] Element gift reset "
         f"(coins {balance:,}, target: gift on and power <= {max_power:,})"
     )
+    if skipped_power:
+        # power が読めない gifted 体は閾値を判定できないので対象外（黙って除外せず警告）。
+        ids = ", ".join(str(h.hero_id) for h in skipped_power)
+        print(
+            f"  {Emojis.WARNING}{len(skipped_power)} gifted hero(es) skipped: "
+            f"power unreadable ({ids}). Verify `gift status` before resetting."
+        )
     if not targets:
         print(f"  {Emojis.INFO}Nothing to drop "
               f"(no hero with gift at power <= {max_power:,}"
@@ -628,6 +713,11 @@ def run_gift_reset(
             f"gift {hero.gift_level}/{GIFT_MAX_LEVEL} refund ~{hero.refundable:,}"
         )
     if dry_run:
+        # multi のサマリ表に計画を反映する（`up` の dry-run と同じ。ok 判定は
+        # error / failed のみなので変わらない）。
+        result.changed = len(targets)
+        result.coins = expected
+        result.balance = balance
         print(f"  {Emojis.INFO}dry-run: nothing executed.")
         return result
 

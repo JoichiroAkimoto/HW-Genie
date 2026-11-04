@@ -1092,7 +1092,12 @@ def summarize_gift(
     "Coins" is the spent amount for ``up`` and the refunded amount for
     ``reset``; "Blocked" only counts the heroes ``up`` could not afford (reset
     has no such gate). Accounts whose routine errored, or whose result reports
-    an error or any failed hero, count as failed.
+    an error or any failed hero, count as failed. The Failed column carries the
+    latest failure reason (``GiftRunResult.details`` last entry, else
+    ``error``) so multi runs / ``run_logs`` readers can see *why* an account
+    failed, matching the note-column convention of ``summarize_seers_game``.
+    With ``dry_run`` the result holds the *plan* (planned heroes in Done,
+    planned coins in Coins), mirroring ``multi consumable --dry-run``.
     """
     from hw_genie.commands.element_gift import GiftRunResult
     from hw_genie.core.utils import format_number_with_suffix
@@ -1102,6 +1107,11 @@ def summarize_gift(
     rows: list[list[str]] = []
     for account, (res, err) in results:
         if err is None and isinstance(res, GiftRunResult):
+            failed_cell = str(res.failed)
+            if res.is_failure:
+                reason = res.details[-1] if res.details else res.error
+                if reason:
+                    failed_cell = f"{res.failed}: {reason}" if res.failed else reason
             rows.append(
                 [
                     account,
@@ -1109,7 +1119,7 @@ def summarize_gift(
                     format_number_with_suffix(res.coins),
                     format_number_with_suffix(res.balance) if res.balance is not None else "-",
                     str(res.blocked) if res.mode == "up" else "-",
-                    str(res.failed),
+                    failed_cell,
                 ]
             )
             if res.is_failure:

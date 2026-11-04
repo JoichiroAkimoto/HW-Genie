@@ -205,6 +205,67 @@ def test_plan_reset_honours_max_power_and_limit():
     assert [h.hero_id for h in plan_reset(heroes, limit=1)] == [1]
 
 
+def test_parse_heroes_tracks_power_readability():
+    payload = _heroes_payload((1, 100, 0))
+    assert parse_heroes(payload)[0].power_known
+
+    del payload["1"]["power"]
+    hero = parse_heroes(payload)[0]
+    assert hero.power == 0 and not hero.power_known
+
+    payload["1"]["power"] = "n/a"
+    hero = parse_heroes(payload)[0]
+    assert hero.power == 0 and not hero.power_known
+
+    payload["1"]["power"] = "12345"
+    hero = parse_heroes(payload)[0]
+    assert hero.power == 12345 and hero.power_known
+
+
+def test_plan_reset_skips_unknown_power_heroes():
+    """`power` が読めない体は 0 に丸めて閾値以下にせず、対象から除外する。"""
+    payload = _heroes_payload(
+        (1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
+        (2, None, GIFT_MAX_LEVEL, GIFT_FULL_COST),
+    )
+    heroes = parse_heroes(payload)
+
+    assert [h.hero_id for h in plan_reset(heroes)] == [1]
+
+
+def test_run_gift_reset_warns_on_unreadable_power(mock_client, capsys):
+    """読めない power の gifted 体があれば黙って除外せず警告 1 行を出す。"""
+    client, mock_call = mock_client
+    payload = _heroes_payload((2, None, GIFT_MAX_LEVEL, GIFT_FULL_COST))
+    mock_call.return_value = _res(_state_detail(payload, 0))
+
+    result = run_gift_reset(client, account_alias="Alice", dry_run=True)
+
+    assert result.changed == 0  # 対象 0 体（除外された）
+    assert not result.is_failure
+    out = capsys.readouterr().out
+    assert "power unreadable" in out
+    assert "hero 2" in out or "(2)" in out
+
+
+def test_run_gift_reset_dry_run_reports_plan(mock_client):
+    """reset の dry-run も計画体数・計画返却コイン・残高を結果に載せる。"""
+    client, mock_call = mock_client
+    payload = _heroes_payload(
+        (1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
+        (2, 50000, 7, 9000),
+    )
+    mock_call.return_value = _res(_state_detail(payload, 1000))
+
+    result = run_gift_reset(client, account_alias="Alice", dry_run=True)
+
+    assert result.changed == 2
+    assert result.coins == GIFT_FULL_COST + 9000
+    assert result.balance == 1000
+    assert not result.is_failure
+    assert _write_calls(mock_call, ApiAction.HERO_TITAN_GIFT_DROP) == []
+
+
 # --- payloads ---
 
 
@@ -302,7 +363,7 @@ def test_run_gift_up_maxes_heroes_strongest_first_and_reports_measured_spend(
     assert [p["calls"][0]["args"]["heroId"] for p in sent] == [1, 2]
 
 
-def test_run_gift_up_stops_on_partial_batch(mock_client, mock_sleep):
+def test_run_gift_up_stops_on_partial_batch(mock_client, mock_sleep, capsys):
     client, mock_call = mock_client
     heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
     _up_client(
@@ -318,8 +379,56 @@ def test_run_gift_up_stops_on_partial_batch(mock_client, mock_sleep):
     assert result.levels == 12
     assert result.is_failure
     assert "NotEnough" in (result.error or "")
+    # コイン枯れ（NotEnough）は同じ残高では次体も失敗するため打ち切る
+    out = capsys.readouterr().out
+    assert "stopping" in out
+    assert "continuing" not in out
     # hero 2 へは送らない（同じ残高では失敗が連鎖するため）
     assert len(_write_calls(mock_call, ApiAction.HERO_TITAN_GIFT_LEVEL_UP)) == 1
+
+
+def test_run_gift_up_non_coin_error_continues_to_next_hero(mock_client, mock_sleep, capsys):
+    """コインと無関係な個別エラー（notAvailable 等）はdropと同じ契約で次体へ継続する。"""
+    client, mock_call = mock_client
+    heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
+    after = _heroes_payload(
+        (1, 200000, 0), (2, 155000, GIFT_MAX_LEVEL, GIFT_FULL_COST)
+    )
+    _up_client(
+        mock_call,
+        states=[(heroes, 140000), (after, 74850)],
+        up_details=[
+            _up_partial(GIFT_MAX_LEVEL, succeeded=0, error_name="notAvailable"),
+            _up_success(GIFT_MAX_LEVEL),
+        ],
+    )
+
+    result = run_gift_up(client, account_alias="Alice", confirm=True)
+
+    assert result.changed == 1  # hero 2 は買えた（継続した）
+    assert result.failed == 1  # hero 1 の個別失敗は失敗として記録
+    assert result.error is None  # 打ち切りではない
+    assert result.is_failure
+    assert result.details == ["hero 1 partial: 0/30 (notAvailable)"]
+    sent = _write_calls(mock_call, ApiAction.HERO_TITAN_GIFT_LEVEL_UP)
+    assert [p["calls"][0]["args"]["heroId"] for p in sent] == [1, 2]
+    out = capsys.readouterr().out
+    assert "continuing" in out
+    assert "1 failed" in out
+
+
+def test_run_gift_up_batch_auth_error_raises_auth_error(mock_client, mock_sleep):
+    """30-calls batch 内の InvalidSession は HWAuthError 経路に合流する（コイン枯れ扱いにしない）。"""
+    client, mock_call = mock_client
+    heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
+    _up_client(
+        mock_call,
+        states=[(heroes, 200000), (heroes, 200000)],
+        up_details=[_up_partial(GIFT_MAX_LEVEL, succeeded=0, error_name="InvalidSession")],
+    )
+
+    with pytest.raises(HWAuthError):
+        run_gift_up(client, account_alias="Alice", confirm=True)
 
 
 def test_run_gift_up_dry_run_sends_no_gift_operation(mock_client):
@@ -329,7 +438,11 @@ def test_run_gift_up_dry_run_sends_no_gift_operation(mock_client):
     result = run_gift_up(client, account_alias="Alice", dry_run=True)
 
     assert result.dry_run is True
-    assert result.changed == 0
+    # dry-run でも計画（体数・コイン・残高）を結果に載せる（multi サマリが計画を反映する）
+    assert result.changed == 1
+    assert result.coins == GIFT_FULL_COST
+    assert result.balance == 500000
+    assert not result.is_failure
     assert _write_calls(mock_call, ApiAction.HERO_TITAN_GIFT_LEVEL_UP) == []
 
 
@@ -534,6 +647,64 @@ def test_summarize_gift_reset_uses_reset_mode_label(capsys):
     out = capsys.readouterr().out
     assert "gift reset summary" in out
     assert "planned" in out
+
+
+def test_summarize_gift_shows_latest_failure_reason(capsys):
+    """`details` の直近失敗理由を Failed 列に出す（run_logs を見ずに理由が分かるように）。"""
+    from hw_genie.runner import summarize_gift
+
+    res = GiftRunResult(
+        account="Bob",
+        mode="up",
+        changed=1,
+        failed=2,
+        error="hero 5: NotEnough",
+        details=["hero 3 partial: 10/30 (notAvailable)", "hero 5 partial: 12/30 (NotEnough)"],
+    )
+
+    assert summarize_gift([("Bob", (res, None))], dry_run=False, mode="up") == 1
+    out = capsys.readouterr().out
+    assert "hero 5 partial: 12/30 (NotEnough)" in out
+
+
+def test_summarize_gift_dry_run_shows_planned_counts_and_coins(capsys):
+    """dry-run の GiftRunResult（計画値入り）を multi サマリに出す（README/SKILL の『予行確認可』）。"""
+    from hw_genie.runner import summarize_gift
+
+    planned = GiftRunResult(
+        account="Alice", mode="up", dry_run=True, changed=2, coins=130300, balance=200000
+    )
+
+    assert summarize_gift([("Alice", (planned, None))], dry_run=True, mode="up") == 0
+    out = capsys.readouterr().out
+    assert "130.3K" in out  # 計画コイン（2 x 65,150）
+    assert "planned" in out
+
+
+def test_multi_gift_up_dry_run_summary_reflects_plan(monkeypatch, capsys):
+    """multi 経路（gift_up_routine + summarize_gift）で dry-run サマリが計画を反映する。"""
+    from hw_genie import main
+    from hw_genie.core.client import HWClient
+
+    heroes = parse_heroes(_heroes_payload((1, 200000, 0), (2, 150000, 0)))
+    monkeypatch.setattr(
+        "hw_genie.commands.element_gift.fetch_state", lambda client: (heroes, 200000)
+    )
+    records = _patch_multi_gift_workers(
+        monkeypatch,
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {
+            acc: (routine(HWClient({"x-auth-token": "t"}), acc), None)
+            for acc in (accounts or [])
+        },
+    )
+
+    main.cmd_multi(_multi_gift_args("gift-up", dry_run=True))  # 失敗ゼロなら exit しない
+
+    out = capsys.readouterr().out
+    assert "gift up summary" in out
+    assert "130.3K" in out  # 計画コインが Done/Coins 列に出る
+    assert "2" in out
+    assert records["status"] == "ok"  # 計画値を載せても ok 判定は変わらない
 
 
 def test_multi_gift_modes_build_runnable_routines(monkeypatch):
@@ -1007,6 +1178,7 @@ def test_multi_gift_dry_run_without_yes_is_allowed(mode_name, monkeypatch):
         ("gift-up", {"limit": 0}),
         ("gift-reset", {"limit": 0}),
         ("gift-reset", {"max_power": -1}),
+        ("gift-up", {"max_power": 50000}),
     ],
 )
 def test_multi_gift_invalid_limit_and_max_power_exit_2(mode_name, overrides, monkeypatch, capsys):
@@ -1025,6 +1197,26 @@ def test_multi_gift_invalid_limit_and_max_power_exit_2(mode_name, overrides, mon
     assert called == []
     expected_flag = "--max-power" if "max_power" in overrides else "--limit"
     assert expected_flag in capsys.readouterr().err
+
+
+def test_multi_gift_up_rejects_max_power_even_in_dry_run(monkeypatch, capsys):
+    """`--max-power` は `gift-reset` 専用。dry-run でも worker 起動前に exit 2（黙って無視しない）。"""
+    from hw_genie import main
+
+    called = []
+    monkeypatch.setattr(
+        main, "run_all_accounts", lambda *a, **k: called.append(1) or {}
+    )
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(_multi_gift_args("gift-up", dry_run=True, max_power=50000))
+
+    assert exc.value.code == 2
+    assert called == []
+    err = capsys.readouterr().err
+    assert "--max-power" in err
+    assert "gift-reset" in err
 
 
 @pytest.mark.parametrize(
@@ -1058,3 +1250,78 @@ def test_cmd_gift_validates_flags_before_loading_session(action, overrides, monk
     assert exc.value.code == 2
     expected_flag = "--max-power" if action == "reset" else "--limit"
     assert expected_flag in capsys.readouterr().err
+
+
+# --- cmd_gift の exit 1 / exit 0 経路（SKILL.md の終了コード仕様） ---
+
+
+def _gift_cmd_args(action, **overrides):
+    base = {
+        "action": action,
+        "account": "Alice",
+        "raw": False,
+        "dry_run": False,
+        "yes": True,
+        "limit": None,
+        "max_power": None,
+    }
+    base.update(overrides)
+    return type("A", (), base)()
+
+
+def _patch_gift_cmd(monkeypatch):
+    from hw_genie import main
+
+    monkeypatch.setattr(main, "_ensure_session", lambda args: {"x-auth-token": "t"})
+    monkeypatch.setattr(main, "resolve_account", lambda alias=None: alias or "Alice")
+    monkeypatch.setattr(main, "HWClient", lambda headers: object())
+
+
+def test_cmd_gift_status_read_failure_exits_1(monkeypatch, capsys):
+    from hw_genie import main
+
+    _patch_gift_cmd(monkeypatch)
+
+    def _boom(client, account, raw=False):
+        raise GiftReadError("gift state read failed (boom)")
+
+    monkeypatch.setattr("hw_genie.commands.element_gift.print_status", _boom)
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_gift(_gift_cmd_args("status"))
+
+    assert exc.value.code == 1
+    assert "gift state read failed" in capsys.readouterr().err
+
+
+def test_cmd_gift_up_cancelled_by_user_exits_1(monkeypatch, capsys):
+    from hw_genie import main
+
+    _patch_gift_cmd(monkeypatch)
+    monkeypatch.setattr(
+        "hw_genie.commands.element_gift.run_gift_up",
+        lambda client, account_alias=None, **kwargs: GiftRunResult(
+            account="Alice", mode="up", error="skipped by user"
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_gift(_gift_cmd_args("up"))
+
+    assert exc.value.code == 1
+    assert "skipped by user" in capsys.readouterr().err
+
+
+def test_cmd_gift_reset_no_targets_does_not_exit(monkeypatch):
+    """対象 0 体（計画どおり）は失敗ではなく exit しない（終了コード 0 仕様）。"""
+    from hw_genie import main
+
+    _patch_gift_cmd(monkeypatch)
+    monkeypatch.setattr(
+        "hw_genie.commands.element_gift.run_gift_reset",
+        lambda client, account_alias=None, **kwargs: GiftRunResult(
+            account="Alice", mode="reset", changed=0, balance=1000
+        ),
+    )
+
+    assert main.cmd_gift(_gift_cmd_args("reset")) is None

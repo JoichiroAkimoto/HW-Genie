@@ -587,11 +587,13 @@ def cmd_gift(args):
 
     headers = _ensure_session(args)
     client = HWClient(headers)
-    account = resolve_account(args.account) if args.account else None
+    # `_ensure_session` 内で既に resolve_account を通っているので曖昧性は消えており、
+    # ここも解決後の実別名を返す（None のままだと `-a` 省略時に出力が "<account>" になる）。
+    account = resolve_account(args.account)
 
     if args.action == "status":
         try:
-            print_status(client, account or "<account>", raw=bool(args.raw))
+            print_status(client, account, raw=bool(args.raw))
         except GiftReadError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1363,14 +1365,28 @@ def cmd_multi(args):
         )
         sys.exit(2)
 
+    # gift 系フラグの検証はモードごとに意味のあるものだけ行う（他モードで
+    # `--limit 0` 等を渡しても無意味な検証を発火させない）。`--max-power` は
+    # `gift-reset` 専用フラグなので、`gift-up` で明示された場合は worker 起動前に
+    # 拒否する（`--lib` / `--method` / `--pick` と同じ「意味のある場所で受け付ける」
+    # 一貫性。黙って無視すると閾値なしで全ヒーロー MAX に走ってしまう）。
     _gift_limit = getattr(args, "limit", None)
-    if _gift_limit is not None and _gift_limit < 1:
-        print("Error: --limit must be 1 or more", file=sys.stderr)
-        sys.exit(2)
     _gift_max_power = getattr(args, "max_power", None)
-    if _gift_max_power is not None and _gift_max_power < 0:
-        print("Error: --max-power must be 0 or more", file=sys.stderr)
-        sys.exit(2)
+    if mode in ("gift-up", "gift-reset"):
+        if _gift_limit is not None and _gift_limit < 1:
+            print("Error: --limit must be 1 or more", file=sys.stderr)
+            sys.exit(2)
+        if mode == "gift-up" and _gift_max_power is not None:
+            print(
+                "Error: --max-power is only meaningful for the 'gift-reset' mode. "
+                "'gift-up' maxes heroes (strongest first) as far as the coins allow "
+                "and never applies a power threshold.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if mode == "gift-reset" and _gift_max_power is not None and _gift_max_power < 0:
+            print("Error: --max-power must be 0 or more", file=sys.stderr)
+            sys.exit(2)
 
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
@@ -2415,7 +2431,7 @@ def main():
     p_multi.add_argument(
         "--max-power",
         type=int,
-        help="Power ceiling for the 'gift-reset' mode: drop gifts of heroes at or below this power (default: 100000)",
+        help="Power ceiling for the 'gift-reset' mode: drop gifts of heroes at or below this power (default: 100000; rejected with 'gift-up', which has no power threshold)",
     )
     p_multi.add_argument(
         "--yes",
