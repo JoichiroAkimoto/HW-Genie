@@ -330,7 +330,7 @@ def test_fetch_state_raises_on_empty_or_api_error(mock_client):
     with pytest.raises(GiftReadError):
         fetch_state(client)
 
-    mock_call.return_value = _res({}, status=ResponseStatus.ERROR, error_name="InvalidSession")
+    mock_call.return_value = _res({}, status=ResponseStatus.ERROR, error_name="boom")
     with pytest.raises(GiftReadError):
         fetch_state(client)
 
@@ -537,7 +537,6 @@ def test_run_gift_up_dry_run_sends_no_gift_operation(mock_client):
 
     result = run_gift_up(client, account_alias="Alice", dry_run=True)
 
-    assert result.dry_run is True
     # dry-run でも計画（体数・コイン・残高）を結果に載せる（multi サマリが計画を反映する）
     assert result.changed == 1
     assert result.coins == GIFT_FULL_COST
@@ -875,9 +874,7 @@ def test_summarize_gift_dry_run_shows_planned_counts_and_coins(capsys):
     """dry-run の GiftRunResult（計画値入り）を multi サマリに出す（README/SKILL の『予行確認可』）。"""
     from hw_genie.runner import summarize_gift
 
-    planned = GiftRunResult(
-        mode="up", dry_run=True, changed=2, coins=130300, balance=200000
-    )
+    planned = GiftRunResult(mode="up", changed=2, coins=130300, balance=200000)
 
     assert summarize_gift([("Alice", (planned, None))], dry_run=True, mode="up") == 0
     out = capsys.readouterr().out
@@ -1395,7 +1392,7 @@ def test_multi_gift_dry_run_without_yes_is_allowed(mode_name, monkeypatch):
     def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
         captured["max_parallel"] = max_parallel
         return {
-            acc: (GiftRunResult(mode=result_mode, dry_run=True), None)
+            acc: (GiftRunResult(mode=result_mode), None)
             for acc in (accounts or [])
         }
 

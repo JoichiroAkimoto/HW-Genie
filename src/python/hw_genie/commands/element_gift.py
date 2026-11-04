@@ -117,7 +117,6 @@ class GiftRunResult:
     #: 打ち切り地点以降が実際に買えたかどうかは示さない（計画ベースの見積もり）。
     blocked: int = 0
     failed: int = 0  # RPC 失敗した体数
-    dry_run: bool = False
     error: str | None = None
     details: list[str] = field(default_factory=list)
 
@@ -590,7 +589,7 @@ def run_gift_up(
       計画額の合計**だけで、部分適用分は入らない（実消費はそれ以上）。
     """
     account = account_alias or "<account>"
-    result = GiftRunResult(mode="up", dry_run=dry_run)
+    result = GiftRunResult(mode="up")
     try:
         heroes, balance = fetch_state(client)
     except GiftReadError as exc:
@@ -603,8 +602,7 @@ def run_gift_up(
           f"(coins {balance:,}, MAX {GIFT_MAX_LEVEL} costs {GIFT_FULL_COST:,}/hero)")
     if not actions:
         reason = "no hero below MAX" if not [h for h in heroes if not h.is_max] else "not enough coins"
-        print(f"  {Emojis.INFO}Nothing to run: {reason}"
-              + (f" ({beyond_limit} beyond --limit)" if beyond_limit else ""))
+        print(f"  {Emojis.INFO}Nothing to run: {reason}")
         result.balance = balance
         result.blocked = blocked
         return result
@@ -777,7 +775,7 @@ def run_gift_reset(
     そのまま `HWAuthError` を送出する（`main` の共通ハンドラが再同期案内を出す）。
     """
     account = account_alias or "<account>"
-    result = GiftRunResult(mode="reset", dry_run=dry_run)
+    result = GiftRunResult(mode="reset")
     try:
         heroes, balance = fetch_state(client)
     except GiftReadError as exc:

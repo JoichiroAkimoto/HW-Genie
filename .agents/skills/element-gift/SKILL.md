@@ -91,12 +91,12 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
   サマリ表の行は `results` の key がアカウントで、`GiftRunResult` 自体はアカウント名を持たない）
 - エラー名の分類（認証／資源枯渇／ヒーロー個別）は `core/client.py` の共有定数だけが正:
   `AUTH_ERROR_NAMES`（`HWClient.call` の自動変換と同一集合）、`RESOURCE_EXHAUSTED_ERROR_NAMES`
-  （コイン枯れ＝`quests.FALLBACK_ERROR_NAMES` のもと）、`HERO_SPECIFIC_ERROR_NAMES`
+  （コイン枯れ＝`NotEnough`。`quests` のフォールバック判定も同じ定数を参照する）、`HERO_SPECIFIC_ERROR_NAMES`
   （継続してよいヒーロー個別名。docs/api か既存コードで実在が確認できた名前だけ）。
   ギフト側で独自集合を持たず、`element_gift` → `quests` の import 依存も持たない。
-- API 仕様: `docs/api/UNIT_API.md`（`heroGetAll` のギフト項目と `heroTitanGift*`）。実機の生キャプチャは
-  `docs/superpowers/ElementGift.md` に置していますが、`docs/superpowers/` は `.gitignore` 済み（追跡外）で
-  fresh clone には存在しません。仕様の正は `docs/api/UNIT_API.md` です。
+- API 仕様: `docs/api/UNIT_API.md`（`heroGetAll` のギフト項目と `heroTitanGift*`）。実機の生キャプチャ
+  `docs/superpowers/ElementGift.md` は `.gitignore` 済みで追跡外（PR / fresh clone には含まれません）。
+  仕様の正は `docs/api/UNIT_API.md` です。
 
 ## 完了後の報告
 実行体数・消費／返却コイン・実行後の残高・合計 power の前後を報告し、打ち切り（コイン不足）や部分成功があればそのヒーロー ID と理由を明記してください。実在アカウント名は報告に含めず、`Alice` 等のプレースホルダを使ってください。
