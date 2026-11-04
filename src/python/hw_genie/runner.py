@@ -1060,6 +1060,8 @@ def summarize_consumable(
     verb = "planned" if dry_run else "consumed"
     print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
+
+
 _GIFT_HEADERS = ["Account", "✅ Done", "💰 Coins", "🪙 Left", "⏭️ Blocked", "❌ Failed"]
 
 
@@ -1077,14 +1079,16 @@ def _render_gift_table(rows: list[list[str]]) -> str:
 
 def summarize_gift(
     results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    mode: str,
     dry_run: bool = False,
-    mode: str = "gift",
 ) -> int:
     """Print a per-account element gift table and return the failed count.
 
     Results come from routines built by :func:`gift_up_routine` /
     :func:`gift_reset_routine`: per account a ``GiftRunResult``. ``mode`` is
-    the multi mode label (``"up"`` / ``"reset"``) and names the table.
+    the multi mode label (``"up"`` / ``"reset"``); it is required because it
+    names the table and picks the verb (``maxed`` / ``reset``) — a neutral
+    default would print a label no mode ever uses.
     "Coins" is the spent amount for ``up`` and the refunded amount for
     ``reset``; "Blocked" only counts the heroes ``up`` could not afford (reset
     has no such gate). Accounts whose routine errored, or whose result reports

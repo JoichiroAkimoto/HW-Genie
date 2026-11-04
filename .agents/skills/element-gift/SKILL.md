@@ -61,7 +61,9 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 ## 出力と終了コード
 - `up` の最終行は実測値です: `N hero(es) maxed (MAX 前 -> 後 of 総数), L level(s), C coins spent, balance B, total power A -> B`。消費額と MAX 体数は実行後に `heroGetAll` + `inventoryGet` を 1 回読み直して確定させます（見積で報告しない）。
 - `reset` の最終行: `N hero(es) dropped, C coins recovered (balance B), gift on 前 -> 後, total power A -> B`。返却額は drop 応答の `response.consumable.24` の合計です。
-- 終了コード: 対象 0 体・コイン不足で打ち切り（実行自体は成功）は **0**。RPC 失敗・状態読み取り失敗・確認で中断は **1**。`--limit < 1` / `--max-power < 0` / multi で `--yes` なしは **2**。
+- 終了コード: 対象 0 体・コイン不足で打ち切り（実行自体は成功）は **0**。RPC 失敗・状態読み取り失敗・確認で中断は **1**。`--limit < 1` / `--max-power < 0` / `multi gift-up`・`multi gift-reset` を書き込みモードで `--yes` なしに実行（`run_all_accounts` を呼ぶ前に停止）は **2**。
+- 実行の途中で認証切れ（HWAuthError）が出ても、そこまでの部分結果で最終レポートを出してからエラー終了します（`multi` ではそのアカウントだけが失敗し、他アカウントは続行します）。
+- 状態読み取りが厳しいことを忘れないでください: `heroGetAll` / `inventoryGet` の `response` が辞書として読めない形に変更されたら「残高 0」として扱わず `GiftReadError` で失敗（exit 1 / multi ではそのアカウントの失敗）になります。0 円のコイン不足（終了コード 0）として握りつぶしません。
 
 ## 制限事項
 - **打ち切りはpower降順の先頭で途切れた地点**です。1 体の実コストが見積（65,150 − 消費済み）より安い場合、その実行では打ち切り以降を拾いません。`gift status` を見てから再実行すれば追加で上げられます。
@@ -73,7 +75,10 @@ description: HW-Genie を使用してエレメントギフト（heroTitanGiftLev
 
 ## 実装
 - ロジック: `src/python/hw_genie/commands/element_gift.py`（読み取り・計画・送信・表示）
-- クライアント: `HWClient.hero_get_all()` / `ApiAction.HERO_GET_ALL`（`core/client.py`）。操作 RPC は `heroTitanGiftLevelUp` / `heroTitanGiftDrop`
+- 状態読み取り: `ApiAction.HERO_GET_ALL` / `ApiAction.INVENTORY_GET` を `fetch_state` の
+  1 リクエスト batch payload で直接読む（単一コール用の `HWClient.hero_get_all()` は
+  `HWClient.call` の `detail` の形が変わるため持たない）。操作 RPC は
+  `heroTitanGiftLevelUp` / `heroTitanGiftDrop`
 - multi: `runner.gift_up_routine` / `gift_reset_routine` / `summarize_gift`（結果は `run_logs` に保存される）
 - API 仕様: `docs/api/UNIT_API.md`（`heroGetAll` のギフト項目と `heroTitanGift*`）、生キャプチャは `docs/superpowers/ElementGift.md`
 

@@ -1683,8 +1683,9 @@ def _run_log_account_failure(
     Mirrors the per-account failure judgement of the runner's ``summarize_*``
     functions so ``run_logs`` rows stay consistent with the printed summary:
     quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors,
-    Seer's Game failures and unavailable statuses all count as failures,
-    matching the ``failed`` counter returned by ``summarize``. A cooperative user cancel counts as
+    Seer's Game failures, element gift errors / failed heroes and unavailable
+    statuses all count as failures, matching the ``failed`` counter returned by
+    ``summarize``. A cooperative user cancel counts as
     COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
     ``interrupted=True`` tier summaries without real bridge/API errors map
     to None. Exceptions are reported by their first message line.
@@ -1735,6 +1736,14 @@ def _run_log_account_failure(
                 return f"seers-game failed: {result.last_error}"
             return None
         return "seers-game result unavailable"
+    if mode in ("gift-up", "gift-reset"):
+        from hw_genie.commands.element_gift import GiftRunResult
+
+        if isinstance(result, GiftRunResult):
+            if result.error:
+                return result.error
+            return f"{result.failed} hero(es) failed" if result.failed else None
+        return "gift result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
             real_errors = _toe_real_errors(result.get("errors", []))

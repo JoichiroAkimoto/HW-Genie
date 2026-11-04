@@ -18,7 +18,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus, _safe_int
+from hw_genie.core.client import (
+    ApiAction,
+    Emojis,
+    HWAuthError,
+    HWClient,
+    ResponseStatus,
+    _safe_int,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +94,7 @@ class GiftRunResult:
     mode: str  # "up" / "reset"
     changed: int = 0  # up: MAX 化できた体数 / reset: drop した体数
     levels: int = 0  # up で実際に上げたレベル合計
-    coins: int = 0  # up: 消費見込み / reset: 実返却合計
+    coins: int = 0  # up: 実消費（実行前後の残高差） / reset: 実返却合計
     balance: int | None = None  # 実行後のコイン残高
     blocked: int = 0  # コイン不足で対象外になった体数
     failed: int = 0  # RPC 失敗した体数
@@ -154,7 +161,13 @@ def _unwrap(detail: Any, ident: str | None) -> dict[str, Any]:
 
     単一コールでは `detail = {"response": ...}`、複数コールでは
     `detail = {ident: {"result": {"response": ...}}}` と形が変わるため、
-    両方をhere平坦化する。
+    両方をここで平坦化する。
+
+    `response` を dict として読めない場合は必ず GiftReadError を投げる。
+    wrapper 自体を返すフォールバックを持つと、キー欠損で 0 を返す
+    `parse_coin_balance` と組み合わさって「API の形変更」が「残高 0 ＝
+    コイン不足」に化けて無音で握りつぶされる（`gift up` が exit 0 になる）。
+    形変更は失敗として報告する。
     """
     if not isinstance(detail, dict):
         raise GiftReadError(f"unexpected response format for {ident or 'call'}")
@@ -169,12 +182,12 @@ def _unwrap(detail: Any, ident: str | None) -> dict[str, Any]:
             raise GiftReadError(f"{ident} failed ({name})", error_name=str(name))
     else:
         inner = detail
-    response = inner.get("response") if isinstance(inner, dict) else None
-    if isinstance(response, dict):
-        return response
-    if isinstance(inner, dict):
-        return inner
-    raise GiftReadError(f"no response object for {ident or 'call'}")
+    if not isinstance(inner, dict):
+        raise GiftReadError(f"no result object for {ident or 'call'}")
+    response = inner.get("response")
+    if not isinstance(response, dict):
+        raise GiftReadError(f"no response object for {ident or 'call'}")
+    return response
 
 
 def fetch_state(client: HWClient) -> tuple[list[GiftHero], int]:
@@ -259,26 +272,39 @@ def plan_reset(
 # ---------------------------------------------------------------- 送信
 
 
+def gift_up_idents(levels: int) -> list[str]:
+    """送信する calls の ident 列（送信順そのまま）。
+
+    `HWClient.call` は複数コールを ident 辞書で返すため、応答を「最初のエラー」
+    として読むには辞書順ではなくこの送信順で走査しなければならない
+    （`sorted()` だと `body_10` が `body_2` より先に来る）。
+    """
+    return ["body" if i == 0 else f"body_{i}" for i in range(max(0, levels))]
+
+
 def gift_up_payload(hero_id: int, levels: int) -> dict[str, Any]:
     """1 体分のレベルアップ calls（ident は `body`, `body_1`, ... の実観測形式）。"""
-    calls = []
-    for i in range(levels):
-        calls.append(
+    return {
+        "calls": [
             {
                 "name": ApiAction.HERO_TITAN_GIFT_LEVEL_UP,
                 "args": {"heroId": hero_id},
                 "context": {"actionTs": 0},
-                "ident": "body" if i == 0 else f"body_{i}",
+                "ident": ident,
             }
-        )
-    return {"calls": calls}
+            for ident in gift_up_idents(levels)
+        ]
+    }
 
 
 def _call_results(res: Any, expected: int) -> tuple[int, str | None]:
-    """バッチ応答から成功コール数を数え、最初のエラー名を返す。
+    """バッチ応答から成功コール数を数え、送信順で最初に当たったエラー名を返す。
 
     `HWClient.call` は単一コールだと `detail` が結果そのもの、複数コールだと
     ident 辞書になるため、`expected` が 1 の場合だけ前者として扱う。
+    走査順は送信した calls の順序（`gift_up_idents`）。応答に無い ident や
+    想定外の ident が混ざっても取りこぼさないよう、送信順で先に走査したあと
+    残ったキーを辞書の挿入順で補う。
     """
     detail = res.detail if isinstance(res.detail, dict) else {}
     if expected == 1:
@@ -287,9 +313,11 @@ def _call_results(res: Any, expected: int) -> tuple[int, str | None]:
         if res.status != ResponseStatus.SUCCESS:
             return 0, res.error_name or res.status.value
         return 1, None
+    idents = [ident for ident in gift_up_idents(expected) if ident in detail]
+    idents += [key for key in detail if key not in idents]
     succeeded = 0
     first_error: str | None = None
-    for ident in sorted(detail):
+    for ident in idents:
         entry = detail.get(ident)
         if not isinstance(entry, dict):
             continue
@@ -350,7 +378,7 @@ def _hero_row(hero: GiftHero) -> str:
     )
 
 
-def print_status(client: HWClient, account: str, raw: bool = False) -> GiftRunResult | None:
+def print_status(client: HWClient, account: str, raw: bool = False) -> None:
     """現況（ヒーローごとのギフトレベル・コイン残高・up/reset できる体数）を表示する。"""
     heroes, balance = fetch_state(client)
     if raw:
@@ -375,7 +403,7 @@ def print_status(client: HWClient, account: str, raw: bool = False) -> GiftRunRe
                 ensure_ascii=False,
             )
         )
-        return None
+        return
 
     maxed = [h for h in heroes if h.is_max]
     unmaxed = [h for h in heroes if not h.is_max]
@@ -398,7 +426,6 @@ def print_status(client: HWClient, account: str, raw: bool = False) -> GiftRunRe
     )
     for hero in heroes:
         print(_hero_row(hero))
-    return None
 
 
 # ---------------------------------------------------------------- 実行
@@ -419,6 +446,9 @@ def run_gift_up(
       再実行すれば追加の体を拾える。
     - バッチ内に 1 つでもエラー（ほぼコイン不足）がある体を部分成功として記録し、
       同じ残高では次の体も失敗するため打ち切る。
+    - 書き込みの途中で `HWAuthError`（認証切れ）が出たら、そこまでの部分結果で
+      最終レポートを出してから例外を再送出する（`multi` はそれをアカウント単位の
+      失敗として記録する）。
     - 終了時に `heroGetAll` + `inventoryGet` を 1 回読み直し、消費コイン・MAX 体数・
       合計 power を実測値で報告する。
     """
@@ -465,9 +495,22 @@ def run_gift_up(
 
     initial_balance = balance
     spent_estimate = 0
+    auth_error: HWAuthError | None = None
     for index, action in enumerate(actions, start=1):
         hero = action.hero
-        res = client.call(gift_up_payload(hero.hero_id, action.levels))
+        try:
+            res = client.call(gift_up_payload(hero.hero_id, action.levels))
+        except HWAuthError as exc:
+            # 認証切れでも「何体 MAX になり、いまコインがいくらか」を捨てない。
+            # 部分結果つきで最終レポートを出してから raise し、multi / cmd_gift の
+            # err 経路（アカウント単位の失敗）に渡す。
+            auth_error = exc
+            result.failed += 1
+            result.details.append(f"hero {hero.hero_id}: auth error")
+            result.error = f"hero {hero.hero_id}: auth error"
+            print(f"  {Emojis.ERROR}[{index}/{len(actions)}] hero {hero.hero_id}: "
+                  f"auth error; stopping.")
+            break
         succeeded, error_name = _call_results(res, action.levels)
         client.sleep()
         if error_name is None and succeeded == action.levels:
@@ -488,11 +531,12 @@ def run_gift_up(
         break
 
     # 見積ではなく実測で報告する（heroGetAll + inventoryGet を 1 リクエストで再読）。
+    # 認証切れのときはこの再読も失敗するため、レポート自体は見積で出す。
     final_heroes: list[GiftHero] | None = None
     try:
         final_heroes, balance = fetch_state(client)
         result.coins = max(0, initial_balance - balance)
-    except GiftReadError as exc:
+    except (GiftReadError, HWAuthError) as exc:
         logger.warning("gift up: final state read failed: %s", exc)
         balance = initial_balance - spent_estimate
         result.coins = spent_estimate
@@ -513,6 +557,8 @@ def run_gift_up(
     )
     if result.error:
         print(f"  {Emojis.WARNING}Stopped early: {result.error}. Re-run `gift status` to see the rest.")
+    if auth_error is not None:
+        raise auth_error
     return result
 
 
@@ -543,6 +589,9 @@ def run_gift_reset(
     drop は消費コインが全額返る（実測: `titanCoinsSpent` と同額が返却）ため、
     1 体が失敗しても他を続行して問題ない（資源を消費しない）。返却額は応答の
     `response.consumable.24` を実測値として合計する。
+
+    書き込みの途中で `HWAuthError` が出たら、drop 済み・回収済みの部分結果で
+    最終レポートを出してから例外を再送出する（`up` と同じ契約）。
     """
     account = account_alias or "<account>"
     result = GiftRunResult(account=account, mode="reset", dry_run=dry_run)
@@ -582,8 +631,17 @@ def run_gift_reset(
         result.error = "skipped by user"
         return result
 
+    auth_error: HWAuthError | None = None
     for index, hero in enumerate(targets, start=1):
-        res = client.call(gift_drop_payload(hero.hero_id))
+        try:
+            res = client.call(gift_drop_payload(hero.hero_id))
+        except HWAuthError as exc:
+            # up と同じく、認証切れでも drop 済みの体数と回収コインを報告してから上げる。
+            auth_error = exc
+            result.failed += 1
+            result.details.append(f"hero {hero.hero_id}: auth error")
+            print(f"  {Emojis.ERROR}[{index}/{len(targets)}] hero {hero.hero_id}: drop failed (auth error)")
+            break
         refunded = _drop_refund(res) if res.status == ResponseStatus.SUCCESS else 0
         client.sleep()
         if res.status != ResponseStatus.SUCCESS:
@@ -605,7 +663,7 @@ def run_gift_reset(
     balance = initial_balance + result.coins
     try:
         final_heroes, balance = fetch_state(client)
-    except GiftReadError as exc:
+    except (GiftReadError, HWAuthError) as exc:
         logger.warning("gift reset: final state read failed: %s", exc)
     result.balance = balance
     gifted = len([h for h in final_heroes if h.gift_level > 0]) if final_heroes else None
@@ -619,4 +677,6 @@ def run_gift_reset(
         + (f", total power {power_before:,} -> {power_now:,}" if power_now is not None else "")
         + (f", {result.failed} failed" if result.failed else "")
     )
+    if auth_error is not None:
+        raise auth_error
     return result

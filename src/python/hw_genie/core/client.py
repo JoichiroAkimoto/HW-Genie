@@ -423,20 +423,6 @@ class HWClient:
         payload = {"calls": [{"name": ApiAction.MISSION_GET_ALL, "args": {}, "ident": "body"}]}
         return self.call(payload)
 
-    def hero_get_all(self) -> HWResponse:
-        """所持全ヒーローの育成状況（power / level / titanGiftLevel / titanCoinsSpent 等）を取得"""
-        payload = {
-            "calls": [
-                {
-                    "name": ApiAction.HERO_GET_ALL,
-                    "args": {},
-                    "context": {"actionTs": 0},
-                    "ident": "heroes",
-                }
-            ]
-        }
-        return self.call(payload)
-
     def quest_get_all(self) -> HWResponse:
         """全クエスト（デイリー/メイン/ギルド/イベント/バトルパス等）の進捗を取得"""
         payload = {"calls": [{"name": ApiAction.QUEST_GET_ALL, "args": {}, "ident": "body"}]}

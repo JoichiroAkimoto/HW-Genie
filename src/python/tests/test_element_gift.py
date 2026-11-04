@@ -1,5 +1,6 @@
 """エレメントギフト一括 MAX 化 / リセット (commands/element_gift, runner gift routines)."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from hw_genie.commands.element_gift import (
     parse_heroes,
     plan_reset,
     plan_up,
+    print_status,
     run_gift_reset,
     run_gift_up,
 )
@@ -561,3 +563,478 @@ def test_multi_gift_modes_build_runnable_routines(monkeypatch):
         )()
         main.cmd_multi(args)
         assert callable(captured["routine"])
+
+
+# --- 読み取りの厳格化（形変更を「残高 0」に化かさない） ---
+
+
+def test_unwrap_requires_a_response_object():
+    from hw_genie.commands.element_gift import _unwrap
+
+    # 単一コール（drop 等）で response ラッパが無い形 → wrapper を返さず失敗させる
+    with pytest.raises(GiftReadError):
+        _unwrap({"quests": []}, None)
+    with pytest.raises(GiftReadError):
+        _unwrap("not a dict", None)
+    with pytest.raises(GiftReadError):
+        _unwrap({"heroes": {"result": "not a dict"}}, "heroes")
+    # 正常形は両方平坦化して返す
+    assert _unwrap({"response": {"consumable": {"24": 5}}}, None) == {"consumable": {"24": 5}}
+    assert _unwrap({"heroes": {"result": {"response": {"1": {"id": 1}}}}}, "heroes") == {
+        "1": {"id": 1}
+    }
+
+
+def test_fetch_state_raises_when_inventory_has_no_response_wrapper(mock_client):
+    """`inventoryGet` の result に `response` が無い形は「残高 0」でなく読み取り失敗。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res(
+        {
+            "heroes": {"result": {"response": _heroes_payload((1, 100, 0))}},
+            # response ラッパが無い（API 形変更を模す）
+            "inventory": {"result": {"consumable": {"24": 5000}}},
+        }
+    )
+
+    with pytest.raises(GiftReadError, match="inventory"):
+        fetch_state(client)
+
+
+def test_run_gift_up_malformed_state_read_is_not_coin_shortage(mock_client, capsys):
+    """形変更を「残高 0 → コイン不足 → exit 0」に握りつぶさない（失敗として返す）。"""
+    client, mock_call = mock_client
+    mock_call.return_value = _res(
+        {
+            "heroes": {"result": {"response": _heroes_payload((1, 200000, 0))}},
+            "inventory": {"result": {"consumable": {"24": 5000}}},
+        }
+    )
+
+    result = run_gift_up(client, account_alias="Alice", confirm=True)
+
+    assert result.is_failure
+    assert "no response object" in (result.error or "")
+    assert mock_call.call_count == 1
+    out = capsys.readouterr().out
+    assert "Nothing to run" not in out
+
+
+def test_drop_refund_survives_malformed_drop_response(mock_client, capsys):
+    """strict な `_unwrap` でも drop 側は壊れない（読めなければ返却 0 で続行）。"""
+    client, mock_call = mock_client
+    gifted = _heroes_payload((1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST))
+    responses = [
+        _res(_state_detail(gifted, 0)),
+        _res({"quests": []}),  # response の無い drop 応答
+        _res(_state_detail(_heroes_payload((1, 50000, 0, 0)), 65150)),
+    ]
+    mock_call.side_effect = lambda payload: responses.pop(0)
+
+    result = run_gift_reset(client, account_alias="Alice", confirm=True)
+
+    assert result.changed == 1
+    assert result.coins == 0
+    assert result.balance == 65150
+    assert not result.is_failure
+    assert "no refund reported" in capsys.readouterr().out
+
+
+# --- 応答の「最初のエラー」は送信順（辞書順ではない） ---
+
+
+def test_call_results_reports_the_earliest_error_in_sent_order():
+    from hw_genie.commands.element_gift import _call_results
+
+    detail = {}
+    for i in range(12):
+        ident = "body" if i == 0 else f"body_{i}"
+        if i == 2:
+            detail[ident] = {"error": {"name": "NotEnough"}}
+        elif i == 10:
+            detail[ident] = {"error": {"name": "ServerError"}}
+        else:
+            detail[ident] = {"result": {"response": None, "quests": []}}
+
+    succeeded, first_error = _call_results(_res(detail), 12)
+
+    # sorted(detail) だと body_10 が body_2 より先に来、遅いエラーを拾ってしまう
+    assert succeeded == 10
+    assert first_error == "NotEnough"
+
+
+def test_call_results_still_counts_ident_shapes_missing_from_the_payload():
+    from hw_genie.commands.element_gift import _call_results
+
+    detail = {"0": {"result": {"response": None}}, "1": {"error": {"name": "Boom"}}}
+
+    succeeded, first_error = _call_results(_res(detail), 2)
+
+    assert succeeded == 1
+    assert first_error == "Boom"
+
+
+# --- print_status ---
+
+
+def test_print_status_reports_counts_and_returns_none(mock_client, capsys):
+    client, mock_call = mock_client
+    heroes = _heroes_payload((1, 200000, 0), (2, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST))
+    mock_call.return_value = _res(_state_detail(heroes, GIFT_FULL_COST))
+
+    assert print_status(client, "Alice") is None
+
+    out = capsys.readouterr().out
+    assert "Element gift status: Alice" in out
+    assert f"coins (libId 24): {GIFT_FULL_COST:,}" in out
+    assert "MAX 1 / not MAX 1" in out
+    assert "reset : 1 hero(es)" in out
+
+
+def test_print_status_raw_json_returns_none(mock_client, capsys):
+    client, mock_call = mock_client
+    mock_call.return_value = _res(_state_detail(_heroes_payload((1, 200000, 0)), 123))
+
+    assert print_status(client, "Alice", raw=True) is None
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["coin_balance"] == 123
+    assert payload["heroes"][0]["heroId"] == 1
+
+
+# --- 認証切れは部分レポートを出してから上げる ---
+
+
+def test_run_gift_up_reports_partial_summary_before_auth_error(mock_client, capsys):
+    client, mock_call = mock_client
+    heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
+    mock_call.side_effect = [
+        _res(_state_detail(heroes, 200000)),
+        _res(_up_success(GIFT_MAX_LEVEL)),
+        HWAuthError("expired"),  # hero 2 への書き込みで認証切れ
+        HWAuthError("expired"),  # 最終再読も失敗 → 見積で報告する
+    ]
+
+    with pytest.raises(HWAuthError):
+        run_gift_up(client, account_alias="Alice", confirm=True)
+
+    out = capsys.readouterr().out
+    assert "1 hero(es) maxed" in out
+    assert f"{GIFT_FULL_COST:,} coins spent" in out
+    assert "balance 134,850" in out
+    assert "auth error" in out
+
+
+def test_run_gift_up_uses_measured_spend_when_final_read_survives(mock_client, capsys):
+    client, mock_call = mock_client
+    heroes = _heroes_payload((1, 200000, 0), (2, 150000, 0))
+    mock_call.side_effect = [
+        _res(_state_detail(heroes, 200000)),
+        _res(_up_success(GIFT_MAX_LEVEL)),
+        HWAuthError("expired"),
+        _res(_state_detail(_heroes_payload((1, 205555, GIFT_MAX_LEVEL, GIFT_FULL_COST), (2, 150000, 0)), 130000)),
+    ]
+
+    with pytest.raises(HWAuthError):
+        run_gift_up(client, account_alias="Alice", confirm=True)
+
+    out = capsys.readouterr().out
+    assert "70,000 coins spent" in out  # 実測（200,000 - 130,000）で見積ではない
+    assert "balance 130,000" in out
+
+
+def test_run_gift_reset_reports_partial_summary_before_auth_error(mock_client, capsys):
+    client, mock_call = mock_client
+    heroes = _heroes_payload(
+        (1, 60000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
+        (2, 50000, GIFT_MAX_LEVEL, GIFT_FULL_COST),
+    )
+    mock_call.side_effect = [
+        _res(_state_detail(heroes, 0)),
+        _res(_drop_detail(GIFT_FULL_COST)),
+        HWAuthError("expired"),
+        HWAuthError("expired"),
+    ]
+
+    with pytest.raises(HWAuthError):
+        run_gift_reset(client, account_alias="Alice", confirm=True)
+
+    out = capsys.readouterr().out
+    assert "1 hero(es) dropped" in out
+    assert f"{GIFT_FULL_COST:,} coins recovered" in out
+    assert "1 failed" in out
+
+
+# --- summarize_gift の mode は必須引数 ---
+
+
+def test_summarize_gift_mode_is_required(capsys):
+    from hw_genie.runner import summarize_gift
+
+    results = [("Alice", (GiftRunResult(account="Alice", mode="up", changed=1), None))]
+
+    with pytest.raises(TypeError):
+        summarize_gift(results, dry_run=False)  # 既定値 "gift" は表示上あり得ないため廃止
+
+    assert summarize_gift(results, mode="up") == 0
+    assert "gift up summary" in capsys.readouterr().out
+
+
+# --- run_logs とサマリ表示の整合（multi gift） ---
+
+
+def _multi_gift_args(mode, **overrides):
+    base = {
+        "mode": mode,
+        "accounts": ["Alice"],
+        "parallel": 1,
+        "debug": False,
+        "dry_run": False,
+        "limit": None,
+        "max_power": None,
+        "yes": False,
+    }
+    base.update(overrides)
+    return type("A", (), base)()
+
+
+def _gift_success_result(account, mode="up"):
+    return GiftRunResult(account=account, mode=mode, changed=2, coins=130300, balance=9700, blocked=1)
+
+
+def _patch_multi_gift_workers(monkeypatch, results_fn):
+    from hw_genie import main
+
+    monkeypatch.setattr(main, "_preflight_multi_accounts", lambda accounts: (list(accounts), {}))
+    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"})
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", results_fn)
+    records = {}
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: records.update(k))
+    return records
+
+
+def test_run_log_account_failure_gift_branch_mirrors_summary():
+    from hw_genie.main import _run_log_account_failure
+
+    assert _run_log_account_failure("gift-up", _gift_success_result("Alice"), None) is None
+    assert _run_log_account_failure("gift-reset", _gift_success_result("Bob", "reset"), None) is None
+    # コイン不足の打ち切り（failed ゼロ・error なし）は失敗ではない
+    blocked = GiftRunResult(account="Carol", mode="up", changed=0, blocked=41, balance=100)
+    assert _run_log_account_failure("gift-up", blocked, None) is None
+
+    errored = GiftRunResult(account="Dave", mode="up", changed=1, error="hero 5: NotEnough")
+    assert _run_log_account_failure("gift-up", errored, None) == "hero 5: NotEnough"
+    failed = GiftRunResult(account="Alice", mode="reset", changed=1, failed=2)
+    assert _run_log_account_failure("gift-reset", failed, None) == "2 hero(es) failed"
+    assert _run_log_account_failure("gift-up", "not a gift result", None) == "gift result unavailable"
+
+
+def test_run_log_account_failure_gift_auth_error_reason_from_exception():
+    """routine が例外で落ちた（result が None）アカウントも嘘の理由でなく失敗になる。"""
+    from hw_genie.main import _build_run_log_summary, _run_log_account_failure
+
+    exc = HWAuthError("Session expired for 'Alice': token gone\nre-sync via auth-server")
+    assert _run_log_account_failure("gift-up", None, exc) == "Session expired for 'Alice': token gone"
+
+    entries, summary = _build_run_log_summary("gift-up", {"Alice": (None, exc)})
+    assert entries == [
+        {
+            "account": "Alice",
+            "ok": False,
+            "error": "Session expired for 'Alice': token gone",
+            "interrupted": False,
+        }
+    ]
+    assert summary == "1 account(s) failed: Alice (Session expired for 'Alice': token gone)"
+
+
+def test_multi_gift_up_records_ok_rows_for_successful_accounts(monkeypatch):
+    """完全成功の multi gift-up で run_logs が自己矛盾しない（以前は全行 ok:false）。"""
+    from hw_genie import main
+
+    records = _patch_multi_gift_workers(
+        monkeypatch,
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {
+            acc: (_gift_success_result(acc), None) for acc in (accounts or [])
+        },
+    )
+
+    main.cmd_multi(_multi_gift_args("gift-up", yes=True))  # 失敗ゼロなら exit しない
+
+    assert records["mode"] == "gift-up"
+    assert records["status"] == "ok"
+    assert records["exit_code"] == 0
+    assert records["error_summary"] is None
+    assert records["accounts"] == [
+        {"account": "Alice", "ok": True, "error": None, "interrupted": False}
+    ]
+
+
+def test_multi_gift_reset_records_failure_rows_with_real_reason(monkeypatch):
+    from hw_genie import main
+
+    records = _patch_multi_gift_workers(
+        monkeypatch,
+        lambda routine, accounts=None, max_parallel=None, cooperative_wait=False: {
+            acc: (GiftRunResult(account=acc, mode="reset", changed=1, failed=2), None)
+            for acc in (accounts or [])
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(_multi_gift_args("gift-reset", yes=True))
+
+    assert exc.value.code == 1
+    assert records["status"] == "failed"
+    assert records["accounts"][0]["ok"] is False
+    assert records["accounts"][0]["error"] == "2 hero(es) failed"
+    assert records["error_summary"] == "1 account(s) failed: Alice (2 hero(es) failed)"
+
+
+def test_multi_gift_cancel_without_failures_stays_ok(monkeypatch):
+    """Ctrl+C 経路で失敗ゼロなら gift も ok / exit 0（既存 toe / seers-game と同じ契約）。"""
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+            runner.request_cancel()
+            return {acc: (_gift_success_result(acc), None) for acc in (accounts or [])}
+
+        records = _patch_multi_gift_workers(monkeypatch, fake_run)
+        main.cmd_multi(_multi_gift_args("gift-up", yes=True))  # exit しない
+
+        assert records["status"] == "ok"
+        assert records["exit_code"] == 0
+        assert records["error_summary"] is None
+    finally:
+        runner.reset_cancel()
+
+
+def test_multi_gift_cancel_with_real_failure_exits_1_for_that_account_only(monkeypatch):
+    """中断経路でも実失敗アカウントだけを失敗として記録する。"""
+    from hw_genie import main, runner
+
+    runner.reset_cancel()
+    try:
+        def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+            runner.request_cancel()
+            return {
+                "Alice": (_gift_success_result("Alice"), None),
+                "Bob": (GiftRunResult(account="Bob", mode="up", error="hero 7: NotEnough"), None),
+            }
+
+        monkeypatch.setattr(main, "_preflight_multi_accounts", lambda accounts: (["Alice", "Bob"], {}))
+        monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"})
+        monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+        records = {}
+        monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: records.update(k))
+
+        with pytest.raises(SystemExit) as exc:
+            main.cmd_multi(_multi_gift_args("gift-up", yes=True, accounts=["Alice", "Bob"]))
+
+        assert exc.value.code == 1
+        assert records["status"] == "failed"
+        assert records["error_summary"] == "1 account(s) failed: Bob (hero 7: NotEnough)"
+        by_account = {e["account"]: e for e in records["accounts"]}
+        assert by_account["Alice"]["ok"] is True
+        assert by_account["Bob"]["ok"] is False
+    finally:
+        runner.reset_cancel()
+
+
+# --- multi の --yes ゲートと終了コード（CLI 層） ---
+
+
+@pytest.mark.parametrize("mode_name", ["gift-up", "gift-reset"])
+def test_multi_gift_write_without_yes_exits_2_before_workers(mode_name, monkeypatch, capsys):
+    from hw_genie import main
+
+    called = []
+    monkeypatch.setattr(
+        main, "run_all_accounts", lambda *a, **k: called.append(1) or {}
+    )
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(_multi_gift_args(mode_name))
+
+    assert exc.value.code == 2
+    assert called == []
+    assert "--yes" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode_name", ["gift-up", "gift-reset"])
+def test_multi_gift_dry_run_without_yes_is_allowed(mode_name, monkeypatch):
+    """dry-run は読み取りのみなので `--yes` 不要（かつ逐次実行に強制される）。"""
+    from hw_genie import main
+
+    captured = {}
+
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+        captured["max_parallel"] = max_parallel
+        return {acc: (GiftRunResult(account=acc, mode="up"), None) for acc in (accounts or [])}
+
+    records = _patch_multi_gift_workers(monkeypatch, fake_run)
+    main.cmd_multi(_multi_gift_args(mode_name, dry_run=True))
+
+    assert captured["max_parallel"] == 1
+    assert records["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "mode_name,overrides",
+    [
+        ("gift-up", {"limit": 0}),
+        ("gift-reset", {"limit": 0}),
+        ("gift-reset", {"max_power": -1}),
+    ],
+)
+def test_multi_gift_invalid_limit_and_max_power_exit_2(mode_name, overrides, monkeypatch, capsys):
+    from hw_genie import main
+
+    called = []
+    monkeypatch.setattr(
+        main, "run_all_accounts", lambda *a, **k: called.append(1) or {}
+    )
+    monkeypatch.setattr("hw_genie.core.run_log.record_run_log", lambda **k: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_multi(_multi_gift_args(mode_name, yes=True, **overrides))
+
+    assert exc.value.code == 2
+    assert called == []
+    expected_flag = "--max-power" if "max_power" in overrides else "--limit"
+    assert expected_flag in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "action,overrides",
+    [("up", {"limit": 0}), ("reset", {"max_power": -1})],
+)
+def test_cmd_gift_validates_flags_before_loading_session(action, overrides, monkeypatch, capsys):
+    from hw_genie import main
+
+    def _no_session(args):
+        raise AssertionError("flags must be validated before the session is loaded")
+
+    monkeypatch.setattr(main, "_ensure_session", _no_session)
+    args = type(
+        "A",
+        (),
+        {
+            "action": action,
+            "account": "Alice",
+            "raw": False,
+            "dry_run": False,
+            "yes": True,
+            "limit": overrides.get("limit"),
+            "max_power": overrides.get("max_power"),
+        },
+    )()
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_gift(args)
+
+    assert exc.value.code == 2
+    expected_flag = "--max-power" if action == "reset" else "--limit"
+    assert expected_flag in capsys.readouterr().err
