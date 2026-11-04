@@ -20,6 +20,10 @@ Content-Type: application/json; charset=UTF-8
 
 所持している全ヒーローのステータス、レベル、ランク、スキル、スキン、グリフ、アーティファクト等の詳細を取得します。
 
+エレメントギフトのレベルと消費コインは `titanGiftLevel` /
+`titanCoinsSpent.consumable.24`、戦闘力は `power` に入ります（下記
+[エレメントギフト](#エレメントギフトherotitangift) 参照）。
+
 ### curl 実行例
 ```bash
 # 認証ヘッダー (x-auth-*) はブラウザ DevTools の「Copy as cURL」で取得した curl に含まれる
@@ -92,6 +96,69 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   `guild_glyph_defaults.enabled=true` かつ `activityForRuneAvailable=true` の
   ときだけ実行する。
 - レスポンス本文はツールでは使用しない（成功/失敗ステータスのみ参照）。
+
+---
+
+## エレメントギフト（heroTitanGift*）
+
+ヒーローごとの「Gift of the Element」を上げる / 降ろすメソッドです。HW-Genie では
+`hw-genie gift status|up|reset` と `multi gift-up` / `multi gift-reset` が使います
+（`.agents/skills/element-gift/SKILL.md`）。
+
+### 状態は `heroGetAll` から読む
+各ヒーローにギフト関連のフィールドが入っています（実測 2026-11-04）。
+
+| フィールド | 意味 |
+|-----------|------|
+| `titanGiftLevel` | 現在のギフトレベル（0〜30。30 = MAX） |
+| `titanCoinsSpent.consumable.24` | これまでに消費したギフトコイン（consumable libId **24**）。未活性化ヒーローは `{}` |
+| `power` | ギフト込みの現在 power（`gift reset` の閾値判定に使う） |
+
+### heroTitanGiftLevelUp - ギフトレベル +1
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `heroId` | number | ○ | 対象ヒーロー ID |
+
+- 1 回のコールでレベル +1。ゲームクライアントは MAX まで（30 回分）を
+  `ident: body`, `body_1`, … の 1 リクエスト batch で送るため、HW-Genie も同じ形
+  （1 体 = 1 リクエスト）で送ります。
+- コストは消費済み込みで **0 → 30 = 65,150 コイン**（MAX ヒーローは全員
+  `titanCoinsSpent.consumable.24 = 65150`）。残コストは
+  `65,150 - titanCoinsSpent` で見積もれます。
+- 応答の `response` は `null`、`quests`（デイリー 10023 等の進捗）のみ返ります。
+  実際の消費額・到達レベルは `heroGetAll` / `inventoryGet` を読み直して確認します。
+- コイン不足などの失敗はコール単位で `error` を返します。
+- HW-Genie は返されたエラー名を `core/client.py` の共有集合で分類します:
+  `auth` / `InvalidSession`（`AUTH_ERROR_NAMES`、batch 内 per-call でも認証経路に合流）、
+  `NotEnough`（`RESOURCE_EXHAUSTED_ERROR_NAMES`＝コイン枯れ、次の体も買えないので打ち切り）、
+  `NotAvailable`（`HERO_SPECIFIC_ERROR_NAMES`＝そのヒーローだけ受理されないので継続）。
+  **継続するのは実在を確認したヒーロー個別名のみ**で、未知の名前・エラー名が読めない形・
+  transport 失敗（`network_or_parse_error`）は全対象に共通の事故として打ち切ります。
+
+### heroTitanGiftDrop - ギフトを降ろす（全額返却）
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `heroId` | number | ○ | 対象ヒーロー ID |
+
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"heroTitanGiftDrop","args":{"heroId":61},"ident":"body"}]}'
+```
+
+- 返却額は応答の `response.consumable.24` に載ります（実測: `titanCoinsSpent` と
+  同額の 65,150 がそのまま返り、`titanGiftLevel` は 0、`titanCoinsSpent` は空に）。
+- ゲームクライアントは前に `stashClient`（ポップアップのウィンドウ記録）を挟みますが、
+  操作自体には不要で、HW-Genie も送りません。
+- 失敗しても資源は消費されないため、1 体失敗しても他のヒーローの drop は続行します。
+
+### Tips
+- 破壊的（コインを消費する）ですが、drop で全額戻るため `up → reset` は実質タダです。
+  HW-Genie は `up` / `reset` とも `--dry-run`（計画のみ・読み取りだけ）と y/N 確認
+  （`--yes` でスキップ、`multi` は `--yes` 必須）を要求します。
+- ヒント: ヒーローの表示名は `heroGetAll` に含まれません（ID のみ）。
 
 ---
 

@@ -22,9 +22,9 @@ from rich.text import Text
 
 from hw_genie.core.client import (
     ApiAction,
-    ErrorName,
     HWClient,
     HWResponse,
+    RESOURCE_EXHAUSTED_ERROR_NAMES,
     ResponseStatus,
     resolve_account,
 )
@@ -709,7 +709,10 @@ def _store_guild_recipe_run_today(account: str, last_ts: int) -> None:
 # リソース不足等で「フォールバック候補（candidates）」を試す価値があるエラー名。
 # 実測: 10024（heroArtifactLevelUp）の資源不足は "NotEnough"。スタミナ不足は
 # 候補（heroId/slotId 変更）では解決しないため対象外。
-FALLBACK_ERROR_NAMES = {ErrorName.NOT_ENOUGH.value}
+# 資源枯渇名の単一の正は `core.client.RESOURCE_EXHAUSTED_ERROR_NAMES`（`element_gift`
+# のコイン枯れ判定もそこを見る）。この集合を直接 import させると recipes 側の改修が
+# gift の打ち切り契約を黙って変えるので、gift は core 側の定数だけを参照する。
+FALLBACK_ERROR_NAMES = set(RESOURCE_EXHAUSTED_ERROR_NAMES)
 
 
 def _guild_recipe_overrides(

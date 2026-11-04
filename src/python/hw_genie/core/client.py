@@ -183,6 +183,7 @@ class ApiAction(str, Enum):
     QUEST_GET_ALL = "questGetAll"
     QUEST_FARM = "questFarm"
     GACHA_OPEN = "gacha_open"
+    HERO_GET_ALL = "heroGetAll"
     HERO_ARTIFACT_LEVEL_UP = "heroArtifactLevelUp"
     TITAN_ARTIFACT_LEVEL_UP = "titanArtifactLevelUp"
     HERO_SKIN_UPGRADE = "heroSkinUpgrade"
@@ -220,6 +221,27 @@ class ErrorName(str, Enum):
     NOT_ENOUGH = "NotEnough"
     TOO_MANY = "TooMany"
     REFILLABLE = "Refillable"
+    #: 「対象が受理できない」系の実測エラー名（`docs/api/ARENA_API.md` /
+    #: `docs/api/GUILD_API.md` で観測済み。ここにある名前だけが既知の業務エラー）。
+    NOT_AVAILABLE = "NotAvailable"
+
+
+#: 認証系エラー名。`HWClient.call` が単一コール／グローバルエラーで HWAuthError に
+#: 変換する名前と、batch 内 per-call エラーを呼び出し側で判定する名前を同一定義にする
+#: （定義が分散すると「認証切れが認証経路に乗らない」事故が生まれる）。
+AUTH_ERROR_NAMES = frozenset({"auth", "InvalidSession"})
+
+#: 資源枯渇エラー名（残高が同じなら次の対象も同じ理由で失敗する）。
+#: `quests` のフォールバック候補判定と `element_gift` のコイン枯れ打ち切りが
+#: 同じ正を見るための共有定数。
+RESOURCE_EXHAUSTED_ERROR_NAMES = frozenset({ErrorName.NOT_ENOUGH.value})
+
+#: 対象（ヒーロー）単位の業務エラー名。この名前に一致した失敗だけが
+#: 「その対象だけ失敗、他は試行できる」を意味する。
+#: **docs/api か既存コードで実在が確認できる名前だけ**を持つ（推測で増やさない）。
+#: 未知の名前・transport 由来の名前（`network_or_parse_error` 等）・読めない形は
+#: 呼び出し側で「回復不能（全対象に共通の事故）」として打ち切る側の判定になる。
+HERO_SPECIFIC_ERROR_NAMES = frozenset({ErrorName.NOT_AVAILABLE.value})
 
 
 @dataclass
@@ -339,7 +361,7 @@ class HWClient:
                     error = res_data["error"]
                     error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                    if error_name in ["auth", "InvalidSession"]:
+                    if str(error_name) in AUTH_ERROR_NAMES:
                         raise HWAuthError(Messages.AUTH_ERROR)
 
                     return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
@@ -355,7 +377,7 @@ class HWClient:
                             error = call_result["error"]
                             error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                            if error_name in ["auth", "InvalidSession"]:
+                            if str(error_name) in AUTH_ERROR_NAMES:
                                 raise HWAuthError(Messages.AUTH_ERROR)
 
                             return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)

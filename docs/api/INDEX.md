@@ -54,12 +54,14 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 
 ### 3. ユニット管理（ヒーロー・タイタン・ペット）
 育成キャラクターたちのステータス情報です。
-*   **`heroGetAll`**: 全ヒーローのレベル、ランク、スキル、スキン、グリフ、アーティファクト等の詳細。
+*   **`heroGetAll`**: 全ヒーローのレベル、ランク、スキル、スキン、グリフ、アーティファクト、エレメントギフト（`titanGiftLevel` / `titanCoinsSpent`）等の詳細。
 *   **`titanGetAll`**: 全タイタンのステータス。
 *   **`pet_getAll`**: 全ペットのステータス。
 *   **`teamGetAll`**: 保存されている防衛チームや攻撃チームの編成情報。
 *   **`titanSpirit_getAll`**: タイタンの「精霊（トーテム）」の状況。
 *   **`artifactGetChestLevel` / `titanArtifactGetChest`**: アーティファクトチェストのレベルや開封状況。
+*   **`heroEnchantRune`**: ヒーローのグリフ（ルーン）強化（`guild_glyph_defaults` で `quests` から実行）。
+*   **`heroTitanGiftLevelUp` / `heroTitanGiftDrop`**: エレメントギフトのレベル +1 / 降ろしてコイン全額返却（`hw-genie gift up|reset`。詳細は `UNIT_API.md`）。
 
 ### 4. クエスト・ミッション・報酬
 デイリー活動や報酬に関連する機能です。
