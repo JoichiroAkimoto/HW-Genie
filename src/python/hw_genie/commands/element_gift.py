@@ -112,8 +112,9 @@ class GiftRunResult:
     #: / reset: 実返却合計 / dry-run: いずれも**計画値**（Nothing to run なら 0）
     coins: int = 0
     balance: int | None = None  # 実行後のコイン残高（dry-run は実行前残高）
-    #: 計画時点で**コイン不足で打ち切った**体数（`--limit` で残った体数は**含まない**。
-    #: `--limit` 超過分は per-account の plan ヘッダーに `| N beyond --limit` として出る）。
+    #: 計画時点で**コイン不足で打ち切った**体数。`--limit` を先に使い切った場合は超過分を
+    #: `beyond_limit` に分ける（per-account の plan ヘッダーに `| N beyond --limit` として出る）が、
+    #: コイン不足が先に来た場合は残り（`--limit` 超過分も含む）をここにまとめる。
     #: 実行中に非コイン系のヒーロー個別エラーで継続した体はコスト未消費のこともあり、
     #: 打ち切り地点以降が実際に買えたかどうかは示さない（計画ベースの見積もり）。
     blocked: int = 0
@@ -315,9 +316,10 @@ def plan_up(
     """power 降順に 1 体ずつ MAX 化する計画を作る。
 
     見積残高が次の 1 体を MAX にできなくなった時点で打ち切る（全員に薄く
-    分配しない方針）。**コイン不足で打ち切った**体数は ``blocked``、`--limit` で
-    残った体数は ``beyond_limit`` に分けて返す（``blocked`` に ``beyond_limit``
-    は含めない）。
+    分配しない方針）。ループは各体で `--limit` 判定を先に行うため、`--limit` を
+    **先に**使い切れば残り全員が ``beyond_limit``（``blocked`` は 0）、コイン不足が
+    **先に**来れば残り全員（`--limit` 超過分も含む）が ``blocked``（``beyond_limit``
+    は 0）になる。
     計画時点の打ち切りなので、**計画した全体が cost を消費する前提**で境界を決める。
     実行中にヒーロー個別の業務エラーで継続した体がコストを消費しなかった場合、
     打ち切り地点より後にある「実際には買えた体」は試行されない（``blocked`` は
@@ -325,7 +327,8 @@ def plan_up(
 
     Returns:
         ``(actions, blocked, beyond_limit)``。``blocked`` はコイン不足で打ち切った
-        体数、``beyond_limit`` は `--limit` 超過で残った体数。
+        体数（`--limit` 超過分も含みうる）、``beyond_limit`` は `--limit` を先に
+        使い切ったときの残り体数。
     """
     eligible = [h for h in heroes if not h.is_max]
     eligible.sort(key=lambda h: (-h.power, h.hero_id))
