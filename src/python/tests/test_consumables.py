@@ -289,7 +289,7 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 def test_registry_covers_all_use_targets():
     """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 62  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508 + 478/509/513
+    assert len(CONSUMABLE_USE_TARGETS) == 63  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508 + 478/509/513/520
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
@@ -315,7 +315,7 @@ def test_registry_covers_all_use_targets():
     # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
-    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 7 件とは別概念）
+    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 8 件とは別概念）
     for lib_id in (149, 469, 492, 497, 176, 185, 187, 190):
         assert lib_id in CONSUMABLE_USE_TARGETS
 
@@ -329,7 +329,7 @@ def test_registry_recursive_flags_confirmed():
 
 
 def test_registry_recursive_flags_documented_unmeasured():
-    """recursive=True（既知マトリョーシカ 4 件：149/469/492/497）。
+    """recursive=True（既知マトリョーシカ：149/469/492/497/520）。
 
     TODO: サーバー側 recursive の本番実測後に confirmed へ昇格させる。
     """
@@ -340,12 +340,16 @@ def test_registry_recursive_flags_documented_unmeasured():
     # 同名のみでは不十分：508（492 と同名）・493（513 と同名）は False
     assert CONSUMABLE_REGISTRY[508].recursive is False
     assert CONSUMABLE_REGISTRY[493].recursive is False
-    # サーバー側 recursive 対象は計 7 件
+    # 520（469 と同名の別 libId）も recursive=True
+    assert CONSUMABLE_REGISTRY[520].name == "Adventure Chest"
+    assert CONSUMABLE_REGISTRY[520].recursive is True
+    assert 520 in CONSUMABLE_USE_TARGETS
+    # サーバー側 recursive 対象は計 8 件
     recursive_true = {
         lib_id for lib_id in CONSUMABLE_USE_TARGETS if CONSUMABLE_REGISTRY[lib_id].recursive
     }
-    assert recursive_true == documented | {478, 509, 513}
-    assert len(recursive_true) == 7
+    assert recursive_true == documented | {478, 509, 513, 520}
+    assert len(recursive_true) == 8
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert CONSUMABLE_REGISTRY[lib_id].recursive is (lib_id in recursive_true)
     assert CONSUMABLE_REGISTRY[17].recursive is False

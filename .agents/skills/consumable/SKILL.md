@@ -25,13 +25,13 @@ description: HW-Genie を使用して所持している consumable（消費ア�
    uv run hw-genie consumable run --dry-run -a <アカウント名>
    ```
 4. **消費量**: 引数指定は不要。実行直前に `inventoryGet` で取得した実在庫数を全量消費します。在庫が無いアイテムはスキップされます。
-5. **再帰消費（自動）**: 全対象の消費後、再度 `inventoryGet` で残りを確認し、マトリョーシカ系アイテム（Ancient Titan Artifact Chest / Adventure Chest / Cosmic Titans Battle Chest / Cosmic Battle Chest 等＝クライアント側ラウンドループで再出現を検出する範囲であり、サーバー側 recursive 付与の 7 件に限定されない）や取り残しが無くなるまでラウンドを繰り返します。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割して消費します。サーバー側 recursive 開封により開封リクエスト数・ラウンド数の削減が見込まれるが、定量比較は未実施。残り確認のラウンドループ自体は取り残し検出のフォールバックとして残ります。
+5. **再帰消費（自動）**: 全対象の消費後、再度 `inventoryGet` で残りを確認し、マトリョーシカ系アイテム（Ancient Titan Artifact Chest / Adventure Chest / Cosmic Titans Battle Chest / Cosmic Battle Chest 等＝クライアント側ラウンドループで再出現を検出する範囲であり、サーバー側 recursive 付与の 8 件に限定されない）や取り残しが無くなるまでラウンドを繰り返します。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割して消費します。サーバー側 recursive 開封により開封リクエスト数・ラウンド数の削減が見込まれるが、定量比較は未実施。残り確認のラウンドループ自体は取り残し検出のフォールバックとして残ります。
 
 ## 登録管理（開発者向け）
 - アイテムの名前・消費 RPC メソッドは `src/python/hw_genie/core/consumables.py` の `CONSUMABLE_REGISTRY` に登録します（例: `215: ConsumableInfo("Equipment Fragment Chest", "consumableUseLootBox")`）。レジストリと `CONSUMABLE_USE_TARGETS` はカテゴリ（Titan・Artifact Chests / Crystals / Equipment Fragment Boxes / Other Chests）ごとにセクション分けされており、追加時は両方に同じセクション順で追記します。なお `17`（Stamina Potion）はレジストリにのみ登録し、`CONSUMABLE_USE_TARGETS`（一括消費対象）には含めません（手動消費のため）。
 - 1 リクエストあたりの消費上限（例: 1000 個）は `ConsumableInfo` の `max_amount` で指定します（0 = 制限なし）。
 - 選択式報酬ボックス（Chest of X Titans / Titan of Your Choice / Artifact 系 Chest 等）は `ConsumableInfo` の `player_reward_choice_index` で報酬選択インデックスを指定します（例: Titan チェストは 2、Titan of Your Choice は 0、Artifact チェストは 4。`consumableUseLootBox` の args に `playerRewardChoiceIndex` として渡されます）。
-- 再帰開封（サーバー側で入れ子を自動開封）は `ConsumableInfo` の `recursive=True` で指定します（`consumableUseLootBox` の args に `recursive: True` として渡されます。付与対象は `docs/api/UNIT_API.md` の consumableUseLootBox 節に記載の7件に限定し、他は実測待ちのため `False` のままにします）。
+- 再帰開封（サーバー側で入れ子を自動開封）は `ConsumableInfo` の `recursive=True` で指定します（`consumableUseLootBox` の args に `recursive: True` として渡されます。付与対象は `docs/api/UNIT_API.md` の consumableUseLootBox 節に記載の8件に限定し、他は実測待ちのため `False` のままにします）。
 - 一括消費の対象は `CONSUMABLE_USE_TARGETS` リスト（hero_raid の `DEFAULT_HERO_MISSION_IDS` と同じ固定管理の流儀）。
 - 新しいアイテムはまず `--method` 上書きで実績を確認してからレジストリへ追加してください。
 - 未登録アイテムを `--method` で試す際は recursive を付与できない（登録後に有効化される）。

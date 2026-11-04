@@ -24,18 +24,11 @@ class ConsumableInfo:
     ``playerRewardChoiceIndex`` として渡す。``None`` は渡さない。
     lootbox 以外のメソッドとは併用できない（登録時に拒否する）。
 
-    ``recursive`` は ``consumableUseLootBox`` の args に ``recursive`` として
-    渡すサーバー側 recursive 開封フラグ。``True`` のマトリョーシカ系アイテムはサーバー側で
-    入れ子を自動開封するため、開封ラウンド数を減らせると期待できる（定量比較は
-    未実施）。付与の証拠基準は (a) 本番実測済み（478/509/513）または (b) SKILL
-    に libId ではなく名前で記載された既知マトリョーシカ
-    （Ancient Titan Artifact Chest=149 / Adventure Chest=469 /
-    Cosmic Titans Battle Chest=492 / Cosmic Battle Chest=497）に該当する libId
-    のいずれかを満たすこととし、
-    同名のみでは不十分とする（508・493 は対象外）。対象外は未検証・ERROR 時の
-    回帰リスクがあるため ``False`` とし、実測で拡大する（lootbox 以外の
-    メソッドには付与しない）。なおクライアント側ラウンドループ（在庫再確認の
-    反復）とサーバー側 recursive（入れ子自動開封）は別概念である。
+    ``recursive`` はマトリョーシカ系（開封で入れ子が再出現する）アイテムに付ける
+    サーバー側自動開封フラグ。``consumableUseLootBox`` の args に ``recursive`` とし
+    て渡すと入れ子まで自動で開封され、開封ラウンド数を減らせると期待できる
+    （定量比較は未実施）。lootbox 以外のメソッドには付与しない。
+    クライアント側ラウンドループ（在庫再確認の反復）とは別概念。
     """
 
     name: str
@@ -169,16 +162,8 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     388: ConsumableInfo(name="Red Equipment Fragment Box - Warrior", method="consumableUseLootBox"),
     389: ConsumableInfo(name="Red Equipment Fragment Box - Control", method="consumableUseLootBox"),
     # --- Other Chests ---
-    # recursive=True の証拠基準：(a) 本番実測済み（478/509/513）または (b) SKILL
-    # に libId ではなく名前で記載された既知マトリョーシカ
-    # （Ancient Titan Artifact Chest=149 / Adventure Chest=469 /
-    # Cosmic Titans Battle Chest=492 / Cosmic Battle Chest=497）に該当する libId。
-    # 同名のみでは不十分のため、508（492 と同名だが自体の証拠なし）・493（513 と
-    # 同名）は False のままとし、実測で拡大する。(b) の 4 件は tests の8種行
-    # （149/469/492/497＋Doll 系 176/185/187/190：クライアント側ラウンドループの
-    # 既存定義）のうち SKILL 名記載に該当する部分集合である。
-    # クライアント側ラウンドループ（在庫再確認の反復）と
-    # サーバー側 recursive（入れ子自動開封）は別概念である。
+    # マトリョーシカ系に recursive=True を付ける。同名の別 libId は 492/508・
+    # 493/513・469/520 で、自体の実測・指定が無い 508・493 は False のまま。
     215: ConsumableInfo(name="Equipment Fragment Chest", method="consumableUseLootBox"),
     188: ConsumableInfo(name="Element Summoning Doll", method="consumableUseLootBox"),
     153: ConsumableInfo(name="Lesser Pet Soul Chest", method="consumableUseLootBox"),
@@ -192,14 +177,12 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
         name="Adventure Chest", method="consumableUseLootBox", recursive=True
     ),
     492: ConsumableInfo(
-        # 492/508: 同名の別libId
         name="Cosmic Titans Battle Chest", method="consumableUseLootBox", recursive=True
     ),
     497: ConsumableInfo(
         name="Cosmic Battle Chest", method="consumableUseLootBox", recursive=True
     ),
     493: ConsumableInfo(
-        # 493/513: 同名の別libId（493 は個別実測待ちのため False）
         name="Titan Upgrade Chest",
         method="consumableUseLootBox",
     ),
@@ -215,7 +198,6 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     468: ConsumableInfo(name="Explorer's Bag", method="consumableUseLootBox"),
     502: ConsumableInfo(name="Ascension Chest", method="consumableUseLootBox"),
     508: ConsumableInfo(
-        # 492/508: 同名の別libId（508 は自体の証拠なしのため False。同名のみでは不十分）
         name="Cosmic Titans Battle Chest",
         method="consumableUseLootBox",
     ),
@@ -230,6 +212,11 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
     513: ConsumableInfo(
         # 493/513: 同名の別libId
         name="Titan Upgrade Chest",
+        method="consumableUseLootBox",
+        recursive=True,
+    ),
+    520: ConsumableInfo(
+        name="Adventure Chest",
         method="consumableUseLootBox",
         recursive=True,
     ),
@@ -304,6 +291,7 @@ CONSUMABLE_USE_TARGETS: list[int] = [
     478,
     509,
     513,
+    520,
 ]
 
 
