@@ -22,7 +22,7 @@ Content-Type: application/json; charset=UTF-8
 | `chatType` | string | Yes | チャットタイプ（後述） |
 | `count` | int | No | 取得件数（デフォルト: 50） |
 | `lastId` | string | No | ページネーション用（特定のID以前のメッセージ取得） |
-| `userId` | string | personal のみ必須 | 個人チャットの相手プレイヤーID（数値）。自分自身のIDは指定不可 |
+| `userId` | string | No | 個人チャットの相手プレイヤーID（数値）。省略時は空レスポンス（会話一覧は `chatGetTalks` を使用）。自分自身のIDは指定不可 |
 
 ### chatType 早見表
 
@@ -32,7 +32,7 @@ Content-Type: application/json; charset=UTF-8
 | `training` | トレーニングマッチ（PvP訓練）の相手とのチャット |
 | `xgvg` | クロスサーバーギルド戦（XvX）|matching相手とのチャット |
 | `server` | サーバー全体向けグローバルチャット（運営公告等） |
-| `personal` | 個人チャット（PM）。相手の `userId` 指定が必須 |
+| `personal` | 個人チャット（PM）。相手の `userId` を指定するとスレッド、省略すると空（一覧は `chatGetTalks`） |
 
 ### curl 実行例
 
@@ -44,8 +44,9 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"clan"},"context":{"actionTs":1},"ident":"chat"}]}'
 ```
 
-個人チャット（PM）は相手の `userId` を必ず指定します。会話一覧を返す API は存在しないため、
-相手の ID は別途入手する必要があります（CLI では `hw-genie chat --type personal --user-id <ID>`）。
+個人チャット（PM）は `chatType=personal` に相手の `userId` を指定すると、その相手との
+スレッドを取得します。`userId` を省略しても会話一覧は返らないため、一覧は
+`chatGetTalks`（後述）を使います。
 
 ```bash
 curl -s 'https://heroes-wb.nextersglobal.com/api/' \
@@ -54,10 +55,11 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"personal","userId":"12345678","count":50},"context":{"actionTs":1},"ident":"chat"}]}'
 ```
 
-> **挙動メモ（実機観測）**: `personal` はサーバー側の未読状態に依存し、既読化済みの会話では
-> 0 件（`{"chat":[],"users":[],"clans":[]}`）が返ることがあります。`userId` なし・`0`・
-> 自分自身の ID を指定した場合は空またはエラーになります。`count` / `lastId` を変えても
-> 取得範囲は広がらないため、未読でなくなった会話の履歴はこの API では取得できません。
+> **挙動メモ（実機観測）**: `personal` のスレッド取得はサーバー側の未読状態に依存し、
+> 既読化済みの会話では 0 件（`{"chat":[],"users":[],"clans":[]}`）が返ることがあります。
+> `userId` なし・`0`・自分自身の ID を指定した場合は空またはエラーになります。
+> `count` / `lastId` を変えても取得範囲は広がらないため、**相手ごとの最新メッセージ**が
+> 必要な場合は `chatGetTalks` の `lastMessage` を使うのが確実です。
 
 ### Response Structure
 
@@ -125,6 +127,63 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 | `clanRole` | string | ギルド役職（255=Leader, 4=Member） |
 | `avatarId` | string | アバターID |
 | `lastLoginTime` | string | 最終ログイン（Unixタイムスタンプ） |
+
+---
+
+## chatGetTalks - 個人チャットの会話一覧
+
+直近にやり取りした相手（PM の会話一覧）を取得します。引数は不要です。
+
+### Request Arguments
+
+なし（`args: {}`）
+
+### curl 実行例
+
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"chatGetTalks","args":{},"context":{"actionTs":1},"ident":"chat"}]}'
+```
+
+### Response Structure
+
+```json
+{
+  "results": [{
+    "ident": "chat",
+    "result": {
+      "response": {
+        "talks": [
+          {
+            "userId": "12345678",
+            "lastMessage": "直近のメッセージ本文",
+            "lastMessageType": "text",
+            "utime": "1794145281",
+            "seen": "1794208957",
+            "read": "1794145281"
+          }
+        ]
+      }
+    }
+  }]
+}
+```
+
+### talks[] フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `userId` | string | 会話相手のプレイヤーID |
+| `lastMessage` | string | 直近メッセージ本文（`challenge` 等では空） |
+| `lastMessageType` | string | `text` / `sticker` / `challenge` など |
+| `utime` | string | 直近メッセージの Unix タイムスタンプ（秒）。**一覧は utime 降順（最新順）** |
+| `seen` | string | 相手が最後に閲覧した時刻（Unix 秒） |
+| `read` | string | 自分が最後に既読した時刻（Unix 秒、0 = 未読） |
+
+相手の名前は `userGetInfoByIds` で一括取得できます（`args: {"ids": ["12345678", ...]}`、
+最大 300 件、`response.users[]` に `id` / `name` / `level` など）。
 
 ---
 

@@ -37,6 +37,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ### 1. ユーザー基本情報・設定
 プレイヤーの基礎データや設定を取得します。
 *   **`userGetInfo`**: プレイヤーID、レベル、経験値、アバターなどの基本情報。
+*   **`userGetInfoByIds`**: 複数プレイヤーの情報を ID 指定で一括取得（`args: {"ids": [...]}`、最大300件）。個人チャットの会話相手名の解決などに使用（USER_API.md）。
 *   **`getTime`**: サーバー時刻の同期。
 *   **`settingsGetAll`**: ゲーム設定（音量、通知設定など）。
 *   **`tutorialGetInfo`**: チュートリアルの進行状況。
@@ -77,7 +78,8 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 *   **`clanWarGetBriefInfo`**: ギルド戦（ゴールドリーグ等）の概要・対戦相手。
 *   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗（`response.shop` にショップ在庫・`coins` に残高。詳細は GUILD_API.md）。
 *   **`clanRaid_shopBuy`**: ギルドレイド（Asgard）のショップ購入（`args: {"slotId": N}`。詳細は GUILD_API.md）。
-*   **`chatGetAll`**: チャット履歴取得（chatType指定。個人チャットは `chatType=personal` + 相手の `userId` が必須、CHAT_API.md）。
+*   **`chatGetAll`**: チャット履歴取得（chatType指定。個人チャットは `chatType=personal` + 相手の `userId` でスレッド取得、CHAT_API.md）。
+*   **`chatGetTalks`**: 個人チャットの会話一覧（直近の相手・最新メッセージ・既読状態。utime 降順、CHAT_API.md）。
 *   **`chatServerSubscribe`**: リアルタイムチャット購読。
 *   **`userGetAvailableStickers`**: 利用可能なスタンプ一覧。
 *   **`friendsGetInfo`**: フレンドリストとギフト交換状況。

@@ -54,13 +54,47 @@ MOCK_CHAT_RESPONSE = {
 }
 
 
-def _make_client(response: dict | None = None, status: ResponseStatus = ResponseStatus.SUCCESS, error_name: str | None = None) -> HWClient:
+MOCK_TALKS_RESPONSE = {
+    "talks": [
+        {"userId": "111", "lastMessage": "older msg", "lastMessageType": "text", "utime": "1000", "seen": "0", "read": "0"},
+        {"userId": "222", "lastMessage": "", "lastMessageType": "challenge", "utime": "3000", "seen": "0", "read": "0"},
+        {"userId": "333", "lastMessage": "newest msg", "lastMessageType": "text", "utime": "2000", "seen": "0", "read": "0"},
+    ]
+}
+
+MOCK_TALK_USERS = [
+    {"id": "111", "name": "Alice"},
+    {"id": "222", "name": "Bob"},
+    {"id": "333", "name": "Carol"},
+]
+
+
+def _make_client(
+    response: dict | None = None,
+    status: ResponseStatus = ResponseStatus.SUCCESS,
+    error_name: str | None = None,
+    talks: dict | None = None,
+    talk_users: list | None = None,
+    names_status: ResponseStatus = ResponseStatus.SUCCESS,
+) -> HWClient:
     client = HWClient(headers={"x-auth-token": "test"})
     res = MagicMock()
     res.status = status
     res.error_name = error_name
     res.detail = {"response": response if response is not None else MOCK_CHAT_RESPONSE}
     client.chat_get_all = MagicMock(return_value=res)
+
+    talks_res = MagicMock()
+    talks_res.status = status
+    talks_res.error_name = error_name
+    talks_res.detail = {"response": talks if talks is not None else MOCK_TALKS_RESPONSE}
+    client.chat_get_talks = MagicMock(return_value=talks_res)
+
+    names_res = MagicMock()
+    names_res.status = names_status
+    names_res.error_name = None
+    names_res.detail = {"response": {"users": talk_users if talk_users is not None else MOCK_TALK_USERS}}
+    client.user_get_info_by_ids = MagicMock(return_value=names_res)
     return client
 
 
@@ -252,14 +286,146 @@ def _register_session(alias: str) -> None:
 
 # --- run_chat: personal (PM) ---
 
-def test_run_chat_personal_requires_user_id(capsys):
+def test_parse_talks_response_sorts_newest_first():
+    from hw_genie.commands.chat import parse_talks_response
+
+    talks = parse_talks_response(MOCK_TALKS_RESPONSE)
+    assert [t.user_id for t in talks] == ["222", "333", "111"]
+    assert talks[0].message_type == "challenge"
+    assert talks[0].display_text == "(challenge)"
+    assert talks[1].display_text == "newest msg"
+    assert parse_talks_response({}) == []
+    assert parse_talks_response({"talks": "nope"}) == []
+
+
+def test_run_chat_personal_lists_talks_with_names(capsys, monkeypatch):
+    monkeypatch.setenv("HWGENIE_TZ", "UTC")
     _register_session("TestUser6")
     client = _make_client()
-    result = run_chat(client, account_alias="TestUser6", chat_type="personal")
-    assert result == []
-    assert not result.success
-    assert "--user-id" in capsys.readouterr().err
+    result = run_chat(client, account_alias="TestUser6", chat_type="personal", count=2)
+    assert result.success
+    client.chat_get_talks.assert_called_once_with()
     client.chat_get_all.assert_not_called()
+    # count で最新2件に絞られる（utime 降順: 222, 333）
+    assert [t.user_id for t in result] == ["222", "333"]
+    client.user_get_info_by_ids.assert_called_once_with(["222", "333"])
+    out = capsys.readouterr().out
+    assert "Personal talks" in out
+    assert "Bob (222)" in out
+    assert "Carol (333)" in out
+    assert "Alice (111)" not in out
+
+
+def test_run_chat_personal_talks_json(capsys):
+    _register_session("TestUser20")
+    client = _make_client()
+    run_chat(client, account_alias="TestUser20", chat_type="personal", json_output=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["user_id"] for row in payload] == ["222", "333", "111"]
+    assert payload[0]["name"] == "Bob"
+    assert payload[0]["message_type"] == "challenge"
+
+
+def test_run_chat_personal_talks_names_failure_falls_back_to_id(capsys):
+    _register_session("TestUser21")
+    client = _make_client(names_status=ResponseStatus.ERROR)
+    result = run_chat(client, account_alias="TestUser21", chat_type="personal")
+    assert result.success
+    assert result[0].name is None
+    assert "222" in capsys.readouterr().out
+
+
+def test_run_chat_personal_talks_empty(capsys):
+    _register_session("TestUser22")
+    client = _make_client(talks={"talks": []})
+    result = run_chat(client, account_alias="TestUser22", chat_type="personal")
+    assert result == []
+    assert result.success
+    assert "No personal talks found" in capsys.readouterr().out
+
+
+def test_run_chat_personal_talks_rejects_last_id(capsys):
+    _register_session("TestUser23")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser23", chat_type="personal", last_id="1")
+    assert not result.success
+    assert "--last-id" in capsys.readouterr().err
+    client.chat_get_talks.assert_not_called()
+
+
+def test_run_chat_personal_talks_failure(capsys):
+    _register_session("TestUser24")
+    client = _make_client(status=ResponseStatus.ERROR, error_name="InvalidSession")
+    result = run_chat(client, account_alias="TestUser24", chat_type="personal")
+    assert not result.success
+    assert "Failed to fetch personal talks" in capsys.readouterr().err
+
+
+def test_run_chat_personal_talks_raw_skips_name_lookup(capsys):
+    _register_session("TestUser30")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser30", chat_type="personal", count=1, raw=True)
+    assert result.success
+    payload = json.loads(capsys.readouterr().out)
+    assert "talks" in payload
+    # raw はデバッグ用でスライスしない
+    assert len(payload["talks"]) == 3
+    assert len(result) == 3
+    client.user_get_info_by_ids.assert_not_called()
+
+
+def test_run_chat_personal_talks_unexpected_format(capsys):
+    _register_session("TestUser31")
+    client = _make_client(talks={})
+    result = run_chat(client, account_alias="TestUser31", chat_type="personal")
+    assert not result.success
+    assert "Unexpected chatGetTalks response format" in capsys.readouterr().err
+
+
+def test_run_chat_personal_talks_json_empty(capsys):
+    _register_session("TestUser32")
+    client = _make_client(talks={"talks": []})
+    result = run_chat(client, account_alias="TestUser32", chat_type="personal", json_output=True)
+    assert result.success
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_run_chat_personal_talks_count_clamped(capsys):
+    # utime 降順（10000 が最新）。user_id は 1000..1204。
+    talks = [
+        {
+            "userId": str(1000 + i),
+            "lastMessage": f"msg{i}",
+            "lastMessageType": "text",
+            "utime": str(10000 - i),
+        }
+        for i in range(205)
+    ]
+    _register_session("TestUser33")
+    client = _make_client(talks={"talks": talks}, talk_users=[])
+
+    result = run_chat(client, account_alias="TestUser33", chat_type="personal", count=500)
+    assert result.success
+    assert len(result) == 200
+    expected_ids = [str(1000 + i) for i in range(200)]
+    assert [t.user_id for t in result] == expected_ids
+    client.user_get_info_by_ids.assert_called_once_with(expected_ids)
+
+    # count=0 は 1 にクランプされ、最新の1件だけになる
+    client.user_get_info_by_ids.reset_mock()
+    result = run_chat(client, account_alias="TestUser33", chat_type="personal", count=0)
+    assert len(result) == 1
+    assert result[0].user_id == "1000"
+    client.user_get_info_by_ids.assert_called_once_with(["1000"])
+
+
+def test_run_chat_personal_rejects_empty_user_id(capsys):
+    _register_session("TestUser25")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser25", chat_type="personal", user_id="  ")
+    assert not result.success
+    assert "must not be empty" in capsys.readouterr().err
+    client.chat_get_talks.assert_not_called()
 
 
 def test_run_chat_user_id_rejected_for_non_personal(capsys):
@@ -363,6 +529,29 @@ def test_client_chat_get_all_payload():
     args = called["payload"]["calls"][0]["args"]
     assert args["chatType"] == "personal"
     assert args["userId"] == "30520858"
+
+
+def test_client_talk_methods_payload():
+    client = HWClient(headers={"x-auth-token": "tok", "x-request-id": "5"})
+    called = {}
+
+    def fake_call(payload):
+        called["payload"] = payload
+        res = MagicMock()
+        res.status = ResponseStatus.SUCCESS
+        res.detail = {"response": {"talks": [], "users": []}}
+        return res
+
+    client.call = fake_call  # type: ignore
+    client.chat_get_talks()
+    call = called["payload"]["calls"][0]
+    assert call["name"] == ApiAction.CHAT_GET_TALKS
+    assert call["args"] == {}
+
+    client.user_get_info_by_ids(["111", 222])
+    call = called["payload"]["calls"][0]
+    assert call["name"] == ApiAction.USER_GET_INFO_BY_IDS
+    assert call["args"] == {"ids": ["111", "222"]}
 
 
 def test_chat_parser_accepts_personal_user_id(monkeypatch):
