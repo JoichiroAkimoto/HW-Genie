@@ -482,13 +482,16 @@ class HWClient:
         chat_type: str = "clan",
         count: int = 50,
         last_id: str | None = None,
+        user_id: str | None = None,
     ) -> HWResponse:
         """チャット履歴を取得する（chatGetAll）。
 
         Args:
-            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``）。
+            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``/``personal``）。
             count: 取得件数（1-200 にクランプ、既定 50）。
             last_id: ページネーション用（指定 ID 以前のメッセージを取得。CLI では ``--last-id`` で指定）。
+            user_id: 個人チャット（``personal``）の相手 userId。``personal`` では必須。
+                会話一覧を返す API は無いため、相手の ID を直接指定する。
         """
         # count は 1-200 にクランプ（API 負荷とレスポンスサイズを制限）。ValueError 等はデフォルトにフォールバック。
         try:
@@ -499,6 +502,8 @@ class HWClient:
         args: dict[str, Any] = {"chatType": chat_type, "count": count_int}
         if last_id is not None:
             args["lastId"] = str(last_id)
+        if user_id:
+            args["userId"] = str(user_id)
         payload = {
             "calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]
         }

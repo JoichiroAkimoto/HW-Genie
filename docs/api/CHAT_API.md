@@ -22,6 +22,7 @@ Content-Type: application/json; charset=UTF-8
 | `chatType` | string | Yes | チャットタイプ（後述） |
 | `count` | int | No | 取得件数（デフォルト: 50） |
 | `lastId` | string | No | ページネーション用（特定のID以前のメッセージ取得） |
+| `userId` | string | personal のみ必須 | 個人チャットの相手プレイヤーID（数値）。自分自身のIDは指定不可 |
 
 ### chatType 早見表
 
@@ -31,6 +32,7 @@ Content-Type: application/json; charset=UTF-8
 | `training` | トレーニングマッチ（PvP訓練）の相手とのチャット |
 | `xgvg` | クロスサーバーギルド戦（XvX）|matching相手とのチャット |
 | `server` | サーバー全体向けグローバルチャット（運営公告等） |
+| `personal` | 個人チャット（PM）。相手の `userId` 指定が必須 |
 
 ### curl 実行例
 
@@ -41,6 +43,21 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'content-type: application/json; charset=UTF-8' \
   --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"clan"},"context":{"actionTs":1},"ident":"chat"}]}'
 ```
+
+個人チャット（PM）は相手の `userId` を必ず指定します。会話一覧を返す API は存在しないため、
+相手の ID は別途入手する必要があります（CLI では `hw-genie chat --type personal --user-id <ID>`）。
+
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"chatGetAll","args":{"chatType":"personal","userId":"12345678","count":50},"context":{"actionTs":1},"ident":"chat"}]}'
+```
+
+> **挙動メモ（実機観測）**: `personal` はサーバー側の未読状態に依存し、既読化済みの会話では
+> 0 件（`{"chat":[],"users":[],"clans":[]}`）が返ることがあります。`userId` なし・`0`・
+> 自分自身の ID を指定した場合は空またはエラーになります。`count` / `lastId` を変えても
+> 取得範囲は広がらないため、未読でなくなった会話の履歴はこの API では取得できません。
 
 ### Response Structure
 

@@ -1,10 +1,11 @@
-"""Guild chat (chatGetAll) fetch, table display and summary.
+"""Guild / personal chat (chatGetAll) fetch, table display and summary.
 
-Fetch latest 50 messages (default) via ``chatGetAll`` (``chatType=clan``)
-and display as table + statistical summary.
+Fetch latest 50 messages (default) via ``chatGetAll`` (``chatType=clan``
+and other types) and display as table + statistical summary.
 
 - ``hw-genie chat``: show guild chat table + summary
-- ``--type``: chatType selection (clan / training / xgvg / server)
+- ``--type``: chatType selection (clan / training / xgvg / server / personal)
+- ``--user-id``: peer userId for ``--type personal`` (required)
 - ``--count``: number of messages
 - ``--raw``: raw response JSON, ``--json``: parsed JSON
 """
@@ -28,7 +29,7 @@ from hw_genie.core.utils import display_timezone_name, format_timestamp_for_disp
 
 logger = logging.getLogger(__name__)
 
-CHAT_TYPES = ("clan", "training", "xgvg", "server")
+CHAT_TYPES = ("clan", "training", "xgvg", "server", "personal")
 
 HEADER_DATETIME = "Time"
 HEADER_SENDER = "Sender"
@@ -238,11 +239,12 @@ def summarize_chat(messages: list[ChatMessage]) -> dict[str, Any]:
     }
 
 
-def print_chat_table(messages: list[ChatMessage], account: str, chat_type: str) -> None:
+def print_chat_table(messages: list[ChatMessage], account: str, chat_type: str, user_id: str | None = None) -> None:
     """Display chat as table."""
     tz_label = display_timezone_name()
+    chat_label = f"{chat_type}:{user_id}" if chat_type == "personal" and user_id else chat_type
     table = Table(
-        title=f"Chat ({chat_type}) - {account}  latest {len(messages)}  [{tz_label}]",
+        title=f"Chat ({chat_label}) - {account}  latest {len(messages)}  [{tz_label}]",
         box=box.ROUNDED,
         show_lines=False,
         header_style="bold cyan",
@@ -289,8 +291,9 @@ def run_chat(
     raw: bool = False,
     json_output: bool = False,
     last_id: str | None = None,
+    user_id: str | None = None,
 ) -> ChatResult:
-    """Fetch guild chat and display as table + summary.
+    """Fetch chat and display as table + summary.
 
     Args:
         client: authenticated HWClient
@@ -300,6 +303,7 @@ def run_chat(
         raw: print raw response JSON
         json_output: print parsed messages as JSON
         last_id: pagination (fetch before this ID)
+        user_id: peer userId for ``chat_type="personal"`` (required there)
 
     Returns:
         Parsed ChatMessage list (``ChatResult`` with ``success`` flag).
@@ -313,13 +317,32 @@ def run_chat(
         print(f"❌ Unknown chatType: {chat_type} (choices: {', '.join(CHAT_TYPES)})", file=sys.stderr)
         return ChatResult([], success=False)
 
+    # 指定有無は strip 前の値で判定する（空白のみの指定も「指定あり」として扱う）。
+    user_id_supplied = user_id is not None
+    user_id = str(user_id).strip() if user_id_supplied else None
+    if chat_type == "personal":
+        # 会話一覧を返す API が無いため、相手 userId の指定が必須。
+        if not user_id:
+            print("❌ --type personal requires --user-id <peer userId>.", file=sys.stderr)
+            return ChatResult([], success=False)
+        # str.isdigit は非 ASCII 数字も通すため isascii と併用する。
+        if not (user_id.isascii() and user_id.isdigit()):
+            print(f"❌ Invalid --user-id: {user_id!r} (numeric userId required).", file=sys.stderr)
+            return ChatResult([], success=False)
+    else:
+        # 非 personal では空白のみの指定もエラーにする（payload に空 userId を送らない）。
+        if user_id_supplied:
+            print("❌ --user-id is only valid with --type personal.", file=sys.stderr)
+            return ChatResult([], success=False)
+        user_id = None
+
     try:
         count_int = int(count) if count is not None else 50
     except (TypeError, ValueError):
         print(f"❌ Invalid count: {count!r}", file=sys.stderr)
         return ChatResult([], success=False)
 
-    res = client.chat_get_all(chat_type=chat_type, count=count_int, last_id=last_id)
+    res = client.chat_get_all(chat_type=chat_type, count=count_int, last_id=last_id, user_id=user_id)
     if res.status != ResponseStatus.SUCCESS:
         print(f"❌ Failed to fetch chat: {res.status.value} ({res.error_name or '-'})", file=sys.stderr)
         return ChatResult([], success=False)
@@ -341,17 +364,25 @@ def run_chat(
     # messages は ctime 昇順にソート済みなので、最新 count 件は末尾のスライスになる
     if count_int is not None and len(messages) > count_int:
         messages = messages[-count_int:]
-    if not messages:
-        print(f"ℹ️  [{account}] No chat history found ({chat_type}).")
-        return ChatResult([], success=True)
-
     if json_output:
+        # JSON モードは空結果でも必ず ``[]`` を出す（stdout を常にパース可能に保つ）。
         data = [asdict(m) for m in messages]
         print(json.dumps(data, ensure_ascii=False, indent=1))
         return ChatResult(messages, success=True)
 
+    if not messages:
+        chat_label = f"personal: {user_id}" if chat_type == "personal" else chat_type
+        print(f"ℹ️  [{account}] No chat history found ({chat_label}).")
+        if chat_type == "personal":
+            print(
+                "   Note: the server may return only unread PMs for a conversation; "
+                "messages already read in-game can come back empty.",
+                file=sys.stderr,
+            )
+        return ChatResult([], success=True)
+
     # 通常表示: 表＋要約
-    print_chat_table(messages, account, chat_type)
+    print_chat_table(messages, account, chat_type, user_id)
     summary = summarize_chat(messages)
     print_chat_summary(summary)
     return ChatResult(messages, success=True)

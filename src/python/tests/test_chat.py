@@ -241,6 +241,97 @@ def test_run_chat_empty(capsys):
     assert "No chat history found" in out
 
 
+def _register_session(alias: str) -> None:
+    from hw_genie.core.session_manager import SessionManager
+
+    SessionManager.repo.save_data(
+        alias,
+        {"headers": {"x-auth-token": "t"}, "player": {"id": "c1", "name": alias}},
+    )
+
+
+# --- run_chat: personal (PM) ---
+
+def test_run_chat_personal_requires_user_id(capsys):
+    _register_session("TestUser6")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser6", chat_type="personal")
+    assert result == []
+    assert not result.success
+    assert "--user-id" in capsys.readouterr().err
+    client.chat_get_all.assert_not_called()
+
+
+def test_run_chat_user_id_rejected_for_non_personal(capsys):
+    _register_session("TestUser7")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser7", chat_type="clan", user_id="123")
+    assert not result.success
+    assert "only valid with --type personal" in capsys.readouterr().err
+    client.chat_get_all.assert_not_called()
+
+
+def test_run_chat_personal_rejects_non_numeric_user_id(capsys):
+    _register_session("TestUser8")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser8", chat_type="personal", user_id="abc")
+    assert not result.success
+    assert "numeric userId" in capsys.readouterr().err
+    client.chat_get_all.assert_not_called()
+
+
+def test_run_chat_personal_passes_user_id(capsys, monkeypatch):
+    monkeypatch.setenv("HWGENIE_TZ", "UTC")
+    _register_session("TestUser9")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser9", chat_type="personal", user_id=" 30520858 ")
+    assert result.success
+    client.chat_get_all.assert_called_once_with(
+        chat_type="personal", count=50, last_id=None, user_id="30520858"
+    )
+    assert "personal:30520858" in capsys.readouterr().out
+
+
+def test_run_chat_personal_empty_mentions_unread_behavior(capsys):
+    _register_session("TestUser10")
+    client = _make_client(response={"chat": [], "users": {}})
+    result = run_chat(client, account_alias="TestUser10", chat_type="personal", user_id="30520858")
+    assert result == []
+    assert result.success
+    captured = capsys.readouterr()
+    assert "personal: 30520858" in captured.out
+    # unread の注意書きは stdout をパース可能に保つため stderr に出す
+    assert "unread" in captured.err
+    assert "unread" not in captured.out
+
+
+def test_run_chat_personal_empty_json_prints_empty_list(capsys):
+    _register_session("TestUser11")
+    client = _make_client(response={"chat": [], "users": {}})
+    result = run_chat(
+        client,
+        account_alias="TestUser11",
+        chat_type="personal",
+        user_id="30520858",
+        json_output=True,
+    )
+    assert result.success
+    captured = capsys.readouterr()
+    # stdout は必ずパース可能な JSON（空リスト）
+    assert json.loads(captured.out) == []
+    # 人間向けメッセージは JSON モードでは出さない
+    assert "No chat history found" not in captured.out
+
+
+def test_run_chat_non_personal_rejects_whitespace_user_id(capsys):
+    _register_session("TestUser12")
+    client = _make_client()
+    result = run_chat(client, account_alias="TestUser12", chat_type="clan", user_id="  ")
+    assert not result.success
+    assert "only valid with --type personal" in capsys.readouterr().err
+    client.chat_get_all.assert_not_called()
+
+
 def test_client_chat_get_all_payload():
     client = HWClient(headers={"x-auth-token": "tok", "x-request-id": "5"})
     # セッションをモックして call を検証
@@ -258,7 +349,37 @@ def test_client_chat_get_all_payload():
     assert called["payload"]["calls"][0]["name"] == ApiAction.CHAT_GET_ALL
     assert called["payload"]["calls"][0]["args"]["chatType"] == "clan"
     assert called["payload"]["calls"][0]["args"]["count"] == 10
+    assert "userId" not in called["payload"]["calls"][0]["args"]
 
     client.chat_get_all(chat_type="server", count=5, last_id="123")
     assert called["payload"]["calls"][0]["args"]["lastId"] == "123"
     assert called["payload"]["calls"][0]["args"]["chatType"] == "server"
+
+    # 空文字の user_id は payload に userId を載せない
+    client.chat_get_all(chat_type="clan", user_id="")
+    assert "userId" not in called["payload"]["calls"][0]["args"]
+
+    client.chat_get_all(chat_type="personal", count=50, user_id="30520858")
+    args = called["payload"]["calls"][0]["args"]
+    assert args["chatType"] == "personal"
+    assert args["userId"] == "30520858"
+
+
+def test_chat_parser_accepts_personal_user_id(monkeypatch):
+    import sys
+
+    import hw_genie.main as main_mod
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hw-genie", "chat", "-a", "Alice", "--type", "personal", "--user-id", "30520858"],
+    )
+    monkeypatch.setattr(main_mod, "cmd_chat", lambda args: captured.update(vars(args)))
+    monkeypatch.setattr("hw_genie.core.database.init_db", lambda: None)
+    monkeypatch.setattr("hw_genie.core.database.install_token_masking_filter", lambda: None)
+    monkeypatch.setattr(main_mod, "setup_logging", lambda debug=False: None)
+    main_mod.main()
+    assert captured["type"] == "personal"
+    assert captured["user_id"] == "30520858"
