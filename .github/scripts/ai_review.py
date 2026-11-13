@@ -229,6 +229,8 @@ def load_model_config():
                 "input_cost_per_1m": 0.30,
                 "output_cost_per_1m": 2.50,
                 "max_diff_chars": 2000000,
+                "provider": "gemini",
+                "thinking_level": "HIGH",
             }
         }
 
