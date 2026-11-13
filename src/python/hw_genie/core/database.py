@@ -12,7 +12,19 @@ import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy import util
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    String,
+    JSON,
+    Index,
+    Integer,
+    DateTime,
+    ForeignKey,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.sql import func
 from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
@@ -507,6 +519,154 @@ class RunLog(Base):
     hostname = Column(String, nullable=True)
 
 
+class TeamConfig(Base):
+    """A team configuration observed in battle logs.
+
+    ``config_hash`` covers the full combat-relevant config (stats included),
+    while ``lineup_key`` covers only the lineup (hero order + pet + banner).
+    Lineup-level matching deliberately ignores power/stat changes so past
+    battles remain comparable after upgrades.
+    """
+
+    __tablename__ = "team_configs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_hash = Column(String(64), unique=True, nullable=False)
+    lineup_key = Column(String(64), nullable=False, index=True)
+    format = Column(String(16), nullable=False)
+    heroes_summary = Column(String(64), nullable=False)
+    pet_id = Column(Integer, nullable=True)
+    banner_id = Column(Integer, nullable=True)
+    config_json = Column(JSON, nullable=False)
+    completeness = Column(String(16), nullable=False, default="full")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class TeamConfigHero(Base):
+    """Per-slot hero rows for a :class:`TeamConfig` (searchable form)."""
+
+    __tablename__ = "team_config_heroes"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_config_id = Column(
+        Integer, ForeignKey("team_configs.id", ondelete="CASCADE"), nullable=False
+    )
+    slot = Column(Integer, nullable=False)
+    hero_id = Column(Integer, nullable=False, index=True)
+    level = Column(Integer, nullable=True)
+    star = Column(Integer, nullable=True)
+    power = Column(Integer, nullable=True)
+    __table_args__ = (
+        UniqueConstraint("team_config_id", "slot", name="_team_config_hero_uc"),
+    )
+
+
+class BattleRecord(Base):
+    """One observed battle (imported replay, simulation, or real attack).
+
+    Imported replays are server-produced, so ``authoritative`` is true; oracle
+    results must only become authoritative after parity verification (Phase 2).
+
+    ``UNIQUE(source, source_record_id)`` is global (not per account): the first
+    import of a replay wins, and importing the same replay under another account
+    is reported as a duplicate. ``query_matchups`` therefore filters by player
+    involvement rather than by the importing ``account_id``.
+
+    ``win`` is the replay's ``result.win`` as reported by the server. The API is
+    assumed to report it from the attacker's perspective (``userId`` side), so a
+    defender-imported replay keeps that same attacker-perspective value.
+    ``viewer_role`` records which side the importing account was on
+    (``attacker`` / ``defender`` / ``unknown``).
+    """
+
+    __tablename__ = "battle_records"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    battle_type = Column(String(16), nullable=False)
+    source = Column(String(16), nullable=False)
+    source_record_id = Column(String(64), nullable=False)
+    battle_id = Column(String(64), nullable=True)
+    occurred_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    game_version = Column(String(32), nullable=True)
+    attacker_config_id = Column(Integer, ForeignKey("team_configs.id"), nullable=True)
+    defender_config_id = Column(Integer, ForeignKey("team_configs.id"), nullable=True)
+    attacker_lineup_key = Column(String(64), nullable=False)
+    defender_lineup_key = Column(String(64), nullable=False)
+    matchup_key = Column(String(64), nullable=False)
+    attacker_player_id = Column(String(32), nullable=True)
+    defender_player_id = Column(String(32), nullable=True)
+    viewer_role = Column(String(16), nullable=True)
+    seed = Column(BigInteger, nullable=True)
+    win = Column(Boolean, nullable=True)
+    stars = Column(Integer, nullable=True)
+    deterministic = Column(Boolean, nullable=True)
+    authoritative = Column(Boolean, nullable=False, default=True)
+    engine = Column(String(24), nullable=False, default="game-server")
+    completeness = Column(String(16), nullable=False, default="full")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("source", "source_record_id", name="_battle_source_uc"),
+        Index(
+            "ix_battle_records_matchup",
+            "battle_type",
+            "matchup_key",
+            "game_version",
+        ),
+        Index(
+            "ix_battle_records_defender",
+            "defender_player_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_battle_records_lineup",
+            "attacker_lineup_key",
+            "defender_lineup_key",
+        ),
+        Index(
+            "ix_battle_records_type_defender_lineup",
+            "battle_type",
+            "defender_lineup_key",
+        ),
+    )
+
+
+class BattleComparison(Base):
+    """Prediction-vs-actual record (populated once an oracle exists)."""
+
+    __tablename__ = "battle_comparisons"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    predicted_battle_id = Column(
+        Integer, ForeignKey("battle_records.id"), nullable=False
+    )
+    actual_battle_id = Column(
+        Integer, ForeignKey("battle_records.id"), nullable=False
+    )
+    expected_win = Column(Boolean, nullable=True)
+    actual_win = Column(Boolean, nullable=True)
+    expected_stars = Column(Integer, nullable=True)
+    actual_stars = Column(Integer, nullable=True)
+    mismatch_type = Column(String(16), nullable=False)
+    delta_stars = Column(Integer, nullable=True)
+    evaluated_at = Column(DateTime, server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint(
+            "predicted_battle_id",
+            "actual_battle_id",
+            name="_battle_comparison_uc",
+        ),
+    )
+
+
 # プロジェクトルートの絶対パスを基点に DB パスを確定させる。
 # 開発環境では src/python/hw_genie/core/database.py、コンテナでは
 # /app/hw_genie/core/database.py のようにネスト深さが異なるため、固定の
@@ -897,20 +1057,27 @@ SessionLocal = _LazySessionLocal()
 
 # 既存テーブルに後から追加されたカラム（create_all はテーブル作成のみで、
 # 既存テーブルへのカラム追加は行わないため、init_db で ALTER する）。
-_RUN_LOGS_ADDITIONAL_COLUMNS: dict[str, dict[str, str]] = {
+_ADDITIONAL_COLUMNS: dict[str, dict[str, str]] = {
     "run_logs": {"hostname": "VARCHAR"},
+    "battle_records": {"viewer_role": "VARCHAR(16)"},
 }
+
+# 既存 DB にも後から張る索引（create_all は既存テーブルの索引を追加しない）。
+_ADDITIONAL_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_battle_records_type_defender_lineup "
+    "ON battle_records (battle_type, defender_lineup_key)",
+)
 
 
 def _apply_light_migrations(engine) -> None:
-    """Add columns introduced after table creation (idempotent, best-effort).
+    """Add columns/indexes introduced after table creation (idempotent, best-effort).
 
     ``Base.metadata.create_all`` only creates missing tables, so columns added
-    later (e.g. ``run_logs.hostname``) must be applied with ``ALTER TABLE``.
-    A missing column would otherwise make every ``record_run_log`` INSERT fail
-    (and be swallowed, since run-log recording is best-effort by design).
+    later (e.g. ``run_logs.hostname``, ``battle_records.viewer_role``) must be
+    applied with ``ALTER TABLE``, and new indexes with ``CREATE INDEX IF NOT
+    EXISTS``. A missing column would otherwise make every related INSERT fail.
     """
-    for table_name, columns in _RUN_LOGS_ADDITIONAL_COLUMNS.items():
+    for table_name, columns in _ADDITIONAL_COLUMNS.items():
         try:
             with engine.connect() as conn:
                 existing = {
@@ -923,6 +1090,9 @@ def _apply_light_migrations(engine) -> None:
             logger.warning(
                 "Failed to inspect table %s for migrations: %s", table_name, exc
             )
+            continue
+        if not existing:
+            # テーブル自体がまだ無い（この後の create_all で作られる）。
             continue
         for column, col_type in columns.items():
             if column in existing:
@@ -939,6 +1109,13 @@ def _apply_light_migrations(engine) -> None:
                 logger.warning(
                     "Failed to add column %s to %s: %s", column, table_name, exc
                 )
+
+    for statement in _ADDITIONAL_INDEXES:
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(statement)
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning("Failed to apply index migration (%s): %s", statement, exc)
 
 
 def init_db():
