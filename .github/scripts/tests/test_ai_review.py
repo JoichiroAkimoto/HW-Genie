@@ -21,17 +21,21 @@ from ai_review import (  # noqa: E402
 
 MODEL_CONFIG = {
     "flash-lite": {
-        "name": "gemini-3.1-flash-lite",
-        "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite", "gemini-3-flash-lite"],
-        "input_cost_per_1m": 0.25,
-        "output_cost_per_1m": 1.50,
+        "name": "gemini-3.5-flash-lite",
+        "aliases": [
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-flash-lite",
+        ],
+        "input_cost_per_1m": 0.30,
+        "output_cost_per_1m": 2.50,
         "max_diff_chars": 2000000,
     },
     "flash": {
-        "name": "gemini-3.5-flash",
-        "aliases": ["gemini-flash-latest", "gemini-flash"],
-        "input_cost_per_1m": 1.50,
-        "output_cost_per_1m": 9.00,
+        "name": "gemini-3.8-flash",
+        "aliases": ["gemini-3.8-flash", "gemini-flash-latest", "gemini-flash"],
+        "input_cost_per_1m": 0.75,
+        "output_cost_per_1m": 3.75,
         "max_diff_chars": 2000000,
     },
     "gemma": {
@@ -158,41 +162,41 @@ def test_strip_review_metadata_empty():
 def test_resolve_model_by_key():
     # 設定キー入力は正規名へ解決される（エイリアスではない）
     info, name = resolve_model("flash-lite", MODEL_CONFIG)
-    assert name == "gemini-3.1-flash-lite"
-    assert info["input_cost_per_1m"] == 0.25
+    assert name == "gemini-3.5-flash-lite"
+    assert info["input_cost_per_1m"] == 0.30
 
 
-def test_resolve_model_by_self_alias_returns_alias():
-    # "gemini-flash-lite" は flash-lite のエイリアス → 表示はエイリアス自身
-    # （本番では API で正規名へ解決される）
+def test_resolve_model_by_self_alias_returns_canonical():
+    # "gemini-flash-lite" は flash-lite のエイリアス → 正式名へ正規化される
+    # （API v1 はエイリアスを解決しないため、エイリアスを API へ渡さない）
     info, name = resolve_model("gemini-flash-lite", MODEL_CONFIG)
-    assert name == "gemini-flash-lite"
-    assert info["input_cost_per_1m"] == 0.25
+    assert name == "gemini-3.5-flash-lite"
+    assert info["input_cost_per_1m"] == 0.30
 
 
 def test_resolve_model_exact_alias_does_not_become_unknown():
-    # "gemini-flash" は flash の厳密エイリアス → 未知にならない
+    # "gemini-flash" は flash の厳密エイリアス → 未知にならず正式名へ正規化
     info, name = resolve_model("gemini-flash", MODEL_CONFIG)
-    assert info["input_cost_per_1m"] == 1.50
-    assert name == "gemini-flash"
+    assert info["input_cost_per_1m"] == 0.75
+    assert name == "gemini-3.8-flash"
 
 
 def test_resolve_model_by_alias():
     info, name = resolve_model("gemini-flash-lite-latest", MODEL_CONFIG)
-    # エイリアス指定: 正式名としてそのまま、価格は flash-lite 相当
-    assert name == "gemini-flash-lite-latest"
-    assert info["input_cost_per_1m"] == 0.25
+    # エイリアス指定: 正式名へ正規化、価格は flash-lite 相当
+    assert name == "gemini-3.5-flash-lite"
+    assert info["input_cost_per_1m"] == 0.30
 
 
 def test_resolve_model_by_name():
-    info, name = resolve_model("gemini-3.5-flash", MODEL_CONFIG)
-    assert name == "gemini-3.5-flash"
+    info, name = resolve_model("gemini-3.8-flash", MODEL_CONFIG)
+    assert name == "gemini-3.8-flash"
 
 
 def test_resolve_model_unknown_keyword_fallback():
     # "gemini-flash-latest-xyz" は flash のエイリアスを一意に含むため flash 相当
     info, name = resolve_model("gemini-flash-latest-xyz", MODEL_CONFIG)
-    assert info["input_cost_per_1m"] == 1.50  # flash 相当
+    assert info["input_cost_per_1m"] == 0.75  # flash 相当
     assert name == "gemini-flash-latest-xyz"
 
 
@@ -214,13 +218,6 @@ def test_resolve_model_unknown_cost_is_none():
     assert name == "some-unknown-model"
 
 
-def test_resolve_model_partial_match_prefers_longer():
-    # "flash-lite" を部分一致で渡しても flash ではなく flash-lite に一致する
-    info, name = resolve_model("gemini-flash-lite", MODEL_CONFIG)
-    assert info["input_cost_per_1m"] == 0.25
-    assert name == "gemini-flash-lite"
-
-
 def test_models_json_valid():
     """models.json が正しい構造であることを確認。"""
     path = os.path.join(os.path.dirname(__file__), "..", "models.json")
@@ -232,6 +229,41 @@ def test_models_json_valid():
         assert "output_cost_per_1m" in info
         assert "max_diff_chars" in info
         assert isinstance(info.get("aliases", []), list)
+
+
+def test_models_json_uses_explicit_gemini_model_ids():
+    """models.json の Gemini モデルは API v1 で解決可能な明示的 GA ID を使う。
+
+    google-genai 3.x では Gemini Developer API の既定が v1 になり、``-latest``
+    系エイリアスは 404 を返す。このテストは各エントリの ``name`` フィールド
+    そのものを検証する（エイリアスは対象外）。既定の flash-lite / flash と
+    hydrogen の ``name`` が明示 ID であり、provider=gemini の全エントリの
+    ``name`` が ``-latest`` / ``-preview`` を含まないことを確認する。
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "models.json")
+    with open(path) as f:
+        config = json.load(f)
+    assert config["flash"]["name"] == "gemini-3.8-flash"
+    assert config["flash-lite"]["name"] == "gemini-3.5-flash-lite"
+    assert config["hydrogen"]["name"] == "gemini-4-hydrogen"
+    for key, info in config.items():
+        if info.get("provider") != "gemini":
+            continue
+        name = info["name"]
+        assert not name.endswith("-latest"), f"{key}: {name} must not be a -latest alias"
+        assert "-preview" not in name, f"{key}: {name} must not be a preview model"
+
+
+def test_resolve_model_hydrogen_alias():
+    """実 models.json で hydrogen を解決すると正式名と thinking_level が返る。"""
+    path = os.path.join(os.path.dirname(__file__), "..", "models.json")
+    with open(path) as f:
+        config = json.load(f)
+    info, name = resolve_model("hydrogen", config)
+    assert name == "gemini-4-hydrogen"
+    assert info["thinking_level"] == "HIGH"
+    # "gemini-hydrogen" エイリアスも同じ正式名へ正規化される
+    assert resolve_model("gemini-hydrogen", config)[1] == "gemini-4-hydrogen"
 
 
 class _FakeResponse:

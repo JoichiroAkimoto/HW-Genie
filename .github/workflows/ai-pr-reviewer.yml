@@ -28,6 +28,7 @@ on:
         options:
           - flash-lite
           - flash
+          - hydrogen
           - openrouter/free
         default: 'flash-lite'
 

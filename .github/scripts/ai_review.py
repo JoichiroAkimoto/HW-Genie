@@ -220,10 +220,14 @@ def load_model_config():
         # Fallback basic config
         return {
             "flash-lite": {
-                "name": "gemini-flash-lite-latest",
-                "aliases": ["gemini-flash-lite-latest", "gemini-flash-lite"],
-                "input_cost_per_1m": 0.25,
-                "output_cost_per_1m": 1.50,
+                "name": "gemini-3.5-flash-lite",
+                "aliases": [
+                    "gemini-3.5-flash-lite",
+                    "gemini-flash-lite-latest",
+                    "gemini-flash-lite",
+                ],
+                "input_cost_per_1m": 0.30,
+                "output_cost_per_1m": 2.50,
                 "max_diff_chars": 2000000,
             }
         }
@@ -240,6 +244,11 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
     部分一致は **一意** に決まる場合のみ採用し、複数のモデルに曖昧にマッチする
     入力（例: ``"gemini"``）は意図しないモデルへ推測させないよう未知として扱う。
 
+    厳密一致（キー / name / aliases）した場合は、入力がエイリアスであっても常に
+    models.json に設定された正式名（``info["name"]``）を返す。Gemini API の v1 では
+    ``-latest`` 系エイリアスが解決されず 404 になるため、エイリアスをそのまま API へ
+    渡さず正式な GA モデル ID へ正規化する必要がある。
+
     Returns:
         tuple: (model_info, model_name)
     """
@@ -247,10 +256,9 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
     for key, info in model_config.items():
         aliases = info.get("aliases", [])
         if model_key == key or model_key == info.get("name") or model_key in aliases:
-            # キーまたは正式名で一致: 正式名を返す
-            # エイリアスで一致: 表示用にエイリアス自身を返す（API で正規名解決のため）
-            display_name = info["name"] if model_key in (key, info.get("name")) else model_key
-            return info, display_name
+            # エイリアスは API v1 で解決されない（例: "-latest" は 404）ため、
+            # 常に設定上の正式名へ正規化して返す。
+            return info, info["name"]
 
     # 2. 部分一致（一意に決まる場合のみ）。曖昧なら未知として扱う。
     matched_key = None
@@ -1572,6 +1580,7 @@ def main():
                 thinking_config = None
                 used_openrouter = True
                 print(f"OpenRouter fallback succeeded with model {or_model}")
+                print(f"::warning::Gemini unavailable or exhausted; used OpenRouter fallback model {or_model}")
             else:
                 last_exc = or_exc
 
