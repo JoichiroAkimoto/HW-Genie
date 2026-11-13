@@ -200,6 +200,8 @@ class ApiAction(str, Enum):
     CLAN_RAID_GET_INFO = "clanRaid_getInfo"
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
     CHAT_GET_ALL = "chatGetAll"
+    CHAT_GET_TALKS = "chatGetTalks"
+    USER_GET_INFO_BY_IDS = "userGetInfoByIds"
     # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
     CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
     TITAN_ARENA_GET_STATUS = "titanArenaGetStatus"
@@ -482,13 +484,17 @@ class HWClient:
         chat_type: str = "clan",
         count: int = 50,
         last_id: str | None = None,
+        user_id: str | None = None,
     ) -> HWResponse:
         """チャット履歴を取得する（chatGetAll）。
 
         Args:
-            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``）。
+            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``/``personal``）。
             count: 取得件数（1-200 にクランプ、既定 50）。
             last_id: ページネーション用（指定 ID 以前のメッセージを取得。CLI では ``--last-id`` で指定）。
+            user_id: 個人チャット（``personal``）の相手 userId。
+                省略時は ``userId`` を送らないだけで、会話一覧は返らない
+                （一覧は ``chat_get_talks()`` / ``chatGetTalks`` を使う）。
         """
         # count は 1-200 にクランプ（API 負荷とレスポンスサイズを制限）。ValueError 等はデフォルトにフォールバック。
         try:
@@ -499,8 +505,38 @@ class HWClient:
         args: dict[str, Any] = {"chatType": chat_type, "count": count_int}
         if last_id is not None:
             args["lastId"] = str(last_id)
+        if user_id:
+            args["userId"] = str(user_id)
         payload = {
             "calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]
+        }
+        return self.call(payload)
+
+    def chat_get_talks(self) -> HWResponse:
+        """個人チャットの会話一覧を取得する（chatGetTalks）。
+
+        `response.talks` は ``userId`` / ``lastMessage`` / ``lastMessageType`` /
+        ``utime`` / ``seen`` / ``read`` を持ち、``utime`` 降順（最新順）で返る。
+        """
+        payload = {
+            "calls": [{"name": ApiAction.CHAT_GET_TALKS, "args": {}, "ident": "body"}]
+        }
+        return self.call(payload)
+
+    def user_get_info_by_ids(self, ids: list[str]) -> HWResponse:
+        """複数プレイヤーの情報を一括取得する（userGetInfoByIds）。
+
+        Args:
+            ids: プレイヤーIDのリスト（最大300件）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.USER_GET_INFO_BY_IDS,
+                    "args": {"ids": [str(i) for i in ids]},
+                    "ident": "body",
+                }
+            ]
         }
         return self.call(payload)
 

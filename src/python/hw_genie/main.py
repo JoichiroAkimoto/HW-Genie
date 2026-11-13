@@ -1020,7 +1020,7 @@ def cmd_toe_status(args):
 
 
 def cmd_chat(args):
-    """ギルドチャット（chatGetAll）の取得・表示"""
+    """チャット履歴（chatGetAll）または個人チャットの会話一覧（chatGetTalks）の取得・表示"""
     from hw_genie.commands.chat import run_chat
     from hw_genie.core.session_manager import SessionManager
 
@@ -1041,6 +1041,7 @@ def cmd_chat(args):
         raw=bool(args.raw),
         json_output=bool(args.json),
         last_id=getattr(args, "last_id", None),
+        user_id=getattr(args, "user_id", None),
     )
     # 失敗時は exit 1（空チャットは success=True なので正常終了）
     if hasattr(result, "success") and not result.success:
@@ -2125,28 +2126,43 @@ def main():
     )
     p_arena_attack.set_defaults(func=cmd_arena_attack)
 
-    # Chat (guild chat)
+    # Chat (guild / personal)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
     p_chat = subparsers.add_parser(
-        "chat", parents=[parent_parser], help="Show guild chat (chatGetAll)"
+        "chat", parents=[parent_parser], help="Show chat history (chatGetAll)"
     )
     p_chat.add_argument(
         "--type",
         choices=_CHAT_TYPES,
         default="clan",
-        help="Chat type (default: clan)",
+        help="Chat type (default: clan; personal without --user-id lists recent talks)",
     )
     p_chat.add_argument(
         "--count",
         type=_positive_int,
         default=50,
-        help="Number of messages to fetch (default: 50, clamp 1-200)",
+        help="Number of messages (or talks for --type personal) to fetch (default: 50, clamp 1-200)",
     )
-    p_chat.add_argument("--last-id", dest="last_id", default=None, help="Pagination: fetch messages before this ID")
+    p_chat.add_argument(
+        "--last-id",
+        dest="last_id",
+        default=None,
+        help="Pagination: fetch messages before this ID (chatGetAll only; not supported for the personal talk list)",
+    )
+    p_chat.add_argument(
+        "--user-id",
+        dest="user_id",
+        default=None,
+        help="Peer userId for --type personal (omit to list recent talks)",
+    )
     raw_json_group = p_chat.add_mutually_exclusive_group()
-    raw_json_group.add_argument("--raw", action="store_true", help="Print raw chatGetAll response as JSON")
-    raw_json_group.add_argument("--json", action="store_true", help="Print parsed messages as JSON")
+    raw_json_group.add_argument(
+        "--raw", action="store_true", help="Print the raw response JSON (chatGetAll / chatGetTalks)"
+    )
+    raw_json_group.add_argument(
+        "--json", action="store_true", help="Print parsed messages/talks as JSON"
+    )
     p_chat.set_defaults(func=cmd_chat)
 
     # Titan Arena (ToE)
