@@ -309,15 +309,19 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
 
     if matched_key is not None:
         matched_info = model_config[matched_key]
-        return (
-            {
-                "name": model_key,
-                "input_cost_per_1m": matched_info["input_cost_per_1m"],
-                "output_cost_per_1m": matched_info["output_cost_per_1m"],
-                "max_diff_chars": matched_info["max_diff_chars"],
-            },
-            model_key,
-        )
+        resolved = {
+            "name": model_key,
+            "input_cost_per_1m": matched_info["input_cost_per_1m"],
+            "output_cost_per_1m": matched_info["output_cost_per_1m"],
+            "max_diff_chars": matched_info["max_diff_chars"],
+        }
+        # 部分一致でも provider / 思考設定は一致したエントリから引き継ぎ、
+        # OpenRouter ルーティングや thinking 設定が失われないようにする。
+        # 存在しないフィールドは追加しない（"api_default" と "OFF" の表示差を保つ）。
+        for field in ("provider", "thinking_level", "reasoning_effort"):
+            if field in matched_info:
+                resolved[field] = matched_info[field]
+        return resolved, model_key
 
     # 3. それでも不明: コスト不明として扱う（高コストモデルを安価と誤認させない）
     #    警告を stderr に出力し、コスト表示は「(不明)」となる
@@ -1632,7 +1636,8 @@ def main():
                 thinking_config = None
                 used_openrouter = True
                 print(f"OpenRouter fallback succeeded with model {or_model}")
-                print(f"::warning::All Gemini fallback models failed; used OpenRouter fallback model {or_model}")
+                safe_model = str(or_model).replace("\r", "").replace("\n", " ")
+                print(f"::warning::All Gemini fallback models failed; used OpenRouter fallback model {safe_model}")
             else:
                 last_exc = or_exc
 

@@ -37,6 +37,8 @@ MODEL_CONFIG = {
         "input_cost_per_1m": 0.75,
         "output_cost_per_1m": 3.75,
         "max_diff_chars": 2000000,
+        "provider": "gemini",
+        "thinking_level": "MEDIUM",
     },
     "gemma": {
         "name": "gemma-4-31b-it",
@@ -198,6 +200,18 @@ def test_resolve_model_unknown_keyword_fallback():
     info, name = resolve_model("gemini-flash-latest-xyz", MODEL_CONFIG)
     assert info["input_cost_per_1m"] == 0.75  # flash 相当
     assert name == "gemini-flash-latest-xyz"
+    # 部分一致でも provider / thinking_level は一致エントリから引き継がれる
+    assert info["provider"] == "gemini"
+    assert info["thinking_level"] == "MEDIUM"
+
+
+def test_resolve_model_partial_match_preserves_openrouter_provider():
+    """実 models.json の部分一致でも provider / reasoning_effort が保持される。"""
+    config = _prod_model_config()
+    info, name = resolve_model("openrouter/free-xyz", config)
+    assert name == "openrouter/free-xyz"
+    assert info.get("provider") == "openrouter"
+    assert info.get("reasoning_effort") == "high"
 
 
 def test_resolve_model_ambiguous_input_is_unknown():
