@@ -18,7 +18,9 @@ from unidiff import PatchSet
 REVIEW_MARKER = "<!-- ai-pr-reviewer-comment -->"
 REVIEW_HEADER_RE = re.compile(r"^#{1,4}\s*🤖\s*AI\s*コードレビュー\s*\n*", re.MULTILINE)
 
-# 総試行回数 = 初回 + リトライ 5 回（要件: 「最大 5 回リトライ」）
+# 総試行回数 = 初回 + リトライ 5 回（要件: 「最大 5 回リトライ」）。
+# このリトライ/バックオフは _generate_with_retry と OpenRouter パスにのみ適用される。
+# Gemini のモデル連鎖 (_generate_with_model_chain) は待機せず即座に次のモデルへ落ちる。
 MAX_ATTEMPTS = 6
 # 5xx 用バックオフ初期値（秒）。リトライごとに倍々になる。
 RETRY_DELAY_5XX = 5
@@ -217,8 +219,22 @@ def load_model_config():
             return json.load(f)
     except Exception as e:
         print(f"Error loading models.json: {e}")
-        # Fallback basic config
+        # Fallback basic config（models.json が読めなくても既定モデルと
+        # Gemini フォールバック連鎖が成立するよう、連鎖内の全モデルを定義する）
         return {
+            "hydrogen": {
+                "name": "gemini-4-hydrogen",
+                "aliases": [
+                    "gemini-4-hydrogen",
+                    "hydrogen",
+                    "gemini-hydrogen",
+                ],
+                "input_cost_per_1m": 1.50,
+                "output_cost_per_1m": 7.50,
+                "max_diff_chars": 2000000,
+                "provider": "gemini",
+                "thinking_level": "HIGH",
+            },
             "flash-lite": {
                 "name": "gemini-3.5-flash-lite",
                 "aliases": [
@@ -231,11 +247,29 @@ def load_model_config():
                 "max_diff_chars": 2000000,
                 "provider": "gemini",
                 "thinking_level": "HIGH",
-            }
+            },
+            "flash": {
+                "name": "gemini-3.8-flash",
+                "aliases": [
+                    "gemini-3.8-flash",
+                    "gemini-flash-latest",
+                    "gemini-flash",
+                ],
+                "input_cost_per_1m": 0.75,
+                "output_cost_per_1m": 3.75,
+                "max_diff_chars": 2000000,
+                "provider": "gemini",
+                "thinking_level": "MEDIUM",
+            },
         }
 
 
-DEFAULT_MODEL_KEY = "flash-lite"
+# 既定は品質優先で Hydrogen。無料枠 (20 RPD) が尽きたら Lite -> Flash ->
+# OpenRouter の順に落とす。各モデルの thinking_level は models.json に従う
+# （Flash は MEDIUM）。
+DEFAULT_MODEL_KEY = "hydrogen"
+
+GEMINI_FALLBACK_CHAIN = ("hydrogen", "flash-lite", "flash")
 
 
 def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
@@ -301,6 +335,82 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
         },
         model_key,
     )
+
+
+def _gemini_model_chain(model_key: str, model_config: dict) -> list[tuple[str, dict, str]]:
+    """要求モデルと、そのモデル以降の Gemini フォールバック連鎖を返す。
+
+    連鎖内のモデルを指定した場合はその位置から後ろを使う
+    （``flash-lite`` -> flash-lite, flash / ``flash`` -> flash のみ）。
+    ``gemma`` や ``openrouter/free``、未知モデルは単独で返す。
+    """
+    info, name = resolve_model(model_key, model_config)
+    if info.get("provider") != "gemini":
+        return [(model_key, info, name)]
+    chain_key = next(
+        (
+            key
+            for key in GEMINI_FALLBACK_CHAIN
+            if key in model_config and model_config[key].get("name") == name
+        ),
+        None,
+    )
+    if chain_key is None:
+        return [(model_key, info, name)]
+    chain: list[tuple[str, dict, str]] = []
+    for key in GEMINI_FALLBACK_CHAIN[GEMINI_FALLBACK_CHAIN.index(chain_key):]:
+        if key not in model_config:
+            continue
+        chain_info = model_config[key]
+        chain.append((key, chain_info, chain_info["name"]))
+    return chain or [(model_key, info, name)]
+
+
+def _generate_with_model_chain(
+    chain: list[tuple[str, dict, str]],
+    gemini_keys: list[str],
+    prompt: str,
+    system_instruction: str,
+    thinking_effort: str | None,
+) -> tuple[object | None, str | None, dict | None, types.ThinkingConfig | None, Exception | None]:
+    """Gemini モデル連鎖を順に試し、最初の成功結果を返す。
+
+    各モデルはキーを 1 回ずつ試す。失敗したら長いバックオフで同じモデルを
+    再試行せず、次のモデルへ即座に移る（RPD 枯渇時に待ち続けないため）。
+    ここでは例外の種類を問わず（400/401/403 を含む）すべて「このモデル/キーは
+    失敗したので次へ」として扱う。これによりキーローテーションとプロバイダ
+    フォールバックの耐性を保つ（モデル単位の 4xx は連鎖を早く使い切るだけ）。
+    Returns: (response, used_model_name, used_model_info, used_thinking_config, last_exc)
+    """
+    last_exc: Exception | None = None
+    failed_attempts = 0
+    for chain_index, (chain_key, chain_info, chain_name) in enumerate(chain):
+        thinking_config = _build_thinking_config(chain_info, thinking_effort)
+        config_kwargs = {"system_instruction": system_instruction}
+        if thinking_config is not None:
+            config_kwargs["thinking_config"] = thinking_config
+        config = types.GenerateContentConfig(**config_kwargs)
+        if chain_index > 0:
+            print(f"Falling back to Gemini model: {chain_key} ({chain_name})")
+        for idx, gemini_key in enumerate(gemini_keys):
+            try:
+                client = genai.Client(api_key=gemini_key)
+                resp = client.models.generate_content(
+                    model=chain_name, contents=prompt, config=config
+                )
+                try:
+                    resp._retry_count = failed_attempts
+                except Exception:
+                    pass
+                print(f"Gemini key {idx + 1}/{len(gemini_keys)} succeeded with {chain_name}")
+                return resp, chain_name, chain_info, thinking_config, None
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                failed_attempts += 1
+                print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed for {chain_name}: {e}")
+        if chain_index < len(chain) - 1:
+            print(f"Gemini model {chain_name} failed; trying next model...")
+    return None, None, None, None, last_exc
 
 
 def _is_retryable_api_error(e: Exception) -> tuple[bool, int | None]:
@@ -1297,8 +1407,11 @@ def main():
 
     # models.json のキー/name/aliases に基づいて model_info と model_name を解決
     model_info, model_name = resolve_model(model_key, model_config)
+    gemini_chain = _gemini_model_chain(model_key, model_config)
 
     print(f"Using model: {model_key} ({model_name})")
+    if len(gemini_chain) > 1:
+        print("Gemini fallback order: " + " -> ".join(name for _, _, name in gemini_chain))
     if len(gemini_keys) > 1:
         print(f"Gemini keys available: {len(gemini_keys)} (rotation enabled)")
 
@@ -1426,12 +1539,7 @@ def main():
     try:
         start_time = datetime.datetime.now(JST)
 
-        thinking_config = _build_thinking_config(model_info, thinking_effort)
-        config_kwargs = {"system_instruction": system_instruction}
-        if thinking_config is not None:
-            config_kwargs["thinking_config"] = thinking_config
-
-        config = types.GenerateContentConfig(**config_kwargs)
+        thinking_config = None
 
         # 生成: provider に応じて Gemini / OpenRouter を選択
         response = None
@@ -1476,7 +1584,7 @@ def main():
             else:
                 last_exc = or_exc
 
-        if not is_openrouter_primary and gemini_keys:
+        if not is_openrouter_primary and gemini_keys and gemini_chain:
             # エイリアス解決は最初のキーで一度だけ試行（API 呼び出しが必要なため）。失敗しても続行
             if model_key != model_name:
                 try:
@@ -1497,64 +1605,27 @@ def main():
                         f"Using: {model_name}"
                     )
 
-            # 1) Gemini: attempt ごとに全キーを順に試行。retryable エラーは即次キーへ、sleep は attempt 完了後のみ
-            for attempt in range(MAX_ATTEMPTS):
-                if response is not None:
-                    break
-                for idx, gemini_key in enumerate(gemini_keys):
-                    try:
-                        client = genai.Client(api_key=gemini_key)
-                        resp = client.models.generate_content(
-                            model=model_name, contents=prompt, config=config
-                        )
-                        try:
-                            resp._retry_count = attempt
-                        except Exception:
-                            pass
-                        response = resp
-                        print(f"Gemini key {idx + 1}/{len(gemini_keys)} succeeded (attempt {attempt + 1})")
-                        break
-                    except Exception as e:  # noqa: BLE001
-                        retryable, code = _is_retryable_api_error(e)
-                        last_exc = e
-                        is_last_key = idx == len(gemini_keys) - 1
-                        if not retryable:
-                            if not is_last_key:
-                                print(
-                                    f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable ({e}), trying next key..."
-                                )
-                                continue
-                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed non-retryable: {e}")
-                            break
-                        # retryable
-                        if not is_last_key:
-                            print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e}), trying next key...")
-                            continue
-                        print(f"Gemini key {idx + 1}/{len(gemini_keys)} failed ({e})")
-                        break
-                if response is not None:
-                    break
-                if last_exc is None:
-                    break
-                retryable, code = _is_retryable_api_error(last_exc)
-                if not retryable:
-                    # 非リトライエラーで全キー失敗 → OpenRouter フォールバックへ
-                    break
-                if attempt >= MAX_ATTEMPTS - 1:
-                    break
-                if code == 429:
-                    delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
-                    print(
-                        f"Gemini API 429 (Rate limited). Retrying in {delay:.1f}s... "
-                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
-                    )
-                else:
-                    delay = RETRY_DELAY_5XX * (2**attempt)
-                    print(
-                        f"Gemini API Error ({last_exc}). Retrying in {delay}s... "
-                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
-                    )
-                time.sleep(delay)
+            # 1) Gemini: Hydrogen -> Flash-Lite -> Flash の順に試す
+            (
+                response,
+                used_model_name,
+                used_model_info,
+                used_thinking_config,
+                chain_exc,
+            ) = _generate_with_model_chain(
+                gemini_chain,
+                gemini_keys,
+                prompt,
+                system_instruction,
+                thinking_effort,
+            )
+            if response is not None:
+                model_name = used_model_name
+                resolved_model_name = used_model_name
+                model_info = used_model_info
+                thinking_config = used_thinking_config
+            elif chain_exc is not None:
+                last_exc = chain_exc
 
         # 2) Gemini 全滅時は OpenRouter フォールバック（無料モデル）
         if not is_openrouter_primary and response is None and openrouter_keys:
@@ -1582,7 +1653,7 @@ def main():
                 thinking_config = None
                 used_openrouter = True
                 print(f"OpenRouter fallback succeeded with model {or_model}")
-                print(f"::warning::Gemini unavailable or exhausted; used OpenRouter fallback model {or_model}")
+                print(f"::warning::All Gemini fallback models failed; used OpenRouter fallback model {or_model}")
             else:
                 last_exc = or_exc
 

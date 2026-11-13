@@ -266,6 +266,52 @@ def test_resolve_model_hydrogen_alias():
     assert resolve_model("gemini-hydrogen", config)[1] == "gemini-4-hydrogen"
 
 
+def _prod_model_config():
+    path = os.path.join(os.path.dirname(__file__), "..", "models.json")
+    with open(path) as f:
+        return json.load(f)
+
+
+def test_default_model_key_is_hydrogen():
+    assert ai_review.DEFAULT_MODEL_KEY == "hydrogen"
+
+
+def test_gemini_model_chain_default_order():
+    chain = ai_review._gemini_model_chain("hydrogen", _prod_model_config())
+    assert [name for _, _, name in chain] == [
+        "gemini-4-hydrogen",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+    ]
+    assert [info["thinking_level"] for _, info, _ in chain] == ["HIGH", "HIGH", "MEDIUM"]
+
+
+def test_gemini_model_chain_starts_at_selected_model():
+    config = _prod_model_config()
+    assert [name for _, _, name in ai_review._gemini_model_chain("flash-lite", config)] == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+    ]
+    assert [name for _, _, name in ai_review._gemini_model_chain("flash", config)] == [
+        "gemini-3.8-flash",
+    ]
+
+
+def test_gemini_model_chain_resolves_hydrogen_alias():
+    chain = ai_review._gemini_model_chain("gemini-4-hydrogen", _prod_model_config())
+    assert [name for _, _, name in chain] == [
+        "gemini-4-hydrogen",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+    ]
+
+
+def test_gemini_model_chain_non_chain_models_are_alone():
+    config = _prod_model_config()
+    for key in ("gemma", "openrouter/free"):
+        assert len(ai_review._gemini_model_chain(key, config)) == 1
+
+
 class _FakeResponse:
     def __init__(self, text="ok"):
         self.text = text
@@ -286,6 +332,93 @@ def _fake_client(*exceptions):
             generate_content=mock.Mock(side_effect=[*exceptions, _FakeResponse()])
         )
     )
+
+
+def test_generate_with_model_chain_falls_back(monkeypatch):
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == "gemini-4-hydrogen":
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            return _FakeResponse("ok")
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(ai_review.genai, "Client", FakeClient)
+    chain = [
+        ("hydrogen", {"name": "gemini-4-hydrogen", "thinking_level": "HIGH"}, "gemini-4-hydrogen"),
+        ("flash-lite", {"name": "gemini-3.5-flash-lite", "thinking_level": "HIGH"}, "gemini-3.5-flash-lite"),
+    ]
+    resp, name, info, thinking, exc = ai_review._generate_with_model_chain(
+        chain, ["k1"], "prompt", "system", None
+    )
+    assert calls == ["gemini-4-hydrogen", "gemini-3.5-flash-lite"]
+    assert resp is not None
+    assert name == "gemini-3.5-flash-lite"
+    assert info["name"] == "gemini-3.5-flash-lite"
+    assert thinking is not None
+    assert exc is None
+    assert resp._retry_count == 1
+
+
+def test_generate_with_model_chain_rotates_keys(monkeypatch):
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if len(calls) == 1:
+                raise Exception("401 invalid key")
+            return _FakeResponse("ok")
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(ai_review.genai, "Client", FakeClient)
+    chain = [("hydrogen", {"name": "gemini-4-hydrogen", "thinking_level": "HIGH"}, "gemini-4-hydrogen")]
+    resp, name, info, thinking, exc = ai_review._generate_with_model_chain(
+        chain, ["k1", "k2"], "prompt", "system", None
+    )
+    assert calls == ["gemini-4-hydrogen", "gemini-4-hydrogen"]
+    assert name == "gemini-4-hydrogen"
+    assert exc is None
+    assert resp._retry_count == 1
+
+
+def test_gemini_model_chain_unknown_is_alone():
+    """未知モデルは連鎖を持たず単独で返る。"""
+    chain = ai_review._gemini_model_chain("some-unknown-model", _prod_model_config())
+    assert len(chain) == 1
+    assert chain[0][2] == "some-unknown-model"
+
+
+def test_generate_with_model_chain_returns_last_exc(monkeypatch):
+    """全滅したら最後の例外を返し、結果系はすべて None になる。"""
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            raise Exception("404 NOT_FOUND")
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(ai_review.genai, "Client", FakeClient)
+    chain = [("hydrogen", {"name": "gemini-4-hydrogen", "thinking_level": "HIGH"}, "gemini-4-hydrogen")]
+    resp, name, info, thinking, exc = ai_review._generate_with_model_chain(
+        chain, ["k1"], "prompt", "system", None
+    )
+    assert resp is None
+    assert name is None
+    assert info is None
+    assert thinking is None
+    assert exc is not None
+    assert "404" in str(exc)
 
 
 def test_generate_with_retry_succeeds_first_try():
