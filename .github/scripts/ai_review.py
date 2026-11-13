@@ -1415,8 +1415,7 @@ def main():
     if len(gemini_keys) > 1:
         print(f"Gemini keys available: {len(gemini_keys)} (rotation enabled)")
 
-    # エイリアス解決は Gemini キー回転ループ内で各キーごとに試行する（API 呼び出しが必要なため）。
-    # ここでは初期値のみ設定。
+    # 実行情報の表示名。初回は要求モデル名で、成功したフォールバック先で上書きする。
     resolved_model_name = model_name
 
     # openrouter/free は OpenRouter 経由の無料モデルルーターを直接利用するメタモデル
@@ -1585,26 +1584,6 @@ def main():
                 last_exc = or_exc
 
         if not is_openrouter_primary and gemini_keys and gemini_chain:
-            # エイリアス解決は最初のキーで一度だけ試行（API 呼び出しが必要なため）。失敗しても続行
-            if model_key != model_name:
-                try:
-                    _alias_client = genai.Client(api_key=gemini_keys[0])
-                    api_model_info = _alias_client.models.get(model=model_name)
-                    if (
-                        api_model_info
-                        and hasattr(api_model_info, "name")
-                        and api_model_info.name
-                    ):
-                        fetched_name = api_model_info.name
-                        fetched_name = fetched_name.removeprefix("models/")
-                        resolved_model_name = fetched_name
-                        print(f"Resolved canonical model name from API: {resolved_model_name}")
-                except Exception as ce:
-                    print(
-                        f"Note: Could not resolve canonical model name via API ({ce}). "
-                        f"Using: {model_name}"
-                    )
-
             # 1) Gemini: Hydrogen -> Flash-Lite -> Flash の順に試す
             (
                 response,
