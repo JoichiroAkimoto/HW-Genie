@@ -26,10 +26,11 @@ on:
         description: 'Select AI Model'
         type: choice
         options:
+          - hydrogen
           - flash-lite
           - flash
           - openrouter/free
-        default: 'flash-lite'
+        default: 'hydrogen'
 
 permissions:
   contents: read
@@ -47,7 +48,8 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) &&
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
-    # 176kトークン規模の大型PR差分では Gemini のレート制限リトライだけで数分待つことがある。
+    # 176kトークン規模の大型PR差分では、長い待機の主因は OpenRouter 側のリトライである
+    # （Gemini は Hydrogen -> Flash-Lite -> Flash と待機せず即フォールバックする）。
     # 10分だと成功しうる実行が切り捨てられるため 15分に緩和（タイムアウト時のみ失敗扱い）。
     timeout-minutes: 15
     steps:
@@ -86,6 +88,6 @@ jobs:
           # workflow_dispatch: Actions UI から手動実行
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
           ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
-          MODEL_KEY: ${{ inputs.model || 'flash-lite' }}
+          MODEL_KEY: ${{ inputs.model || 'hydrogen' }}
         run: |
           python .github/scripts/ai_review.py
