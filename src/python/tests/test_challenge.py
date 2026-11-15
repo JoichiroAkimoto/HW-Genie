@@ -353,6 +353,24 @@ def test_cli_challenge_config_sets_defaults(monkeypatch):
     assert load_challenge_defaults("Alice") == {"user_id": PEER_ID, "type": "hero"}
 
 
+def test_cli_challenge_config_clear_rejects_other_flags(monkeypatch, capsys):
+    result = _invoke_main(
+        [
+            "hw-genie",
+            "challenge",
+            "config",
+            "-a",
+            "Alice",
+            "--clear",
+            "--user-id",
+            PEER_ID,
+        ],
+        monkeypatch,
+    )
+    assert result.value.code == 2
+    assert "--clear cannot be combined" in capsys.readouterr().err
+
+
 def test_cli_multi_challenge_requires_yes_before_any_api_call(monkeypatch, capsys):
     result = _invoke_main(["hw-genie", "multi", "challenge", "Alice"], monkeypatch)
     assert result.value.code == 2
@@ -692,6 +710,15 @@ def test_run_challenge_accept_sent_flag_errors_when_only_received_pending():
     )
     with pytest.raises(ChallengeError, match="No pending challenge sent to"):
         run_challenge_accept(client, "Alice", PEER_ID, sent=True)
+
+
+def test_run_challenge_accept_sent_with_explicit_received_id_errors():
+    client = _make_client(
+        thread=_thread_with_challenges(_challenge_message(1, PEER_ID, 1000))
+    )
+    with pytest.raises(ChallengeError, match="was received from"):
+        run_challenge_accept(client, "Alice", PEER_ID, message_id=1, sent=True)
+    client.chat_accept_challenge.assert_not_called()
 
 
 def test_run_challenge_list_hints_sent_pending(capsys):

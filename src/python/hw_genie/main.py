@@ -1138,6 +1138,12 @@ def cmd_challenge_config(args):
     )
 
     account = resolve_account(args.account)
+    if args.clear and (args.user_id is not None or args.type is not None):
+        print(
+            "Error: --clear cannot be combined with --user-id/--type.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     _require_registered_account(account)
     try:
         if args.clear:
@@ -2801,7 +2807,7 @@ def main():
     p_multi.add_argument(
         "--type",
         dest="challenge_type",
-        choices=["titan", "hero"],
+        choices=list(_CHALLENGE_TYPES),
         default=None,
         help="Challenge type for the 'challenge' mode (default: challenge_defaults.type or titan)",
     )

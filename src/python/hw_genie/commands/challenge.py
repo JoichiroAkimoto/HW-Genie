@@ -541,6 +541,12 @@ def run_challenge_accept(
                 )
         target = pending[-1]
 
+    if sent and target.sender_id == peer_id:
+        raise ChallengeError(
+            f"--sent was given but messageId {target.message_id} was received from "
+            f"{peer_id}; omit --sent for a received challenge."
+        )
+
     direction = "sent by this account" if target.sender_id != peer_id else f"from {peer_id}"
     challenge_type = target.challenge_type or "titan"
     team = validate_heroes(heroes) if heroes is not None else select_challenge_team(
