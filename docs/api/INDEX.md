@@ -80,6 +80,8 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 *   **`clanRaid_shopBuy`**: ギルドレイド（Asgard）のショップ購入（`args: {"slotId": N}`。詳細は GUILD_API.md）。
 *   **`chatGetAll`**: チャット履歴取得（chatType指定。個人チャットは `chatType=personal` + 相手の `userId` でスレッド取得、CHAT_API.md）。
 *   **`chatGetTalks`**: 個人チャットの会話一覧（直近の相手・最新メッセージ・既読状態。utime 降順、CHAT_API.md）。
+*   **`chatSendChallenge`**: 個人チャットの相手にフレンドリーチャレンジを送信（CHAT_API.md）。
+*   **`chatAcceptChallenge`**: 受信したチャレンジを承諾してバトル。`messageId` は受信側 personal スレッドの challenge メッセージ `id`（CHAT_API.md）。
 *   **`chatServerSubscribe`**: リアルタイムチャット購読。
 *   **`userGetAvailableStickers`**: 利用可能なスタンプ一覧。
 *   **`friendsGetInfo`**: フレンドリストとギフト交換状況。

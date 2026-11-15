@@ -109,13 +109,19 @@ def _run_host_identifier() -> str:
     return f"{user}@{machine}"
 
 
-def _ensure_session(args) -> dict[str, str]:
-    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+def _load_session_headers(account: str) -> dict[str, str] | None:
+    """セッションヘッダーを読み込む（未登録・ヘッダー欠落時は None）"""
     from hw_genie.core.session_manager import SessionManager
 
-    resolved = resolve_account(args.account)
-    data = SessionManager.load(resolved)
+    data = SessionManager.load(account)
     headers = data.get("headers") if data else None
+    return headers or None
+
+
+def _ensure_session(args) -> dict[str, str]:
+    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+    resolved = resolve_account(args.account)
+    headers = _load_session_headers(resolved)
     if not headers:
         print(f"Error: Session not found for account '{resolved}'. Please provide a valid curl with --curl.")
         sys.exit(1)
@@ -1045,6 +1051,98 @@ def cmd_chat(args):
     )
     # 失敗時は exit 1（空チャットは success=True なので正常終了）
     if hasattr(result, "success") and not result.success:
+        sys.exit(1)
+
+
+def cmd_challenge_send(args):
+    """Send a friendly personal-chat challenge (chatSendChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_send
+
+    account = resolve_account(args.account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_challenge_send(
+            client,
+            account,
+            args.user_id,
+            args.type,
+            args.heroes,
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_accept(args):
+    """Accept the newest pending challenge (chatAcceptChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_accept
+
+    account = resolve_account(args.account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_challenge_accept(
+            client,
+            account,
+            args.user_id,
+            message_id=args.message_id,
+            heroes=args.heroes,
+            count=args.count,
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_list(args):
+    """List challenge messages and messageIds in one personal thread."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_list
+
+    account = resolve_account(args.account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_challenge_list(
+            client,
+            account,
+            args.user_id,
+            count=args.count,
+            json_output=bool(args.json),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_battle(args):
+    """Send a challenge from one account and accept it on another."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_battle
+
+    accept_account = resolve_account(args.accept_account)
+    accept_headers = _load_session_headers(accept_account)
+    if not accept_headers:
+        print(
+            f"Error: Session not found for account '{accept_account}'. "
+            "Please provide a valid curl with --curl."
+        )
+        sys.exit(1)
+    sender_account = resolve_account(args.account)
+    sender_client = HWClient(_ensure_session(args))
+    accept_client = HWClient(accept_headers)
+    try:
+        run_challenge_battle(
+            sender_client,
+            sender_account,
+            accept_client,
+            accept_account,
+            challenge_type=args.type,
+            heroes=args.heroes,
+            accept_heroes=args.accept_heroes,
+            dry_run=bool(args.dry_run),
+            wait_seconds=float(args.wait),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -2164,6 +2262,115 @@ def main():
         "--json", action="store_true", help="Print parsed messages/talks as JSON"
     )
     p_chat.set_defaults(func=cmd_chat)
+
+    # Friendly challenge (personal chat)
+    from hw_genie.commands.challenge import CHALLENGE_TYPES as _CHALLENGE_TYPES
+
+    p_challenge = subparsers.add_parser(
+        "challenge", help="Friendly personal-chat challenge (send / accept / list / battle)"
+    )
+    challenge_sub = p_challenge.add_subparsers(dest="challenge_command", required=True)
+
+    p_challenge_send = challenge_sub.add_parser(
+        "send", parents=[parent_parser], help="Send a challenge to a player (chatSendChallenge)"
+    )
+    p_challenge_send.add_argument(
+        "--user-id", required=True, help="Target player id (recipient of the challenge)"
+    )
+    p_challenge_send.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default="titan",
+        help="Challenge type (default: titan)",
+    )
+    p_challenge_send.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Override the saved challenge team (1-5 unit ids)",
+    )
+    p_challenge_send.add_argument(
+        "--dry-run", action="store_true", help="Resolve the team and print the plan only"
+    )
+    p_challenge_send.set_defaults(func=cmd_challenge_send)
+
+    p_challenge_accept = challenge_sub.add_parser(
+        "accept",
+        parents=[parent_parser],
+        help="Accept the newest pending challenge (chatAcceptChallenge)",
+    )
+    p_challenge_accept.add_argument(
+        "--user-id", required=True, help="Challenger player id (sender of the challenge)"
+    )
+    p_challenge_accept.add_argument(
+        "--message-id",
+        type=_positive_int,
+        default=None,
+        help="Explicit challenge messageId (default: newest pending message from --user-id)",
+    )
+    p_challenge_accept.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Override the saved challenge team (1-5 unit ids)",
+    )
+    p_challenge_accept.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan for the challenge messageId (default: 200)",
+    )
+    p_challenge_accept.add_argument(
+        "--dry-run", action="store_true", help="Show the discovered messageId and team only"
+    )
+    p_challenge_accept.set_defaults(func=cmd_challenge_accept)
+
+    p_challenge_list = challenge_sub.add_parser(
+        "list", parents=[parent_parser], help="List challenge messages and messageIds in a thread"
+    )
+    p_challenge_list.add_argument("--user-id", required=True, help="Peer player id")
+    p_challenge_list.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan (default: 200)",
+    )
+    p_challenge_list.add_argument("--json", action="store_true", help="Print parsed JSON")
+    p_challenge_list.set_defaults(func=cmd_challenge_list)
+
+    p_challenge_battle = challenge_sub.add_parser(
+        "battle",
+        parents=[parent_parser],
+        help="Send a challenge from -a and accept it on another registered account",
+    )
+    p_challenge_battle.add_argument(
+        "--accept-account", required=True, help="Registered account that accepts the challenge"
+    )
+    p_challenge_battle.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default="titan",
+        help="Challenge type (default: titan)",
+    )
+    p_challenge_battle.add_argument(
+        "--heroes", type=int, nargs="+", help="Sender team override (1-5 unit ids)"
+    )
+    p_challenge_battle.add_argument(
+        "--accept-heroes", type=int, nargs="+", help="Accepter team override (1-5 unit ids)"
+    )
+    p_challenge_battle.add_argument(
+        "--wait",
+        type=_non_negative_int,
+        default=10,
+        help=(
+            "Seconds to wait for the challenge to appear in the accepter's thread "
+            "(default: 10; 0 = one immediate check only)"
+        ),
+    )
+    p_challenge_battle.add_argument(
+        "--dry-run", action="store_true", help="Resolve accounts/teams and print the plan only"
+    )
+    p_challenge_battle.set_defaults(func=cmd_challenge_battle)
 
     # Titan Arena (ToE)
     p_toe = subparsers.add_parser("toe", parents=[parent_parser], help="Titan Arena (ToE) operations")
