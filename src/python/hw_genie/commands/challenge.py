@@ -405,7 +405,8 @@ def run_challenge_accept(
     the peer (the other participant in the personal thread).
     """
     peer_id = validate_user_id(user_id)
-    challenges = parse_challenge_messages(fetch_thread(client, peer_id, count))
+    effective_count = max(1, min(DEFAULT_THREAD_COUNT, count))
+    challenges = parse_challenge_messages(fetch_thread(client, peer_id, effective_count))
 
     if message_id is not None:
         wanted = _to_message_id(message_id)
@@ -413,7 +414,9 @@ def run_challenge_accept(
         if target is None:
             raise ChallengeError(
                 f"Challenge messageId {message_id!r} was not found in the last "
-                f"{count} messages with {peer_id}. Check `challenge list` or raise --count."
+                f"{effective_count} messages with {peer_id} (the API returns at most "
+                "200 and a personal thread may expose only unread messages). "
+                "Check `challenge list`."
             )
         if target.pending is False:
             print(
@@ -587,14 +590,15 @@ def run_challenge_battle(
     accept_id = fetch_player_id(accept_client)
     if sender_id == accept_id:
         raise ChallengeError("Sender and accept account resolve to the same player id.")
+    # Resolve/validate both teams before sending: a bad --accept-heroes or a
+    # missing saved team must not leave a sent-but-unbattled challenge behind.
+    sender_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
+        _fetch_team_detail(sender_client), challenge_type
+    )
+    accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
+        _fetch_team_detail(accept_client), challenge_type
+    )
     if dry_run:
-        # Still resolve teams so the plan is complete; no writes.
-        sender_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
-            _fetch_team_detail(sender_client), challenge_type
-        )
-        accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
-            _fetch_team_detail(accept_client), challenge_type
-        )
         print(
             f"{Emojis.INFO}Dry run: {sender_alias} ({sender_id}) would send a "
             f"{challenge_type} challenge to {accept_alias} ({accept_id}) "
@@ -612,7 +616,7 @@ def run_challenge_battle(
         sender_alias,
         accept_id,
         challenge_type,
-        heroes,
+        list(sender_team),
         dry_run=False,
     )
 
@@ -636,7 +640,7 @@ def run_challenge_battle(
         accept_alias,
         sender_id,
         message_id=target.message_id,
-        heroes=accept_heroes,
+        heroes=list(accept_team),
         count=count,
         dry_run=False,
     )
@@ -664,17 +668,18 @@ def run_challenge_self_battle(
     both the sender because both teams belong to the sender.
     """
     peer_id = validate_user_id(user_id)
+    # Resolve/validate both teams before sending so an invalid override or a
+    # missing saved team cannot leave a sent-but-unbattled challenge behind.
+    team_detail = None
+    if heroes is None or accept_heroes is None:
+        team_detail = _fetch_team_detail(client)
+    target_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
+        team_detail, challenge_type
+    )
+    accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
+        team_detail, challenge_type
+    )
     if dry_run:
-        # One teamGetAll round trip serves both teams.
-        detail = None
-        if heroes is None or accept_heroes is None:
-            detail = _fetch_team_detail(client)
-        target_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
-            detail, challenge_type
-        )
-        accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
-            detail, challenge_type
-        )
         print(
             f"{Emojis.INFO}Dry run: {account_alias} would send a {challenge_type} "
             f"challenge to {peer_id} with target team {list(target_team)} and battle "
@@ -691,7 +696,7 @@ def run_challenge_self_battle(
         account_alias,
         peer_id,
         challenge_type,
-        heroes,
+        list(target_team),
         dry_run=False,
     )
 
@@ -722,7 +727,7 @@ def run_challenge_self_battle(
         account_alias,
         peer_id,
         message_id=target.message_id,
-        heroes=accept_heroes,
+        heroes=list(accept_team),
         count=count,
         sent=True,
         dry_run=False,

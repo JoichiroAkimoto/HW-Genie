@@ -16,7 +16,7 @@ uv run hw-genie challenge send -a <account> --user-id <相手のプレイヤーI
 
 - 送信する `heroes` は**バトル対象（防御側）チーム**です。既定では `teamGetAll.challenge_titan`（`--type titan`）または `challenge`（`--type hero`）の**先頭1体**を使用（実機のゲーム操作と同じ1体）。
 - `--heroes 4013` のように指定すると対象チームを明示できます（1〜5 体）。
-- 成功時は `{"result": true}`。失敗時は `reason`（例: `notFound` = 相手ID不正/対象外）を表示して exit 1。
+- 成功時は CLI に `✅ Challenge sent to <peer_id>.` と表示されます（API 応答は `{"result": true}`）。失敗時は `reason`（例: `notFound` = 相手ID不正/対象外）を表示して exit 1。
 - `--dry-run` は書き込み（`chatSendChallenge`）を行いませんが、チーム解決のため `teamGetAll` などの読み取り API は呼びます。
 
 ### 2. messageId の特定

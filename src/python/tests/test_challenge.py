@@ -775,3 +775,18 @@ def test_run_challenge_self_battle_ignores_baseline_and_times_out():
             poll_interval=0.1,
             sleep_fn=lambda _: None,
         )
+
+
+def test_run_challenge_self_battle_validates_accept_team_before_send():
+    client = _make_client()
+    with pytest.raises(ChallengeError, match="Invalid unit id"):
+        run_challenge_self_battle(client, "Alice", PEER_ID, accept_heroes=[0])
+    client.chat_send_challenge.assert_not_called()
+
+
+def test_run_challenge_battle_validates_accept_team_before_send():
+    sender = _make_client(player_id=SENDER_ID)
+    accept = _make_client(player_id=PEER_ID)
+    with pytest.raises(ChallengeError, match="Invalid unit id"):
+        run_challenge_battle(sender, "Alice", accept, "Bob", accept_heroes=[0])
+    sender.chat_send_challenge.assert_not_called()

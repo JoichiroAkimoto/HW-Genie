@@ -1054,12 +1054,25 @@ def cmd_chat(args):
         sys.exit(1)
 
 
+def _challenge_client(account: str) -> HWClient:
+    """Build an authenticated client for an already-resolved account alias."""
+    headers = _load_session_headers(account)
+    if not headers:
+        print(
+            f"Error: Session not found for account '{account}'. "
+            "Please provide a valid curl with --curl.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return HWClient(headers)
+
+
 def cmd_challenge_send(args):
     """Send a friendly personal-chat challenge (chatSendChallenge)."""
     from hw_genie.commands.challenge import ChallengeError, run_challenge_send
 
     account = resolve_account(args.account)
-    client = HWClient(_ensure_session(args))
+    client = _challenge_client(account)
     try:
         run_challenge_send(
             client,
@@ -1079,7 +1092,7 @@ def cmd_challenge_accept(args):
     from hw_genie.commands.challenge import ChallengeError, run_challenge_accept
 
     account = resolve_account(args.account)
-    client = HWClient(_ensure_session(args))
+    client = _challenge_client(account)
     try:
         run_challenge_accept(
             client,
@@ -1101,7 +1114,7 @@ def cmd_challenge_list(args):
     from hw_genie.commands.challenge import ChallengeError, run_challenge_list
 
     account = resolve_account(args.account)
-    client = HWClient(_ensure_session(args))
+    client = _challenge_client(account)
     try:
         run_challenge_list(
             client,
@@ -1124,21 +1137,14 @@ def cmd_challenge_battle(args):
     )
 
     sender_account = resolve_account(args.account)
-    sender_client = HWClient(_ensure_session(args))
+    sender_client = _challenge_client(sender_account)
     try:
-        if args.accept_account:
+        if args.accept_account is not None:
             accept_account = resolve_account(args.accept_account)
-            accept_headers = _load_session_headers(accept_account)
-            if not accept_headers:
-                print(
-                    f"Error: Session not found for account '{accept_account}'. "
-                    "Please provide a valid curl with --curl."
-                )
-                sys.exit(1)
             run_challenge_battle(
                 sender_client,
                 sender_account,
-                HWClient(accept_headers),
+                _challenge_client(accept_account),
                 accept_account,
                 challenge_type=args.type,
                 heroes=args.heroes,
