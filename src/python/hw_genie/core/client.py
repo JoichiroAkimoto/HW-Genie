@@ -571,10 +571,13 @@ class HWClient:
         favor: dict[str, int] | None = None,
         max_upgrade: bool = True,
     ) -> HWResponse:
-        """受信したチャレンジを承諾してバトルする（chatAcceptChallenge）。
+        """チャレンジをバトルする（chatAcceptChallenge）。
 
-        ``user_id`` はチャレンジを送った相手、``message_id`` は相手側スレッドの
-        ``challenge`` メッセージの ``id``。レスポンスの ``response.battle`` に
+        受信者専用ではない。受信者・送信者のどちらも実行できる。
+        ``user_id`` は personal スレッドの相手（受信者なら送信者、送信者なら
+        受信者）、``message_id`` は双方で共有する personal スレッドの
+        ``challenge`` メッセージの ``id``、``heroes`` は攻撃側チーム
+        （自分の保存チーム全員）。レスポンスの ``response.battle`` に
         ``result.win`` / ``result.stars`` / ``id``（リプレイID）が入る。
         バトルの重複実行を避けるためリトライしない（``max_retries=0``）。
         """

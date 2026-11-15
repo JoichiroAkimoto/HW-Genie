@@ -38,7 +38,7 @@ Python による高速な API 自動化 (CLI) と、ブラウザ画面での利�
 - **Element Gift**: エレメントギフト（`heroTitanGiftLevelUp` / `heroTitanGiftDrop`）の一括操作（`hw-genie gift status` / `gift up` / `gift reset`。月 1 のパワー競走イベント用で、up は未 MAX ヒーローを power 降順に 1 体ずつ MAX（レベル 30 = 65,150 コイン）までコインが続くところまで、reset は実行時点の power（ギフト込み）が `--max-power`（既定 100,000）以下のヒーローを drop してコインを全額回収。状態は DB に持たず毎回 `heroGetAll` を読むので手動操作が挟まっても計画が追随する。`--limit N` / `--dry-run` / y/N 確認（`--yes` でスキップ）、`multi gift-up` / `multi gift-reset` で全アカウント一括（`--yes` 必須）。詳細は `.agents/skills/element-gift/SKILL.md` / `docs/api/UNIT_API.md`）。
 - **Consumable**: 所持 consumable の在庫確認（`hw-genie inventory`。名前付き表示・`--all`/`--min`/`--raw`）と、レジストリ登録済みアイテムの一括全消費（`hw-genie consumable run` / `multi consumable`。対象は `CONSUMABLE_USE_TARGETS` に固定登録、在庫は実行時に `inventoryGet` で自動取得して全量消費、在庫 0 はスキップ。1000 上限アイテム（Random Crystal 等）は 1 リクエスト 1000 個ずつに分割、マトリョーシカ系アイテムは残りが無くなるまで「在庫取得 → 全消費 → 残り確認」ラウンドを自動繰り返し。`--dry-run` で予行確認可）。
 - **Guild Chat**: チャット（`chatGetAll`）の履歴取得・表示（`hw-genie chat`。最新50件を表形式（`Time | Sender | Message`）と統計・要約で出力。`HWGENIE_TZ` 準拠、`--type` / `--count` / `--last-id` / `--raw` / `--json`。個人チャット（PM）は `--type personal` で会話一覧（`chatGetTalks`、最新順・相手名自動解決）、`--type personal --user-id <相手ID>` で個別スレッドを取得。`docs/api/CHAT_API.md` 参照）。
-- **Challenge**: 個人チャットのフレンドリーチャレンジを自動化（`hw-genie challenge send` / `accept` / `list` / `battle`。`chatAcceptChallenge` に必要な `messageId` は受信側 personal スレッドの `challenge` メッセージ `id` から自動特定し、`replay.data.challengeId` で承諾済みを判定。`battle` は登録済みの別アカウントで「送信 → 承諾」を 1 コマンド実行。`--dry-run` 対応。`docs/api/CHAT_API.md` 参照）。
+- **Challenge**: 個人チャットのフレンドリーチャレンジを自動化（`hw-genie challenge send` / `accept` / `list` / `battle`。送信は対象（防御側）1 体、バトルは保存チーム全員で実行。`chatAcceptChallenge` に必要な `messageId` は personal スレッドの `challenge` メッセージ `id` から自動特定し、`replay.data.challengeId` でバトル済みを判定。`battle --user-id` はドキュメントと同じ「送信 → 同一アカウントでバトル」、`battle --accept-account` は受信側アカウントにバトルさせる。`--dry-run` 対応。`docs/api/CHAT_API.md` 参照）。
 - **Titan Arena (ToE)**: Titan Arena の壁/プレイヤー rival を自動選択して攻略（`hw-genie toe status` / `attack` / `run`。`--rival` / `--titans` 省略時は `titanArenaGetStatus`（`attackScore < 250` で最低スコアの壁優先）/ `teamGetAll.titan_arena` から自動解決、`--dry-run` / `--threshold` / `--engine hybrid` 対応。`run` は新 Tier で Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。`--progress line` の進捗は Tier 内の rival 位置（例: `T7 3/9`）を表示。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
 - **Arena (targeted attack)**: 自分より上位の指定プレイヤーをチーム指定で攻撃（`hw-genie arena status` / `top` / `find-enemies` / `snapshot` / `team` / `attack`。`--rank` または `--user-id`、`--team` プリセット / `--heroes`・`--pet`・`--banner`・`--favor` の直接指定、`--dry-run` で攻撃なしの候補確認、`--candidate-retries` で候補リスト更新回数を指定。`topGet` はトップ50のみ。通常攻撃は「最新の `arenaFindEnemies` 候補」かつ「`arenaCheckTargetRange` が true」の両方を満たす相手のみ。範囲チェックのウィンドウは順位/リーグ依存（22位/34位では ±21、GA 51位では5〜50位）。手動検証用の `find-enemies` は候補を1回取得して保存し、`snapshot` / `attack --from-snapshot`（実験用）は `arenaFindEnemies` を呼ばず保存候補を比較・攻撃する（上位のみは現在の `topGet` で強制、range false は `--force` 時のみ送信）。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）。
 - **Multi Account**: 複数アカウントのレイド・ショッピング・デイリークエスト・consumable 消費を単一プロセス内で並列実行（`hw-genie multi`）。
@@ -121,28 +121,34 @@ uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
 ### Challenge（フレンドリーチャレンジ）
 
 個人チャットのフレンドリーチャレンジ（`chatSendChallenge` / `chatAcceptChallenge`）を自動化します。
-送信には `teamGetAll` の保存チーム（`challenge_titan` / `challenge`）を使い、`--heroes` で上書きできます。
+送信するのは**対象（防御側）チーム**で、既定では `teamGetAll` の保存チーム（`challenge_titan` / `challenge`）の先頭 1 体を使います。バトルは保存チーム全員で実行し、`--heroes` / `--accept-heroes` で上書きできます。
 
 ```bash
-# チャレンジ送信（相手のプレイヤーIDを指定）
+# チャレンジ送信（相手のプレイヤーIDを指定。対象1体）
 uv run hw-genie challenge send -a Alice --user-id 11111111 --type titan
 
-# 受信側スレッドのチャレンジ一覧（messageId の確認）
-uv run hw-genie challenge list -a Bob --user-id 22222222
+# チャレンジ一覧（messageId の確認。送信した pending も表示）
+uv run hw-genie challenge list -a Alice --user-id 11111111
 
-# 最新の未承諾チャレンジを承諾（messageId は自動特定）
+# 受信した未承諾チャレンジをバトル（messageId は自動特定）
 uv run hw-genie challenge accept -a Bob --user-id 22222222
 
-# 送信と承諾を1コマンドで（送信元 -a / 承諾側 --accept-account、両方とも登録済み）
+# 自分が送った未承諾チャレンジを同じアカウントでバトル
+uv run hw-genie challenge accept -a Alice --user-id 11111111 --sent
+
+# ドキュメントと同じ2ステップを1コマンドで（送信 → 同一アカウントでバトル）
+uv run hw-genie challenge battle -a Alice --user-id 11111111
+
+# 受信側の別アカウントにバトルさせる場合（送信元 -a / 承諾側 --accept-account）
 uv run hw-genie challenge battle -a Alice --accept-account Bob
 
-# 予行確認（API を書き換えない）
-uv run hw-genie challenge battle -a Alice --accept-account Bob --dry-run
+# 予行確認（書き込みなし。teamGetAll などの読み取りのみ）
+uv run hw-genie challenge battle -a Alice --user-id 11111111 --dry-run
 ```
 
-- `messageId` は**受信側**の personal スレッド（`chatGetAll` + `chatType=personal` + `userId=<送信者>`）にある `challenge` メッセージの `id` です。`replay` メッセージの `data.challengeId` に同じ id が現れているチャレンジは承諾済みとして扱い、`accept` は未承諾の最新 1 件を自動選択します。
-- チャレンジは受信者だけが承諾できます（送信者自身が承諾すると自分自身とのバトルになります）。`battle` は 2 つの登録済みアカウントを使います。
-- チャレンジ送信後、受信側スレッドへの反映に数秒かかることがあります。`battle` は `--wait`（既定 10 秒）までポーリングします。
+- `messageId` は personal スレッド（`chatGetAll` + `chatType=personal` + `userId=<相手>`）にある `challenge` メッセージの `id` です。`replay` メッセージの `data.challengeId` に同じ id が現れているチャレンジはバトル済みとして扱い、`accept` は未処理の最新 1 件を自動選択します。
+- チャレンジは**受信者・送信者のどちらもバトルできます**。送信者側のバトルは、攻撃側 = 自分の保存チーム全員、防御側 = 送信時に指定した対象チーム（既定 1 体）になります。`challenge battle --user-id` はこの送信者側フローです。
+- チャレンジ送信後、スレッドへの反映に数秒かかることがあります。`battle` は `--wait`（既定 10 秒）までポーリングします。
 - API 仕様: `docs/api/CHAT_API.md` / エージェント向け手順: `.agents/skills/challenge/SKILL.md`
 
 ### Tips: direnv による自動有効化

@@ -7,6 +7,7 @@ API 呼び出しはすべてモックし、実在アカウント名は使わな�
 """
 
 import json
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,8 +23,11 @@ from hw_genie.commands.challenge import (
     run_challenge_accept,
     run_challenge_battle,
     run_challenge_list,
+    run_challenge_self_battle,
     run_challenge_send,
+    select_challenge_target_team,
     select_challenge_team,
+    sent_pending_challenges,
     validate_heroes,
     validate_user_id,
 )
@@ -279,6 +283,26 @@ def test_pending_challenges_filters_sender_and_pending():
     ]
     assert [m.message_id for m in pending_challenges(messages)] == [1, 2]
     assert [m.message_id for m in pending_challenges(messages, SENDER_ID)] == [1]
+    assert [m.message_id for m in sent_pending_challenges(messages, SENDER_ID)] == [2]
+    assert [m.message_id for m in sent_pending_challenges(messages, 99999999)] == [1, 2]
+
+
+def test_cli_challenge_battle_battle_target_is_mutually_exclusive(monkeypatch):
+    from hw_genie.main import main
+
+    monkeypatch.setattr(sys, "argv", ["hw-genie", "challenge", "battle"])
+    with pytest.raises(SystemExit) as missing:
+        main()
+    assert missing.value.code == 2
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hw-genie", "challenge", "battle", "--user-id", "11111111", "--accept-account", "Bob"],
+    )
+    with pytest.raises(SystemExit) as both:
+        main()
+    assert both.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -343,14 +367,20 @@ def test_fetch_player_id_reads_user_get_info():
 # --- send ---
 
 
-def test_run_challenge_send_uses_saved_team_and_calls_api():
+def test_run_challenge_send_uses_single_target_unit_and_calls_api():
     client = _make_client()
     result = run_challenge_send(client, "Alice", PEER_ID)
     assert result.peer_id == PEER_ID
-    assert result.heroes == (4000, 4001, 4002)
+    assert result.heroes == (4000,)
     client.chat_send_challenge.assert_called_once_with(
-        user_id=PEER_ID, heroes=[4000, 4001, 4002], challenge_type="titan"
+        user_id=PEER_ID, heroes=[4000], challenge_type="titan"
     )
+
+
+def test_select_challenge_target_team_defaults_to_first_saved_unit():
+    detail = {"response": {"challenge_titan": [4000, 4001, 4002], "challenge": [11, 22]}}
+    assert select_challenge_target_team(detail, "titan") == (4000,)
+    assert select_challenge_target_team(detail, "hero") == (11,)
 
 
 def test_run_challenge_send_hero_override_and_dry_run():
@@ -420,16 +450,31 @@ def test_run_challenge_accept_explicit_consumed_message_warns_but_accepts(capsys
     assert "already exists for this messageId" in capsys.readouterr().out
 
 
-def test_run_challenge_accept_rejects_challenge_sent_by_this_account():
-    # userId 12345678 == the client's own player id: outgoing "Sent" message.
+def test_run_challenge_accept_explicit_sent_challenge_battles_as_sender():
+    # userId 12345678 == the client's own player id: outgoing "Sent" challenge.
     client = _make_client(
         thread=_thread_with_challenges(
             _challenge_message(5, "12345678", 1000),
         )
     )
-    with pytest.raises(ChallengeError, match="only the recipient can accept it"):
-        run_challenge_accept(client, "Alice", PEER_ID, message_id=5)
-    client.chat_accept_challenge.assert_not_called()
+    result = run_challenge_accept(client, "Alice", PEER_ID, message_id=5)
+    assert result is not None
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=5, heroes=[4000, 4001, 4002]
+    )
+
+
+def test_run_challenge_accept_sent_flag_picks_sent_pending():
+    client = _make_client(
+        thread=_thread_with_challenges(
+            _challenge_message(1, PEER_ID, 1000),
+            _challenge_message(2, "12345678", 1001),
+        )
+    )
+    run_challenge_accept(client, "Alice", PEER_ID, sent=True)
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=2, heroes=[4000, 4001, 4002]
+    )
 
 
 def test_run_challenge_accept_same_ctime_picks_numerically_newest():
@@ -526,7 +571,7 @@ def test_run_challenge_battle_sends_then_accepts_discovered_message(monkeypatch)
     )
     assert result is not None and result.win is True
     sender.chat_send_challenge.assert_called_once_with(
-        user_id=PEER_ID, heroes=[4000, 4001, 4002], challenge_type="titan"
+        user_id=PEER_ID, heroes=[4000], challenge_type="titan"
     )
     accept.chat_accept_challenge.assert_called_once_with(
         user_id=SENDER_ID, message_id=9, heroes=[4000, 4001, 4002]
@@ -578,6 +623,154 @@ def test_run_challenge_battle_ignores_challenges_that_existed_before_send():
             "Alice",
             accept,
             "Bob",
+            wait_seconds=0,
+            poll_interval=0.1,
+            sleep_fn=lambda _: None,
+        )
+
+
+# --- sender-side battle (doc-style) ---
+
+
+def test_run_challenge_accept_sent_flag_errors_when_only_received_pending():
+    client = _make_client(
+        thread=_thread_with_challenges(_challenge_message(1, PEER_ID, 1000))
+    )
+    with pytest.raises(ChallengeError, match="No pending challenge sent to"):
+        run_challenge_accept(client, "Alice", PEER_ID, sent=True)
+
+
+def test_run_challenge_list_hints_sent_pending(capsys):
+    client = _make_client(
+        thread=_thread_with_challenges(_challenge_message(5, "12345678", 1000))
+    )
+    run_challenge_list(client, "Alice", PEER_ID)
+    out = capsys.readouterr().out
+    assert "Newest pending challenge you sent: 5" in out
+    assert "challenge accept --sent" in out
+
+
+def test_run_challenge_self_battle_sends_one_unit_and_battles_on_same_account():
+    client = _make_client(player_id="12345678")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {"response": _thread_with_challenges(_challenge_message(9, "12345678", 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = run_challenge_self_battle(
+        client,
+        "Alice",
+        PEER_ID,
+        wait_seconds=1,
+        poll_interval=0.1,
+        sleep_fn=lambda _: None,
+    )
+    assert result is not None and result.win is True
+    client.chat_send_challenge.assert_called_once_with(
+        user_id=PEER_ID, heroes=[4000], challenge_type="titan"
+    )
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=9, heroes=[4000, 4001, 4002]
+    )
+
+
+def test_run_challenge_self_battle_dry_run_does_not_write():
+    client = _make_client()
+    assert (
+        run_challenge_self_battle(client, "Alice", PEER_ID, dry_run=True)
+        is None
+    )
+    client.chat_send_challenge.assert_not_called()
+    client.chat_accept_challenge.assert_not_called()
+    client.team_get_all.assert_called_once()
+
+
+def test_run_challenge_self_battle_prefers_sent_challenge_over_received():
+    client = _make_client(player_id="12345678")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {
+            "response": _thread_with_challenges(
+                _challenge_message(1, PEER_ID, 2000),
+                _challenge_message(2, "12345678", 2001),
+            )
+        }
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = run_challenge_self_battle(
+        client,
+        "Alice",
+        PEER_ID,
+        wait_seconds=1,
+        poll_interval=0.1,
+        sleep_fn=lambda _: None,
+    )
+    assert result is not None
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=2, heroes=[4000, 4001, 4002]
+    )
+
+
+def test_run_challenge_self_battle_ignores_new_received_challenge_and_times_out():
+    client = _make_client(player_id="12345678")
+    empty = _res({"response": {"chat": []}})
+    received = _res(
+        {"response": _thread_with_challenges(_challenge_message(5, PEER_ID, 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, received])
+    with pytest.raises(ChallengeError, match="no new pending challenge appeared"):
+        run_challenge_self_battle(
+            client,
+            "Alice",
+            PEER_ID,
+            wait_seconds=0,
+            poll_interval=0.1,
+            sleep_fn=lambda _: None,
+        )
+    client.chat_accept_challenge.assert_not_called()
+
+
+def test_run_challenge_self_battle_team_overrides_are_directional():
+    client = _make_client(player_id="12345678")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {"response": _thread_with_challenges(_challenge_message(9, "12345678", 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = run_challenge_self_battle(
+        client,
+        "Alice",
+        PEER_ID,
+        heroes=[4013],
+        accept_heroes=[4000, 4001],
+        wait_seconds=1,
+        poll_interval=0.1,
+        sleep_fn=lambda _: None,
+    )
+    assert result is not None
+    client.chat_send_challenge.assert_called_once_with(
+        user_id=PEER_ID, heroes=[4013], challenge_type="titan"
+    )
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=9, heroes=[4000, 4001]
+    )
+    client.team_get_all.assert_not_called()
+
+
+def test_run_challenge_self_battle_ignores_baseline_and_times_out():
+    client = _make_client(player_id="12345678")
+    same = _res(
+        {"response": _thread_with_challenges(_challenge_message(1, "12345678", 1000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[same, same])
+    with pytest.raises(ChallengeError, match="no new pending challenge appeared"):
+        run_challenge_self_battle(
+            client,
+            "Alice",
+            PEER_ID,
             wait_seconds=0,
             poll_interval=0.1,
             sleep_fn=lambda _: None,

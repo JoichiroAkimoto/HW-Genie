@@ -1075,7 +1075,7 @@ def cmd_challenge_send(args):
 
 
 def cmd_challenge_accept(args):
-    """Accept the newest pending challenge (chatAcceptChallenge)."""
+    """Battle the newest pending challenge (chatAcceptChallenge)."""
     from hw_genie.commands.challenge import ChallengeError, run_challenge_accept
 
     account = resolve_account(args.account)
@@ -1088,6 +1088,7 @@ def cmd_challenge_accept(args):
             message_id=args.message_id,
             heroes=args.heroes,
             count=args.count,
+            sent=bool(args.sent),
             dry_run=bool(args.dry_run),
         )
     except ChallengeError as e:
@@ -1115,32 +1116,47 @@ def cmd_challenge_list(args):
 
 
 def cmd_challenge_battle(args):
-    """Send a challenge from one account and accept it on another."""
-    from hw_genie.commands.challenge import ChallengeError, run_challenge_battle
+    """Send a challenge and battle it (same account or another registered account)."""
+    from hw_genie.commands.challenge import (
+        ChallengeError,
+        run_challenge_battle,
+        run_challenge_self_battle,
+    )
 
-    accept_account = resolve_account(args.accept_account)
-    accept_headers = _load_session_headers(accept_account)
-    if not accept_headers:
-        print(
-            f"Error: Session not found for account '{accept_account}'. "
-            "Please provide a valid curl with --curl."
-        )
-        sys.exit(1)
     sender_account = resolve_account(args.account)
     sender_client = HWClient(_ensure_session(args))
-    accept_client = HWClient(accept_headers)
     try:
-        run_challenge_battle(
-            sender_client,
-            sender_account,
-            accept_client,
-            accept_account,
-            challenge_type=args.type,
-            heroes=args.heroes,
-            accept_heroes=args.accept_heroes,
-            dry_run=bool(args.dry_run),
-            wait_seconds=float(args.wait),
-        )
+        if args.accept_account:
+            accept_account = resolve_account(args.accept_account)
+            accept_headers = _load_session_headers(accept_account)
+            if not accept_headers:
+                print(
+                    f"Error: Session not found for account '{accept_account}'. "
+                    "Please provide a valid curl with --curl."
+                )
+                sys.exit(1)
+            run_challenge_battle(
+                sender_client,
+                sender_account,
+                HWClient(accept_headers),
+                accept_account,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
+        else:
+            run_challenge_self_battle(
+                sender_client,
+                sender_account,
+                args.user_id,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
     except ChallengeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -2287,7 +2303,7 @@ def main():
         "--heroes",
         type=int,
         nargs="+",
-        help="Override the saved challenge team (1-5 unit ids)",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
     )
     p_challenge_send.add_argument(
         "--dry-run", action="store_true", help="Resolve the team and print the plan only"
@@ -2297,22 +2313,29 @@ def main():
     p_challenge_accept = challenge_sub.add_parser(
         "accept",
         parents=[parent_parser],
-        help="Accept the newest pending challenge (chatAcceptChallenge)",
+        help="Battle the newest pending challenge (chatAcceptChallenge)",
     )
     p_challenge_accept.add_argument(
-        "--user-id", required=True, help="Challenger player id (sender of the challenge)"
+        "--user-id",
+        required=True,
+        help="Peer player id (challenger for a received challenge; recipient with --sent)",
     )
     p_challenge_accept.add_argument(
         "--message-id",
         type=_positive_int,
         default=None,
-        help="Explicit challenge messageId (default: newest pending message from --user-id)",
+        help="Explicit challenge messageId (default: newest pending message)",
+    )
+    p_challenge_accept.add_argument(
+        "--sent",
+        action="store_true",
+        help="Battle a challenge this account sent (sender-side battle) instead of one received",
     )
     p_challenge_accept.add_argument(
         "--heroes",
         type=int,
         nargs="+",
-        help="Override the saved challenge team (1-5 unit ids)",
+        help="Battle team override (default: full saved challenge team)",
     )
     p_challenge_accept.add_argument(
         "--count",
@@ -2341,10 +2364,16 @@ def main():
     p_challenge_battle = challenge_sub.add_parser(
         "battle",
         parents=[parent_parser],
-        help="Send a challenge from -a and accept it on another registered account",
+        help="Send a challenge and battle it (same account, or --accept-account)",
     )
-    p_challenge_battle.add_argument(
-        "--accept-account", required=True, help="Registered account that accepts the challenge"
+    battle_target = p_challenge_battle.add_mutually_exclusive_group(required=True)
+    battle_target.add_argument(
+        "--user-id",
+        help="Peer player id; the sender battles its own challenge on -a (doc-style flow)",
+    )
+    battle_target.add_argument(
+        "--accept-account",
+        help="Registered account that receives and battles the challenge",
     )
     p_challenge_battle.add_argument(
         "--type",
@@ -2353,10 +2382,16 @@ def main():
         help="Challenge type (default: titan)",
     )
     p_challenge_battle.add_argument(
-        "--heroes", type=int, nargs="+", help="Sender team override (1-5 unit ids)"
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
     )
     p_challenge_battle.add_argument(
-        "--accept-heroes", type=int, nargs="+", help="Accepter team override (1-5 unit ids)"
+        "--accept-heroes",
+        type=int,
+        nargs="+",
+        help="Battle team override (default: full saved challenge team)",
     )
     p_challenge_battle.add_argument(
         "--wait",

@@ -2,21 +2,21 @@
 
 Live-verified flow (2026-11-15, serverVersion 299):
 
-1. Sender: ``chatSendChallenge`` with the saved challenge team
-   (``teamGetAll.challenge_titan`` for ``type=titan``, ``teamGetAll.challenge``
-   for ``type=hero``). The recipient gets a personal-chat message with
-   ``messageType="challenge"``.
-2. Recipient: ``chatGetAll`` (``chatType=personal``, ``userId=<sender>``)
+1. Send: ``chatSendChallenge`` with the **target (defending) team**. The
+   observed game flow sends a single unit (``heroes=[4013]``); the saved
+   ``teamGetAll.challenge_titan`` / ``challenge`` provides the default pick.
+   The recipient gets a personal-chat message with ``messageType="challenge"``
+   whose ``data.heroes`` is this target team.
+2. messageId: ``chatGetAll`` (``chatType=personal``, ``userId=<peer>``)
    returns ``chat[]``. The challenge message's ``id`` is the ``messageId``
-   that ``chatAcceptChallenge`` needs. A later ``replay`` message whose
+   needed by ``chatAcceptChallenge``. A later ``replay`` message whose
    ``data.challengeId`` equals that id means the challenge was already fought.
-3. Recipient: ``chatAcceptChallenge`` with the sender's userId, the discovered
-   messageId and the recipient's own challenge team returns
-   ``response.battle`` (``result.win`` / ``result.stars`` / ``id`` = replay id).
-
-The sender cannot fight its own challenge: accepting on the sender account
-yields a self-battle (``battle.typeId`` is the caller's own id). ``challenge
-battle`` therefore sends from one registered account and accepts on another.
+3. Battle: ``chatAcceptChallenge`` with the peer userId, the messageId and the
+   full saved team as attackers. **Both participants can battle**: the
+   recipient fights the target team, and the sender can also battle its own
+   challenge (attackers = own full team, defenders = the challenge's target
+   team; ``battle.userId`` / ``battle.typeId`` are both the sender because
+   both teams belong to it).
 """
 
 from __future__ import annotations
@@ -224,6 +224,14 @@ def pending_challenges(
     ]
 
 
+def sent_pending_challenges(
+    challenges: list[ChallengeMessage], peer_id: str | int
+) -> list[ChallengeMessage]:
+    """Pending challenges sent by this account (sender_id is not the peer)."""
+    peer = str(peer_id)
+    return [c for c in pending_challenges(challenges) if c.sender_id != peer]
+
+
 def select_challenge_team(team_detail: Any, challenge_type: str) -> tuple[int, ...]:
     """Pick the saved challenge team for ``challenge_type`` from teamGetAll."""
     field = CHALLENGE_TEAM_FIELDS.get(challenge_type)
@@ -243,6 +251,16 @@ def select_challenge_team(team_detail: Any, challenge_type: str) -> tuple[int, .
             "Set the challenge team in-game or pass --heroes explicitly."
         )
     return validate_heroes(raw)
+
+
+def select_challenge_target_team(team_detail: Any, challenge_type: str) -> tuple[int, ...]:
+    """Pick the challenge **target** lineup (the team the opponent fights).
+
+    The observed game flow sends a single unit (``chatSendChallenge.heroes``
+    becomes the ``defenders`` snapshot in the battle), while the accepting side
+    brings its full saved team. Default to the first saved unit.
+    """
+    return select_challenge_team(team_detail, challenge_type)[:1]
 
 
 def parse_send_result(detail: Any) -> None:
@@ -328,18 +346,22 @@ def run_challenge_send(
     *,
     dry_run: bool = False,
 ) -> ChallengeSendResult:
-    """Send a friendly challenge to ``user_id`` using the saved challenge team."""
+    """Send a friendly challenge to ``user_id`` with the target (defending) team.
+
+    ``heroes`` (or the saved challenge team's first unit) becomes the team the
+    opponent fights; the accepting side uses its full saved team.
+    """
     peer_id = validate_user_id(user_id)
     if challenge_type not in CHALLENGE_TYPES:
         raise ChallengeError(
             f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
         )
-    team = validate_heroes(heroes) if heroes is not None else select_challenge_team(
+    team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
         _fetch_team_detail(client), challenge_type
     )
     print(
         f"{Emojis.START}[{account_alias}] Sending {challenge_type} challenge to "
-        f"{peer_id} with {len(team)} unit(s): {', '.join(map(str, team))}"
+        f"{peer_id} with target team ({len(team)} unit(s)): {', '.join(map(str, team))}"
     )
     if dry_run:
         print(f"{Emojis.INFO} Dry run: chatSendChallenge was not called.")
@@ -367,12 +389,20 @@ def run_challenge_accept(
     message_id: int | str | None = None,
     heroes: list[int] | None = None,
     count: int = DEFAULT_THREAD_COUNT,
+    sent: bool = False,
     dry_run: bool = False,
 ) -> ChallengeBattleResult | None:
-    """Accept the newest pending challenge from ``user_id`` (or ``--message-id``).
+    """Battle a pending challenge (``chatAcceptChallenge``).
+
+    By default the newest pending challenge **received from** ``user_id`` is
+    used (recipient flow). With ``sent=True`` the newest pending challenge
+    **sent by this account to** ``user_id`` is used (sender-side flow: the
+    sender fights its own challenge with the full team, while the challenge's
+    1-unit target team is the defender).
 
     The challenge message is discovered in the personal thread: its ``id`` is
-    the ``messageId`` required by ``chatAcceptChallenge``.
+    the ``messageId`` required by ``chatAcceptChallenge``. ``userId`` is always
+    the peer (the other participant in the personal thread).
     """
     peer_id = validate_user_id(user_id)
     challenges = parse_challenge_messages(fetch_thread(client, peer_id, count))
@@ -391,27 +421,30 @@ def run_challenge_accept(
                 "exists for this messageId; continuing because --message-id was explicit."
             )
     else:
-        pending = pending_challenges(challenges, peer_id)
-        if not pending:
-            raise ChallengeError(
-                f"No pending challenge from {peer_id}. Ask them to send one, or "
-                "check `hw-genie challenge list --user-id <peer>`."
-            )
+        if sent:
+            pending = sent_pending_challenges(challenges, peer_id)
+            if not pending:
+                raise ChallengeError(
+                    f"No pending challenge sent to {peer_id}. Send one with "
+                    "`hw-genie challenge send --user-id <peer>` first."
+                )
+        else:
+            pending = pending_challenges(challenges, peer_id)
+            if not pending:
+                raise ChallengeError(
+                    f"No pending challenge from {peer_id}. Ask them to send one, or "
+                    "use --sent to battle a challenge you sent."
+                )
         target = pending[-1]
 
-    if target.sender_id != peer_id:
-        raise ChallengeError(
-            f"Challenge #{target.message_id} was sent by this account, not received "
-            f"from {peer_id}; only the recipient can accept it."
-        )
-
+    direction = "sent by this account" if target.sender_id != peer_id else f"from {peer_id}"
     challenge_type = target.challenge_type or "titan"
     team = validate_heroes(heroes) if heroes is not None else select_challenge_team(
         _fetch_team_detail(client), challenge_type
     )
     print(
-        f"{Emojis.STEP}[{account_alias}] Accepting {challenge_type} challenge "
-        f"#{target.message_id} from {peer_id} with {len(team)} unit(s): "
+        f"{Emojis.STEP}[{account_alias}] Battling {challenge_type} challenge "
+        f"#{target.message_id} ({direction}) with {len(team)} unit(s): "
         f"{', '.join(map(str, team))}"
     )
     if dry_run:
@@ -491,14 +524,21 @@ def run_challenge_list(
         print(f"{Emojis.INFO}[{account_alias}] No challenge messages found with {peer_id}.")
         return challenges
     print_challenge_table(challenges, account_alias, peer_id)
-    pending = pending_challenges(challenges, peer_id)
-    if pending:
+    received = pending_challenges(challenges, peer_id)
+    sent_pending = sent_pending_challenges(challenges, peer_id)
+    if received:
         print(
             f"{Emojis.INFO}Newest pending messageId from {peer_id}: "
-            f"{pending[-1].message_id} (`challenge accept` picks this automatically)."
+            f"{received[-1].message_id} (`challenge accept` picks this automatically)."
+        )
+    elif sent_pending:
+        print(
+            f"{Emojis.INFO}Newest pending challenge you sent: "
+            f"{sent_pending[-1].message_id} "
+            "(`challenge accept --sent` battles it as the sender)."
         )
     else:
-        print(f"{Emojis.INFO}No pending challenge from {peer_id}.")
+        print(f"{Emojis.INFO}No pending challenge with {peer_id}.")
     return challenges
 
 
@@ -534,13 +574,14 @@ def run_challenge_battle(
 ) -> ChallengeBattleResult | None:
     """Send a challenge from one registered account and accept it on another.
 
-    The accepter must be the challenge recipient; the server resolves the
-    opponent from the challenge message, so the sender's own account cannot
-    fight its own challenge.
+    Two-account mode: the accepter is the challenge recipient and uses its full
+    saved team against the sender's target team. Use
+    :func:`run_challenge_self_battle` for the sender-side flow (same account).
     """
     if sender_alias.strip().lower() == accept_alias.strip().lower():
         raise ChallengeError(
-            "Sender and accept account must differ (a challenge is accepted by its recipient)."
+            "Sender and accept account must differ; use the sender-side battle "
+            "(--user-id without --accept-account) to battle your own challenge."
         )
     sender_id = fetch_player_id(sender_client)
     accept_id = fetch_player_id(accept_client)
@@ -548,7 +589,7 @@ def run_challenge_battle(
         raise ChallengeError("Sender and accept account resolve to the same player id.")
     if dry_run:
         # Still resolve teams so the plan is complete; no writes.
-        sender_team = validate_heroes(heroes) if heroes is not None else select_challenge_team(
+        sender_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
             _fetch_team_detail(sender_client), challenge_type
         )
         accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
@@ -557,7 +598,8 @@ def run_challenge_battle(
         print(
             f"{Emojis.INFO}Dry run: {sender_alias} ({sender_id}) would send a "
             f"{challenge_type} challenge to {accept_alias} ({accept_id}) "
-            f"with {list(sender_team)}, and {accept_alias} would accept it with {list(accept_team)}."
+            f"with target team {list(sender_team)}, and {accept_alias} would battle it "
+            f"with {list(accept_team)}."
         )
         return None
 
@@ -600,6 +642,93 @@ def run_challenge_battle(
     )
 
 
+def run_challenge_self_battle(
+    client: HWClient,
+    account_alias: str,
+    user_id: str | int,
+    *,
+    challenge_type: str = "titan",
+    heroes: list[int] | None = None,
+    accept_heroes: list[int] | None = None,
+    dry_run: bool = False,
+    wait_seconds: float = DEFAULT_WAIT_SECONDS,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+    count: int = DEFAULT_THREAD_COUNT,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> ChallengeBattleResult | None:
+    """Doc-style flow: send a 1-unit challenge and battle it on the same account.
+
+    Live-verified: the sender calls ``chatAcceptChallenge`` with the same peer
+    ``userId``, its full saved team as ``attackers``, and the challenge's
+    target team as ``defenders``. ``battle.userId`` / ``battle.typeId`` are
+    both the sender because both teams belong to the sender.
+    """
+    peer_id = validate_user_id(user_id)
+    if dry_run:
+        # One teamGetAll round trip serves both teams.
+        detail = None
+        if heroes is None or accept_heroes is None:
+            detail = _fetch_team_detail(client)
+        target_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
+            detail, challenge_type
+        )
+        accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
+            detail, challenge_type
+        )
+        print(
+            f"{Emojis.INFO}Dry run: {account_alias} would send a {challenge_type} "
+            f"challenge to {peer_id} with target team {list(target_team)} and battle "
+            f"it on the same account with {list(accept_team)}."
+        )
+        return None
+
+    baseline = {
+        c.message_id
+        for c in parse_challenge_messages(fetch_thread(client, peer_id, count))
+    }
+    run_challenge_send(
+        client,
+        account_alias,
+        peer_id,
+        challenge_type,
+        heroes,
+        dry_run=False,
+    )
+
+    attempts = max(1, int(wait_seconds / max(poll_interval, 0.1)) + 1)
+    target: ChallengeMessage | None = None
+    for attempt in range(attempts):
+        challenges = parse_challenge_messages(fetch_thread(client, peer_id, count))
+        fresh = [
+            c
+            for c in sent_pending_challenges(challenges, peer_id)
+            if c.message_id not in baseline
+        ]
+        if fresh:
+            target = fresh[-1]
+            break
+        if attempt < attempts - 1:
+            sleep_fn(poll_interval)
+    if target is None:
+        raise ChallengeError(
+            f"Challenge was sent but no new pending challenge appeared in "
+            f"{account_alias}'s own thread with {peer_id} within {wait_seconds:.0f}s. "
+            f"Retry with `hw-genie challenge accept -a {account_alias} "
+            f"--user-id {peer_id} --sent`."
+        )
+    print(f"{Emojis.STEP}Found messageId {target.message_id} in {account_alias}'s own thread.")
+    return run_challenge_accept(
+        client,
+        account_alias,
+        peer_id,
+        message_id=target.message_id,
+        heroes=accept_heroes,
+        count=count,
+        sent=True,
+        dry_run=False,
+    )
+
+
 __all__ = [
     "CHALLENGE_TEAM_FIELDS",
     "CHALLENGE_TYPES",
@@ -615,8 +744,11 @@ __all__ = [
     "run_challenge_accept",
     "run_challenge_battle",
     "run_challenge_list",
+    "run_challenge_self_battle",
     "run_challenge_send",
+    "select_challenge_target_team",
     "select_challenge_team",
+    "sent_pending_challenges",
     "validate_heroes",
     "validate_user_id",
 ]
