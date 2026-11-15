@@ -637,6 +637,12 @@ def test_run_challenge_list_empty(capsys):
     assert "No challenge messages found" in capsys.readouterr().out
 
 
+def test_run_challenge_list_clamps_count_to_api_max():
+    client = _make_client(thread={"chat": []})
+    run_challenge_list(client, "Alice", PEER_ID, count=500)
+    assert client.chat_get_all.call_args.kwargs["count"] == 200
+
+
 # --- battle ---
 
 

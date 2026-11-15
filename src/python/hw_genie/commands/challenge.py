@@ -626,7 +626,8 @@ def run_challenge_list(
 ) -> list[ChallengeMessage]:
     """List challenge messages and their messageIds for one personal thread."""
     peer_id = resolve_challenge_peer(account_alias, user_id)
-    challenges = parse_challenge_messages(fetch_thread(client, peer_id, count))
+    effective_count = max(1, min(DEFAULT_THREAD_COUNT, count))
+    challenges = parse_challenge_messages(fetch_thread(client, peer_id, effective_count))
     if json_output:
         print(json.dumps([asdict(c) for c in challenges], ensure_ascii=False, indent=1))
         return challenges
