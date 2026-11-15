@@ -534,6 +534,47 @@ def seers_game_routine(
     )
 
 
+def challenge_routine(
+    user_id: str | None = None,
+    challenge_type: str | None = None,
+    wait_seconds: float = 10.0,
+    dry_run: bool = False,
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that sends + battles one challenge per account.
+
+    Each account uses ``challenge_defaults`` unless ``user_id`` / ``challenge_type``
+    are given (shared override for every account). The sender-side flow is used:
+    send a 1-unit target challenge, then battle it on the same account.
+
+    Returns:
+        A routine whose per-account result is ``ChallengeRunResult``.
+    """
+    from hw_genie.commands.challenge import (
+        ChallengeRunResult,
+        resolve_challenge_target,
+        run_challenge_self_battle,
+    )
+
+    def run(client: HWClient, account: str) -> object:
+        target, resolved_type = resolve_challenge_target(account, user_id, challenge_type)
+        battle = run_challenge_self_battle(
+            client,
+            account,
+            target,
+            challenge_type=resolved_type,
+            dry_run=dry_run,
+            wait_seconds=wait_seconds,
+        )
+        return ChallengeRunResult(
+            peer_id=target,
+            challenge_type=resolved_type,
+            dry_run=dry_run,
+            battle=battle,
+        )
+
+    return run
+
+
 def full_routine(
     client: HWClient, account: str, item_max_iterations: int = 9999
 ) -> object:
@@ -1361,6 +1402,69 @@ def summarize_seers_game(
             f"{key} x{amount}" for key, amount in sorted(totals.items())
         )
         print(f"🎁 Total rewards: {totals_str}")
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
+_CHALLENGE_HEADERS = ["Account", "🎯 Peer", "⚔️ Result", "⭐ Stars", "ℹ️ Type"]
+
+
+def summarize_challenge(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account challenge summary and return the failed count.
+
+    Results come from :func:`challenge_routine`: per account a
+    ``ChallengeRunResult``. A LOSS still counts as completed (the battle ran);
+    only routine errors, missing results, or a missing battle in a non-dry run
+    are failures. With ``dry_run=True`` the footer says "planned".
+    """
+    from hw_genie.commands.challenge import ChallengeRunResult
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is not None:
+            message = str(err).strip().splitlines()
+            note = message[0] if message else type(err).__name__
+            rows.append([account, "-", "-", "-", note])
+            failed.append(account)
+            continue
+        if not isinstance(res, ChallengeRunResult):
+            rows.append([account, "-", "-", "-", "result unavailable"])
+            failed.append(account)
+            continue
+        if res.dry_run:
+            rows.append([account, res.peer_id, "planned", "-", res.challenge_type])
+            ok += 1
+            continue
+        if res.battle is None:
+            rows.append([account, res.peer_id, "-", "-", "battle result unavailable"])
+            failed.append(account)
+            continue
+        rows.append(
+            [
+                account,
+                res.peer_id,
+                "WIN" if res.battle.win else "LOSS",
+                str(res.battle.stars),
+                res.challenge_type,
+            ]
+        )
+        ok += 1
+
+    width = _table_layout(_CHALLENGE_HEADERS, rows)[1] if rows else 52
+    print("\n" + "=" * width)
+    print("📊 --- Multi challenge summary ---")
+    if rows:
+        print(_render_table(_CHALLENGE_HEADERS, rows))
     if failed:
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")

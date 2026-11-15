@@ -201,6 +201,8 @@ class ApiAction(str, Enum):
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
     CHAT_GET_ALL = "chatGetAll"
     CHAT_GET_TALKS = "chatGetTalks"
+    CHAT_SEND_CHALLENGE = "chatSendChallenge"
+    CHAT_ACCEPT_CHALLENGE = "chatAcceptChallenge"
     USER_GET_INFO_BY_IDS = "userGetInfoByIds"
     # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
     CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
@@ -521,6 +523,97 @@ class HWClient:
         payload = {
             "calls": [{"name": ApiAction.CHAT_GET_TALKS, "args": {}, "ident": "body"}]
         }
+        return self.call(payload)
+
+    def chat_send_challenge(
+        self,
+        user_id: str | int,
+        heroes: list[int],
+        challenge_type: str = "titan",
+        favor: dict[str, int] | None = None,
+        text: str = "",
+        manual: bool = False,
+        max_upgrade: bool = True,
+    ) -> HWResponse:
+        """個人チャットの相手にフレンドリーチャレンジを送る（chatSendChallenge）。
+
+        チャレンジは相手側の personal スレッドに ``messageType=challenge`` の
+        メッセージとして届き、その ``id`` が ``chatAcceptChallenge`` に渡す
+        ``messageId`` になる。送信の重複を避けるためリトライしない
+        （``max_retries=0``）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.CHAT_SEND_CHALLENGE,
+                    "args": {
+                        "chatType": "personal",
+                        "heroes": [int(h) for h in heroes],
+                        "favor": favor or {},
+                        "text": text,
+                        "type": challenge_type,
+                        "manual": manual,
+                        "maxUpgrade": max_upgrade,
+                        "userId": str(user_id),
+                    },
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload, max_retries=0)
+
+    def chat_accept_challenge(
+        self,
+        user_id: str | int,
+        message_id: str | int,
+        heroes: list[int],
+        favor: dict[str, int] | None = None,
+        max_upgrade: bool = True,
+    ) -> HWResponse:
+        """チャレンジをバトルする（chatAcceptChallenge）。
+
+        受信者専用ではない。受信者・送信者のどちらも実行できる。
+        ``user_id`` は personal スレッドの相手（受信者なら送信者、送信者なら
+        受信者）、``message_id`` は双方で共有する personal スレッドの
+        ``challenge`` メッセージの ``id``、``heroes`` は攻撃側チーム
+        （自分の保存チーム全員）。レスポンスの ``response.battle`` に
+        ``result.win`` / ``result.stars`` / ``id``（リプレイID）が入る。
+        バトルの重複実行を避けるためリトライしない（``max_retries=0``）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.CHAT_ACCEPT_CHALLENGE,
+                    "args": {
+                        "messageId": message_id,
+                        "heroes": [int(h) for h in heroes],
+                        "favor": favor or {},
+                        "maxUpgrade": max_upgrade,
+                        "userId": str(user_id),
+                    },
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload, max_retries=0)
+
+    def team_get_all(self) -> HWResponse:
+        """保存済みチーム一覧を取得する（teamGetAll）。
+
+        ``response.challenge_titan`` / ``response.challenge`` がフレンドリー
+        チャレンジ用の保存チーム。
+        """
+        payload = {"calls": [{"name": ApiAction.TEAM_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def user_get_info(self) -> HWResponse:
+        """自分のプレイヤー情報を取得する（userGetInfo）。
+
+        ``response.id`` がプレイヤーID（``x-auth-user-id`` ヘッダーとは別物）。
+        """
+        payload = {"calls": [{"name": ApiAction.USER_GET_INFO, "args": {}, "ident": "body"}]}
         return self.call(payload)
 
     def user_get_info_by_ids(self, ids: list[str]) -> HWResponse:

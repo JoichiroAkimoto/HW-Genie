@@ -109,13 +109,19 @@ def _run_host_identifier() -> str:
     return f"{user}@{machine}"
 
 
-def _ensure_session(args) -> dict[str, str]:
-    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+def _load_session_headers(account: str) -> dict[str, str] | None:
+    """セッションヘッダーを読み込む（未登録・ヘッダー欠落時は None）"""
     from hw_genie.core.session_manager import SessionManager
 
-    resolved = resolve_account(args.account)
-    data = SessionManager.load(resolved)
+    data = SessionManager.load(account)
     headers = data.get("headers") if data else None
+    return headers or None
+
+
+def _ensure_session(args) -> dict[str, str]:
+    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+    resolved = resolve_account(args.account)
+    headers = _load_session_headers(resolved)
     if not headers:
         print(f"Error: Session not found for account '{resolved}'. Please provide a valid curl with --curl.")
         sys.exit(1)
@@ -1048,6 +1054,159 @@ def cmd_chat(args):
         sys.exit(1)
 
 
+def _challenge_client(account: str) -> HWClient:
+    """Build an authenticated client for an already-resolved account alias."""
+    headers = _load_session_headers(account)
+    if not headers:
+        print(
+            f"Error: Session not found for account '{account}'. "
+            "Please provide a valid curl with --curl.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return HWClient(headers)
+
+
+def cmd_challenge_send(args):
+    """Send a friendly personal-chat challenge (chatSendChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_send
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_send(
+            client,
+            account,
+            args.user_id,
+            args.type,
+            args.heroes,
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_accept(args):
+    """Battle the newest pending challenge (chatAcceptChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_accept
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_accept(
+            client,
+            account,
+            args.user_id,
+            message_id=args.message_id,
+            heroes=args.heroes,
+            count=args.count,
+            sent=bool(args.sent),
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_list(args):
+    """List challenge messages and messageIds in one personal thread."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_list
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_list(
+            client,
+            account,
+            args.user_id,
+            count=args.count,
+            json_output=bool(args.json),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_config(args):
+    """Show or update the per-account challenge target (challenge_defaults)."""
+    from hw_genie.commands.challenge import (
+        ChallengeError,
+        clear_challenge_defaults,
+        load_challenge_defaults,
+        set_challenge_defaults,
+    )
+
+    account = resolve_account(args.account)
+    if args.clear and (args.user_id is not None or args.type is not None):
+        print(
+            "Error: --clear cannot be combined with --user-id/--type.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    _require_registered_account(account)
+    try:
+        if args.clear:
+            clear_challenge_defaults(account)
+            print(f"ℹ️  Cleared challenge_defaults for {account}.")
+            return
+        if args.user_id is not None or args.type is not None:
+            defaults = set_challenge_defaults(
+                account, user_id=args.user_id, challenge_type=args.type
+            )
+            print(f"ℹ️  challenge_defaults for {account}: {json.dumps(defaults, ensure_ascii=False)}")
+            return
+        defaults = load_challenge_defaults(account)
+        body = json.dumps(defaults, ensure_ascii=False) if defaults else "(none)"
+        print(f"ℹ️  challenge_defaults for {account}: {body}")
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_battle(args):
+    """Send a challenge and battle it (same account or another registered account)."""
+    from hw_genie.commands.challenge import (
+        ChallengeError,
+        run_challenge_battle,
+        run_challenge_self_battle,
+    )
+
+    if args.accept_account is not None and not str(args.accept_account).strip():
+        print("Error: --accept-account must not be blank.", file=sys.stderr)
+        sys.exit(2)
+    sender_account = resolve_account(args.account)
+    sender_client = _challenge_client(sender_account)
+    try:
+        if args.accept_account is not None:
+            accept_account = resolve_account(args.accept_account)
+            run_challenge_battle(
+                sender_client,
+                sender_account,
+                _challenge_client(accept_account),
+                accept_account,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
+        else:
+            run_challenge_self_battle(
+                sender_client,
+                sender_account,
+                args.user_id,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_quests(args):
     """クエスト（デイリー等）の取得・表示"""
     from hw_genie.commands.quests import (
@@ -1308,6 +1467,7 @@ def cmd_multi(args):
     from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
         asgard_shop_routine,
+        challenge_routine,
         consumable_routine,
         daily_routine,
         full_routine,
@@ -1320,6 +1480,7 @@ def cmd_multi(args):
         reset_cancel,
         seers_game_routine,
         summarize_asgard_shop,
+        summarize_challenge,
         summarize_consumable,
         summarize_gift,
         summarize_quests,
@@ -1347,10 +1508,10 @@ def cmd_multi(args):
     accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests', 'consumable', 'seers-game', "
-            "'gift-up' and 'gift-reset' modes "
+            "'gift-up', 'gift-reset' and 'challenge' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
@@ -1365,6 +1526,25 @@ def cmd_multi(args):
             file=sys.stderr,
         )
         sys.exit(2)
+
+    if mode == "challenge" and not dry_run and not getattr(args, "yes", False):
+        # 各アカウントから対象プレイヤーへ実メッセージを送るため、gift 系と同じ
+        # 明示ゲートを要求する（--dry-run は読み取りのみ）。
+        print(
+            "Error: multi challenge sends a challenge from every selected account. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "challenge" and getattr(args, "challenge_user_id", None) is not None:
+        from hw_genie.commands.challenge import ChallengeError, validate_user_id
+
+        try:
+            validate_user_id(args.challenge_user_id)
+        except ChallengeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
 
     # gift 系フラグの検証はモードごとに意味のあるものだけ行う（他モードで
     # `--limit 0` 等を渡しても無意味な検証を発火させない）。`--max-power` は
@@ -1408,6 +1588,14 @@ def cmd_multi(args):
             dry_run=dry_run,
         )
         # dry-run は read-only の計画表示のため逐次実行
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "challenge":
+        routine = challenge_routine(
+            user_id=getattr(args, "challenge_user_id", None),
+            challenge_type=getattr(args, "challenge_type", None),
+            wait_seconds=float(getattr(args, "challenge_wait", 10)),
+            dry_run=dry_run,
+        )
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
@@ -1565,6 +1753,8 @@ def cmd_multi(args):
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode == "challenge":
+                    failed = summarize_challenge(results.items(), dry_run=dry_run)
                 elif mode in ("gift-up", "gift-reset"):
                     failed = summarize_gift(
                         results.items(),
@@ -1777,6 +1967,14 @@ def _run_log_account_failure(
                 return "no rival cleared"
             return None
         return "toe result unavailable"
+    if mode == "challenge":
+        from hw_genie.commands.challenge import ChallengeRunResult
+
+        if isinstance(result, ChallengeRunResult):
+            if result.dry_run:
+                return None
+            return None if result.battle is not None else "battle result unavailable"
+        return "challenge result unavailable"
     # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
     from hw_genie.core.client import PlayerStatus
 
@@ -2165,6 +2363,159 @@ def main():
     )
     p_chat.set_defaults(func=cmd_chat)
 
+    # Friendly challenge (personal chat)
+    from hw_genie.commands.challenge import CHALLENGE_TYPES as _CHALLENGE_TYPES
+
+    p_challenge = subparsers.add_parser(
+        "challenge", help="Friendly personal-chat challenge (send / accept / list / battle)"
+    )
+    challenge_sub = p_challenge.add_subparsers(dest="challenge_command", required=True)
+
+    p_challenge_send = challenge_sub.add_parser(
+        "send", parents=[parent_parser], help="Send a challenge to a player (chatSendChallenge)"
+    )
+    p_challenge_send.add_argument(
+        "--user-id",
+        default=None,
+        help="Target player id (default: challenge_defaults.user_id)",
+    )
+    p_challenge_send.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Challenge type (default: challenge_defaults.type or titan)",
+    )
+    p_challenge_send.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
+    )
+    p_challenge_send.add_argument(
+        "--dry-run", action="store_true", help="Resolve the team and print the plan only"
+    )
+    p_challenge_send.set_defaults(func=cmd_challenge_send)
+
+    p_challenge_accept = challenge_sub.add_parser(
+        "accept",
+        parents=[parent_parser],
+        help="Battle the newest pending challenge (chatAcceptChallenge)",
+    )
+    p_challenge_accept.add_argument(
+        "--user-id",
+        default=None,
+        help="Peer player id (default: challenge_defaults.user_id)",
+    )
+    p_challenge_accept.add_argument(
+        "--message-id",
+        type=_positive_int,
+        default=None,
+        help="Explicit challenge messageId (default: newest pending message)",
+    )
+    p_challenge_accept.add_argument(
+        "--sent",
+        action="store_true",
+        help="Battle a challenge this account sent (sender-side battle) instead of one received",
+    )
+    p_challenge_accept.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Battle team override (default: full saved challenge team)",
+    )
+    p_challenge_accept.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan for the challenge messageId (default: 200)",
+    )
+    p_challenge_accept.add_argument(
+        "--dry-run", action="store_true", help="Show the discovered messageId and team only"
+    )
+    p_challenge_accept.set_defaults(func=cmd_challenge_accept)
+
+    p_challenge_list = challenge_sub.add_parser(
+        "list", parents=[parent_parser], help="List challenge messages and messageIds in a thread"
+    )
+    p_challenge_list.add_argument(
+        "--user-id", default=None, help="Peer player id (default: challenge_defaults.user_id)"
+    )
+    p_challenge_list.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan (default: 200)",
+    )
+    p_challenge_list.add_argument("--json", action="store_true", help="Print parsed JSON")
+    p_challenge_list.set_defaults(func=cmd_challenge_list)
+
+    p_challenge_config = challenge_sub.add_parser(
+        "config",
+        parents=[parent_parser],
+        help="Show/set the per-account challenge target (challenge_defaults)",
+    )
+    p_challenge_config.add_argument(
+        "--user-id", default=None, help="Default target player id"
+    )
+    p_challenge_config.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Default challenge type",
+    )
+    p_challenge_config.add_argument(
+        "--clear", action="store_true", help="Remove all stored challenge defaults"
+    )
+    p_challenge_config.set_defaults(func=cmd_challenge_config)
+
+    p_challenge_battle = challenge_sub.add_parser(
+        "battle",
+        parents=[parent_parser],
+        help="Send a challenge and battle it (same account, or --accept-account)",
+    )
+    battle_target = p_challenge_battle.add_mutually_exclusive_group()
+    battle_target.add_argument(
+        "--user-id",
+        default=None,
+        help="Peer player id; the sender battles its own challenge on -a (default: challenge_defaults.user_id)",
+    )
+    battle_target.add_argument(
+        "--accept-account",
+        default=None,
+        help="Registered account that receives and battles the challenge",
+    )
+    p_challenge_battle.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Challenge type (default: challenge_defaults.type or titan)",
+    )
+    p_challenge_battle.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
+    )
+    p_challenge_battle.add_argument(
+        "--accept-heroes",
+        type=int,
+        nargs="+",
+        help="Battle team override (default: full saved challenge team)",
+    )
+    p_challenge_battle.add_argument(
+        "--wait",
+        type=_non_negative_int,
+        default=10,
+        help=(
+            "Seconds to wait for the challenge to appear in the accepter's thread "
+            "(default: 10; 0 = one immediate check only)"
+        ),
+    )
+    p_challenge_battle.add_argument(
+        "--dry-run", action="store_true", help="Resolve accounts/teams and print the plan only"
+    )
+    p_challenge_battle.set_defaults(func=cmd_challenge_battle)
+
     # Titan Arena (ToE)
     p_toe = subparsers.add_parser("toe", parents=[parent_parser], help="Titan Arena (ToE) operations")
     toe_sub = p_toe.add_subparsers(dest="toe_type", help="ToE operation")
@@ -2365,10 +2716,11 @@ def main():
             "seers-game",
             "gift-up",
             "gift-reset",
+            "challenge",
         ],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes) or 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
     )
     p_multi.add_argument(
         "--engine",
@@ -2456,7 +2808,27 @@ def main():
     p_multi.add_argument(
         "--yes",
         action="store_true",
-        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' modes",
+        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' / 'challenge' modes",
+    )
+    p_multi.add_argument(
+        "--user-id",
+        dest="challenge_user_id",
+        default=None,
+        help="Target player id for the 'challenge' mode (default: each account's challenge_defaults.user_id)",
+    )
+    p_multi.add_argument(
+        "--type",
+        dest="challenge_type",
+        choices=list(_CHALLENGE_TYPES),
+        default=None,
+        help="Challenge type for the 'challenge' mode (default: challenge_defaults.type or titan)",
+    )
+    p_multi.add_argument(
+        "--wait",
+        dest="challenge_wait",
+        type=_non_negative_int,
+        default=10,
+        help="Seconds to wait for the challenge message in the 'challenge' mode (default: 10; 0 = one immediate check)",
     )
     p_multi.add_argument(
         "--pick",
@@ -2485,7 +2857,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable/seers-game/gift-up/gift-reset modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game/gift-up/gift-reset/challenge modes only)",
     )
     p_multi.add_argument(
         "--iterations",
