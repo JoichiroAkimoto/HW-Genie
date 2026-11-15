@@ -333,6 +333,15 @@ def test_cli_challenge_battle_allows_default_target_without_flags(monkeypatch, c
     assert "No accounts found" in capsys.readouterr().err
 
 
+def test_cli_challenge_battle_blank_accept_account_is_rejected(monkeypatch, capsys):
+    result = _invoke_main(
+        ["hw-genie", "challenge", "battle", "-a", "Alice", "--accept-account", "   "],
+        monkeypatch,
+    )
+    assert result.value.code == 2
+    assert "must not be blank" in capsys.readouterr().err
+
+
 def test_cli_challenge_config_sets_defaults(monkeypatch):
     _register_alice()
     _invoke_main(
@@ -375,6 +384,14 @@ def test_cli_multi_challenge_requires_yes_before_any_api_call(monkeypatch, capsy
     result = _invoke_main(["hw-genie", "multi", "challenge", "Alice"], monkeypatch)
     assert result.value.code == 2
     assert "Add --yes" in capsys.readouterr().err
+
+
+def test_cli_multi_challenge_rejects_invalid_user_id_before_workers(monkeypatch, capsys):
+    result = _invoke_main(
+        ["hw-genie", "multi", "challenge", "--user-id", "abc", "--yes"], monkeypatch
+    )
+    assert result.value.code == 2
+    assert "Invalid userId" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -906,6 +923,8 @@ def test_challenge_defaults_validation_and_cli_precedence():
         resolve_challenge_peer("Alice", "")
     with pytest.raises(ChallengeError, match="Unknown challenge type"):
         set_challenge_defaults("Alice", challenge_type="beast")
+    with pytest.raises(ChallengeError, match="Unknown challenge type"):
+        resolve_challenge_target("Alice", challenge_type="beast")
     with pytest.raises(ChallengeError, match="Invalid userId"):
         set_challenge_defaults("Alice", user_id="abc")
 

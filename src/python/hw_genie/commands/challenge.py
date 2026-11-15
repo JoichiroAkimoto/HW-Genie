@@ -193,11 +193,11 @@ def resolve_challenge_target(
     challenge_type: str | None = None,
 ) -> tuple[str, str]:
     """Resolve the target peer and type: CLI value > stored default > error / titan."""
+    if challenge_type is not None and challenge_type not in CHALLENGE_TYPES:
+        raise ChallengeError(
+            f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
+        )
     if user_id is not None and str(user_id).strip() and challenge_type is not None:
-        if challenge_type not in CHALLENGE_TYPES:
-            raise ChallengeError(
-                f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
-            )
         return validate_user_id(user_id), challenge_type
     defaults = load_challenge_defaults(account)
     raw = user_id if user_id is not None else defaults.get("user_id")

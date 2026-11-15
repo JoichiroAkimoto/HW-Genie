@@ -1172,6 +1172,9 @@ def cmd_challenge_battle(args):
         run_challenge_self_battle,
     )
 
+    if args.accept_account is not None and not str(args.accept_account).strip():
+        print("Error: --accept-account must not be blank.", file=sys.stderr)
+        sys.exit(2)
     sender_account = resolve_account(args.account)
     sender_client = _challenge_client(sender_account)
     try:
@@ -1533,6 +1536,15 @@ def cmd_multi(args):
             file=sys.stderr,
         )
         sys.exit(2)
+
+    if mode == "challenge" and getattr(args, "challenge_user_id", None) is not None:
+        from hw_genie.commands.challenge import ChallengeError, validate_user_id
+
+        try:
+            validate_user_id(args.challenge_user_id)
+        except ChallengeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
 
     # gift 系フラグの検証はモードごとに意味のあるものだけ行う（他モードで
     # `--limit 0` 等を渡しても無意味な検証を発火させない）。`--max-power` は
