@@ -7,19 +7,27 @@ API 呼び出しはすべてモックし、実在アカウント名は使わな�
 """
 
 import json
+import logging
 import sys
 from unittest.mock import MagicMock
 
 import pytest
 
 from hw_genie.commands.challenge import (
+    CHALLENGE_DEFAULTS_KEY,
+    ChallengeBattleResult,
     ChallengeError,
     ChallengeMessage,
+    ChallengeRunResult,
+    clear_challenge_defaults,
     fetch_player_id,
+    load_challenge_defaults,
     parse_accept_result,
     parse_challenge_messages,
     parse_send_result,
     pending_challenges,
+    resolve_challenge_peer,
+    resolve_challenge_target,
     run_challenge_accept,
     run_challenge_battle,
     run_challenge_list,
@@ -28,10 +36,12 @@ from hw_genie.commands.challenge import (
     select_challenge_target_team,
     select_challenge_team,
     sent_pending_challenges,
+    set_challenge_defaults,
     validate_heroes,
     validate_user_id,
 )
 from hw_genie.core.client import ApiAction, HWClient, ResponseStatus
+from hw_genie.core.session_manager import SessionManager
 
 PEER_ID = "11111111"
 SENDER_ID = "22222222"
@@ -287,22 +297,66 @@ def test_pending_challenges_filters_sender_and_pending():
     assert [m.message_id for m in sent_pending_challenges(messages, 99999999)] == [1, 2]
 
 
-def test_cli_challenge_battle_battle_target_is_mutually_exclusive(monkeypatch):
+def _invoke_main(
+    argv: list[str], monkeypatch, *, expect_exit: bool = True
+) -> pytest.ExceptionInfo | None:
+    """Run main() and restore the root log level it changes globally."""
     from hw_genie.main import main
 
-    monkeypatch.setattr(sys, "argv", ["hw-genie", "challenge", "battle"])
-    with pytest.raises(SystemExit) as missing:
-        main()
-    assert missing.value.code == 2
+    previous = logging.getLogger().level
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        if not expect_exit:
+            main()
+            return None
+        with pytest.raises(SystemExit) as exc:
+            main()
+        return exc
+    finally:
+        logging.getLogger().setLevel(previous)
 
-    monkeypatch.setattr(
-        sys,
-        "argv",
+
+def test_cli_challenge_battle_targets_are_mutually_exclusive(monkeypatch):
+    both = _invoke_main(
         ["hw-genie", "challenge", "battle", "--user-id", "11111111", "--accept-account", "Bob"],
+        monkeypatch,
     )
-    with pytest.raises(SystemExit) as both:
-        main()
     assert both.value.code == 2
+
+
+def test_cli_challenge_battle_allows_default_target_without_flags(monkeypatch, capsys):
+    # Neither flag is an argparse error now: the command falls back to
+    # challenge_defaults.user_id (here the test DB has no accounts, so the
+    # account-resolution stage exits 1 instead of the argparse exit 2).
+    missing = _invoke_main(["hw-genie", "challenge", "battle"], monkeypatch)
+    assert missing.value.code == 1
+    assert "No accounts found" in capsys.readouterr().err
+
+
+def test_cli_challenge_config_sets_defaults(monkeypatch):
+    _register_alice()
+    _invoke_main(
+        [
+            "hw-genie",
+            "challenge",
+            "config",
+            "-a",
+            "Alice",
+            "--user-id",
+            PEER_ID,
+            "--type",
+            "hero",
+        ],
+        monkeypatch,
+        expect_exit=False,
+    )
+    assert load_challenge_defaults("Alice") == {"user_id": PEER_ID, "type": "hero"}
+
+
+def test_cli_multi_challenge_requires_yes_before_any_api_call(monkeypatch, capsys):
+    result = _invoke_main(["hw-genie", "multi", "challenge", "Alice"], monkeypatch)
+    assert result.value.code == 2
+    assert "Add --yes" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -790,3 +844,151 @@ def test_run_challenge_battle_validates_accept_team_before_send():
     with pytest.raises(ChallengeError, match="Invalid unit id"):
         run_challenge_battle(sender, "Alice", accept, "Bob", accept_heroes=[0])
     sender.chat_send_challenge.assert_not_called()
+
+
+# --- per-account defaults / multi ---
+
+
+def _register_alice() -> None:
+    SessionManager.save(
+        "Alice",
+        {"headers": {"x-auth-token": "test"}, "player": {"id": "a1", "name": "Alice"}},
+    )
+
+
+def test_challenge_defaults_roundtrip_and_clear():
+    _register_alice()
+    defaults = set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="hero")
+    assert defaults == {"user_id": PEER_ID, "type": "hero"}
+    assert load_challenge_defaults("Alice") == defaults
+    assert SessionManager.load("Alice")[CHALLENGE_DEFAULTS_KEY] == defaults
+    assert resolve_challenge_target("Alice") == (PEER_ID, "hero")
+
+    clear_challenge_defaults("Alice")
+    assert load_challenge_defaults("Alice") == {}
+    with pytest.raises(ChallengeError, match="No challenge target"):
+        resolve_challenge_target("Alice")
+
+
+def test_challenge_defaults_validation_and_cli_precedence():
+    _register_alice()
+    set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="hero")
+    assert resolve_challenge_target("Alice", "22222222", "titan") == ("22222222", "titan")
+    assert resolve_challenge_peer("Alice") == PEER_ID
+    with pytest.raises(ChallengeError, match="Invalid userId"):
+        resolve_challenge_peer("Alice", "")
+    with pytest.raises(ChallengeError, match="Unknown challenge type"):
+        set_challenge_defaults("Alice", challenge_type="beast")
+    with pytest.raises(ChallengeError, match="Invalid userId"):
+        set_challenge_defaults("Alice", user_id="abc")
+
+
+def test_run_challenge_send_uses_stored_defaults():
+    _register_alice()
+    set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="hero")
+    client = _make_client()
+    result = run_challenge_send(client, "Alice")
+    assert result.peer_id == PEER_ID
+    assert result.challenge_type == "hero"
+    assert result.heroes == (11,)
+    client.chat_send_challenge.assert_called_once_with(
+        user_id=PEER_ID, heroes=[11], challenge_type="hero"
+    )
+
+
+def test_run_challenge_send_without_target_errors_before_api():
+    _register_alice()
+    client = _make_client()
+    with pytest.raises(ChallengeError, match="No challenge target"):
+        run_challenge_send(client, "Alice")
+    client.chat_send_challenge.assert_not_called()
+
+
+def test_run_challenge_self_battle_uses_stored_defaults():
+    _register_alice()
+    set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="titan")
+    client = _make_client(player_id="a1")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {"response": _thread_with_challenges(_challenge_message(9, "a1", 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = run_challenge_self_battle(
+        client,
+        "Alice",
+        wait_seconds=1,
+        poll_interval=0.1,
+        sleep_fn=lambda _: None,
+    )
+    assert result is not None
+    client.chat_send_challenge.assert_called_once_with(
+        user_id=PEER_ID, heroes=[4000], challenge_type="titan"
+    )
+    client.chat_accept_challenge.assert_called_once_with(
+        user_id=PEER_ID, message_id=9, heroes=[4000, 4001, 4002]
+    )
+
+
+def test_challenge_routine_uses_account_defaults():
+    from hw_genie.runner import challenge_routine
+
+    _register_alice()
+    set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="titan")
+    client = _make_client(player_id="a1")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {"response": _thread_with_challenges(_challenge_message(9, "a1", 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = challenge_routine(wait_seconds=1)(client, "Alice")
+    assert isinstance(result, ChallengeRunResult)
+    assert result.peer_id == PEER_ID
+    assert result.dry_run is False
+    assert result.battle is not None and result.battle.win is True
+
+
+def test_challenge_routine_shared_override_wins_over_defaults():
+    from hw_genie.runner import challenge_routine
+
+    _register_alice()
+    set_challenge_defaults("Alice", user_id=PEER_ID, challenge_type="titan")
+    client = _make_client(player_id="a1")
+    empty = _res({"response": {"chat": []}})
+    after_send = _res(
+        {"response": _thread_with_challenges(_challenge_message(9, "a1", 2000))}
+    )
+    client.chat_get_all = MagicMock(side_effect=[empty, after_send, after_send])
+
+    result = challenge_routine(user_id="22222222", challenge_type="hero", wait_seconds=1)(
+        client, "Alice"
+    )
+    assert result.peer_id == "22222222"
+    client.chat_send_challenge.assert_called_once_with(
+        user_id="22222222", heroes=[11], challenge_type="hero"
+    )
+
+
+def test_summarize_challenge_counts_failures_and_shows_results(capsys):
+    from hw_genie.runner import summarize_challenge
+
+    good = ChallengeRunResult(
+        peer_id=PEER_ID,
+        challenge_type="titan",
+        dry_run=False,
+        battle=ChallengeBattleResult(True, 3, "battle-id", "challenge_titan", []),
+    )
+    planned = ChallengeRunResult(PEER_ID, "titan", True, None)
+    failed = summarize_challenge(
+        [
+            ("Alice", (good, None)),
+            ("Bob", (planned, None)),
+            ("Carol", (None, ChallengeError("boom"))),
+        ],
+        dry_run=False,
+    )
+    assert failed == 1
+    out = capsys.readouterr().out
+    assert "Multi challenge summary" in out
+    assert "WIN" in out and "planned" in out and "boom" in out

@@ -42,6 +42,7 @@ from hw_genie.core.utils import display_timezone_name, format_timestamp_for_disp
 
 CHALLENGE_TYPES = ("titan", "hero")
 CHALLENGE_TEAM_FIELDS = {"titan": "challenge_titan", "hero": "challenge"}
+CHALLENGE_DEFAULTS_KEY = "challenge_defaults"
 DEFAULT_THREAD_COUNT = 200
 DEFAULT_WAIT_SECONDS = 10.0
 DEFAULT_POLL_INTERVAL = 1.0
@@ -98,6 +99,16 @@ class ChallengeBattleResult:
         return REPLAY_URL.format(self.battle_id) if self.battle_id else None
 
 
+@dataclass(frozen=True)
+class ChallengeRunResult:
+    """Per-account result used by ``multi challenge`` summaries."""
+
+    peer_id: str
+    challenge_type: str
+    dry_run: bool
+    battle: ChallengeBattleResult | None
+
+
 def validate_user_id(value: Any) -> str:
     """Return a numeric peer userId as a string, or raise ``ChallengeError``."""
     text = str(value).strip() if value is not None else ""
@@ -128,6 +139,97 @@ def validate_heroes(heroes: Any) -> tuple[int, ...]:
             raise ChallengeError(f"Duplicate unit id in challenge team: {unit_id}")
         normalized.append(unit_id)
     return tuple(normalized)
+
+
+def load_challenge_defaults(account: str) -> dict[str, Any]:
+    """Read ``account_configs.challenge_defaults`` (``{user_id, type}``) for an account."""
+    from hw_genie.core.session_manager import SessionManager
+
+    data = SessionManager.load(account) or {}
+    raw = data.get(CHALLENGE_DEFAULTS_KEY)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def set_challenge_defaults(
+    account: str,
+    *,
+    user_id: str | int | None = None,
+    challenge_type: str | None = None,
+) -> dict[str, Any]:
+    """Merge a target user id / challenge type into ``challenge_defaults``."""
+    from hw_genie.core.session_manager import SessionManager
+
+    if user_id is None and challenge_type is None:
+        raise ChallengeError("Nothing to set (pass --user-id and/or --type).")
+    validated_user = validate_user_id(user_id) if user_id is not None else None
+    if challenge_type is not None and challenge_type not in CHALLENGE_TYPES:
+        raise ChallengeError(
+            f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
+        )
+
+    def _merge(existing: Any) -> dict[str, Any]:
+        current = dict(existing) if isinstance(existing, dict) else {}
+        if validated_user is not None:
+            current["user_id"] = validated_user
+        if challenge_type is not None:
+            current["type"] = challenge_type
+        return current
+
+    return SessionManager.repo.update_config_merged(account, CHALLENGE_DEFAULTS_KEY, _merge)
+
+
+def clear_challenge_defaults(account: str) -> dict[str, Any]:
+    """Remove all stored challenge defaults for an account."""
+    from hw_genie.core.session_manager import SessionManager
+
+    return SessionManager.repo.update_config_merged(
+        account, CHALLENGE_DEFAULTS_KEY, lambda _existing: {}
+    )
+
+
+def resolve_challenge_target(
+    account: str,
+    user_id: str | int | None = None,
+    challenge_type: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the target peer and type: CLI value > stored default > error / titan."""
+    if user_id is not None and str(user_id).strip() and challenge_type is not None:
+        if challenge_type not in CHALLENGE_TYPES:
+            raise ChallengeError(
+                f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
+            )
+        return validate_user_id(user_id), challenge_type
+    defaults = load_challenge_defaults(account)
+    raw = user_id if user_id is not None else defaults.get("user_id")
+    if raw is None or str(raw).strip() == "":
+        raise ChallengeError(
+            "No challenge target: pass --user-id or set one with "
+            f"`hw-genie challenge config -a {account} --user-id <player id>`."
+        )
+    target = validate_user_id(raw)
+    resolved_type = challenge_type if challenge_type is not None else defaults.get("type")
+    if resolved_type not in CHALLENGE_TYPES:
+        resolved_type = "titan"
+    return target, str(resolved_type)
+
+
+def resolve_challenge_peer(account: str, user_id: str | int | None = None) -> str:
+    """Resolve only the peer id (``--user-id`` > stored default > error)."""
+    if user_id is not None:
+        return validate_user_id(user_id)
+    return resolve_challenge_target(account, None, None)[0]
+
+
+def resolve_challenge_type(account: str, challenge_type: str | None = None) -> str:
+    """Resolve only the challenge type (``--type`` > stored default > titan)."""
+    if challenge_type is not None:
+        if challenge_type not in CHALLENGE_TYPES:
+            raise ChallengeError(
+                f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
+            )
+        return challenge_type
+    stored = load_challenge_defaults(account).get("type")
+    return str(stored) if stored in CHALLENGE_TYPES else "titan"
 
 
 def _to_message_id(value: Any) -> int | str | None:
@@ -340,37 +442,35 @@ def fetch_player_id(client: HWClient) -> str:
 def run_challenge_send(
     client: HWClient,
     account_alias: str,
-    user_id: str | int,
-    challenge_type: str = "titan",
+    user_id: str | int | None = None,
+    challenge_type: str | None = None,
     heroes: list[int] | None = None,
     *,
     dry_run: bool = False,
 ) -> ChallengeSendResult:
     """Send a friendly challenge to ``user_id`` with the target (defending) team.
 
-    ``heroes`` (or the saved challenge team's first unit) becomes the team the
-    opponent fights; the accepting side uses its full saved team.
+    ``user_id`` / ``challenge_type`` fall back to the account's
+    ``challenge_defaults`` (see ``challenge config``). ``heroes`` (or the saved
+    challenge team's first unit) becomes the team the opponent fights; the
+    accepting side uses its full saved team.
     """
-    peer_id = validate_user_id(user_id)
-    if challenge_type not in CHALLENGE_TYPES:
-        raise ChallengeError(
-            f"Unknown challenge type: {challenge_type!r} (choices: {', '.join(CHALLENGE_TYPES)})"
-        )
+    peer_id, resolved_type = resolve_challenge_target(account_alias, user_id, challenge_type)
     team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
-        _fetch_team_detail(client), challenge_type
+        _fetch_team_detail(client), resolved_type
     )
     print(
-        f"{Emojis.START}[{account_alias}] Sending {challenge_type} challenge to "
+        f"{Emojis.START}[{account_alias}] Sending {resolved_type} challenge to "
         f"{peer_id} with target team ({len(team)} unit(s)): {', '.join(map(str, team))}"
     )
     if dry_run:
         print(f"{Emojis.INFO} Dry run: chatSendChallenge was not called.")
-        return ChallengeSendResult(peer_id=peer_id, challenge_type=challenge_type, heroes=team)
+        return ChallengeSendResult(peer_id=peer_id, challenge_type=resolved_type, heroes=team)
 
     res = client.chat_send_challenge(
         user_id=peer_id,
         heroes=list(team),
-        challenge_type=challenge_type,
+        challenge_type=resolved_type,
     )
     if res.status != ResponseStatus.SUCCESS:
         raise ChallengeError(
@@ -378,13 +478,13 @@ def run_challenge_send(
         )
     parse_send_result(res.detail)
     print(f"{Emojis.SUCCESS}Challenge sent to {peer_id}.")
-    return ChallengeSendResult(peer_id=peer_id, challenge_type=challenge_type, heroes=team)
+    return ChallengeSendResult(peer_id=peer_id, challenge_type=resolved_type, heroes=team)
 
 
 def run_challenge_accept(
     client: HWClient,
     account_alias: str,
-    user_id: str | int,
+    user_id: str | int | None = None,
     *,
     message_id: int | str | None = None,
     heroes: list[int] | None = None,
@@ -402,9 +502,10 @@ def run_challenge_accept(
 
     The challenge message is discovered in the personal thread: its ``id`` is
     the ``messageId`` required by ``chatAcceptChallenge``. ``userId`` is always
-    the peer (the other participant in the personal thread).
+    the peer (the other participant in the personal thread). When ``user_id``
+    is omitted, the account's ``challenge_defaults.user_id`` is used.
     """
-    peer_id = validate_user_id(user_id)
+    peer_id = resolve_challenge_peer(account_alias, user_id)
     effective_count = max(1, min(DEFAULT_THREAD_COUNT, count))
     challenges = parse_challenge_messages(fetch_thread(client, peer_id, effective_count))
 
@@ -512,13 +613,13 @@ def print_challenge_table(
 def run_challenge_list(
     client: HWClient,
     account_alias: str,
-    user_id: str | int,
+    user_id: str | int | None = None,
     *,
     count: int = DEFAULT_THREAD_COUNT,
     json_output: bool = False,
 ) -> list[ChallengeMessage]:
     """List challenge messages and their messageIds for one personal thread."""
-    peer_id = validate_user_id(user_id)
+    peer_id = resolve_challenge_peer(account_alias, user_id)
     challenges = parse_challenge_messages(fetch_thread(client, peer_id, count))
     if json_output:
         print(json.dumps([asdict(c) for c in challenges], ensure_ascii=False, indent=1))
@@ -566,7 +667,7 @@ def run_challenge_battle(
     accept_client: HWClient,
     accept_alias: str,
     *,
-    challenge_type: str = "titan",
+    challenge_type: str | None = None,
     heroes: list[int] | None = None,
     accept_heroes: list[int] | None = None,
     dry_run: bool = False,
@@ -580,7 +681,9 @@ def run_challenge_battle(
     Two-account mode: the accepter is the challenge recipient and uses its full
     saved team against the sender's target team. Use
     :func:`run_challenge_self_battle` for the sender-side flow (same account).
+    ``challenge_type=None`` falls back to the sender's stored default.
     """
+    resolved_type = resolve_challenge_type(sender_alias, challenge_type)
     if sender_alias.strip().lower() == accept_alias.strip().lower():
         raise ChallengeError(
             "Sender and accept account must differ; use the sender-side battle "
@@ -593,15 +696,15 @@ def run_challenge_battle(
     # Resolve/validate both teams before sending: a bad --accept-heroes or a
     # missing saved team must not leave a sent-but-unbattled challenge behind.
     sender_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
-        _fetch_team_detail(sender_client), challenge_type
+        _fetch_team_detail(sender_client), resolved_type
     )
     accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
-        _fetch_team_detail(accept_client), challenge_type
+        _fetch_team_detail(accept_client), resolved_type
     )
     if dry_run:
         print(
             f"{Emojis.INFO}Dry run: {sender_alias} ({sender_id}) would send a "
-            f"{challenge_type} challenge to {accept_alias} ({accept_id}) "
+            f"{resolved_type} challenge to {accept_alias} ({accept_id}) "
             f"with target team {list(sender_team)}, and {accept_alias} would battle it "
             f"with {list(accept_team)}."
         )
@@ -615,7 +718,7 @@ def run_challenge_battle(
         sender_client,
         sender_alias,
         accept_id,
-        challenge_type,
+        resolved_type,
         list(sender_team),
         dry_run=False,
     )
@@ -649,9 +752,9 @@ def run_challenge_battle(
 def run_challenge_self_battle(
     client: HWClient,
     account_alias: str,
-    user_id: str | int,
+    user_id: str | int | None = None,
     *,
-    challenge_type: str = "titan",
+    challenge_type: str | None = None,
     heroes: list[int] | None = None,
     accept_heroes: list[int] | None = None,
     dry_run: bool = False,
@@ -665,23 +768,24 @@ def run_challenge_self_battle(
     Live-verified: the sender calls ``chatAcceptChallenge`` with the same peer
     ``userId``, its full saved team as ``attackers``, and the challenge's
     target team as ``defenders``. ``battle.userId`` / ``battle.typeId`` are
-    both the sender because both teams belong to the sender.
+    both the sender because both teams belong to the sender. ``user_id`` /
+    ``challenge_type`` fall back to ``challenge_defaults``.
     """
-    peer_id = validate_user_id(user_id)
+    peer_id, resolved_type = resolve_challenge_target(account_alias, user_id, challenge_type)
     # Resolve/validate both teams before sending so an invalid override or a
     # missing saved team cannot leave a sent-but-unbattled challenge behind.
     team_detail = None
     if heroes is None or accept_heroes is None:
         team_detail = _fetch_team_detail(client)
     target_team = validate_heroes(heroes) if heroes is not None else select_challenge_target_team(
-        team_detail, challenge_type
+        team_detail, resolved_type
     )
     accept_team = validate_heroes(accept_heroes) if accept_heroes is not None else select_challenge_team(
-        team_detail, challenge_type
+        team_detail, resolved_type
     )
     if dry_run:
         print(
-            f"{Emojis.INFO}Dry run: {account_alias} would send a {challenge_type} "
+            f"{Emojis.INFO}Dry run: {account_alias} would send a {resolved_type} "
             f"challenge to {peer_id} with target team {list(target_team)} and battle "
             f"it on the same account with {list(accept_team)}."
         )
@@ -695,7 +799,7 @@ def run_challenge_self_battle(
         client,
         account_alias,
         peer_id,
-        challenge_type,
+        resolved_type,
         list(target_team),
         dry_run=False,
     )
@@ -735,17 +839,24 @@ def run_challenge_self_battle(
 
 
 __all__ = [
+    "CHALLENGE_DEFAULTS_KEY",
     "CHALLENGE_TEAM_FIELDS",
     "CHALLENGE_TYPES",
     "ChallengeBattleResult",
     "ChallengeError",
     "ChallengeMessage",
+    "ChallengeRunResult",
     "ChallengeSendResult",
+    "clear_challenge_defaults",
     "fetch_player_id",
+    "load_challenge_defaults",
     "parse_accept_result",
     "parse_challenge_messages",
     "parse_send_result",
     "pending_challenges",
+    "resolve_challenge_peer",
+    "resolve_challenge_target",
+    "resolve_challenge_type",
     "run_challenge_accept",
     "run_challenge_battle",
     "run_challenge_list",
@@ -754,6 +865,7 @@ __all__ = [
     "select_challenge_target_team",
     "select_challenge_team",
     "sent_pending_challenges",
+    "set_challenge_defaults",
     "validate_heroes",
     "validate_user_id",
 ]

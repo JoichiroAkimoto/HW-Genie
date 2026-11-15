@@ -357,8 +357,14 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 上記 2 API を自動化するコマンドです。詳細は `.agents/skills/challenge/SKILL.md`。
 
 ```bash
+# 対象 UserID / type をアカウント設定に保存（以後 --user-id を省略可能）
+uv run hw-genie challenge config -a Alice --user-id 12345678 --type titan
+uv run hw-genie challenge config -a Alice          # 現在値を表示
+uv run hw-genie challenge config -a Alice --clear  # 削除
+
 # チャレンジ送信（対象1体 + 保存チームの先頭を使用。--heroes で対象を指定可）
 uv run hw-genie challenge send -a Alice --user-id 12345678 --type titan
+uv run hw-genie challenge send -a Alice  # challenge_defaults を使用
 
 # チャレンジ一覧（messageId の確認。送信した側の pending も表示）
 uv run hw-genie challenge list -a Alice --user-id 12345678
@@ -371,9 +377,15 @@ uv run hw-genie challenge accept -a Alice --user-id 12345678 --sent
 
 # ドキュメントと同じ 2 ステップを 1 コマンドで（送信 → 同一アカウントでバトル）
 uv run hw-genie challenge battle -a Alice --user-id 12345678
+uv run hw-genie challenge battle -a Alice  # challenge_defaults を使用
 
 # 受信者側の別アカウントにバトルさせる場合
 uv run hw-genie challenge battle -a Alice --accept-account Bob
+
+# 全アカウントで一括（各アカウントの challenge_defaults を使用。--yes 必須）
+uv run hw-genie multi challenge --dry-run
+uv run hw-genie multi challenge --yes
+uv run hw-genie multi challenge --user-id 12345678 --yes
 ```
 
 ---

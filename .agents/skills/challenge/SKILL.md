@@ -8,10 +8,23 @@ description: Send and battle Hero Wars friendly personal-chat challenges (chatSe
 
 > **Tip**: アカウントは `uv run hw-genie auth --list` で確認してください。`--user-id` は**プレイヤーID**（`userGetInfo.response.id` やチャットの `userId`）で、認証ヘッダーの `x-auth-user-id` とは別物です。間違えると送信が `notFound` で失敗します。
 
+### 0. 対象 UserID の保存（任意・Multi 向け）
+
+対象が決まっている場合は、アカウント設定 `challenge_defaults` に保存できます（`account_configs` に保存され、リポジトリには実IDを含めません）。
+
+```bash
+uv run hw-genie challenge config -a <account> --user-id <相手のプレイヤーID> --type titan
+uv run hw-genie challenge config -a <account>          # 現在値を表示
+uv run hw-genie challenge config -a <account> --clear  # 削除
+```
+
+解決順は `--user-id` > `challenge_defaults.user_id` > エラー、type は `--type` > `challenge_defaults.type` > `titan` です。
+
 ### 1. チャレンジ送信
 
 ```bash
 uv run hw-genie challenge send -a <account> --user-id <相手のプレイヤーID> --type titan
+uv run hw-genie challenge send -a <account>  # challenge_defaults を使用
 ```
 
 - 送信する `heroes` は**バトル対象（防御側）チーム**です。既定では `teamGetAll.challenge_titan`（`--type titan`）または `challenge`（`--type hero`）の**先頭1体**を使用（実機のゲーム操作と同じ1体）。
@@ -64,6 +77,7 @@ uv run hw-genie challenge accept -a <送信側account> --user-id <受信者の�
 
 ```bash
 uv run hw-genie challenge battle -a <account> --user-id <相手のプレイヤーID>
+uv run hw-genie challenge battle -a <account>  # challenge_defaults を使用
 ```
 
 **受信側の別アカウントにバトルさせる**:
@@ -76,6 +90,21 @@ uv run hw-genie challenge battle -a <送信元account> --accept-account <受信�
 - `--accept-account` モード: 2 つとも登録済みアカウントが必要。送信元の `userGetInfo` と受信側の `userGetInfo` からプレイヤーIDを解決し、受信側スレッドで messageId を特定してバトル。
 - `--heroes` は対象チーム、`--accept-heroes` はバトルチームの上書き。
 - `--dry-run` はアカウント・チーム・ID の解決のみ（書き込みはせず、`userGetInfo` / `teamGetAll` などの読み取り API のみ。送信もバトルもしない）。
+
+### 5. Multi（複数アカウント）で一括実行
+
+```bash
+# 各アカウントの challenge_defaults を使って「1体送信→同一アカウントでバトル」
+uv run hw-genie multi challenge --dry-run
+uv run hw-genie multi challenge --yes
+
+# 全アカウント共通の対象で上書き
+uv run hw-genie multi challenge --user-id <相手のプレイヤーID> --yes
+```
+
+- `multi challenge` は各アカウントから実メッセージを送るため、`--yes` がない限り実行しません（`--dry-run` は読み取りのみ、逐次表示）。
+- `--user-id` / `--type` を省略すると、各アカウントの `challenge_defaults` を使用。既定値がないアカウントは失敗として集計されます。
+- 途中で失敗したアカウントがあれば exit 1。バトルの LOSS は実行済みとして成功扱いです。
 
 ## 注意
 
