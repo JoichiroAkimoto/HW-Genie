@@ -462,6 +462,86 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ---
 
+### clanRaid_startBossBattle - ボス戦開始
+Asgard のボス戦を開始します。チーム（5 ヒーロー + ペット + favor）を指定します。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `heroes` | int[5] | ✓ | 攻撃側のヒーロー ID（5 体） |
+| `pet` | int | | ペット ID（例: 6002 / 6005） |
+| `favor` | dict | | `heroId -> patronPetId` のマップ（例: `{"12":6003,"13":6002}`） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_startBossBattle","args":{"heroes":[50,60,58,51,72],"pet":6005,"favor":{"50":6005,"51":6001,"58":6008,"60":6006,"72":6002}},"context":{"actionTs":15065795},"ident":"body"}]}'
+```
+
+### Response フィールド
+
+`response.battle` にバトルオブジェクトが返ります。
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `battle.type` | string | `clan_raid` |
+| `battle.seed` | int | バトルシード |
+| `battle.typeId` | int | バトル種別 ID（実測: `11002`） |
+| `battle.userId` | string | 攻撃側プレイヤー ID |
+| `battle.attackers` | object | 攻撃側ユニットの状態（hero ID → 状態） |
+
+> **重要**: `startBossBattle` を送った時点で `clanRaid_getInfo` の `bossAttempts` が 1 減ります。`endBossBattle` を送らないとバトルは未確定のまま残り、`userStats.damage` は増えません（`clanRaid_getInfo` を繰り返しても解決されません）。
+
+---
+
+### clanRaid_endBossBattle - ボス戦終了（オートバトル確定）
+ボス戦の結果を送信します。**空の `progress` を送ると、サーバーがクライアント側シミュレーションの不備とみなしてサーバー側オートバトルで結果を確定します**（実測 serverVersion 300, 2026-11-17）。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `result` | object | ✓ | `{"win": bool, "stars": int}` |
+| `progress` | array | | クライアント側シミュレーション結果。空配列 `[]` でオートバトル確定 |
+
+### curl 実行例（オートバトル）
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_endBossBattle","args":{"result":{"win":false,"stars":0},"progress":[]},"context":{"actionTs":0},"ident":"body"}]}'
+```
+
+### Response フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `response.result.win` | bool | 勝敗 |
+| `response.result.stars` | int | スター数 |
+| `response.result.afterInvalid` | bool | `true` = 空/不正 progress によりサーバー側オートバトルで確定 |
+| `response.result.damage` | object | defender インデックス → 与ダメージ（例: `{"1":35790884,"2":0}`） |
+| `response.result.raidId` | string | レイド ID |
+| `response.result.level` | string | ボスレベル |
+| `response.result.serverVersion` | int | サーバーバージョン（実測: `300`） |
+| `response.damage` | object | `result.damage` と同じ |
+| `response.states` | object | バトル後のボス状態（`state.hp` など） |
+| `response.replay` | string | リプレイ ID |
+
+> クライアントが通常送る `progress` は `[{"v":300,"b":0,"seed":<int>,"attackers":{"input":["auto",...],"heroes":{...}},"defenders":{"input":[],"heroes":{...}}}]` の形ですが、`hw-genie asgard-raid` はシミュレーションを行わず空配列でオートバトルを利用します。
+
+#### `clanRaid_getInfo` のスコア関連フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `bossAttempts` | int | 残りボス攻撃回数（`startBossBattle` で 1 減る） |
+| `attempts` | int | ミニオンフェーズの残り攻撃回数 |
+| `userStats.damage` | string | 自分の今週の累計ダメージ（数値文字列） |
+| `userStats.points` | string | 自分のクランポイント |
+| `stats.points` | string | クラン合計ポイント |
+
+---
+
 ## 補足メソッド
 *(その他のメソッドは必要に応じて追加してください)*
 *   **`clan_prestigeGetInfo`**: クランの威信（Prestige）レベルと進行状況。

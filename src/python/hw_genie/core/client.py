@@ -199,6 +199,8 @@ class ApiAction(str, Enum):
     CLAN_GET_INFO = "clanGetInfo"
     CLAN_RAID_GET_INFO = "clanRaid_getInfo"
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
+    CLAN_RAID_START_BOSS_BATTLE = "clanRaid_startBossBattle"
+    CLAN_RAID_END_BOSS_BATTLE = "clanRaid_endBossBattle"
     CHAT_GET_ALL = "chatGetAll"
     CHAT_GET_TALKS = "chatGetTalks"
     CHAT_SEND_CHALLENGE = "chatSendChallenge"
