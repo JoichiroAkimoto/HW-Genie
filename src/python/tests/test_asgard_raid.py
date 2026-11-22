@@ -5,9 +5,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from hw_genie.commands.asgard_raid import (
+    REWARD_STANDING_CLAN,
+    REWARD_STANDING_USER,
     AsgardRaidError,
     AsgardRaidRunResult,
     AsgardRaidTeamResult,
+    AsgardRewardResult,
     AsgardTeam,
     detect_boss,
     list_asgard_raid_teams,
@@ -22,7 +25,7 @@ from hw_genie.commands.asgard_raid import (
     validate_slot,
     validate_team,
 )
-from hw_genie.core.client import ResponseStatus
+from hw_genie.core.client import HWAuthError, ResponseStatus
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.runner import summarize_asgard_raid
 
@@ -107,6 +110,10 @@ def _end_detail(damage: int = 35_790_884, replay: str = "r1") -> dict:
             "replay": replay,
         }
     }
+
+
+def _reward_ok() -> MagicMock:
+    return _ok({"response": {}})
 
 
 # --- validation -----------------------------------------------------------
@@ -263,6 +270,8 @@ def test_run_starts_and_auto_ends_each_enabled_team(mock_client):
         _ok(_end_detail(10, "r1")),
         _ok(_start_detail()),
         _ok(_end_detail(20, "r2")),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(attempts=3, damage=30)),
     ]
 
@@ -270,6 +279,7 @@ def test_run_starts_and_auto_ends_each_enabled_team(mock_client):
 
     assert result.failed_count == 0
     assert [t.status for t in result.teams] == [ResponseStatus.SUCCESS] * 2
+    assert [r.status for r in result.rewards] == [ResponseStatus.SUCCESS] * 2
     assert result.total_damage == 30
     assert result.attempts_before == 5
     assert result.attempts_after == 3
@@ -282,12 +292,17 @@ def test_run_starts_and_auto_ends_each_enabled_team(mock_client):
         "clanRaid_endBossBattle",
         "clanRaid_startBossBattle",
         "clanRaid_endBossBattle",
+        "clanRaid_farmRatingReward",
+        "clanRaid_farmRatingReward",
         "clanRaid_getInfo",
     ]
     assert calls[2]["args"] == {"result": {"win": False, "stars": 0}, "progress": []}
-    # start/end are non-idempotent: never retried.
+    assert calls[5]["args"] == {"type": "standingClan"}
+    assert calls[6]["args"] == {"type": "standingUser"}
+    # start/end/reward are non-idempotent: never retried.
     assert mock_call.call_args_list[1].kwargs == {"max_retries": 0}
     assert mock_call.call_args_list[2].kwargs == {"max_retries": 0}
+    assert mock_call.call_args_list[5].kwargs == {"max_retries": 0}
 
 
 def test_run_skips_disabled_team(mock_client):
@@ -299,6 +314,8 @@ def test_run_skips_disabled_team(mock_client):
         _ok(_info(attempts=5)),
         _ok(_start_detail()),
         _ok(_end_detail(10)),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(attempts=4, damage=10)),
     ]
 
@@ -319,13 +336,19 @@ def test_run_stops_without_attempts(mock_client):
     client, mock_call = mock_client
     _register_alice()
     set_asgard_raid_team("Alice", _team(slot=1))
-    mock_call.side_effect = [_ok(_info(attempts=0))]
+    mock_call.side_effect = [
+        _ok(_info(attempts=0)),
+        _reward_ok(),
+        _reward_ok(),
+        _ok(_info(attempts=0)),
+    ]
 
     result = run_asgard_raid(client, account_alias="Alice")
 
     assert result.failed_count == 0
     assert result.teams[0].status == ResponseStatus.SKIPPED
-    assert mock_call.call_count == 1
+    assert [r.status for r in result.rewards] == [ResponseStatus.SUCCESS] * 2
+    assert mock_call.call_count == 4
 
 
 def test_run_skips_remaining_when_attempts_run_out_mid_list(mock_client):
@@ -337,6 +360,8 @@ def test_run_skips_remaining_when_attempts_run_out_mid_list(mock_client):
         _ok(_info(attempts=1)),
         _ok(_start_detail()),
         _ok(_end_detail(10)),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(attempts=0, damage=10)),
     ]
 
@@ -363,6 +388,8 @@ def test_run_stops_on_start_failure(mock_client):
     mock_call.side_effect = [
         _ok(_info(attempts=5)),
         _err("NotAvailable"),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(attempts=5)),
     ]
 
@@ -383,6 +410,8 @@ def test_run_stops_on_end_failure(mock_client):
         _ok(_info(attempts=5)),
         _ok(_start_detail()),
         _err("Invalid battle"),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(attempts=4)),
     ]
 
@@ -392,6 +421,65 @@ def test_run_stops_on_end_failure(mock_client):
     assert "end failed" in (result.error or "")
     assert len(result.teams) == 1
     assert result.teams[0].status == ResponseStatus.ERROR
+
+
+def test_run_skips_already_claimed_reward(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    mock_call.side_effect = [
+        _ok(_info(attempts=5)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        _err("NotAvailable"),
+        _reward_ok(),
+        _ok(_info(attempts=4, damage=10)),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice")
+
+    assert [r.status for r in result.rewards] == [
+        ResponseStatus.SKIPPED,
+        ResponseStatus.SUCCESS,
+    ]
+    assert result.rewards[0].error == "NotAvailable"
+    assert result.failed_count == 0
+    assert result.error is None
+
+
+def test_run_skips_reward_transport_error(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    mock_call.side_effect = [
+        _ok(_info(attempts=5)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        RuntimeError("bridge down"),
+        _reward_ok(),
+        _ok(_info(attempts=4, damage=10)),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice")
+
+    assert result.rewards[0].status == ResponseStatus.SKIPPED
+    assert "bridge down" in (result.rewards[0].error or "")
+    assert result.error is None
+
+
+def test_reward_auth_error_propagates(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    mock_call.side_effect = [
+        _ok(_info(attempts=5)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        HWAuthError("session expired"),
+    ]
+
+    with pytest.raises(HWAuthError):
+        run_asgard_raid(client, account_alias="Alice")
 
 
 def test_run_dry_run_does_not_start(mock_client):
@@ -404,31 +492,58 @@ def test_run_dry_run_does_not_start(mock_client):
 
     assert result.dry_run is True
     assert result.teams[0].status == ResponseStatus.SKIPPED
+    assert result.rewards == []
     assert mock_call.call_count == 1
+    assert mock_call.call_args_list[0].args[0]["calls"][0]["name"] == "clanRaid_getInfo"
 
 
-def test_run_unknown_week_skips_without_teams(mock_client):
+def test_run_unknown_week_still_claims_rewards(mock_client):
     client, mock_call = mock_client
     _register_alice()
-    mock_call.side_effect = [_ok({"response": {"shop": {}, "userStats": {}}})]
+    unknown = {"response": {"shop": {}, "buffs": {}, "userStats": {}}}
+    mock_call.side_effect = [
+        _ok(unknown),
+        _reward_ok(),
+        _reward_ok(),
+        _ok(unknown),
+    ]
 
     result = run_asgard_raid(client, account_alias="Alice")
 
     assert result.boss is None
     assert result.teams == []
+    assert [r.status for r in result.rewards] == [ResponseStatus.SUCCESS] * 2
+    assert mock_call.call_count == 4
+
+
+def test_run_unknown_week_dry_run_skips_rewards(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    mock_call.side_effect = [_ok({"response": {"shop": {}, "buffs": {}}})]
+
+    result = run_asgard_raid(client, account_alias="Alice", dry_run=True)
+
+    assert result.boss is None
+    assert result.rewards == []
     assert mock_call.call_count == 1
 
 
 def test_run_no_registered_teams(mock_client):
     client, mock_call = mock_client
     _register_alice()
-    mock_call.side_effect = [_ok(_info(attempts=5))]
+    mock_call.side_effect = [
+        _ok(_info(attempts=5)),
+        _reward_ok(),
+        _reward_ok(),
+        _ok(_info(attempts=5)),
+    ]
 
     result = run_asgard_raid(client, account_alias="Alice")
 
     assert result.boss == "maestro"
     assert result.teams == []
-    assert mock_call.call_count == 1
+    assert [r.status for r in result.rewards] == [ResponseStatus.SUCCESS] * 2
+    assert mock_call.call_count == 4
 
 
 def test_run_explicit_boss_overrides_detected_week(mock_client):
@@ -439,6 +554,8 @@ def test_run_explicit_boss_overrides_detected_week(mock_client):
         _ok(_info(maestro=True, attempts=5)),
         _ok(_start_detail()),
         _ok(_end_detail(10)),
+        _reward_ok(),
+        _reward_ok(),
         _ok(_info(maestro=True, attempts=4, damage=10)),
     ]
 
@@ -459,6 +576,8 @@ def test_run_explicit_boss_when_week_is_unknown(mock_client):
         _ok(unknown),
         _ok(_start_detail()),
         _ok(_end_detail(10)),
+        _reward_ok(),
+        _reward_ok(),
         _ok(unknown),
     ]
 
@@ -495,6 +614,34 @@ def test_summarize_asgard_raid_dry_run_is_ok(capsys):
     result = AsgardRaidRunResult(boss="maestro", dry_run=True, teams=[])
     assert summarize_asgard_raid([("Alice", (result, None))], dry_run=True) == 0
     assert "no teams registered" in capsys.readouterr().out
+
+
+def test_summarize_asgard_raid_shows_score_and_rewards(capsys):
+    result = AsgardRaidRunResult(
+        boss="maestro",
+        dry_run=False,
+        teams=[
+            AsgardRaidTeamResult(
+                slot=1,
+                memo=None,
+                enabled=True,
+                status=ResponseStatus.SUCCESS,
+                damage=10,
+            )
+        ],
+        rewards=[
+            AsgardRewardResult(REWARD_STANDING_CLAN, ResponseStatus.SUCCESS),
+            AsgardRewardResult(
+                REWARD_STANDING_USER, ResponseStatus.SKIPPED, "NotAvailable"
+            ),
+        ],
+        damage_after=1234,
+    )
+    assert summarize_asgard_raid([("Alice", (result, None))]) == 0
+    out = capsys.readouterr().out
+    assert "clan✓" in out
+    assert "user⏭" in out
+    assert "1.2K" in out
 
 
 # --- CLI wiring -----------------------------------------------------------

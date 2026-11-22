@@ -13,8 +13,9 @@ description: HW-Genie を使用して、Asgard（ギルドレイド）のボス�
   1. `clanRaid_startBossBattle`（`heroes` / `pet` / `favor`）— この時点で `bossAttempts` が1減ります。
   2. `clanRaid_endBossBattle` に **空の `progress`** を送信（`args: {"result":{"win":false,"stars":0},"progress":[]}`）。サーバーはこれをクライアント側シミュレーションの不備とみなし、**サーバー側オートバトル**で結果を確定します（レスポンスの `result.afterInvalid: true`）。実機検証済み（serverVersion 300, 2026-11-17）。
 - **重要**: `start` 後に `end` を送らないと、`clanRaid_getInfo` を何度読んでも `userStats.damage` は増えず、攻撃だけが消費されたままになります。必ず `end`（空 progress）を送ってください。
-- **スコア表示**: `end` レスポンスの `result.damage`（defender ごとの damage）を合計し、チーム別 damage / 合計 damage / `bossAttempts` の前後 / `userStats.damage`・`points` の前後を表示します。
-- **停止条件**: 残り `bossAttempts` が 0、`start` 失敗、または `end` 失敗で残りチームを停止します（認証切れは `HWAuthError` として上位へ）。
+- **スコア表示**: `end` レスポンスの `result.damage`（defender ごとの damage）を合計し、チーム別 damage / 合計 damage / `bossAttempts` の前後 / `userStats.damage`・`points` の前後を表示します。実行後スコアはサマリーとログ（`asgard-raid score (...)`）に残ります。
+- **週間ランキング報酬**: ボス戦の最後に `clanRaid_farmRatingReward` を `standingClan`（ギルド）→ `standingUser`（個人）の順で受け取ります。週1回のため、受取済みなどのエラーは**スキップ扱い**にしてラン整体を失敗にしません（認証エラーのみ再送出）。`--dry-run` では受け取りません。
+- **停止条件**: 残り `bossAttempts` が 0、`start` 失敗、または `end` 失敗で残りチームを停止します（認証切れは `HWAuthError` として上位へ）。チームが0件・attempts 0 でも週間報酬の受け取りと実行後スコアの取得は行います。
 - **`--dry-run`**: 週判定と実行予定チームの表示のみ（攻撃しません）。
 - **`multi asgard-raid`**: 全アカウントで実行します。攻撃回数を消費するため **`--yes` 必須**（`--dry-run` は `--yes` 不要）。
 

@@ -542,6 +542,33 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ---
 
+### clanRaid_farmRatingReward - 週間ランキング報酬の受け取り
+
+Asgard の週間ランキング報酬を受け取ります。ギルド（`standingClan`）と個人（`standingUser`）の2種類があり、**それぞれ週に1回**受け取れます。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `type` | string | ✓ | `standingClan`（ギルド）または `standingUser`（個人） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_farmRatingReward","args":{"type":"standingClan"},"context":{"actionTs":2649805},"ident":"body"}]}'
+```
+
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_farmRatingReward","args":{"type":"standingUser"},"context":{"actionTs":2649805},"ident":"body"}]}'
+```
+
+> `hw-genie asgard-raid run` / `multi asgard-raid` はボス戦の最後にこの2種類を順に呼びます。受取済みなどでエラーになった場合は**スキップ**として扱い、ラン整体を失敗にしません（認証エラーのみ再送出）。`--dry-run` では受け取りません。
+
+---
+
 ## 補足メソッド
 *(その他のメソッドは必要に応じて追加してください)*
 *   **`clan_prestigeGetInfo`**: クランの威信（Prestige）レベルと進行状況。

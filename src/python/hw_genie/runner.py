@@ -1341,8 +1341,17 @@ def summarize_asgard_shop(
     return len(failed)
 
 
-# Asgard raid summary table (per-account boss / executed teams / damage / attempts).
-_ASGARD_RAID_HEADERS = ["Account", "Boss", "✅ Teams", "💥 Damage", "🎯 Attempts", "ℹ️ Note"]
+# Asgard raid summary table (per-account boss / teams / run + account score / rewards).
+_ASGARD_RAID_HEADERS = [
+    "Account",
+    "Boss",
+    "✅ Teams",
+    "💥 Damage",
+    "📈 Score",
+    "🎯 Attempts",
+    "🎁 Reward",
+    "ℹ️ Note",
+]
 
 
 def _asgard_raid_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
@@ -1367,7 +1376,11 @@ def summarize_asgard_raid(
     any failed team counts as failed. Accounts with no registered teams are
     reported with a note and count as ok (nothing to do).
     """
-    from hw_genie.commands.asgard_raid import BOSS_LABELS, AsgardRaidRunResult
+    from hw_genie.commands.asgard_raid import (
+        BOSS_LABELS,
+        REWARD_STANDING_CLAN,
+        AsgardRaidRunResult,
+    )
     from hw_genie.core.client import ResponseStatus
     from hw_genie.core.utils import format_number_with_suffix
 
@@ -1377,11 +1390,12 @@ def summarize_asgard_raid(
     for account, (res, err) in results:
         if err is not None:
             failed.append(account)
-            rows.append([account, "-", "0", "-", "-", str(err).splitlines()[0] if str(err) else type(err).__name__])
+            note = str(err).splitlines()[0] if str(err) else type(err).__name__
+            rows.append([account, "-", "0", "-", "-", "-", "-", note])
             continue
         if not isinstance(res, AsgardRaidRunResult):
             failed.append(f"{account} (asgard-raid result unavailable)")
-            rows.append([account, "-", "0", "-", "-", "result unavailable"])
+            rows.append([account, "-", "0", "-", "-", "-", "-", "result unavailable"])
             continue
         label = BOSS_LABELS.get(res.boss or "", res.boss or "-")
         executed = sum(1 for team in res.teams if team.status == ResponseStatus.SUCCESS)
@@ -1390,6 +1404,13 @@ def summarize_asgard_raid(
             if res.attempts_before is not None
             else "-"
         )
+        score = "-" if res.dry_run else format_number_with_suffix(res.damage_after)
+        rewards = []
+        for reward in res.rewards:
+            name = "clan" if reward.reward_type == REWARD_STANDING_CLAN else "user"
+            mark = "✓" if reward.status == ResponseStatus.SUCCESS else "⏭"
+            rewards.append(f"{name}{mark}")
+        reward_cell = " ".join(rewards) or "-"
         note = "dry-run" if dry_run or res.dry_run else "-"
         if not res.teams:
             note = "no teams registered"
@@ -1407,7 +1428,9 @@ def summarize_asgard_raid(
                 label,
                 str(executed),
                 format_number_with_suffix(res.total_damage),
+                score,
                 attempts,
+                reward_cell,
                 note,
             ]
         )

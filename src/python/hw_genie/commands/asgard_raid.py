@@ -21,6 +21,7 @@ run summary.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +48,12 @@ BOSS_CHOICES = (BOSS_OSH, BOSS_MAESTRO)
 
 TEAM_SLOTS = (1, 2, 3, 4, 5)
 TEAM_SIZE = 5
+
+REWARD_STANDING_CLAN = "standingClan"
+REWARD_STANDING_USER = "standingUser"
+REWARD_TYPES = (REWARD_STANDING_CLAN, REWARD_STANDING_USER)
+
+logger = logging.getLogger(__name__)
 
 
 class AsgardRaidError(Exception):
@@ -86,12 +93,22 @@ class AsgardRaidTeamResult:
 
 
 @dataclass
+class AsgardRewardResult:
+    """Weekly ranking reward claim outcome (second claim is skipped)."""
+
+    reward_type: str
+    status: ResponseStatus
+    error: str | None = None
+
+
+@dataclass
 class AsgardRaidRunResult:
     """Per-account result used by the single command and ``multi`` summary."""
 
     boss: str | None
     dry_run: bool
     teams: list[AsgardRaidTeamResult] = field(default_factory=list)
+    rewards: list[AsgardRewardResult] = field(default_factory=list)
     attempts_before: int | None = None
     attempts_after: int | None = None
     damage_before: int = 0
@@ -373,6 +390,44 @@ def parse_end_detail(detail: Any) -> tuple[int, bool, int, str | None]:
 # --- run ------------------------------------------------------------------
 
 
+def claim_rating_rewards(client: HWClient) -> list[AsgardRewardResult]:
+    """Claim the weekly guild (standingClan) and personal (standingUser) rewards.
+
+    The reward can be claimed once per week. Any non-auth failure (already
+    received, not available, transport error) is recorded as ``SKIPPED`` so the
+    raid run itself still succeeds; auth errors propagate.
+    """
+    results: list[AsgardRewardResult] = []
+    for reward_type in REWARD_TYPES:
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.CLAN_RAID_FARM_RATING_REWARD,
+                    "args": {"type": reward_type},
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        try:
+            res = client.call(payload, max_retries=0)
+        except HWAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("clanRaid_farmRatingReward(%s) failed: %s", reward_type, exc)
+            results.append(
+                AsgardRewardResult(reward_type, ResponseStatus.SKIPPED, str(exc))
+            )
+            continue
+        if res.is_success:
+            results.append(AsgardRewardResult(reward_type, ResponseStatus.SUCCESS))
+            continue
+        error = res.error_name or res.status.value
+        logger.info("clanRaid_farmRatingReward(%s) skipped: %s", reward_type, error)
+        results.append(AsgardRewardResult(reward_type, ResponseStatus.SKIPPED, error))
+    return results
+
+
 def _start_payload(team: AsgardTeam) -> dict[str, Any]:
     args: dict[str, Any] = {
         "heroes": list(team.heroes),
@@ -438,6 +493,7 @@ def _print_plan(
         state = "enabled" if team.enabled else "disabled"
         memo = f" memo={team.memo}" if team.memo else ""
         print(f"  slot {team.slot} [{state}] {format_team(team)}{memo}")
+    print(f"  weekly rewards: {', '.join(REWARD_TYPES)} (claimed at the end of a real run)")
 
 
 def _print_summary(account: str, result: AsgardRaidRunResult) -> None:
@@ -457,18 +513,62 @@ def _print_summary(account: str, result: AsgardRaidRunResult) -> None:
             )
         else:
             print(f"  slot {team.slot}: ERROR {team.error}{memo}")
+    for reward in result.rewards:
+        if reward.status == ResponseStatus.SUCCESS:
+            print(f"  reward {reward.reward_type}: claimed")
+        else:
+            print(f"  reward {reward.reward_type}: skipped ({reward.error})")
     print(f"  Total battle damage: {format_number_with_suffix(result.total_damage)}")
     if result.attempts_before is not None or result.attempts_after is not None:
         before = "-" if result.attempts_before is None else result.attempts_before
         after = "-" if result.attempts_after is None else result.attempts_after
         print(f"  Boss attempts: {before} -> {after}")
     print(
-        "  Account damage: "
+        "  Score (account damage): "
         f"{format_number_with_suffix(result.damage_before)} -> "
         f"{format_number_with_suffix(result.damage_after)}"
     )
-    if result.points_before != result.points_after:
-        print(f"  Points: {result.points_before} -> {result.points_after}")
+    print(f"  Score (points): {result.points_before} -> {result.points_after}")
+    logger.info(
+        "asgard-raid score (%s): damage %d -> %d, points %d -> %d, "
+        "bossAttempts %s -> %s, rewards %s",
+        account,
+        result.damage_before,
+        result.damage_after,
+        result.points_before,
+        result.points_after,
+        result.attempts_before,
+        result.attempts_after,
+        ", ".join(
+            f"{reward.reward_type}={reward.status.value}" for reward in result.rewards
+        )
+        or "none",
+    )
+
+
+def _refresh_after(
+    client: HWClient, result: AsgardRaidRunResult, executed: int
+) -> None:
+    """Refresh the post-run score / attempts (best effort)."""
+    try:
+        after = fetch_clan_raid_info(client)
+    except HWAuthError:
+        raise
+    except AsgardRaidError as exc:
+        print(f"{Emojis.WARNING}Could not refresh raid info: {exc}")
+        after = {}
+    if after:
+        result.attempts_after = _optional_int(after.get("bossAttempts"))
+        result.damage_after = _user_damage(after)
+        result.points_after = _user_points(after)
+    else:
+        result.attempts_after = (
+            None
+            if result.attempts_before is None
+            else result.attempts_before - executed
+        )
+        result.damage_after = result.damage_before + result.total_damage
+        result.points_after = result.points_before
 
 
 def run_asgard_raid(
@@ -496,9 +596,17 @@ def run_asgard_raid(
 
     if selected is None:
         print(
-            f"{Emojis.INFO}Asgard week not detected (unknown shop lineup); skipping. "
+            f"{Emojis.INFO}Asgard week not detected (unknown shop lineup); skipping battles. "
             "Use --boss osh|maestro to force a lineup."
         )
+        if dry_run:
+            print(f"{Emojis.INFO}Dry-run: weekly rewards are not claimed.")
+            return result
+        # The weekly ranking reward is independent of the current lineup
+        # detection; try it anyway (already-received / unavailable → skipped).
+        result.rewards = claim_rating_rewards(client)
+        _refresh_after(client, result, executed=0)
+        _print_summary(account_alias, result)
         return result
     if explicit_boss and detected and explicit_boss != detected:
         print(
@@ -507,103 +615,86 @@ def run_asgard_raid(
         )
 
     teams = list_asgard_raid_teams(account_alias, selected)
+    if dry_run:
+        _print_plan(account_alias, selected, teams, result.attempts_before)
+        print(f"{Emojis.INFO}Dry-run: weekly rewards are not claimed.")
+        result.teams = [_team_result(team, ResponseStatus.SKIPPED) for team in teams]
+        return result
+
+    executed = 0
     if not teams:
         print(
             f"{Emojis.INFO}No {BOSS_LABELS[selected]} teams registered for "
             f"'{account_alias}'. Register them with "
             f"`hw-genie asgard-raid team set <1-5> --boss {selected} ...`."
         )
-        return result
-
-    if dry_run:
-        _print_plan(account_alias, selected, teams, result.attempts_before)
-        result.teams = [_team_result(team, ResponseStatus.SKIPPED) for team in teams]
-        return result
-
-    if result.attempts_before is not None and result.attempts_before <= 0:
-        print(f"{Emojis.INFO}No boss attempts left; nothing to do.")
-        result.teams = [_team_result(team, ResponseStatus.SKIPPED) for team in teams]
-        return result
-
-    executed = 0
-    for team in teams:
-        if not team.enabled:
-            print(f"{Emojis.INFO}slot {team.slot}: disabled; skipping.")
-            result.teams.append(_team_result(team, ResponseStatus.SKIPPED))
-            continue
-        if (
-            result.attempts_before is not None
-            and result.attempts_before - executed <= 0
-        ):
-            print(f"{Emojis.INFO}slot {team.slot}: no boss attempts left; skipping.")
-            result.teams.append(_team_result(team, ResponseStatus.SKIPPED))
-            continue
-
+    elif result.attempts_before is not None and result.attempts_before <= 0:
         print(
-            f"{Emojis.STEP}slot {team.slot}: starting boss battle "
-            f"(heroes={list(team.heroes)} pet={team.pet})..."
+            f"{Emojis.INFO}No boss attempts left; skipping battles "
+            "(weekly rewards are still claimed)."
         )
-        start_res = client.call(_start_payload(team), max_retries=0)
-        if not start_res.is_success:
-            error = start_res.error_name or start_res.status.value
-            print(f"{Emojis.ERROR}slot {team.slot}: start failed ({error}).")
-            result.teams.append(
-                _team_result(team, ResponseStatus.ERROR, error=f"start failed: {error}")
-            )
-            result.error = f"start failed for slot {team.slot}: {error}"
-            break
-        executed += 1
-
-        end_res = client.call(_end_payload(), max_retries=0)
-        if not end_res.is_success:
-            error = end_res.error_name or end_res.status.value
-            print(
-                f"{Emojis.WARNING}slot {team.slot}: start accepted but end failed "
-                f"({error}); stopping."
-            )
-            result.teams.append(
-                _team_result(team, ResponseStatus.ERROR, error=f"end failed: {error}")
-            )
-            result.error = f"end failed for slot {team.slot}: {error}"
-            break
-
-        damage, win, stars, replay = parse_end_detail(end_res.detail)
-        print(
-            f"{Emojis.SUCCESS}slot {team.slot}: damage="
-            f"{format_number_with_suffix(damage)} win={win} stars={stars}"
-            + (f" replay={replay}" if replay else "")
-        )
-        result.teams.append(
-            _team_result(
-                team,
-                ResponseStatus.SUCCESS,
-                damage=damage,
-                win=win,
-                stars=stars,
-                replay=replay,
-            )
-        )
-
-    try:
-        after = fetch_clan_raid_info(client)
-    except HWAuthError:
-        raise
-    except AsgardRaidError as exc:
-        print(f"{Emojis.WARNING}Could not refresh raid info: {exc}")
-        after = {}
-    if after:
-        result.attempts_after = _optional_int(after.get("bossAttempts"))
-        result.damage_after = _user_damage(after)
-        result.points_after = _user_points(after)
+        result.teams = [_team_result(team, ResponseStatus.SKIPPED) for team in teams]
     else:
-        result.attempts_after = (
-            None
-            if result.attempts_before is None
-            else result.attempts_before - executed
-        )
-        result.damage_after = result.damage_before + result.total_damage
-        result.points_after = result.points_before
+        for team in teams:
+            if not team.enabled:
+                print(f"{Emojis.INFO}slot {team.slot}: disabled; skipping.")
+                result.teams.append(_team_result(team, ResponseStatus.SKIPPED))
+                continue
+            if (
+                result.attempts_before is not None
+                and result.attempts_before - executed <= 0
+            ):
+                print(f"{Emojis.INFO}slot {team.slot}: no boss attempts left; skipping.")
+                result.teams.append(_team_result(team, ResponseStatus.SKIPPED))
+                continue
 
+            print(
+                f"{Emojis.STEP}slot {team.slot}: starting boss battle "
+                f"(heroes={list(team.heroes)} pet={team.pet})..."
+            )
+            start_res = client.call(_start_payload(team), max_retries=0)
+            if not start_res.is_success:
+                error = start_res.error_name or start_res.status.value
+                print(f"{Emojis.ERROR}slot {team.slot}: start failed ({error}).")
+                result.teams.append(
+                    _team_result(team, ResponseStatus.ERROR, error=f"start failed: {error}")
+                )
+                result.error = f"start failed for slot {team.slot}: {error}"
+                break
+            executed += 1
+
+            end_res = client.call(_end_payload(), max_retries=0)
+            if not end_res.is_success:
+                error = end_res.error_name or end_res.status.value
+                print(
+                    f"{Emojis.WARNING}slot {team.slot}: start accepted but end failed "
+                    f"({error}); stopping."
+                )
+                result.teams.append(
+                    _team_result(team, ResponseStatus.ERROR, error=f"end failed: {error}")
+                )
+                result.error = f"end failed for slot {team.slot}: {error}"
+                break
+
+            damage, win, stars, replay = parse_end_detail(end_res.detail)
+            print(
+                f"{Emojis.SUCCESS}slot {team.slot}: damage="
+                f"{format_number_with_suffix(damage)} win={win} stars={stars}"
+                + (f" replay={replay}" if replay else "")
+            )
+            result.teams.append(
+                _team_result(
+                    team,
+                    ResponseStatus.SUCCESS,
+                    damage=damage,
+                    win=win,
+                    stars=stars,
+                    replay=replay,
+                )
+            )
+
+    result.rewards = claim_rating_rewards(client)
+    _refresh_after(client, result, executed)
     _print_summary(account_alias, result)
     return result
 
@@ -613,13 +704,18 @@ __all__ = [
     "BOSS_LABELS",
     "BOSS_MAESTRO",
     "BOSS_OSH",
+    "REWARD_STANDING_CLAN",
+    "REWARD_STANDING_USER",
+    "REWARD_TYPES",
     "AsgardRaidError",
     "AsgardRaidReadError",
     "AsgardRaidRunResult",
     "AsgardRaidTeamResult",
+    "AsgardRewardResult",
     "AsgardTeam",
     "TEAM_SIZE",
     "TEAM_SLOTS",
+    "claim_rating_rewards",
     "detect_boss",
     "fetch_clan_raid_info",
     "format_team",
