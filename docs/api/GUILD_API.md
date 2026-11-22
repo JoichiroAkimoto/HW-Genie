@@ -569,6 +569,58 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ---
 
+### clanRaid_logBoss - ボス戦の戦闘履歴
+
+ギルドメンバーのボス戦履歴を取得します。`hw-genie asgard-raid team import-log` はこの履歴からチーム構成（heroes / pet / favor）を復元します。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| なし | - | - | - |
+
+### Response Structure
+
+```json
+{
+  "response": {
+    "<userId>": {
+      "<battleId>": {
+        "userId": "12345678",
+        "typeId": "11002",
+        "type": "clan_raid",
+        "startTime": 1795371600,
+        "endTime": 1795371600,
+        "seed": "2094873982",
+        "attackers": {
+          "50": {"id": 50, "type": "hero", "petId": 6005, "favorPetId": 6005},
+          "60": {"id": 60, "type": "hero", "petId": 6006, "favorPetId": 6006},
+          "6005": {"id": 6005, "type": "pet", "petId": null, "favorPetId": null}
+        },
+        "defenders": {"1": {"id": 2025, "type": "hero"}},
+        "result": {"win": false, "stars": 0, "damage": {"1": 35790884, "2": 0}}
+      }
+    }
+  }
+}
+```
+
+### フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `response[userId][battleId]` | object | プレイヤー別・バトル別の履歴（レスポンスは大きくなり得る） |
+| `attackers` | object | 攻撃側ユニット。`type="hero"` がヒーロー、`type="pet"` がチームペット |
+| `attackers[].favorPetId` | int | そのヒーローに付けた patron（favor の値） |
+| `attackers[].petId` | int | ヒーロー側の patron（通常 `favorPetId` と同値） |
+| `startTime` | int | 攻撃時刻（秒）。履歴の攻撃順ソートに使う |
+| `id` | int/string | バトル ID |
+| `result.damage` | object | defender ごとの与ダメージ |
+
+> `import-log` は `attackers` の `type="hero"` を heroes、`favorPetId` を favor、`type="pet"` をチーム pet として復元します。5体未満の不完全な履歴はスキップし、6件以上ある場合は slot 1〜5 への対応が曖昧になるためエラーにします。
+
+---
+
 ## 補足メソッド
 *(その他のメソッドは必要に応じて追加してください)*
 *   **`clan_prestigeGetInfo`**: クランの威信（Prestige）レベルと進行状況。

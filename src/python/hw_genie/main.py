@@ -611,6 +611,32 @@ def cmd_asgard_raid_team_remove(args):
     print(f"{Emojis.SUCCESS}Removed {args.boss} slot {args.slot} for '{account}'.")
 
 
+def cmd_asgard_raid_team_import_log(args):
+    """Rebuild boss-battle teams from clanRaid_logBoss."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardRaidReadError,
+        import_teams_from_log,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        import_teams_from_log(
+            client,
+            account_alias=account,
+            boss=args.boss,
+            user_id=args.user_id,
+            overwrite=bool(args.overwrite),
+            dry_run=bool(args.dry_run),
+        )
+    except (AsgardRaidReadError, AsgardRaidError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_asgard_raid_run(args):
     """Run the enabled Asgard boss-battle teams for the current week."""
     from hw_genie.commands.asgard_raid import (
@@ -2370,6 +2396,28 @@ def main():
         "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
     )
     p_asgard_raid_team_remove.set_defaults(func=cmd_asgard_raid_team_remove)
+
+    p_asgard_raid_team_import = asgard_raid_team_sub.add_parser(
+        "import-log",
+        parents=[parent_parser],
+        help="Rebuild teams from clanRaid_logBoss",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--user-id",
+        help="Game player ID to import (default: this account via userGetInfo)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing slots (enabled / memo are preserved)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--dry-run", action="store_true", help="Show the reconstructed teams without writing"
+    )
+    p_asgard_raid_team_import.set_defaults(func=cmd_asgard_raid_team_import_log)
 
     p_asgard_raid_run = asgard_raid_sub.add_parser(
         "run", parents=[parent_parser], help="Run enabled teams for the current week"

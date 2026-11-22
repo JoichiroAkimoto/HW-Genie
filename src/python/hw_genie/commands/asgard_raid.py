@@ -101,6 +101,30 @@ class AsgardRewardResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class AsgardLoggedTeam:
+    """One boss-battle team reconstructed from ``clanRaid_logBoss``."""
+
+    slot: int
+    heroes: tuple[int, ...]
+    pet: int | None
+    favor: dict[int, int]
+    battle_id: str
+    start_time: int | None
+    damage: int
+
+
+@dataclass
+class AsgardRaidImportResult:
+    """Outcome of ``asgard-raid team import-log``."""
+
+    boss: str
+    dry_run: bool
+    teams: list[AsgardLoggedTeam] = field(default_factory=list)
+    imported_slots: list[int] = field(default_factory=list)
+    skipped_slots: list[int] = field(default_factory=list)
+
+
 @dataclass
 class AsgardRaidRunResult:
     """Per-account result used by the single command and ``multi`` summary."""
@@ -272,13 +296,25 @@ def _team_from_row(row: dict[str, Any]) -> AsgardTeam:
 
 
 def format_team(team: AsgardTeam) -> str:
-    parts = [f"heroes={list(team.heroes)}"]
-    if team.pet is not None:
-        parts.append(f"pet={team.pet}")
-    if team.favor:
-        favor = " ".join(f"{hero}={patron}" for hero, patron in sorted(team.favor.items()))
-        parts.append(f"favor={favor}")
+    return _format_team_parts(team.heroes, team.pet, team.favor)
+
+
+def _format_team_parts(
+    heroes: tuple[int, ...], pet: int | None, favor: dict[int, int]
+) -> str:
+    parts = [f"heroes={list(heroes)}"]
+    if pet is not None:
+        parts.append(f"pet={pet}")
+    if favor:
+        favor_text = " ".join(
+            f"{hero}={patron}" for hero, patron in sorted(favor.items())
+        )
+        parts.append(f"favor={favor_text}")
     return " ".join(parts)
+
+
+def format_logged_team(team: AsgardLoggedTeam) -> str:
+    return _format_team_parts(team.heroes, team.pet, team.favor)
 
 
 # --- read-only helpers ----------------------------------------------------
@@ -305,6 +341,68 @@ def fetch_clan_raid_info(client: HWClient) -> dict[str, Any]:
             "clanRaid_getInfo returned unexpected response (missing 'response' dict)"
         )
     return response
+
+
+def fetch_boss_log(client: HWClient) -> dict[str, Any]:
+    """Return ``clanRaid_logBoss``'s ``response`` (userId → battleId → entry)."""
+    try:
+        res = client.call(
+            {"calls": [{"name": ApiAction.CLAN_RAID_LOG_BOSS, "args": {}, "ident": "body"}]}
+        )
+    except HWAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise AsgardRaidReadError(f"clanRaid_logBoss failed: {exc}") from exc
+    if not res.is_success:
+        raise AsgardRaidReadError(
+            f"clanRaid_logBoss failed ({res.error_name or res.status.value})"
+        )
+    detail = res.detail if isinstance(res.detail, dict) else {}
+    response = detail.get("response")
+    if not isinstance(response, dict):
+        raise AsgardRaidReadError(
+            "clanRaid_logBoss returned unexpected response (missing 'response' dict)"
+        )
+    return response
+
+
+def resolve_player_id(client: HWClient, user_id: str | None = None) -> str:
+    """Resolve the game player ID used as the ``clanRaid_logBoss`` key.
+
+    ``--user-id`` wins. Otherwise ``userGetInfo`` is called: the stored
+    ``player.id`` is not part of ``SessionManager.load`` (only the auth
+    ``x-auth-user-id`` is available, which is a different identifier).
+    """
+    if user_id is not None:
+        text = str(user_id).strip()
+        if not text.isdigit() or int(text) <= 0:
+            raise AsgardRaidError(
+                f"Invalid --user-id {user_id!r}: a numeric player ID is required."
+            )
+        return text
+
+    try:
+        res = client.user_get_info()
+    except HWAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise AsgardRaidReadError(f"userGetInfo failed: {exc}") from exc
+    if not res.is_success:
+        raise AsgardRaidReadError(
+            f"userGetInfo failed ({res.error_name or res.status.value})"
+        )
+    detail = res.detail if isinstance(res.detail, dict) else {}
+    response = detail.get("response")
+    if not isinstance(response, dict):
+        raise AsgardRaidReadError(
+            "userGetInfo returned unexpected response (missing 'response' dict)"
+        )
+    resolved = str(response.get("id") or "").strip()
+    if not resolved.isdigit() or int(resolved) <= 0:
+        raise AsgardRaidError(
+            "Could not resolve the game player ID; pass --user-id explicitly."
+        )
+    return resolved
 
 
 def detect_boss(response: dict[str, Any]) -> str | None:
@@ -388,6 +486,180 @@ def parse_end_detail(detail: Any) -> tuple[int, bool, int, str | None]:
 
 
 # --- run ------------------------------------------------------------------
+
+
+def parse_logged_teams(
+    log: dict[str, Any], user_id: str, *, limit: int = TEAM_SIZE
+) -> list[AsgardLoggedTeam]:
+    """Reconstruct teams from ``clanRaid_logBoss`` in attack order (slots 1..N).
+
+    Each battle's ``attackers`` map contains ``type="hero"`` units and one
+    ``type="pet"`` unit. A hero's ``favorPetId`` is the patron used for favor.
+    Battles with anything other than exactly five unique heroes are skipped
+    with a warning; more than ``limit`` battles is an error (slot mapping would
+    be ambiguous).
+    """
+    entries = log.get(str(user_id))
+    if not isinstance(entries, dict) or not entries:
+        raise AsgardRaidError(f"No boss battle logs found for player {user_id}.")
+
+    parsed: list[tuple[tuple[int, int], AsgardLoggedTeam]] = []
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        attackers = entry.get("attackers")
+        if not isinstance(attackers, dict):
+            continue
+
+        heroes: list[int] = []
+        favor: dict[int, int] = {}
+        pet: int | None = None
+        for attacker_key, unit in attackers.items():
+            if not isinstance(unit, dict):
+                continue
+            unit_id = _optional_int(unit.get("id", attacker_key))
+            if unit_id is None or unit_id <= 0:
+                continue
+            unit_type = str(unit.get("type") or "").lower()
+            if unit_type == "pet":
+                pet = unit_id
+                continue
+            if unit_type != "hero":
+                continue
+            heroes.append(unit_id)
+            patron = _optional_int(unit.get("favorPetId"))
+            if patron is not None and patron > 0:
+                favor[unit_id] = patron
+
+        if len(heroes) != TEAM_SIZE or len(set(heroes)) != len(heroes):
+            logger.warning(
+                "Skipping battle %s for player %s: expected %d unique heroes, got %d",
+                key,
+                user_id,
+                TEAM_SIZE,
+                len(heroes),
+            )
+            continue
+
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        damage_map = result.get("damage") if isinstance(result.get("damage"), dict) else {}
+        damage = sum(_safe_int(value) for value in damage_map.values())
+        start_time = _optional_int(entry.get("startTime"))
+        battle_id = str(entry.get("id") or key)
+        sort_key = (start_time or 0, _optional_int(battle_id) or 0)
+        parsed.append(
+            (
+                sort_key,
+                AsgardLoggedTeam(
+                    slot=0,
+                    heroes=tuple(heroes),
+                    pet=pet,
+                    favor=favor,
+                    battle_id=battle_id,
+                    start_time=start_time,
+                    damage=damage,
+                ),
+            )
+        )
+
+    if not parsed:
+        raise AsgardRaidError(
+            f"No complete {TEAM_SIZE}-hero boss battles found for player {user_id}."
+        )
+    parsed.sort(key=lambda item: item[0])
+    if len(parsed) > limit:
+        raise AsgardRaidError(
+            f"Found {len(parsed)} boss battles for player {user_id}; "
+            f"cannot map more than {limit} battles to slots 1-{limit}. Refusing to guess."
+        )
+
+    teams: list[AsgardLoggedTeam] = []
+    for slot, (_, team) in enumerate(parsed, 1):
+        teams.append(
+            AsgardLoggedTeam(
+                slot=slot,
+                heroes=team.heroes,
+                pet=team.pet,
+                favor=team.favor,
+                battle_id=team.battle_id,
+                start_time=team.start_time,
+                damage=team.damage,
+            )
+        )
+    return teams
+
+
+def import_teams_from_log(
+    client: HWClient,
+    *,
+    account_alias: str,
+    boss: str,
+    user_id: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> AsgardRaidImportResult:
+    """Register teams reconstructed from ``clanRaid_logBoss``.
+
+    Existing slots are left untouched unless ``overwrite`` is set. When a slot
+    is overwritten its ``enabled`` / ``memo`` values are preserved because the
+    battle log carries no such metadata.
+    """
+    if not account_alias:
+        raise AsgardRaidError("account alias is required")
+    boss = validate_boss(boss)
+    player_id = resolve_player_id(client, user_id)
+    log = fetch_boss_log(client)
+    logged = parse_logged_teams(log, player_id)
+    existing = {
+        team.slot: team for team in list_asgard_raid_teams(account_alias, boss)
+    }
+    result = AsgardRaidImportResult(boss=boss, dry_run=dry_run, teams=logged)
+
+    print(
+        f"\n{Emojis.STEP}Asgard raid import-log ({BOSS_LABELS[boss]}) for "
+        f"'{account_alias}' (player {player_id})"
+    )
+    for team in logged:
+        current = existing.get(team.slot)
+        if current is None:
+            action = "import"
+        elif overwrite:
+            action = "overwrite"
+        else:
+            action = "skip (already registered)"
+        damage = (
+            f" damage={format_number_with_suffix(team.damage)}" if team.damage else ""
+        )
+        print(f"  slot {team.slot}: {action} {format_logged_team(team)}{damage}")
+
+    if dry_run:
+        print(f"{Emojis.INFO}Dry-run: no teams were written.")
+        return result
+
+    for team in logged:
+        current = existing.get(team.slot)
+        if current is not None and not overwrite:
+            result.skipped_slots.append(team.slot)
+            continue
+        set_asgard_raid_team(
+            account_alias,
+            AsgardTeam(
+                boss=boss,
+                slot=team.slot,
+                heroes=team.heroes,
+                pet=team.pet,
+                favor=team.favor,
+                enabled=current.enabled if current is not None else True,
+                memo=current.memo if current is not None else None,
+            ),
+        )
+        result.imported_slots.append(team.slot)
+
+    print(
+        f"{Emojis.SUCCESS}Imported slots: {result.imported_slots or '-'}; "
+        f"skipped existing: {result.skipped_slots or '-'}"
+    )
+    return result
 
 
 def claim_rating_rewards(client: HWClient) -> list[AsgardRewardResult]:
@@ -708,22 +980,29 @@ __all__ = [
     "REWARD_STANDING_USER",
     "REWARD_TYPES",
     "AsgardRaidError",
+    "AsgardRaidImportResult",
     "AsgardRaidReadError",
     "AsgardRaidRunResult",
     "AsgardRaidTeamResult",
     "AsgardRewardResult",
+    "AsgardLoggedTeam",
     "AsgardTeam",
     "TEAM_SIZE",
     "TEAM_SLOTS",
     "claim_rating_rewards",
     "detect_boss",
+    "fetch_boss_log",
     "fetch_clan_raid_info",
+    "format_logged_team",
     "format_team",
+    "import_teams_from_log",
     "list_asgard_raid_teams",
     "parse_end_detail",
     "parse_favor_args",
     "parse_heroes",
+    "parse_logged_teams",
     "remove_asgard_raid_team",
+    "resolve_player_id",
     "run_asgard_raid",
     "set_asgard_raid_team",
     "validate_boss",

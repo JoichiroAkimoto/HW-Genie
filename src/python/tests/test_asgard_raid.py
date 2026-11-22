@@ -13,11 +13,14 @@ from hw_genie.commands.asgard_raid import (
     AsgardRewardResult,
     AsgardTeam,
     detect_boss,
+    import_teams_from_log,
     list_asgard_raid_teams,
     parse_end_detail,
     parse_favor_args,
     parse_heroes,
+    parse_logged_teams,
     remove_asgard_raid_team,
+    resolve_player_id,
     run_asgard_raid,
     set_asgard_raid_team,
     validate_boss,
@@ -30,10 +33,10 @@ from hw_genie.core.session_manager import SessionManager
 from hw_genie.runner import summarize_asgard_raid
 
 
-def _register_alice() -> None:
+def _register_alice(player_id: str = "11111111") -> None:
     SessionManager.save(
         "Alice",
-        {"headers": {"x-auth-token": "test"}, "player": {"id": "a1", "name": "Alice"}},
+        {"headers": {"x-auth-token": "test"}, "player": {"id": player_id, "name": "Alice"}},
     )
 
 
@@ -114,6 +117,37 @@ def _end_detail(damage: int = 35_790_884, replay: str = "r1") -> dict:
 
 def _reward_ok() -> MagicMock:
     return _ok({"response": {}})
+
+
+def _battle_entry(
+    start_time: int,
+    heroes: list[int],
+    pet: int | None,
+    favor: dict[int, int],
+    battle_id: int,
+    damage: int = 0,
+) -> dict:
+    attackers = {}
+    for hero in heroes:
+        attackers[str(hero)] = {
+            "id": hero,
+            "type": "hero",
+            "favorPetId": favor.get(hero, 0),
+        }
+    if pet is not None:
+        attackers[str(pet)] = {
+            "id": pet,
+            "type": "pet",
+            "petId": None,
+            "favorPetId": None,
+        }
+    return {
+        "id": str(battle_id),
+        "startTime": start_time,
+        "type": "clan_raid",
+        "attackers": attackers,
+        "result": {"damage": {"1": damage, "2": 0}},
+    }
 
 
 # --- validation -----------------------------------------------------------
@@ -250,6 +284,208 @@ def test_parse_end_detail_tolerates_string_damage_and_int_replay():
         }
     }
     assert parse_end_detail(detail) == (123, True, 3, "456")
+
+
+# --- import-log -----------------------------------------------------------
+
+
+def test_parse_logged_teams_extracts_heroes_pet_favor_in_attack_order():
+    log = {
+        "111": {
+            "second": _battle_entry(200, [6, 7, 8, 9, 10], None, {6: 6001}, 2001, 20),
+            "first": _battle_entry(
+                100, [1, 2, 3, 4, 5], 6002, {1: 6001, 2: 6002}, 1001, 10
+            ),
+        }
+    }
+    teams = parse_logged_teams(log, "111")
+    assert [team.slot for team in teams] == [1, 2]
+    assert teams[0].heroes == (1, 2, 3, 4, 5)
+    assert teams[0].pet == 6002
+    assert teams[0].favor == {1: 6001, 2: 6002}
+    assert teams[0].damage == 10
+    assert teams[1].pet is None
+    assert teams[1].favor == {6: 6001}
+
+
+def test_parse_logged_teams_skips_incomplete_and_errors_when_none_remain():
+    log = {"111": {"bad": _battle_entry(100, [1, 2, 3], None, {}, 1, 0)}}
+    with pytest.raises(AsgardRaidError, match="No complete"):
+        parse_logged_teams(log, "111")
+
+
+def test_parse_logged_teams_rejects_more_than_five_battles():
+    log = {
+        "111": {
+            str(index): _battle_entry(index, [1, 2, 3, 4, 5], None, {}, index, 0)
+            for index in range(1, 7)
+        }
+    }
+    with pytest.raises(AsgardRaidError, match="cannot map more than 5"):
+        parse_logged_teams(log, "111")
+
+
+def test_parse_logged_teams_missing_user_raises():
+    with pytest.raises(AsgardRaidError, match="No boss battle logs"):
+        parse_logged_teams({}, "111")
+
+
+def test_resolve_player_id_rejects_invalid_override(mock_client):
+    client, _ = mock_client
+    with pytest.raises(AsgardRaidError):
+        resolve_player_id(client, "abc")
+    with pytest.raises(AsgardRaidError):
+        resolve_player_id(client, "0")
+
+
+def test_import_teams_from_log_writes_missing_slots(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    log = {
+        "11111111": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {1: 6001}, 1001, 10),
+            "b2": _battle_entry(200, [6, 7, 8, 9, 10], None, {6: 6002}, 2001, 20),
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(client, account_alias="Alice", boss="maestro")
+
+    assert result.imported_slots == [1, 2]
+    teams = list_asgard_raid_teams("Alice", "maestro")
+    assert [team.slot for team in teams] == [1, 2]
+    assert teams[0].heroes == (1, 2, 3, 4, 5)
+    assert teams[0].pet == 6002
+    assert teams[0].favor == {1: 6001}
+    assert teams[0].enabled is True
+    assert teams[0].memo is None
+    assert teams[1].pet is None
+
+
+def test_import_teams_from_log_skips_existing_by_default(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    existing = _team(slot=1, heroes=(99, 98, 97, 96, 95), memo="keep")
+    set_asgard_raid_team("Alice", existing)
+    log = {
+        "11111111": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {}, 1001, 10),
+            "b2": _battle_entry(200, [6, 7, 8, 9, 10], None, {}, 2001, 20),
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(client, account_alias="Alice", boss="maestro")
+
+    assert result.skipped_slots == [1]
+    assert result.imported_slots == [2]
+    teams = {team.slot: team for team in list_asgard_raid_teams("Alice", "maestro")}
+    assert teams[1] == existing
+    assert teams[2].heroes == (6, 7, 8, 9, 10)
+
+
+def test_import_teams_from_log_overwrite_preserves_enabled_and_memo(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team(
+        "Alice",
+        _team(slot=1, heroes=(99, 98, 97, 96, 95), enabled=False, memo="keep"),
+    )
+    log = {
+        "11111111": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {1: 6001}, 1001, 10)
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(
+        client, account_alias="Alice", boss="maestro", overwrite=True
+    )
+
+    assert result.imported_slots == [1]
+    team = list_asgard_raid_teams("Alice", "maestro")[0]
+    assert team.heroes == (1, 2, 3, 4, 5)
+    assert team.enabled is False
+    assert team.memo == "keep"
+
+
+def test_import_teams_from_log_dry_run_writes_nothing(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    log = {
+        "11111111": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {}, 1001, 10)
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(
+        client, account_alias="Alice", boss="maestro", dry_run=True
+    )
+
+    assert result.teams[0].slot == 1
+    assert result.imported_slots == []
+    assert list_asgard_raid_teams("Alice", "maestro") == []
+
+
+def test_import_teams_from_log_user_id_override(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    log = {
+        "99999999": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {}, 1001, 10)
+        }
+    }
+    mock_call.side_effect = [_ok({"response": log})]
+
+    result = import_teams_from_log(
+        client, account_alias="Alice", boss="maestro", user_id="99999999"
+    )
+
+    assert result.imported_slots == [1]
+
+
+def test_import_teams_from_log_uses_user_get_info(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    log = {
+        "11111111": {
+            "b1": _battle_entry(100, [1, 2, 3, 4, 5], 6002, {}, 1001, 10)
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(client, account_alias="Alice", boss="maestro")
+
+    assert result.imported_slots == [1]
+    assert mock_call.call_count == 2
+
+
+def test_import_teams_from_log_no_logs_raises(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": {}}),
+    ]
+
+    with pytest.raises(AsgardRaidError, match="No boss battle logs"):
+        import_teams_from_log(client, account_alias="Alice", boss="maestro")
 
 
 def test_parse_end_detail_tolerates_empty_detail():

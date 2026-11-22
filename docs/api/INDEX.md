@@ -80,6 +80,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 *   **`clanRaid_shopBuy`**: ギルドレイド（Asgard）のショップ購入（`args: {"slotId": N}`。詳細は GUILD_API.md）。
 *   **`clanRaid_startBossBattle` / `clanRaid_endBossBattle`**: ギルドレイド（Asgard）のボス戦。`endBossBattle` に空の `progress` を送るとサーバー側オートバトルで確定する（`afterInvalid: true`。詳細は GUILD_API.md）。
 *   **`clanRaid_farmRatingReward`**: ギルドレイド（Asgard）の週間ランキング報酬（`type`: `standingClan` / `standingUser`、週1回。詳細は GUILD_API.md）。
+*   **`clanRaid_logBoss`**: ギルドレイド（Asgard）のボス戦履歴（userId → battleId → attackers / result。`asgard-raid team import-log` の復元元。詳細は GUILD_API.md）。
 *   **`chatGetAll`**: チャット履歴取得（chatType指定。個人チャットは `chatType=personal` + 相手の `userId` でスレッド取得、CHAT_API.md）。
 *   **`chatGetTalks`**: 個人チャットの会話一覧（直近の相手・最新メッセージ・既読状態。utime 降順、CHAT_API.md）。
 *   **`chatSendChallenge`**: 個人チャットの相手にフレンドリーチャレンジを送信（CHAT_API.md）。
