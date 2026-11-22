@@ -262,7 +262,7 @@ bin/hwsa
 - `hwsa` サービス: `hw-genie multi full`（ヒーローレイド + ショップ + デイリー）
 - `multi quests`: 全アカウントのデイリークエスト自動完了のみ（`--dry-run` で予行確認可）。daily / full は実行後に各アカウントの `quest_defaults.enabled` クエストと `guild_glyph_defaults.enabled` のグリフ強化（`heroEnchantRune`）を自動実行します（enabled のみ、初期状態は無効）
 - `multi asgard-shop`: 全アカウントの Asgard ショップ自動購入のみ（Osh / Maestro 週を自動判定、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off）
-- `multi asgard-raid`: 全アカウントの Asgard ボス戦（登録済みチームを slot 順に実行）のみ（週を自動判定、攻撃回数を消費するため **`--yes` 必須**、`--dry-run` で計画表示のみ）
+- `multi asgard-raid`: 全アカウントの Asgard ボス戦（登録済みチームを slot 順に実行し、最後に週次ランキング報酬を受け取り）のみ（週を自動判定、攻撃回数を消費するため **`--yes` 必須**、`--dry-run` で計画表示のみ）
 - `multi seers-game`: 全アカウントの Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応、`--dry-run` で予行確認可）
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
 - `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
