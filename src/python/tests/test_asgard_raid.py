@@ -143,6 +143,8 @@ def test_parse_heroes_requires_five_unique_positive_ids():
         parse_heroes([1, 2, 3, 4, 4])
     with pytest.raises(AsgardRaidError):
         parse_heroes([1, 2, 3, 4, 0])
+    with pytest.raises(AsgardRaidError):
+        parse_heroes([1, 2, 3, 4, "x"])
 
 
 def test_parse_favor_args():
@@ -222,9 +224,25 @@ def test_detect_boss_from_shop_signature():
     assert detect_boss({"shop": {"6": {"buffId": 999}}}) is None
 
 
+def test_detect_boss_falls_back_to_active_buffs():
+    assert detect_boss({"shop": {}, "buffs": {"113": {"id": 113}, "114": {"id": 114}}}) == "maestro"
+    assert detect_boss({"buffs": {"63": {"id": 63}, "64": {"id": 64}}}) == "osh"
+    assert detect_boss({"buffs": {"30": {"id": 30}}}) is None
+
+
 def test_parse_end_detail_sums_damage_and_reads_replay():
     damage, win, stars, replay = parse_end_detail(_end_detail(12345, "r9"))
     assert (damage, win, stars, replay) == (12345, False, 0, "r9")
+
+
+def test_parse_end_detail_tolerates_string_damage_and_int_replay():
+    detail = {
+        "response": {
+            "result": {"win": True, "stars": 3, "damage": {"1": "123", "2": 0}},
+            "replay": 456,
+        }
+    }
+    assert parse_end_detail(detail) == (123, True, 3, "456")
 
 
 def test_parse_end_detail_tolerates_empty_detail():
@@ -308,6 +326,33 @@ def test_run_stops_without_attempts(mock_client):
     assert result.failed_count == 0
     assert result.teams[0].status == ResponseStatus.SKIPPED
     assert mock_call.call_count == 1
+
+
+def test_run_skips_remaining_when_attempts_run_out_mid_list(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    set_asgard_raid_team("Alice", _team(slot=2))
+    mock_call.side_effect = [
+        _ok(_info(attempts=1)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        _ok(_info(attempts=0, damage=10)),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice")
+
+    assert [t.status for t in result.teams] == [
+        ResponseStatus.SUCCESS,
+        ResponseStatus.SKIPPED,
+    ]
+    assert result.total_damage == 10
+    starts = [
+        call
+        for call in mock_call.call_args_list
+        if call.args[0]["calls"][0]["name"] == "clanRaid_startBossBattle"
+    ]
+    assert len(starts) == 1
 
 
 def test_run_stops_on_start_failure(mock_client):
@@ -403,6 +448,24 @@ def test_run_explicit_boss_overrides_detected_week(mock_client):
     assert result.failed_count == 0
     start = mock_call.call_args_list[1].args[0]["calls"][0]
     assert start["args"]["heroes"] == [50, 60, 58, 51, 72]
+
+
+def test_run_explicit_boss_when_week_is_unknown(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1, boss="osh"))
+    unknown = {"response": {"shop": {}, "buffs": {}, "bossAttempts": 5, "userStats": {}}}
+    mock_call.side_effect = [
+        _ok(unknown),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        _ok(unknown),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice", boss="osh")
+
+    assert result.boss == "osh"
+    assert result.teams[0].status == ResponseStatus.SUCCESS
 
 
 # --- multi summary --------------------------------------------------------

@@ -24,7 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from hw_genie.commands.asgard_shop import is_maestro_shop, is_osh_shop
+from hw_genie.commands.asgard_shop import (
+    MAESTRO_BUFF_IDS,
+    OSH_BUFF_IDS,
+    is_maestro_shop,
+    is_osh_shop,
+)
 from hw_genie.core.client import (
     ApiAction,
     Emojis,
@@ -129,7 +134,10 @@ def validate_boss(boss: Any) -> str:
 def parse_heroes(raw: list[int] | None) -> tuple[int, ...]:
     if raw is None:
         raise AsgardRaidError("--heroes is required (5 hero IDs).")
-    heroes = [int(hero) for hero in raw]
+    try:
+        heroes = [int(hero) for hero in raw]
+    except (TypeError, ValueError) as exc:
+        raise AsgardRaidError(f"Invalid hero ID in {raw!r}.") from exc
     if len(heroes) != TEAM_SIZE:
         raise AsgardRaidError(f"Boss team requires exactly {TEAM_SIZE} heroes (got {len(heroes)}).")
     if any(hero <= 0 for hero in heroes):
@@ -283,15 +291,43 @@ def fetch_clan_raid_info(client: HWClient) -> dict[str, Any]:
 
 
 def detect_boss(response: dict[str, Any]) -> str | None:
-    """Detect the current boss from the shop buffId signature."""
+    """Detect the current boss from the shop (or active buffs) signature.
+
+    ``shop`` is the primary source. When every slot has been bought (or the
+    response omits the shop), the active ``buffs`` map still carries the
+    week's buff IDs, so it is used as a fallback.
+    """
     shop = response.get("shop")
-    if not isinstance(shop, dict):
-        return None
-    if is_osh_shop(shop):
-        return BOSS_OSH
-    if is_maestro_shop(shop):
-        return BOSS_MAESTRO
+    if isinstance(shop, dict) and shop:
+        if is_osh_shop(shop):
+            return BOSS_OSH
+        if is_maestro_shop(shop):
+            return BOSS_MAESTRO
+
+    buffs = response.get("buffs")
+    if isinstance(buffs, dict) and buffs:
+        known = _source_buff_ids(buffs) & (OSH_BUFF_IDS | MAESTRO_BUFF_IDS)
+        pseudo_shop = {
+            str(index): {"buffId": buff_id}
+            for index, buff_id in enumerate(sorted(known))
+        }
+        if is_osh_shop(pseudo_shop):
+            return BOSS_OSH
+        if is_maestro_shop(pseudo_shop):
+            return BOSS_MAESTRO
     return None
+
+
+def _source_buff_ids(source: dict[str, Any]) -> set[int]:
+    """Collect buff IDs from a ``shop`` (``buffId``) or ``buffs`` (``id``) map."""
+    ids: set[int] = set()
+    for key, value in source.items():
+        raw = value.get("buffId", value.get("id", key)) if isinstance(value, dict) else key
+        try:
+            ids.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return ids
 
 
 def _optional_int(value: Any) -> int | None:

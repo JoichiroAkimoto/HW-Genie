@@ -6,7 +6,7 @@ description: HW-Genie を使用して、Asgard（ギルドレイド）のボス�
 
 ## 概要
 
-`clanRaid_startBossBattle` / `clanRaid_endBossBattle` を使って Asgard のボス戦を自動化します。チームはアカウント × ボス（`osh` / `maestro`）× slot（1〜5）ごとに専用テーブル `asgard_raid_teams` へ保存します。週は `clanRaid_getInfo` の `shop` に含まれる buffId シグネチャ（Osh: 61〜81 / Maestro: 112〜133）で自動判定します。
+`clanRaid_startBossBattle` / `clanRaid_endBossBattle` を使って Asgard のボス戦を自動化します。チームはアカウント × ボス（`osh` / `maestro`）× slot（1〜5）ごとに専用テーブル `asgard_raid_teams` へ保存します。週は `clanRaid_getInfo` の `shop` に含まれる buffId シグネチャ（Osh: 61〜81 / Maestro: 112〜133）で自動判定します。shop が空（全 slot 購入済み等）の場合は、同じ週の buffId を持つ `buffs` をフォールバックに使います。
 
 - **チーム登録**: `team set <1-5> --boss osh|maestro --heroes <5体> [--pet N] [--favor HERO=PATRON ...] [--disabled] [--memo TEXT]`。`enabled` はチームごとでデフォルト `true`。`--disabled` を付けたチームは実行時にスキップされます。
 - **実行**: `run` は週を自動判定し、`enabled=true` のチームを slot 昇順で実行します。各チームは次の2コールです。
