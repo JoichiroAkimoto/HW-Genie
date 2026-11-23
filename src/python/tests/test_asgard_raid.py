@@ -852,6 +852,29 @@ def test_summarize_asgard_raid_dry_run_is_ok(capsys):
     assert "no teams registered" in capsys.readouterr().out
 
 
+def test_summarize_asgard_raid_attempts_without_after_is_not_none(capsys):
+    result = AsgardRaidRunResult(
+        boss="maestro", dry_run=True, attempts_before=5, teams=[]
+    )
+    assert summarize_asgard_raid([("Alice", (result, None))], dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "5->None" not in out
+    assert "5" in out
+
+
+def test_summarize_asgard_raid_attempts_arrow_when_after_present(capsys):
+    result = AsgardRaidRunResult(
+        boss="maestro",
+        dry_run=False,
+        attempts_before=5,
+        attempts_after=3,
+        teams=[],
+    )
+    assert summarize_asgard_raid([("Alice", (result, None))]) == 0
+    out = capsys.readouterr().out
+    assert "5->3" in out
+
+
 def test_summarize_asgard_raid_shows_score_and_rewards(capsys):
     result = AsgardRaidRunResult(
         boss="maestro",

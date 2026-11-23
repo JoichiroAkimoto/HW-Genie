@@ -1399,11 +1399,11 @@ def summarize_asgard_raid(
             continue
         label = BOSS_LABELS.get(res.boss or "", res.boss or "-")
         executed = sum(1 for team in res.teams if team.status == ResponseStatus.SUCCESS)
-        attempts = (
-            f"{res.attempts_before}->{res.attempts_after}"
-            if res.attempts_before is not None
-            else "-"
-        )
+        attempts = "-"
+        if res.attempts_before is not None:
+            attempts = str(res.attempts_before)
+            if res.attempts_after is not None:
+                attempts = f"{res.attempts_before}->{res.attempts_after}"
         score = "-" if res.dry_run else format_number_with_suffix(res.damage_after)
         rewards = []
         for reward in res.rewards:
