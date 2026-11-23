@@ -32,6 +32,7 @@ jobs:
           targets=(
             src/userscripts/index.ts
             docs/_includes/head-custom.html
+            docs/_layouts/default.html
             docs/_config.yml
             docs/index.md
             README.md
