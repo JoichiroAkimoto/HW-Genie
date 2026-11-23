@@ -1,4 +1,4 @@
-<h1><img src="docs/assets/hw-genie-icon.png" alt="" width="34" height="34" align="left" hspace="12"> HW-Genie 🧞‍♂️</h1>
+<h1><img src="docs/assets/hw-genie-icon.png" alt="" width="34" height="34" align="left">HW-Genie 🧞‍♂️</h1>
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-HW--Genie-ea4aaa.svg?style=for-the-badge&logo=github)](https://github.com/sponsors/JoichiroAkimoto)
 [![Python Checks](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/python-tests.yml/badge.svg)](https://github.com/JoichiroAkimoto/HW-Genie/actions/workflows/python-tests.yml)

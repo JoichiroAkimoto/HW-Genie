@@ -40,7 +40,7 @@ bash ./build.sh \
 ### アイコン（@icon）
 
 `index.ts` の `@icon` は GitHub Pages 上の 512px アイコン（**背景透過**版）を指す。Tampermonkey /
-Violentmonkey がインストール・更新時に取得し、一覧や詳細画面に表示する。DEV版も同じアイコンを使う（DEV版は `@name` と `-dev` サフィックスで区別される）。
+Violentmonkey がインストール・更新時に取得し、一覧や詳細画面に表示する（取得のタイミングと既存インストールへの反映の関係は「反映タイミング」節）。DEV版も同じアイコンを使う（DEV版は `@name` と `-dev` サフィックスで区別される）。
 
 ```
 https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
@@ -56,23 +56,29 @@ https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
 | ファイル | 用途 |
 | --- | --- |
 | `hw-genie-icon-1024.png` | マスター（1024px / フラット 8 色 / 不透明） |
-| `hw-genie-icon.png` | 配布用 512px **背景透過**（`@icon`・Pages の png favicon・README と Pages ヘッダーのタイトル行） |
+| `hw-genie-icon.png` | 配布用 512px **背景透過**（`@icon`・Pages の png favicon・README と Pages ヘッダーのタイトル行・`_config.yml` の `logo`（JSON-LD の publisher）） |
 | `hw-genie-icon-solid.png` | 配布用 512px 不透明（apple-touch-icon 専用。iOS は透過 PNG を黒で塗り潰すため別ファイルにする） |
-| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色。magick は 8 色 ICO を indexed BMP 4bpp で書くため alpha は持てない＝意図的に不透明の地色で残す） |
+| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色。indexed BMP 4bpp は 1 ビットの AND マスクで完全透過を表現できる＝部分的な alpha だけが不可で、magick も実際にマスクを書く。現行の favicon.ico は地色を抜いていない＝不透明な紺タイルを意図的に残したものであり、形式上の制限ではない。透過のタブアイコンを望むなら per-size ループに `-transparent "#03104D"` を追加する） |
 | `hw-genie-social-preview.png` | 1280x640。og:image / twitter:image。原画はリポジトリ外のためリポジトリ内容からの再生成は不可 |
 
 Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 透過 512px png → apple-touch-icon（不透明）。テーマ本体の `head-custom-theme-colors.html` と Google Analytics フックは追加型で残す。`theme-color` はテーマが `#151515` 固定で出すため重複指定しない）、`docs/_layouts/default.html`（テーマの同ファイルをコピーして h1 のタイトル行に透過アイコンを 34px インライン化。**テーマ更新を自動追跡しないので、hacker テーマ側の変更は手動で反映する**）と `docs/_config.yml`（`logo` は JSON-LD の publisher 用、`defaults` の `image` が og:image を生成）。
+
+タイトル行の実描画は `./ [マーク] HW-Genie` になる（左から `./ ` → アイコン → タイトルの順）。先頭の `./ ` は hacker テーマが `header h1::before { content: "./ " }` で出すプレフィックスで、この並びはターミナル風テーマの見ためどおり＝**意図的なもの**。誤記ではないので「修正」（`::before` を消す・アイコンを先頭に寄せる等）はしないこと。`default.html` はコピーして持っているためテーマ更新の自動追跡はないが、このテーマ側の規則自体は反映対象ではなくそのまま受け入れる。
 
 #### 生成と検品
 
 ピクセルアートは既定の補間縮小で境界がにじむ（8 色が 100 色超に膨らむ）ため、縮小は必ず最近傍 (`-filter point`) ＋ 非ディザーの 8 色量子化で行う。さらに `-strip` を添えて、生成ツールの来歴メタデータ（`TC260:AIGC` の ContentProducer / ProduceID など）とタイムスタンプを公開資産に残さない。
 
+透過版は、地色を抜いたあと外周に残る暗色斑点 `#2F2434`（旧 609px、うち 571px がシルエット外周）をランプの影色 `#AD5914` に書き換えてから量子化する。そのまま残すと淡い背景の上で縁が黒く崩れて見えるためで、結果は 7 色（斑点 0 / 影色 6570px、透過画素数は差し替え前と同一）になる。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"   # 以降のパスはすべてリポジトリルート基準
 
-# 配布用 512px png（透過版: マスターの地色 #03104D を alpha 0 に抜く）
+# 配布用 512px png（透過版: マスターの地色 #03104D を alpha 0 に抜き、外周に残る暗色斑点 #2F2434 をランプの影色 #AD5914 に寄せる）
 magick docs/assets/hw-genie-icon-1024.png -transparent "#03104D" \
+  -fill "#AD5914" -opaque "#2F2434" \
   -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon.png
+# 注意: `-opaque` に `+opaque` は使えない（選択が反転して斑点以外が塗り替わり、alpha も落ちて透過版が壊れる）
 
 # 配布用 512px png（不透明版: apple-touch-icon 用）
 magick docs/assets/hw-genie-icon-1024.png \
@@ -89,7 +95,7 @@ magick /tmp/ico16.png /tmp/ico32.png /tmp/ico48.png /tmp/ico64.png \
 # 検品 1: favicon の全レイヤーが 8 色以下（16px は 7 色）
 identify -format "%s: %wx%h colors=%k\n" docs/assets/favicon.ico
 
-# 検品 2: コミット対象の PNG にメタデータチャンクが無いこと
+# 検品 2: コミット対象の PNG にメタデータチャンクが無いこと # ※ tRNS はパレット透過そのもの（検品 3 の alpha=Blend の根拠）なので対象外。blacklist は来歴/時刻チャンクのみ。
 python3 - docs/assets/*.png <<'PY'
 import struct, sys
 for path in sys.argv[1:]:
@@ -111,7 +117,9 @@ identify -format "%f alpha=%A\n" docs/assets/hw-genie-icon.png docs/assets/hw-ge
 
 #### 反映タイミング
 
-`@icon` の URL は変えずに `docs/assets/hw-genie-icon.png` の中身だけ差し替えると、**リリース不要で**既存インストールのアイコンも更新される（マネージャーが `@icon` URL を再取得するため）。逆に `@icon` 行そのものや metadata の変更を既存インストールに届けるには、**タグリリースを通じたスクリプト更新が必要**。タグプッシュと Pages デプロイの順序ルールは RELEASE_PROCESS.md（Source of Truth）に記載。
+`@icon` の URL を変えずに `docs/assets/hw-genie-icon.png` の中身だけ差し替えた場合、効くのは**新規インストールだけ**（インストール時にその時点のバイト列が取得されるため）。既存インストールは、マネージャーが URL をキーに保存した旧いアイコンバイトを使い続け、**スクリプト更新（`@version` 上昇）が起きた時点で初めて**アイコンも再取得される。Violentmonkey は `cac:<iconURL>` の形でアイコンバイトを保存し、実際のスクリプト更新（`src.update` がある場合）か項目が無い場合のみ再取得する。Tampermonkey もスクリプト更新時に外部資産を同様に更新するため結論は同じ。Pages 側が `cache-control: max-age=600` を返すことはボトルネックではない（10分で切れる HTTP キャッシュより、マネージャー自身の保存領域が長生きするため）。
+
+したがって**アイコンの変更を既存インストールに届けるには `@version` のバンプとタグリリースが必要**。手順は RELEASE_PROCESS.md（Source of Truth）に記載どおりであり、本READMEでは繰り返さない。
 
 ### DEV版ビルド（ToE自動化時のみONにする開発版）
 
