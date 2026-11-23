@@ -5,6 +5,7 @@ from typing import TypedDict, Optional
 import requests
 from hw_genie.core.client import AUTH_ERROR_NAMES, PlayerStatus, load_session_headers
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.signing import serialize_body, sign_headers
 
 
 class SessionData(TypedDict, total=False):
@@ -80,8 +81,13 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
     url = "https://heroes-wb.nextersglobal.com/api/"
     headers["x-request-id"] = str(int(headers.get("x-request-id", 100)) + 1)
     payload = {"calls": [{"name": "userGetInfo", "args": {}, "ident": "body"}, {"name": "arenaGetAll", "args": {}, "ident": "arena"}]}
+    body = serialize_body(payload)
+    if not any(key.lower() == "content-type" for key in headers):
+        headers["Content-Type"] = "application/json; charset=UTF-8"
+    # 署名は body と x-request-id に紐づくため、送信直前に毎回計算する。
+    sign_headers(headers, body)
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=15)
         if response.status_code == 401:
             return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
         response.raise_for_status()

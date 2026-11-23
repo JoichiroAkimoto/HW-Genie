@@ -44,6 +44,22 @@ test("非 2xx + 非 JSON ボディで例外を投げず false を返す（res.ok
   });
   const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
   assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "http-500");
+  assert.strictEqual(result.detail, "Internal Server Error");
+});
+
+test("非 2xx の JSON detail を SendResult.detail に載せる（500 の原因を可視化）", async () => {
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(
+      500,
+      JSON.stringify({ detail: "Session expired or invalid signature." }),
+    ),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "http-500");
+  assert.strictEqual(result.detail, "Session expired or invalid signature.");
 });
 
 test("200 + status:success で true を返し、player 名も返す", async () => {
@@ -56,13 +72,14 @@ test("200 + status:success で true を返し、player 名も返す", async () =
   assert.strictEqual(result.playerName, "Alice");
 });
 
-test("200 + status:error で false を返す", async () => {
+test("200 + status:error で false を返し message を detail に載せる", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
     authResponse: makeResponse(200, JSON.stringify({ status: "error", message: "Invalid signature" })),
   });
   const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
   assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.detail, "Invalid signature");
 });
 
 test("200 + 不正 JSON（json() が throw）で例外なく false を返す", async () => {

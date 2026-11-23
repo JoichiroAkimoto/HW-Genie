@@ -114,8 +114,9 @@ bun test tests/
   使う場合は捕捉されません。
 - dedupe は `x-auth-signature` を除外したシリアライズで判定するため、署名の
   ローテーションでは再送されません。ページロード後に一度だけ送信され、セッション
-  値が変わらない限り再送されません（送信ペイロードには署名を含めるため、サーバー
-  側の必須ヘッダー検証は維持されます）。
+  値が変わらない限り再送されません（署名はサーバー側が `x-auth-token` /
+  `x-auth-session-id` / `x-request-id` とボディから再計算するため、捕捉した
+  署名値はサーバーでは使われません）。
 - 再送が発生するのは実セッション値の変化時のみです: session-id / user-id の
   変化（再ログイン）は、バックオフが残っている間のみ同一値の 2 連続観測で
   ガードされ、それ以外は次のポーリングで即送信されます。token 等のその他
@@ -127,6 +128,10 @@ bun test tests/
   セッションの署名の鮮度（有効期限）は保証しません。ゲーム側でセッションが
   失効した場合は、curl での再認証または auth-server での再キャプチャが必要です
   （v1.0.2 と同じ前提）。
+- 送信失敗時はコンソールに `Failed to send auth headers to server (http-500): <理由>`
+  の形式でサーバー側の失敗理由（例: `Session expired or invalid signature.`）も
+  表示します（v1.0.14 以降）。同じ理由は auth-server のログにも記録されます
+  （`auth header capture failed for x-auth-user-id=...`）。
 - セッション失効時（HTTP 401 / `error` の name・文字列値が `auth` /
   `InvalidSession`（完全一致・大文字区別）/ 非 JSON ボディの `Invalid signature`
   テキスト）は XHR レスポンス監視（load イベントのみ。error/abort 時は通知

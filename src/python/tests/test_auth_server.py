@@ -112,7 +112,7 @@ class TestAuthServerEndpoints:
         mock_update.assert_called_once_with(VALID_HEADERS, None)
 
     @patch("hw_genie.commands.auth_server.update_session_with_headers")
-    def test_post_auth_api_error(self, mock_update, client):
+    def test_post_auth_api_error(self, mock_update, client, caplog):
         mock_update.return_value = {
             "status": "error",
             "message": "API connection failed"
@@ -121,14 +121,19 @@ class TestAuthServerEndpoints:
         nonce_resp = client.get("/nonce")
         nonce = nonce_resp.json()["nonce"]
 
-        response = client.post("/auth", json={
-            "nonce": nonce,
-            "headers": VALID_HEADERS
-        })
+        with caplog.at_level("WARNING", logger="hw_genie.commands.auth_server"):
+            response = client.post("/auth", json={
+                "nonce": nonce,
+                "headers": VALID_HEADERS
+            })
 
         assert response.status_code == 500
         data = response.json()
-        assert "detail" in data
+        assert data["detail"] == "API connection failed"
+        # 500 の理由が常駐ログにも残ること（userscript 側のログにしか出ないと
+        # docker compose logs から原因を追えない）
+        assert "API connection failed" in caplog.text
+        assert VALID_HEADERS["x-auth-user-id"] in caplog.text
 
 
 class TestValidateHeaders:

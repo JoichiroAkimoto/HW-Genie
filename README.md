@@ -448,6 +448,13 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 どちらも認証キャプチャ機能に違いはありません。常駐させる場合は Docker 実行がおすすめです。
 
+> **リクエスト署名（2026-11 のゲーム更新対応）**: ゲーム API は `X-Request-Id` と
+> リクエストボディに紐づく `X-Auth-Signature` を検証します。HW-Genie は送信直前に
+> 保存済みの `x-auth-token` / `x-auth-session-id` から署名を再計算するため
+> （`src/python/hw_genie/core/signing.py`）、キャプチャした署名値そのものは使いません。
+> 以前のように「捕捉したヘッダーをそのまま別リクエストへ流用」すると
+> `Invalid signature` になります。
+
 ### AI エージェント連携
 
 本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。各スキル（`daily-raid`・`hero-raid`・`hero-shopping` 等）の説明は [AGENTS.md](AGENTS.md) を参照してください。

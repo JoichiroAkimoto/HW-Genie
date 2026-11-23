@@ -68,6 +68,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。確認方法は `.agents/skills/db-inspect/SKILL.md`、スキーマは **[docs/db/schema.md](docs/db/schema.md)** を参照。
     *   **worktree / 新規クローンの準備**: `.env` は `.gitignore` 済みのため checkout に含まれません。worktree で DB 操作する前に main worktree の `.env` へのシンボリックリンクを貼ってください（例: `ln -s /path/to/main-worktree/.env .env`）。解除は `unlink .env`（`rm` は main の `.env` を誤削除する恐れがあるため使用しないこと）。
 *   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
+*   **リクエスト署名**: ゲーム API は `X-Request-Id` とリクエストボディに紐づく `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（キャプチャした署名値の再利用は `Invalid signature` になります）。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
 

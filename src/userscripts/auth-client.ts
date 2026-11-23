@@ -69,6 +69,34 @@ export interface SendResult {
   ok: boolean;
   playerName: string | null;
   reason?: "nonce-failed" | `http-${number}` | "status-error" | "network" | "timeout";
+  /** サーバーが返した失敗理由（FastAPI の detail など）。診断ログ用。 */
+  detail?: string;
+}
+
+/**
+ * エラー本文から表示用の理由を取り出す。
+ *
+ * FastAPI はエラーを ``{"detail": "..."}`` で返すため、JSON なら detail
+ * （無ければ message）を優先し、非 JSON は本文をそのまま使う（長すぎる
+ * 場合は切り詰める）。
+ */
+function extractErrorDetail(body: string): string | undefined {
+  const text = body.trim();
+  if (!text) {
+    return undefined;
+  }
+  try {
+    const data = JSON.parse(text);
+    if (typeof data?.detail === "string" && data.detail.trim()) {
+      return data.detail.trim();
+    }
+    if (typeof data?.message === "string" && data.message.trim()) {
+      return data.message.trim();
+    }
+  } catch {
+    // JSON でない本文はそのまま表示する
+  }
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
 /**
@@ -102,15 +130,28 @@ export async function sendHeadersToServer(
     );
     if (!res.ok) {
       // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
-      await readBodyWithTimeout(res, timeoutMs);
-      return { ok: false, playerName: null, reason: `http-${res.status}` };
+      const errorBody = await readBodyWithTimeout(res, timeoutMs);
+      return {
+        ok: false,
+        playerName: null,
+        reason: `http-${res.status}`,
+        detail: extractErrorDetail(errorBody),
+      };
     }
     const body = await readBodyWithTimeout(res, timeoutMs);
     const data = JSON.parse(body);
     if (data.status === "success") {
       return { ok: true, playerName: data.player?.name ?? null };
     }
-    return { ok: false, playerName: null, reason: "status-error" };
+    return {
+      ok: false,
+      playerName: null,
+      reason: "status-error",
+      detail:
+        typeof data.message === "string" && data.message.trim()
+          ? data.message.trim()
+          : undefined,
+    };
   } catch (e) {
     // 環境（Bun / Node / Tampermonkey サンドボックス）によっては fetch の
     // 中断エラーが DOMException の直接インスタンスでないことがあるため、
