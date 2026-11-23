@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { TOE_ENABLED, __resetBridgeForTests, __setToeEnabledForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
+import { TOE_ENABLED, __resetBridgeForTests, __setToeEnabledForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, resolveSignalKey, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -136,6 +136,58 @@ test("getF resolves minified key via __properties__", () => {
 test("getFn/getProtoFn resolve by ordinal", () => {
   assert.strictEqual(getFn({ x: 1, y: 2 }, 1), "y");
   assert.strictEqual(getProtoFn({ prototype: { p: 1, q: 2 } }, 0), "p");
+});
+
+const signalLike = () => ({ add: () => {}, dispatch: () => {} });
+
+test("resolveSignalKey prefers the pinned ordinal", () => {
+  const keys = Array.from({ length: 11 }, (_, i) => `k${i}`);
+  const proto = Object.fromEntries(keys.map((k) => [k, k]));
+  const instance = Object.fromEntries(keys.map((k) => [k, signalLike()]));
+  const spec = resolveSignalKey(instance, { prototype: proto }, 10);
+  assert.deepStrictEqual(spec, { key: "k10", index: 10 });
+});
+
+test("resolveSignalKey falls back when the ordinal drifted", () => {
+  // 2026-11-20 game update shifted the signal to a different index.
+  const proto = { a: 1, b: 2, signal: 3 };
+  const instance = { a: 0, b: 0, signal: signalLike() };
+  const spec = resolveSignalKey(instance, { prototype: proto }, 10);
+  assert.deepStrictEqual(spec, { key: "signal", index: 2 });
+});
+
+test("resolveSignalKey returns null when no signal is present", () => {
+  const proto = { a: 1, b: 2 };
+  assert.strictEqual(resolveSignalKey({ a: {}, b: {} }, { prototype: proto }, 10), null);
+});
+
+test("resolveSignalKey skips a pinned key that is not a signal", () => {
+  // The pinned ordinal still lands on a field, but that field is a List-like
+  // value (only ``add``): the scan must continue to a real later signal.
+  const proto = { a: 1, b: 2, pinned: 3, signal: 4 };
+  const instance = {
+    a: { add: () => {} },
+    b: 0,
+    pinned: { add: () => {} },
+    signal: signalLike(),
+  };
+  const spec = resolveSignalKey(instance, { prototype: proto }, 2);
+  assert.deepStrictEqual(spec, { key: "signal", index: 3 });
+});
+
+test("resolveSignalKey ignores List-like fields with only add", () => {
+  const proto = { a: 1, b: 2 };
+  const instance = { a: { add: () => {} }, b: { add: () => {} } };
+  assert.strictEqual(resolveSignalKey(instance, { prototype: proto }, 10), null);
+});
+
+test("resolveSignalKey finds a signal that is an own instance field", () => {
+  const proto = { a: 1, b: 2 };
+  const instance = { a: 0, b: 0, ownSignal: signalLike() };
+  assert.deepStrictEqual(resolveSignalKey(instance, { prototype: proto }, 10), {
+    key: "ownSignal",
+    index: -1,
+  });
 });
 
 test("battleConfigFor maps titan_arena to manual PvP", () => {
@@ -645,7 +697,8 @@ test("tick stops draining when shouldStop turns true", async () => {
   const origFetch = globalThis.fetch;
   let claims = 0;
   let submits = 0;
-  globalThis.fetch = async (url) => {
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     if (u.includes("/toe/next")) {
       claims += 1;
@@ -657,6 +710,7 @@ test("tick stops draining when shouldStop turns true", async () => {
     }
     if (u.includes("/result")) {
       submits += 1;
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
       return { ok: true, status: 200 };
     }
     return { ok: false, status: 404 };
@@ -672,6 +726,8 @@ test("tick stops draining when shouldStop turns true", async () => {
     await tick("", "http://127.0.0.1:1", 3, shouldStop);
     assert.strictEqual(claims, 1);
     assert.strictEqual(submits, 1);
+    // The dummy payload carries the failing stage for CLI diagnostics.
+    assert.match(submittedBody.result.error, /ordinal resolution failed/);
   } finally {
     globalThis.fetch = origFetch;
     if (prevWindow === undefined) delete globalThis.window;

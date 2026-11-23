@@ -352,13 +352,26 @@ userscript は全滅（dummy loss）を返す。`seed` が欠落・無効、ま�
 警告として 1 行で報告する（該当 rival は個別バトルで再試行される）。
 dummy loss は EndRaid に含めない（サーバーがレイド全体を無効化し得るため）。
 
+戦闘計算の dummy（空 progress）が連続 3 回続いた場合、個別バトル経路は
+`BridgeCalcError` で Tier ループを停止して原因（userscript の `diag`）を
+表示する（1〜2 回の一時的失敗は従来どおり次のチーム／シードへ継続）。
+レイド経路では検証済み結果が 1 件でもあれば検証済み分のみで EndRaid して
+そのまま通常どおり続行し（例外にしない）、`BridgeCalcError` を送出するのは
+検証済み結果が 1 件も無く（EndRaid はスキップ）かつ dummy が連続 3 回に
+達した場合だけである。連続判定は rival 単位のカウンタではなく、
+`_run_rivals` では同一実行内で rival / チーム / シードをまたいだ連続 3 回、
+`_run_raid` ではレイドバッチ内の rival をまたいだ連続 3 回を数える。
+seed／ロスター欠落によるスキップはダミー計数の前に確定するため、カウントを
+伸ばしもリセットもしない。bridge エラーと検証済み結果はカウントをリセットする。
+
 `hw-genie toe run` はこの形で Raid をステージ開始時に実行し、レイドで
 検証済み結果が 1 件も得られなかった場合は同一 Tier 内ではレイド再試行を
 打ち切り、Tier が変われば再試行する（抑止は Tier 単位。Tier の同一判定は
 数値正規化したキーで行い、API が `8` / `"8"` / `8.0` を揺らしても抑止を
-維持する）。`tier` を欠落した status は別 Tier 扱いで抑止をリセットする
-（不明な状態で古い抑止を引き継がないため）。残りの rival は個別バトル
-（`titanArenaStartBattle`）で継続する。
+維持する）。ただし 3 連続 dummy は計算基盤の故障なので、この抑止ではなく
+上記の `BridgeCalcError` として Tier を停止する。`tier` を欠落した status
+は別 Tier 扱いで抑止をリセットする（不明な状態で古い抑止を引き継がない
+ため）。残りの rival は個別バトル（`titanArenaStartBattle`）で継続する。
 レイドで負けた rival は `attackScore < threshold` のまま残るため、続く
 個別バトルの対象になる。レイドが一部の rival だけを落とした場合は、
 個別バトルの前に `titanArenaGetStatus` を再取得し、レイドで既にクリア
