@@ -28,13 +28,42 @@ from hw_genie.runner import (
 from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
+_SENSITIVE_HEADER_PREFIXES = ("x-auth-", "authorization", "cookie")
+
+
+def _redact_headers(headers: dict) -> dict:
+    """秘匿ヘッダーの値だけを ``***`` に置き換えた新しい dict を返す。
+
+    対象は :data:`_SENSITIVE_HEADER_PREFIXES`（``x-auth-*`` / ``authorization*``
+    / ``cookie*``）で始まるキー。キーの大小文字は無視する
+    （``--update '{"X-Auth-Token": ...}'`` のように大文字キーで保存された
+    トークンも伏字にする）。それ以外のヘッダー（``Content-Type`` 等）は
+    そのまま残す。入力 dict は変更しない。
+    """
+    return {
+        k: (
+            "***"
+            if str(k).lower().startswith(_SENSITIVE_HEADER_PREFIXES)
+            else v
+        )
+        for k, v in headers.items()
+    }
+
+
 def _prepare_info_for_json(info: dict) -> dict:
-    """JSON出力用に PlayerStatus オブジェクトを辞書に変換する"""
-    if "player" in info and hasattr(info["player"], "to_dict"):
-        output = info.copy()
-        output["player"] = info["player"].to_dict()
-        return output
-    return info
+    """JSON出力用にヘッダーを伏字化し、PlayerStatus オブジェクトを辞書に変換する
+
+    表示用の変換であり、元の ``info`` は変更しない（``update_session_with_headers``
+    が保存済みのデータに伏字が波及しないようにする）。
+    """
+    output = info.copy()
+    headers = output.get("headers")
+    if isinstance(headers, dict):
+        output["headers"] = _redact_headers(headers)
+    player = output.get("player")
+    if hasattr(player, "to_dict"):
+        output["player"] = player.to_dict()
+    return output
 
 
 def _positive_int(value: str) -> int:
@@ -380,8 +409,10 @@ def cmd_auth(args):
         print(json.dumps(_prepare_info_for_json(info), indent=2))
     else:
         headers = session_data.get("headers") or {}
-        redacted_headers = {k: ("***" if k.startswith("x-auth-") else v) for k, v in headers.items()}
-        print(json.dumps(redacted_headers, indent=2))
+        # キーの大小文字を無視して秘匿ヘッダー（x-auth-* / authorization /
+        # cookie）を伏字にする（``--update '{"X-Auth-Token": ...}'`` のように
+        # 大文字キーで保存されたトークンも平文表示しない）
+        print(json.dumps(_redact_headers(headers), indent=2))
 
 
 def cmd_auth_server(args):

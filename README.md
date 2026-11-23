@@ -416,6 +416,10 @@ export TURSO_WRITE_REMOTE="true"
 hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
 ```
 
+`auth` の JSON 出力（`--curl` / `--update` / `--info`）と、フラグなしで保存済み
+ヘッダーを表示する経路は、秘匿ヘッダー（`x-auth-*` / `authorization` / `cookie`）を
+伏字（`***`）で表示します（DB に保存される値は実際のトークンのままです）。
+
 **最新ステータスの一覧取得**: `auth --list` は DB のキャッシュ値を表示します。
 ゲームサーバーから最新ステータスを取得して DB を更新してから表示するには `--fresh` を併用します
 （全アカウント並列、`-a` で特定アカウントのみ指定可能）:
@@ -447,6 +451,15 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 | Docker 実行 (`docker compose up -d auth-server`) | 常駐・長時間運用 | コンテナ内では完全リモート構成（`TURSO_READ_REMOTE` / `TURSO_WRITE_REMOTE=true`）になり、ホスト CLI との WAL 競合を構造的に回避 |
 
 どちらも認証キャプチャ機能に違いはありません。常駐させる場合は Docker 実行がおすすめです。
+
+> **リクエスト署名（2026-11 のゲーム更新対応）**: ゲーム API は `X-Request-Id` と
+> リクエストボディに紐づく `X-Auth-Signature` を検証します。HW-Genie は送信直前に
+> 保存済みの `x-auth-token` / `x-auth-session-id` から署名を再計算するため
+> （`src/python/hw_genie/core/signing.py`）、キャプチャした署名値の中身は使いません。
+> ただしキャプチャ経路では `x-auth-signature` が必須ヘッダーとして存在チェックされる
+> ため、取り込み時に欠けているとエラーになります。
+> 以前のように「捕捉したヘッダーをそのまま別リクエストへ流用」すると
+> `Invalid signature` になります。
 
 ### AI エージェント連携
 

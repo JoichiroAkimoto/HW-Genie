@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.13
+// @version      1.0.14
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -146,7 +146,13 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
       FETCH_TIMEOUT_MS,
     );
     if (!result.ok) {
-      log(`Failed to send auth headers to server (${result.reason ?? "unknown"}).`);
+      const reason = result.reason ?? "unknown";
+      // サーバー側の失敗理由（セッション失効など）まで出さないと原因が分からない。
+      log(
+        result.detail
+          ? `Failed to send auth headers to server (${reason}): ${result.detail}`
+          : `Failed to send auth headers to server (${reason}).`,
+      );
     } else {
       log(`Auth headers sent (Player: ${result.playerName ?? "unknown"})`);
     }

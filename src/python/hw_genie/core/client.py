@@ -1,4 +1,5 @@
 import copy
+import logging
 import time
 import random
 from dataclasses import dataclass, asdict
@@ -8,6 +9,14 @@ from typing import Any, ClassVar
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.signing import (
+    ensure_json_content_type,
+    get_header,
+    is_invalid_signature_response,
+    serialize_body,
+    set_header,
+    sign_headers,
+)
 from hw_genie.core.utils import max_energy_for_level
 
 
@@ -305,13 +314,19 @@ class HWClient:
     def __init__(self, headers: dict[str, str], session: requests.Session | None = None):
         self.session = session or requests.Session()
         self.headers = dict(headers)
-        self.request_id = int(headers.get("x-request-id", 100))
+        # 保存済みヘッダーのキーは ``X-Request-Id`` のように大小が混ざり得るため、
+        # 大小文字を無視して読み、数値でない値（空文字・"abc" 等）は既定値で補う。
+        self.request_id = _safe_int(get_header(headers, "x-request-id"), 100)
 
     def get_headers(self) -> dict[str, str]:
-        """現在の request-id を反映したヘッダーを取得"""
+        """現在の request-id を反映したヘッダーを取得
+
+        保存済みヘッダーに ``X-Request-Id`` のような大小文字違いのキーが
+        残っていてもよいよう、署名対象＝送信値になる単一キーに正規化する。
+        """
         self.request_id += 1
         headers = self.headers.copy()
-        headers["x-request-id"] = str(self.request_id)
+        set_header(headers, "x-request-id", str(self.request_id))
         return headers
 
     def call(
@@ -352,17 +367,43 @@ class HWClient:
                                 if isinstance(data_item, dict) and "params" in data_item and "actionTs" in data_item["params"]:
                                     data_item["params"]["actionTs"] = now
 
-                import logging
-                import json
-                logging.debug(f"Payload: {json.dumps(payload)}")
-                response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
+                # ゲームは body + x-request-id に紐づく署名を要求する。
+                # 送信するバイト列と署名対象を一致させるため、compact JSON を
+                # 直接送る（署名はリトライ毎に actionTs 更新後の body で再計算）。
+                try:
+                    body = serialize_body(payload)
+                except (TypeError, ValueError) as e:
+                    # NaN / Infinity など厳密な JSON でない値や、JSON 直列化
+                    # できないオブジェクトはリトライしても直らないため、
+                    # 送信せずに payload 不正として即返す
+                    # （network_or_parse_error に混ぜると原因が読めなくなる）。
+                    return HWResponse(
+                        status=ResponseStatus.UNEXPECTED,
+                        error_name="invalid_payload",
+                        detail=str(e),
+                        request_id=current_request_id,
+                    )
+                # ログにも署名対象と同じバイト列（compact JSON）を出す。
+                logging.debug("Payload: %s", body)
+                ensure_json_content_type(headers)
+                sign_headers(headers, body)
+                response = self.session.post(
+                    self.API_URL, headers=headers, data=body.encode("utf-8"), timeout=self.DEFAULT_TIMEOUT
+                )
 
                 # 0. Auth error check (HTTP 401)
                 if response.status_code == 401:
                     raise HWAuthError(Messages.AUTH_ERROR)
 
                 response.raise_for_status()
-                res_data = response.json()
+                try:
+                    res_data = response.json()
+                except ValueError:
+                    # 署名不正はステータス 200 + text/plain で返ることがある。
+                    # JSON でない応答は従来どおり network_or_parse_error 経路へ流す。
+                    if is_invalid_signature_response(response.text):
+                        raise HWAuthError(Messages.AUTH_ERROR)
+                    raise
 
                 # 1. Global error check
                 if "error" in res_data:
@@ -414,10 +455,15 @@ class HWClient:
             except HWAuthError:
                 raise
             except (Timeout, ConnectionError, HTTPError) as e:
-                # HTTPError の場合、リトライすべきステータスコードか確認
                 if isinstance(e, HTTPError):
                     status_code = e.response.status_code if e.response is not None else None
-                    response_text = e.response.text if e.response is not None else ""
+                    response_text = (
+                        str(e.response.text or "") if e.response is not None else ""
+                    )
+                    # 署名不正は 401 ではなく 4xx/5xx + text/plain で返ることもある。
+                    # リトライしても同じ署名で拒否されるだけなので認証エラーにする。
+                    if is_invalid_signature_response(response_text):
+                        raise HWAuthError(Messages.AUTH_ERROR)
                     # 429 (Too Many Requests) または 5xx (Server Error) はリトライ
                     if status_code != 429 and (status_code is None or not (500 <= status_code < 600)):
                         detail = f"{str(e)} | Response: {response_text[:500]}"
@@ -429,7 +475,7 @@ class HWClient:
                 if attempt > retries:
                     response_text = ""
                     if isinstance(e, HTTPError) and e.response is not None:
-                        response_text = f" | Response: {e.response.text[:500]}"
+                        response_text = f" | Response: {str(e.response.text or '')[:500]}"
                     
                     detail = f"{str(e)}{response_text}"
                     return HWResponse(

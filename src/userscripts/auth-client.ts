@@ -69,6 +69,59 @@ export interface SendResult {
   ok: boolean;
   playerName: string | null;
   reason?: "nonce-failed" | `http-${number}` | "status-error" | "network" | "timeout";
+  /** サーバーが返した失敗理由（FastAPI の detail など）。診断ログ用。 */
+  detail?: string;
+}
+
+const MAX_DETAIL_LENGTH = 300;
+
+/**
+ * 診断ログ用の詳細文字列を最大 300 文字（コードポイント基準）に切り詰める。
+ *
+ * ``String.prototype.slice`` は UTF-16 コードユニットで切るため、絵文字など
+ * サロゲートペアの途中で切ると壊れた文字（孤立サロゲート）になる。
+ * ``Array.from`` でコードポイント配列にしてから切る（JSON / 非 JSON 共通）。
+ */
+function truncateDetail(text: string): string {
+  const codePoints = Array.from(text);
+  return codePoints.length > MAX_DETAIL_LENGTH
+    ? `${codePoints.slice(0, MAX_DETAIL_LENGTH).join("")}…`
+    : text;
+}
+
+/**
+ * エラー本文から表示用の理由を取り出す。
+ *
+ * FastAPI はエラーを ``{"detail": "..."}`` で返すため、JSON なら detail
+ * （無ければ message）の文字列だけを使う。それ以外の JSON 本文
+ * （422 の ``detail`` 配列など）は生の本文を出さず undefined にする
+ * （送信ヘッダー等の秘匿値がコンソールに残るのを避ける）。
+ * 非 JSON 本文・JSON の detail / message はいずれも長すぎる場合は
+ * 300 文字 + ``…`` に切り詰める。
+ */
+function extractErrorDetail(body: string): string | undefined {
+  const text = body.trim();
+  if (!text) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // JSON でない本文はそのまま表示する
+    return truncateDetail(text);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return undefined;
+  }
+  const data = parsed as { detail?: unknown; message?: unknown };
+  if (typeof data.detail === "string" && data.detail.trim()) {
+    return truncateDetail(data.detail.trim());
+  }
+  if (typeof data.message === "string" && data.message.trim()) {
+    return truncateDetail(data.message.trim());
+  }
+  return undefined;
 }
 
 /**
@@ -102,15 +155,28 @@ export async function sendHeadersToServer(
     );
     if (!res.ok) {
       // 非 2xx: 本文が JSON とは限らないため、先に ok を確認する
-      await readBodyWithTimeout(res, timeoutMs);
-      return { ok: false, playerName: null, reason: `http-${res.status}` };
+      const errorBody = await readBodyWithTimeout(res, timeoutMs);
+      return {
+        ok: false,
+        playerName: null,
+        reason: `http-${res.status}`,
+        detail: extractErrorDetail(errorBody),
+      };
     }
     const body = await readBodyWithTimeout(res, timeoutMs);
     const data = JSON.parse(body);
     if (data.status === "success") {
       return { ok: true, playerName: data.player?.name ?? null };
     }
-    return { ok: false, playerName: null, reason: "status-error" };
+    return {
+      ok: false,
+      playerName: null,
+      reason: "status-error",
+      detail:
+        typeof data.message === "string" && data.message.trim()
+          ? truncateDetail(data.message.trim())
+          : undefined,
+    };
   } catch (e) {
     // 環境（Bun / Node / Tampermonkey サンドボックス）によっては fetch の
     // 中断エラーが DOMException の直接インスタンスでないことがあるため、
