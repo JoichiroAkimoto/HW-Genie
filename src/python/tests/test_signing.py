@@ -11,6 +11,7 @@ from requests.exceptions import HTTPError
 from hw_genie.core.signing import (
     compute_signature,
     ensure_json_content_type,
+    is_invalid_signature_response,
     serialize_body,
     set_header,
     sign_headers,
@@ -89,6 +90,26 @@ def test_header_lookup_uses_last_match_like_requests():
     headers["X-Request-Id"] = "9"
     assert compute_signature(headers, BODY) == compute_signature(
         _headers(**{"x-request-id": "9"}), BODY
+    )
+
+
+def test_compute_signature_tolerates_non_string_header_values():
+    """``--update '{"x-auth-token": 123}'`` のような非文字列保存でも署名できる。
+
+    以前は ``":".join`` に非文字列が混ざって ``TypeError`` になっていた。
+    """
+    headers = {
+        "x-auth-token": 123,
+        "x-auth-session-id": "s",
+        "x-request-id": 1,
+    }
+    signature = compute_signature(headers, BODY)
+    assert isinstance(signature, str)
+    assert len(signature) == 32
+    # 数値は str 化して署名対象にする（文字列で保存した場合と同じ結果）
+    assert signature == compute_signature(
+        {"x-auth-token": "123", "x-auth-session-id": "s", "x-request-id": "1"},
+        BODY,
     )
 
 
@@ -302,6 +323,45 @@ def test_hwclient_reports_non_json_payload_as_invalid_payload():
     assert res.error_name == "invalid_payload"
     # 送信前に弾くのでリトライもしない。
     session.post.assert_not_called()
+
+
+def test_hwclient_reports_unserializable_object_as_invalid_payload():
+    """JSON 直列化できないオブジェクト（TypeError）も invalid_payload として即返す。"""
+    from unittest.mock import MagicMock
+
+    from hw_genie.core.client import HWClient, ResponseStatus
+
+    session = MagicMock()
+    client = HWClient(
+        {"x-auth-token": TOKEN, "x-auth-session-id": SESSION_ID, "x-request-id": "0"},
+        session=session,
+    )
+
+    res = client.call(
+        {"calls": [{"name": "test", "args": {"value": object()}, "ident": "x"}]}
+    )
+
+    assert res.status == ResponseStatus.UNEXPECTED
+    assert res.error_name == "invalid_payload"
+    # 送信前に弾くのでリトライもしない。
+    session.post.assert_not_called()
+
+
+def test_is_invalid_signature_response_matches_only_the_exact_marker():
+    """"Invalid signature" は大小文字区別の部分一致で判定する。"""
+    assert is_invalid_signature_response("Invalid signature")
+    assert is_invalid_signature_response('{"error":{"name":"Invalid signature"}}')
+    assert is_invalid_signature_response(" prefix Invalid signature suffix ")
+
+
+def test_is_invalid_signature_response_is_false_for_non_matching_values():
+    """None / 非 str / 大小違い / 別文言はすべて False（例外を投げない）。"""
+    assert is_invalid_signature_response(None) is False
+    assert is_invalid_signature_response({"message": "Invalid signature"}) is False
+    assert is_invalid_signature_response(b"Invalid signature") is False
+    assert is_invalid_signature_response(123) is False
+    assert is_invalid_signature_response("invalid signature") is False
+    assert is_invalid_signature_response("") is False
 
 
 def test_hwclient_classifies_http_403_invalid_signature_as_auth_error():

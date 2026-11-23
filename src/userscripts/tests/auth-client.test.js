@@ -62,6 +62,19 @@ test("非 2xx の JSON detail を SendResult.detail に載せる（500 の原因
   assert.strictEqual(result.detail, "Session expired or invalid signature.");
 });
 
+test("非 2xx の JSON detail も 300 文字 + … に切り詰める（非 JSON 本文と対称）", async () => {
+  const longDetail = "x".repeat(400);
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(500, JSON.stringify({ detail: longDetail })),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "http-500");
+  assert.strictEqual(result.detail.length, 301);
+  assert.ok(result.detail.endsWith("…"));
+});
+
 test("422 + JSON の detail 配列は生の本文を detail に出さない（秘匿値の露出回避）", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
@@ -94,6 +107,18 @@ test("200 + status:success で true を返し、player 名も返す", async () =
   assert.strictEqual(result.playerName, "Alice");
 });
 
+test("非 2xx の JSON message も SendResult.detail に載せる（detail が無い場合の代替）", async () => {
+  // 既存の status:error + message ケースとは別経路（非 2xx の本文解析）。
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(500, JSON.stringify({ message: "Server exploded" })),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "http-500");
+  assert.strictEqual(result.detail, "Server exploded");
+});
+
 test("200 + status:error で false を返し message を detail に載せる", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
@@ -102,6 +127,46 @@ test("200 + status:error で false を返し message を detail に載せる", a
   const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.detail, "Invalid signature");
+});
+
+test("長い detail はコードポイント基準で切り詰め、サロゲートペアを壊さない", async () => {
+  // 絵文字（サロゲートペア）301 個 → 先頭 300 個 + …（孤立サロゲートを作らない）
+  const longDetail = "🙂".repeat(301);
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(500, JSON.stringify({ detail: longDetail })),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.detail, "🙂".repeat(300) + "…");
+  // 孤立サロゲート（壊れた文字）を含まない
+  const loneSurrogate =
+    /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|(?:(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/;
+  assert.ok(!loneSurrogate.test(result.detail));
+  assert.strictEqual(Array.from(result.detail).length, 301);
+});
+
+test("300 コードポイントちょうどの detail は切り詰めない", async () => {
+  const exact = "🙂".repeat(300);
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(500, JSON.stringify({ detail: exact })),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.detail, exact);
+});
+
+test("200 + status:error の長い message も 300 文字 + … に切り詰める（非 2xx と対称）", async () => {
+  const longMessage = "x".repeat(400);
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(200, JSON.stringify({ status: "error", message: longMessage })),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "status-error");
+  assert.strictEqual(result.detail, "x".repeat(300) + "…");
 });
 
 test("200 + 不正 JSON（json() が throw）で例外なく false を返す", async () => {

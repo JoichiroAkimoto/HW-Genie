@@ -58,7 +58,7 @@ Unique constraint: `(account_id, config_key)`
 
 | config_key | config_value の型 | 説明 |
 |------------|-------------------|------|
-| `"headers"` | `dict[str, str]` | 認証ヘッダー（x-auth-*） |
+| `"headers"` | `dict[str, str]` | リクエストヘッダー。`x-auth-*` に限らず `Content-Type` 等も保存され得る（キーの大小文字は保持）。`x-auth-signature` は `SessionManager.load` が無視し、`save` 時に除去する（既存行は次回 save まで物理的に残り得る） |
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
 | `"arena_team_presets"` | `dict[str, dict[str, dict]]` | Arena チームプリセット。`{"arena": {"atk1": {"heroes": [...], "pet": 6008, "favor": {"13": 6003}, "banners": [2]}}}` の形（`pet` / `banners` は任意、Grand Arena 用の `grand` キーは将来拡張） |
@@ -124,6 +124,8 @@ class HeadersConfig(TypedDict, total=False):
     x_auth_token: str
     x_auth_user_id: str
     x_request_id: str
+    content_type: str  # Content-Type 等、x-auth-* 以外のヘッダーも保存され得る
+    # x-auth-signature は保存しない（送信のたびに再計算する使い捨ての値）
 
 
 class PlayerInfo(TypedDict, total=False):
@@ -158,12 +160,14 @@ SessionManager.load(alias)
     → 各 config_key を data dict にマージ（`player_*` はレガシー行として player_info へ再構成）
     → Account カラムを player_info にオーバーレイ
     → AccountData を返す
+  → `x-auth-signature` を除外（読み取り境界）
 ```
 
 ### Write
 
 ```
 SessionManager.save(alias, data)
+  → `x-auth-signature` を除外（保存境界）
   → SessionRepository.update_config(alias, data)
     → Account: 存在確認 / 作成 → カラム更新
     → AccountConfig: 各 key を upsert

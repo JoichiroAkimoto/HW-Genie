@@ -416,6 +416,10 @@ export TURSO_WRITE_REMOTE="true"
 hw-genie auth --curl 'PASTE_CURL_COMMAND_HERE'
 ```
 
+`auth` の JSON 出力（`--curl` / `--update` / `--info`）と、フラグなしで保存済み
+ヘッダーを表示する経路は、秘匿ヘッダー（`x-auth-*` / `authorization` / `cookie`）を
+伏字（`***`）で表示します（DB に保存される値は実際のトークンのままです）。
+
 **最新ステータスの一覧取得**: `auth --list` は DB のキャッシュ値を表示します。
 ゲームサーバーから最新ステータスを取得して DB を更新してから表示するには `--fresh` を併用します
 （全アカウント並列、`-a` で特定アカウントのみ指定可能）:

@@ -18,11 +18,20 @@ from .database import (
 
 
 class HeadersConfig(TypedDict, total=False):
-    """``config_key = "headers"`` — authentication headers stored per account."""
+    """``config_key = "headers"`` — request headers stored per account.
+
+    The stored dict is NOT limited to ``x-auth-*`` keys: ``Content-Type``
+    (added by :func:`hw_genie.core.signing.ensure_json_content_type`) and
+    other request headers may be persisted alongside them, and keys keep
+    their original casing. ``x-auth-signature`` is deliberately never
+    stored (it is recomputed per request); legacy values are dropped at
+    both the read and write boundaries by :class:`SessionManager`.
+    """
     x_auth_session_id: str
     x_auth_token: str
     x_auth_user_id: str
     x_request_id: str
+    content_type: str
 
 
 class PlayerInfo(TypedDict, total=False):

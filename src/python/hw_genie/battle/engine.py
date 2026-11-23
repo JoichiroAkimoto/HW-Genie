@@ -508,6 +508,25 @@ PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
                     }"""
 
 
+def _browser_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
+    """Keep only the auth-related headers for ``browser.new_context``.
+
+    Playwright's ``extra_http_headers`` applies to **every** request the page
+    makes (HTML/JS/images included). Stored session headers may grow beyond
+    auth (``Content-Type``, ...), and sending those on plain GETs can confuse
+    the game/CDN, so filter down to the headers the game API actually uses.
+    """
+    if not headers:
+        return None
+    keep = {"x-request-id"}
+    filtered = {
+        k: v
+        for k, v in headers.items()
+        if str(k).lower() in keep or str(k).lower().startswith("x-auth-")
+    }
+    return filtered or None
+
+
 class PlaywrightBattleEngine:
     """Headless browser battle engine via Playwright.
 
@@ -547,7 +566,9 @@ class PlaywrightBattleEngine:
                 browser = p.chromium.launch(headless=self.headless)
                 try:
                     # Isolated context per battle (equiv. to Firefox container)
-                    context = browser.new_context(extra_http_headers=self.headers or None)
+                    context = browser.new_context(
+                        extra_http_headers=_browser_headers(self.headers)
+                    )
                     page = context.new_page()
                     page.goto(self.game_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
                     # Wait for Haxe Game to appear (poll, cross-origin safe via evaluate)

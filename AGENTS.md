@@ -48,7 +48,7 @@ Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) �
 *   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
 *   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応）、`seers-game` で Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応）、`gift-up` でエレメントギフト一括 MAX 化のみ、`gift-reset` で低 power ヒーローのギフト drop（コイン回収）のみ（`--limit` は両モード対応で既定は gift-up=コインが続く限り／gift-reset=閾値以下の全対象、`--max-power` は `gift-reset` のみ対応で `gift-up` に指定すると exit 2、非対話実行なので **`--yes` 必須**、無ければ exit 2）、`--dry-run` でプラン表示のみ（quests / consumable / seers-game / gift-up / gift-reset のみ。toe を含む他モードではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable／gift（`gift-up` / `gift-reset`）で失敗アカウントがあると exit 1（gift は**実行中の失敗を失敗計上**：3 分類の打ち切り契約は `gift-up` のみで、コイン枯れ（`NotEnough`）＝途中打ち切り／既知のヒーロー個別業務エラー（`NotAvailable`）＝個別体失敗で継続／未知エラー名・transport 失敗＝打ち切り。`gift-reset` は drop が資源を消費しないため非認証の失敗（`NotEnough` を含む）でもその体を失敗計上して続行し、失敗が残れば exit 1（認証切れのみ即中断））。計画時点で対象 0 体／コイン不足のまま何もしなかった場合は exit 0）。詳細は README.md の「Docker での実行」セクションを参照。
 *   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
-*   **認証状態確認**: `uv run hw-genie auth --info`
+*   **認証状態確認**: `uv run hw-genie auth --info`（JSON 出力の `x-auth-*` ヘッダーは伏字 `***` 表示）
 *   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）
 *   **同期**: `uv run hw-genie sync`（ローカル Turso レプリカをクラウドと明示的に同期）
 *   **実行ログ確認**: `uv run hw-genie log ls` / `log show <id>`（`multi` 実行の結果サマリーと出力全文が DB の `run_logs` に保存される。Turso 同期経由で別ホストからも閲覧可。保持日数は `HW_LOG_KEEP_DAYS`、デフォルト 7 日）
@@ -68,7 +68,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。確認方法は `.agents/skills/db-inspect/SKILL.md`、スキーマは **[docs/db/schema.md](docs/db/schema.md)** を参照。
     *   **worktree / 新規クローンの準備**: `.env` は `.gitignore` 済みのため checkout に含まれません。worktree で DB 操作する前に main worktree の `.env` へのシンボリックリンクを貼ってください（例: `ln -s /path/to/main-worktree/.env .env`）。解除は `unlink .env`（`rm` は main の `.env` を誤削除する恐れがあるため使用しないこと）。
 *   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
-*   **リクエスト署名**: ゲーム API は `X-Request-Id` とリクエストボディに紐づく `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（キャプチャした署名値の再利用は `Invalid signature` になります）。
+*   **リクエスト署名**: ゲーム API は `X-Request-Id` / `X-Auth-Token` / `X-Auth-Session-Id` / リクエストボディ（compact JSON）/ `X-Env*` から算出した `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（署名式は同ファイル参照。キャプチャした署名値の再利用や `json=` での送信は `Invalid signature` になります）。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
 

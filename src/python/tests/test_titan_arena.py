@@ -256,6 +256,41 @@ def test_playwright_battle_js_resolves_signal_with_drift_fallback():
     assert "signal not found" in PLAYWRIGHT_BATTLE_JS
 
 
+def test_playwright_browser_headers_keep_only_auth_headers():
+    """``new_context(extra_http_headers=...)`` must not leak non-auth headers.
+
+    Playwright applies those headers to every page request (HTML/JS/images),
+    so a stored ``Content-Type`` must be dropped before handing them over.
+    """
+    from hw_genie.battle.engine import _browser_headers
+
+    headers = {
+        "X-Request-Id": "3",
+        "x-auth-token": "t",
+        "X-Auth-Session-Id": "s",
+        "Content-Type": "application/json; charset=UTF-8",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+    }
+
+    assert _browser_headers(headers) == {
+        "X-Request-Id": "3",
+        "x-auth-token": "t",
+        "X-Auth-Session-Id": "s",
+    }
+    # 元の dict は変更しない
+    assert "Content-Type" in headers
+
+
+def test_playwright_browser_headers_none_when_empty():
+    """空 dict / None / 対象ヘッダーなしは ``None``（Playwright の既定動作）。"""
+    from hw_genie.battle.engine import _browser_headers
+
+    assert _browser_headers(None) is None
+    assert _browser_headers({}) is None
+    assert _browser_headers({"Content-Type": "application/json"}) is None
+
+
 def _fake_bridge_fetch(monkeypatch, *, done_after=2, timeout_jobs=(), now=None):
     """Install a fake urlopen that records POST/poll order for the job queue."""
     import json as _json

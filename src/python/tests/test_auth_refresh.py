@@ -259,6 +259,164 @@ def test_cmd_auth_curl_with_explicit_alias(capsys):
     assert "default" not in accounts
 
 
+def test_cmd_auth_display_redacts_auth_headers_case_insensitively(capsys):
+    """``auth`` の情報表示はキーの大小文字を無視して x-auth-* を伏字にする。
+
+    ``--update '{"X-Auth-Token": ...}'`` のように大文字キーで保存された
+    トークンも平文表示しない（既存の小文字キーの挙動は維持）。
+    """
+    SessionManager.save(
+        "Alice",
+        {
+            "player": {"id": "redact_id", "name": "Alice"},
+            "headers": {
+                "X-Auth-Token": "secret-uppercase-token",
+                "x-auth-session-id": "secret-session",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+        },
+    )
+    args = SimpleNamespace(
+        account="Alice", curl=None, update=None, memo=None, info=False,
+        list=False, list_names=False, fresh=False,
+    )
+    cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert '"X-Auth-Token": "***"' in out
+    assert '"x-auth-session-id": "***"' in out
+    # 秘匿値は平文で出さない
+    assert "secret-uppercase-token" not in out
+    assert "secret-session" not in out
+    # x-auth-* 以外のヘッダーは従来どおりそのまま表示する
+    assert '"Content-Type": "application/json; charset=UTF-8"' in out
+
+
+def test_prepare_info_for_json_redacts_auth_headers_without_mutating_input():
+    """_prepare_info_for_json は x-auth-* のみ伏字にし、入力 dict を変更しない。"""
+    from hw_genie.main import _prepare_info_for_json
+
+    original_headers = {
+        "x-auth-token": "SECRET",
+        "X-Auth-Session-Id": "S",
+        "Content-Type": "application/json",
+    }
+    info = {"headers": original_headers, "status": "success"}
+
+    output = _prepare_info_for_json(info)
+
+    assert output["headers"] == {
+        "x-auth-token": "***",
+        "X-Auth-Session-Id": "***",
+        "Content-Type": "application/json",
+    }
+    # 入力 dict（と入れ子の headers）は変更されない
+    assert original_headers == {
+        "x-auth-token": "SECRET",
+        "X-Auth-Session-Id": "S",
+        "Content-Type": "application/json",
+    }
+    assert info["headers"] is original_headers
+    assert output is not info
+
+
+def test_prepare_info_for_json_converts_player_and_keeps_other_keys():
+    """player の to_dict 変換は従来どおり行われる（ヘッダー伏字と併用）。"""
+    from hw_genie.main import _prepare_info_for_json
+
+    info = _success_info("Alice")
+    output = _prepare_info_for_json(info)
+
+    assert output["player"]["name"] == "Alice"
+    assert output["headers"]["x-auth-token"] == "***"
+    assert info["headers"]["x-auth-token"] == "your-token"
+
+
+def test_cmd_auth_info_redacts_headers_in_stdout(capsys):
+    """--info 経路の JSON 出力にもトークンが平文で出ない。"""
+    _save_accounts()
+    info = _success_info("Alice")
+    info["headers"] = {"x-auth-token": "SECRET", "Content-Type": "application/json"}
+    args = SimpleNamespace(
+        account="Alice", curl=None, update=None, memo=None, info=True,
+        list=False, list_names=False, fresh=False,
+    )
+    with patch(
+        "hw_genie.main.load_session",
+        return_value={"headers": {"x-auth-token": "SECRET"}},
+    ), patch("hw_genie.main.update_session_with_headers", return_value=info):
+        cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "SECRET" not in out
+    assert '"x-auth-token": "***"' in out
+    assert '"Content-Type": "application/json"' in out
+    # 表示用の伏字が保存用データ（info）に波及しない
+    assert info["headers"]["x-auth-token"] == "SECRET"
+
+
+def test_cmd_auth_curl_redacts_headers_in_stdout(capsys):
+    """--curl 経路の JSON 出力にもトークンが平文で出ない。"""
+    info = _success_info("NewPlayer", "np2")
+    info["headers"] = {"x-auth-token": "SECRET"}
+    args = SimpleNamespace(
+        account=None, curl='curl -H "x-auth-token: t" https://example.com',
+        update=None, memo=None, info=False, list=False, list_names=False, fresh=False,
+    )
+    with patch(
+        "hw_genie.main.extract_headers_from_curl", return_value={"x-auth-token": "t"}
+    ), patch("hw_genie.main.update_session_with_headers", return_value=info):
+        cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "SECRET" not in out
+    assert '"x-auth-token": "***"' in out
+
+
+def test_cmd_auth_update_redacts_headers_in_stdout(capsys):
+    """--update 経路の JSON 出力にもトークンが平文で出ない。"""
+    info = _success_info("Alice")
+    info["headers"] = {"x-auth-token": "SECRET", "Content-Type": "application/json"}
+    args = SimpleNamespace(
+        account="Alice", curl=None,
+        update='{"x-auth-token": "SECRET"}', memo=None, info=False,
+        list=False, list_names=False, fresh=False,
+    )
+    with patch("hw_genie.main.update_session_with_headers", return_value=info):
+        cmd_auth(args)
+
+    out = capsys.readouterr().out
+    assert "SECRET" not in out
+    assert '"x-auth-token": "***"' in out
+    assert '"Content-Type": "application/json"' in out
+    # 表示用の伏字が保存用データ（info）に波及しない
+    assert info["headers"]["x-auth-token"] == "SECRET"
+
+
+def test_redact_headers_covers_authorization_and_cookie():
+    """authorization / cookie も伏字にし、それ以外は保持し、入力を変更しない。"""
+    from hw_genie.main import _redact_headers
+
+    headers = {
+        "Authorization": "Bearer SECRET",
+        "Cookie": "session=SECRET",
+        "X-Auth-Token": "SECRET",
+        "Content-Type": "application/json",
+    }
+
+    redacted = _redact_headers(headers)
+
+    assert redacted == {
+        "Authorization": "***",
+        "Cookie": "***",
+        "X-Auth-Token": "***",
+        "Content-Type": "application/json",
+    }
+    assert headers["Authorization"] == "Bearer SECRET"
+    assert headers["Cookie"] == "session=SECRET"
+    assert headers["X-Auth-Token"] == "SECRET"
+
+
 def test_cmd_auth_fresh_requires_list(capsys):
     """--fresh 単体（--list なし）はエラーメッセージとともに終了する。"""
     args = SimpleNamespace(fresh=True, list=False, list_names=False, account=None)

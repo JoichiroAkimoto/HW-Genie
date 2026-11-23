@@ -14,6 +14,7 @@ from hw_genie.core.signing import (
     SIGNATURE_HEADER,
     ensure_json_content_type,
     get_header,
+    is_invalid_signature_response,
     serialize_body,
     set_header,
     sign_headers,
@@ -76,7 +77,7 @@ AUTH_EXPIRED_MESSAGE = "Session expired or invalid signature. Please update your
 def _unexpected_response_message(response) -> str:
     """JSON でない API レスポンスからユーザー向けエラーメッセージを組み立てる。"""
     text = (response.text or "").strip()
-    if "Invalid signature" in text:
+    if is_invalid_signature_response(text):
         return AUTH_EXPIRED_MESSAGE
     if text:
         return f"Unexpected response from API: {text[:200]}"
@@ -119,7 +120,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
             # 403 などで本文が "Invalid signature" の場合はセッション失効として
             # 報告する（HTTPError の str() だけでは原因が伝わらない）。
             error_text = getattr(exc.response, "text", "") or ""
-            if isinstance(error_text, str) and "Invalid signature" in error_text:
+            if is_invalid_signature_response(error_text):
                 return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
             raise
         try:
@@ -152,6 +153,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 next_day_ts=int(user_info.get("nextDayTs", 0) or 0),
             )
             # 署名はリクエスト毎に再計算する使い捨ての値なので保存しない。
+            # Content-Type は正しい値なので残す（除外するのは署名のみ）。
             stored_headers = {
                 key: value
                 for key, value in headers.items()

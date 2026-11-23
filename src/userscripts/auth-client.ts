@@ -73,6 +73,22 @@ export interface SendResult {
   detail?: string;
 }
 
+const MAX_DETAIL_LENGTH = 300;
+
+/**
+ * 診断ログ用の詳細文字列を最大 300 文字（コードポイント基準）に切り詰める。
+ *
+ * ``String.prototype.slice`` は UTF-16 コードユニットで切るため、絵文字など
+ * サロゲートペアの途中で切ると壊れた文字（孤立サロゲート）になる。
+ * ``Array.from`` でコードポイント配列にしてから切る（JSON / 非 JSON 共通）。
+ */
+function truncateDetail(text: string): string {
+  const codePoints = Array.from(text);
+  return codePoints.length > MAX_DETAIL_LENGTH
+    ? `${codePoints.slice(0, MAX_DETAIL_LENGTH).join("")}…`
+    : text;
+}
+
 /**
  * エラー本文から表示用の理由を取り出す。
  *
@@ -80,7 +96,8 @@ export interface SendResult {
  * （無ければ message）の文字列だけを使う。それ以外の JSON 本文
  * （422 の ``detail`` 配列など）は生の本文を出さず undefined にする
  * （送信ヘッダー等の秘匿値がコンソールに残るのを避ける）。
- * 非 JSON 本文はそのまま使う（長すぎる場合は切り詰める）。
+ * 非 JSON 本文・JSON の detail / message はいずれも長すぎる場合は
+ * 300 文字 + ``…`` に切り詰める。
  */
 function extractErrorDetail(body: string): string | undefined {
   const text = body.trim();
@@ -92,17 +109,17 @@ function extractErrorDetail(body: string): string | undefined {
     parsed = JSON.parse(text);
   } catch {
     // JSON でない本文はそのまま表示する
-    return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+    return truncateDetail(text);
   }
   if (typeof parsed !== "object" || parsed === null) {
     return undefined;
   }
   const data = parsed as { detail?: unknown; message?: unknown };
   if (typeof data.detail === "string" && data.detail.trim()) {
-    return data.detail.trim();
+    return truncateDetail(data.detail.trim());
   }
   if (typeof data.message === "string" && data.message.trim()) {
-    return data.message.trim();
+    return truncateDetail(data.message.trim());
   }
   return undefined;
 }
@@ -157,7 +174,7 @@ export async function sendHeadersToServer(
       reason: "status-error",
       detail:
         typeof data.message === "string" && data.message.trim()
-          ? data.message.trim()
+          ? truncateDetail(data.message.trim())
           : undefined,
     };
   } catch (e) {

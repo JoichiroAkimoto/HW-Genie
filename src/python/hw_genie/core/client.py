@@ -12,6 +12,7 @@ from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.signing import (
     ensure_json_content_type,
     get_header,
+    is_invalid_signature_response,
     serialize_body,
     set_header,
     sign_headers,
@@ -371,9 +372,10 @@ class HWClient:
                 # 直接送る（署名はリトライ毎に actionTs 更新後の body で再計算）。
                 try:
                     body = serialize_body(payload)
-                except ValueError as e:
-                    # NaN / Infinity など厳密な JSON でない値はリトライしても
-                    # 直らないため、送信せずに payload 不正として即返す
+                except (TypeError, ValueError) as e:
+                    # NaN / Infinity など厳密な JSON でない値や、JSON 直列化
+                    # できないオブジェクトはリトライしても直らないため、
+                    # 送信せずに payload 不正として即返す
                     # （network_or_parse_error に混ぜると原因が読めなくなる）。
                     return HWResponse(
                         status=ResponseStatus.UNEXPECTED,
@@ -399,7 +401,7 @@ class HWClient:
                 except ValueError:
                     # 署名不正はステータス 200 + text/plain で返ることがある。
                     # JSON でない応答は従来どおり network_or_parse_error 経路へ流す。
-                    if "Invalid signature" in (response.text or ""):
+                    if is_invalid_signature_response(response.text):
                         raise HWAuthError(Messages.AUTH_ERROR)
                     raise
 
@@ -460,7 +462,7 @@ class HWClient:
                     )
                     # 署名不正は 401 ではなく 4xx/5xx + text/plain で返ることもある。
                     # リトライしても同じ署名で拒否されるだけなので認証エラーにする。
-                    if "Invalid signature" in response_text:
+                    if is_invalid_signature_response(response_text):
                         raise HWAuthError(Messages.AUTH_ERROR)
                     # 429 (Too Many Requests) または 5xx (Server Error) はリトライ
                     if status_code != 429 and (status_code is None or not (500 <= status_code < 600)):

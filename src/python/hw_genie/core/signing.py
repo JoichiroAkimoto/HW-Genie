@@ -36,6 +36,20 @@ SIGNATURE_HEADER = "x-auth-signature"
 #: ゲーム本体が送っている Content-Type。
 JSON_CONTENT_TYPE = "application/json; charset=UTF-8"
 
+#: 署名が受理されなかったときにサーバーが返す本文の目印。
+#: ステータスコードは 401 / 403 / 200 + text/plain など一定しないため、
+#: 本文の部分一致（大小文字区別）で判定する。
+INVALID_SIGNATURE_MARKER = "Invalid signature"
+
+
+def is_invalid_signature_response(text: object) -> bool:
+    """レスポンス本文が署名不正を示すか判定する。
+
+    ``None`` や非 ``str`` でも例外を投げず ``False`` を返す。判定は
+    サーバーの返す文言に合わせた **大小文字区別の部分一致**。
+    """
+    return isinstance(text, str) and INVALID_SIGNATURE_MARKER in text
+
 
 def serialize_body(payload: Mapping[str, Any]) -> str:
     """クライアントと同じ形式（compact・UTF-8 そのまま）で body を直列化する。
@@ -83,12 +97,16 @@ def get_header(headers: Mapping[str, str], name: str) -> str:
     requests のマージ意味論（後勝ち＝最後に一致した値）に合わせて最後の
     一致を返す。保存済みヘッダーの `X-Request-Id` / `x-request-id` のような
     大小違いを呼び出し側で吸収するために公開している。
+
+    値は常に ``str`` で返す。``--update '{"x-auth-token": 123}'`` のように
+    非文字列が保存されていても ``":".join`` が ``TypeError`` にならないよう、
+    ``None`` は空文字、それ以外は ``str(value)`` に変換する。
     """
     target = name.lower()
     found = ""
     for key, value in headers.items():
         if key.lower() == target:
-            found = value or ""
+            found = "" if value is None else str(value)
     return found
 
 
