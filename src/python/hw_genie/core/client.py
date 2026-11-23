@@ -8,7 +8,12 @@ from typing import Any, ClassVar
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
-from hw_genie.core.signing import serialize_body, sign_headers
+from hw_genie.core.signing import (
+    ensure_json_content_type,
+    serialize_body,
+    set_header,
+    sign_headers,
+)
 from hw_genie.core.utils import max_energy_for_level
 
 
@@ -309,10 +314,14 @@ class HWClient:
         self.request_id = int(headers.get("x-request-id", 100))
 
     def get_headers(self) -> dict[str, str]:
-        """現在の request-id を反映したヘッダーを取得"""
+        """現在の request-id を反映したヘッダーを取得
+
+        保存済みヘッダーに ``X-Request-Id`` のような大小文字違いのキーが
+        残っていてもよいよう、署名対象＝送信値になる単一キーに正規化する。
+        """
         self.request_id += 1
         headers = self.headers.copy()
-        headers["x-request-id"] = str(self.request_id)
+        set_header(headers, "x-request-id", str(self.request_id))
         return headers
 
     def call(
@@ -360,8 +369,7 @@ class HWClient:
                 # 送信するバイト列と署名対象を一致させるため、compact JSON を
                 # 直接送る（署名はリトライ毎に actionTs 更新後の body で再計算）。
                 body = serialize_body(payload)
-                if not any(key.lower() == "content-type" for key in headers):
-                    headers["Content-Type"] = "application/json; charset=UTF-8"
+                ensure_json_content_type(headers)
                 sign_headers(headers, body)
                 response = self.session.post(
                     self.API_URL, headers=headers, data=body.encode("utf-8"), timeout=self.DEFAULT_TIMEOUT
@@ -372,7 +380,14 @@ class HWClient:
                     raise HWAuthError(Messages.AUTH_ERROR)
 
                 response.raise_for_status()
-                res_data = response.json()
+                try:
+                    res_data = response.json()
+                except ValueError:
+                    # 署名不正はステータス 200 + text/plain で返ることがある。
+                    # JSON でない応答は従来どおり network_or_parse_error 経路へ流す。
+                    if "Invalid signature" in (response.text or ""):
+                        raise HWAuthError(Messages.AUTH_ERROR)
+                    raise
 
                 # 1. Global error check
                 if "error" in res_data:

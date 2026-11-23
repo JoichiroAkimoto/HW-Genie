@@ -451,7 +451,9 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 > **リクエスト署名（2026-11 のゲーム更新対応）**: ゲーム API は `X-Request-Id` と
 > リクエストボディに紐づく `X-Auth-Signature` を検証します。HW-Genie は送信直前に
 > 保存済みの `x-auth-token` / `x-auth-session-id` から署名を再計算するため
-> （`src/python/hw_genie/core/signing.py`）、キャプチャした署名値そのものは使いません。
+> （`src/python/hw_genie/core/signing.py`）、キャプチャした署名値そのものは使いません
+> （署名値の中身は再計算するため使わないが、キャプチャ経路では `x-auth-signature` は
+> 必須ヘッダーとして存在チェックされます）。
 > 以前のように「捕捉したヘッダーをそのまま別リクエストへ流用」すると
 > `Invalid signature` になります。
 

@@ -5,7 +5,13 @@ from typing import TypedDict, Optional
 import requests
 from hw_genie.core.client import AUTH_ERROR_NAMES, PlayerStatus, load_session_headers
 from hw_genie.core.session_manager import SessionManager
-from hw_genie.core.signing import serialize_body, sign_headers
+from hw_genie.core.signing import (
+    SIGNATURE_HEADER,
+    ensure_json_content_type,
+    serialize_body,
+    set_header,
+    sign_headers,
+)
 
 
 class SessionData(TypedDict, total=False):
@@ -77,13 +83,18 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
     失敗時は ``{"status": "error", "message": ...}`` を返す。セッション失効
     （HTTP 401 / "Invalid signature" / ``InvalidSession`` エラー）は原因が
     特定できるメッセージで報告し、JSON でない応答は本文の一部を表示する。
+
+    引数の ``headers`` は変更しない（request-id 更新・Content-Type 付与・署名は
+    内部コピーに対して行う）。成功時の戻り値 ``headers`` には ``x-auth-signature``
+    を含めない（署名は送信のたびに再計算するため保存する意味がない）。
     """
+    # 呼び出し元（保存済みヘッダーを持つ dict）を書き換えないようコピーする。
+    headers = dict(headers)
     url = "https://heroes-wb.nextersglobal.com/api/"
-    headers["x-request-id"] = str(int(headers.get("x-request-id", 100)) + 1)
+    set_header(headers, "x-request-id", str(int(headers.get("x-request-id", 100)) + 1))
     payload = {"calls": [{"name": "userGetInfo", "args": {}, "ident": "body"}, {"name": "arenaGetAll", "args": {}, "ident": "arena"}]}
     body = serialize_body(payload)
-    if not any(key.lower() == "content-type" for key in headers):
-        headers["Content-Type"] = "application/json; charset=UTF-8"
+    ensure_json_content_type(headers)
     # 署名は body と x-request-id に紐づくため、送信直前に毎回計算する。
     sign_headers(headers, body)
     try:
@@ -120,7 +131,13 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 timezone=int(user_info.get("timeZone", 0) or 0),
                 next_day_ts=int(user_info.get("nextDayTs", 0) or 0),
             )
-            return {"headers": headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
+            # 署名はリクエスト毎に再計算する使い捨ての値なので保存しない。
+            stored_headers = {
+                key: value
+                for key, value in headers.items()
+                if key.lower() != SIGNATURE_HEADER
+            }
+            return {"headers": stored_headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
         return {"status": "error", "message": "API error"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
