@@ -39,7 +39,7 @@ bash ./build.sh \
 
 ### アイコン（@icon）
 
-`index.ts` の `@icon` は GitHub Pages 上の 512px アイコンを指す。Tampermonkey /
+`index.ts` の `@icon` は GitHub Pages 上の 512px アイコン（**背景透過**版）を指す。Tampermonkey /
 Violentmonkey がインストール・更新時に取得し、一覧や詳細画面に表示する。DEV版も同じアイコンを使う（DEV版は `@name` と `-dev` サフィックスで区別される）。
 
 ```
@@ -48,19 +48,20 @@ https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
 
 絶対 URL を**ドキュメント本文**に明記するのは本セクションだけにする（コード内の `@icon` は仕様上 絶対 URL が必須。それ他のドキュメントは `docs/assets/` への相対参照に留める）。
 
-- 参照の実在性は `github-pages.yml` の `Verify /assets references exist` が **Pages ビルド前**に検証する（走査対象は `src/userscripts/index.ts` / `docs/_includes/head-custom.html` / `docs/_config.yml` / `docs/index.md` / `README.md` / `src/userscripts/README.md`）。このステップは `build` ジョブにあるため、誤参照はアイコン限りでなく Pages デプロイ全体を止める。
+- 参照の実在性は `github-pages.yml` の `Verify /assets references exist` が **Pages ビルド前**に検証する（走査対象は `src/userscripts/index.ts` / `docs/_includes/head-custom.html` / `docs/_layouts/default.html` / `docs/_config.yml` / `docs/index.md` / `README.md` / `src/userscripts/README.md`）。このステップは `build` ジョブにあるため、誤参照はアイコン限りでなく Pages デプロイ全体を止める。
 - `@icon` URL の到達性は **リリース後**に `release.yml` が確認し、未達でも warning にとどめてスクリプト配布は止めない（Pages デプロイ遅れの 404 でリリースを止めない）。
 
 #### 資産一覧（`docs/assets/` が Source of Truth）
 
 | ファイル | 用途 |
 | --- | --- |
-| `hw-genie-icon-1024.png` | マスター（1024px / フラット 8 色） |
-| `hw-genie-icon.png` | 配布用 512px（`@icon`・Pages の png favicon・README） |
-| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色） |
+| `hw-genie-icon-1024.png` | マスター（1024px / フラット 8 色 / 不透明） |
+| `hw-genie-icon.png` | 配布用 512px **背景透過**（`@icon`・Pages の png favicon・README と Pages ヘッダーのタイトル行） |
+| `hw-genie-icon-solid.png` | 配布用 512px 不透明（apple-touch-icon 専用。iOS は透過 PNG を黒で塗り潰すため別ファイルにする） |
+| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色。magick は 8 色 ICO を indexed BMP 4bpp で書くため alpha は持てない＝意図的に不透明の地色で残す） |
 | `hw-genie-social-preview.png` | 1280x640。og:image / twitter:image。原画はリポジトリ外のためリポジトリ内容からの再生成は不可 |
 
-Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 512px png → apple-touch-icon。テーマ本体の `head-custom-theme-colors.html` と Google Analytics フックは追加型で残す。`theme-color` はテーマが `#151515` 固定で出すため重複指定しない）と `docs/_config.yml`（`logo` は JSON-LD の publisher 用、`defaults` の `image` が og:image を生成）。
+Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 透過 512px png → apple-touch-icon（不透明）。テーマ本体の `head-custom-theme-colors.html` と Google Analytics フックは追加型で残す。`theme-color` はテーマが `#151515` 固定で出すため重複指定しない）、`docs/_layouts/default.html`（テーマの同ファイルをコピーして h1 のタイトル行に透過アイコンを 34px インライン化。**テーマ更新を自動追跡しないので、hacker テーマ側の変更は手動で反映する**）と `docs/_config.yml`（`logo` は JSON-LD の publisher 用、`defaults` の `image` が og:image を生成）。
 
 #### 生成と検品
 
@@ -69,9 +70,13 @@ Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 
 ```bash
 cd "$(git rev-parse --show-toplevel)"   # 以降のパスはすべてリポジトリルート基準
 
-# 配布用 512px png
-magick docs/assets/hw-genie-icon-1024.png \
+# 配布用 512px png（透過版: マスターの地色 #03104D を alpha 0 に抜く）
+magick docs/assets/hw-genie-icon-1024.png -transparent "#03104D" \
   -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon.png
+
+# 配布用 512px png（不透明版: apple-touch-icon 用）
+magick docs/assets/hw-genie-icon-1024.png \
+  -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon-solid.png
 
 # favicon.ico（各サイズを作ってから合成）
 for s in 16 32 48 64; do
@@ -97,13 +102,16 @@ for path in sys.argv[1:]:
         off += 12 + ln
     print(path, "meta chunks:", bad or "none")
 PY
+
+# 検品 3: 透過版は alpha=Blend、不透明版は alpha=Undefined（地色を抜いていないなら Blend にならない）
+identify -format "%f alpha=%A\n" docs/assets/hw-genie-icon.png docs/assets/hw-genie-icon-solid.png
 ```
 
-検品は**コミット前のそのファイルに対して**行うもの（`git add` する前に実行し、両方とも期待値が出たらコミットする）。マスター／原画の差し替え時も同じく `-strip` した原画を取り込んでから上の生成コマンドを流し直す。
+検品は**コミット前のそのファイルに対して**行うもの（`git add` する前に実行し、検品 1〜3 すべてが期待値になったらコミットする）。マスター／原画の差し替え時も同じく `-strip` した原画を取り込んでから上の生成コマンドを流し直す。
 
 #### 反映タイミング
 
-アイコンは `index.ts` のメタブロックなので、**既存インストールに届くのはタグリリースを通じたスクリプト更新のときだけ**です。タグプッシュと Pages デプロイの順序ルールは RELEASE_PROCESS.md（Source of Truth）に記載。
+`@icon` の URL は変えずに `docs/assets/hw-genie-icon.png` の中身だけ差し替えると、**リリース不要で**既存インストールのアイコンも更新される（マネージャーが `@icon` URL を再取得するため）。逆に `@icon` 行そのものや metadata の変更を既存インストールに届けるには、**タグリリースを通じたスクリプト更新が必要**。タグプッシュと Pages デプロイの順序ルールは RELEASE_PROCESS.md（Source of Truth）に記載。
 
 ### DEV版ビルド（ToE自動化時のみONにする開発版）
 
