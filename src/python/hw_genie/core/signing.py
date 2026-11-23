@@ -7,8 +7,11 @@
 
     md5(f"{requestId}:{token}:{sessionId}:{body}:{env}")
 
-- ``body`` はクライアントの compact な JSON シリアライズ（サーバー側で正規化されるため、
-  wire 上の空白の差は問題にならない）。
+- ``body`` はクライアントの compact な JSON シリアライズ。署名は **送信するバイト列**
+  に対して計算するため、:func:`serialize_body` の出力をそのまま ``data=`` で送ること。
+  サーバーが受け取った後に再直列化して比較しているかは未検証で、wire 上の空白差が
+  許容されるかは確認していない。``json=payload`` に戻したり ``dumps`` の設定を
+  変えたりすると署名対象と送信バイト列がずれ、``Invalid signature`` になる。
 - ``env`` は名前に ``X-Env`` を含む（大小文字区別）ヘッダーについて
   ``"<NAME>=<value>"`` を連結したもの。``NAME`` はヘッダー名の 7 文字目以降を
   大文字化した値で、``NAME`` 昇順にソートする。現状のキャプチャ対象は ``x-auth-*``
@@ -73,12 +76,13 @@ def ensure_json_content_type(headers: dict[str, str]) -> None:
     headers["Content-Type"] = JSON_CONTENT_TYPE
 
 
-def _header(headers: Mapping[str, str], name: str) -> str:
-    """ヘッダー値を大小文字を無視して引く。
+def get_header(headers: Mapping[str, str], name: str) -> str:
+    """ヘッダー値を大小文字を無視して引く（無ければ空文字）。
 
     HTTP ヘッダー名は大小文字を区別しないため、重複キーがある場合は
     requests のマージ意味論（後勝ち＝最後に一致した値）に合わせて最後の
-    一致を返す。
+    一致を返す。保存済みヘッダーの `X-Request-Id` / `x-request-id` のような
+    大小違いを呼び出し側で吸収するために公開している。
     """
     target = name.lower()
     found = ""
@@ -90,6 +94,10 @@ def _header(headers: Mapping[str, str], name: str) -> str:
 
 def _env_signature_part(headers: Mapping[str, str]) -> str:
     """``X-Env*`` ヘッダーから ``env`` 部分（``NAME=value`` の連結）を作る。"""
+    # ゲーム実装はヘッダー名に ``"X-Env"`` を **大小文字区別の部分一致**
+    # （JS の ``indexOf``）で含むかどうかで判定しているため、ここも意図的に
+    # ``startswith`` ではなく ``in`` で判定する。``startswith`` にすると
+    # ``X-Env`` が先頭以外に現れる名前を取りこぼし、ゲームと結果がズレる。
     pairs = [
         (key[6:].upper(), value or "")
         for key, value in headers.items()
@@ -103,9 +111,9 @@ def compute_signature(headers: Mapping[str, str], body: str) -> str:
     """``headers`` と ``body`` に対応する ``x-auth-signature`` の値を返す。"""
     source = ":".join(
         (
-            _header(headers, "x-request-id"),
-            _header(headers, "x-auth-token"),
-            _header(headers, "x-auth-session-id"),
+            get_header(headers, "x-request-id"),
+            get_header(headers, "x-auth-token"),
+            get_header(headers, "x-auth-session-id"),
             body,
             _env_signature_part(headers),
         )

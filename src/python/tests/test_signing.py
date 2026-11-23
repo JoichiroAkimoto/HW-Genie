@@ -205,8 +205,14 @@ def test_hwclient_retry_resigns_with_new_request_id_and_body():
     )
 
     payload = {"calls": [{"name": "test", "args": {}, "context": {"actionTs": 0}, "ident": "x"}]}
+    ticks = iter([1000, 2000])
+
+    def fake_time():
+        # 呼び出し回数に依存して StopIteration しないよう、尽きたら最後の値を返す。
+        return next(ticks, 2000)
+
     with patch("hw_genie.core.client.time.sleep"), patch(
-        "hw_genie.core.client.time.time", side_effect=[1000, 2000]
+        "hw_genie.core.client.time.time", side_effect=fake_time
     ):
         res = client.call(payload)
 
@@ -248,6 +254,77 @@ def test_hwclient_classifies_invalid_signature_plain_text_as_auth_error():
 
     with pytest.raises(HWAuthError):
         client.call({"calls": [{"name": "test", "args": {}, "ident": "x"}]})
+
+
+def test_hwclient_reads_request_id_case_insensitively():
+    """``X-Request-Id`` のように大小が混ざったキーでもシードとして読む。"""
+    from hw_genie.core.client import HWClient
+
+    client = HWClient(
+        {
+            "X-Request-Id": "77",
+            "x-auth-token": TOKEN,
+            "x-auth-session-id": SESSION_ID,
+        }
+    )
+
+    assert client.request_id == 77
+    assert client.get_headers()["x-request-id"] == "78"
+
+
+def test_hwclient_falls_back_when_request_id_is_not_a_number():
+    """数値でない request-id は既定値 100 から開始する（ValueError を投げない）。"""
+    from hw_genie.core.client import HWClient
+
+    client = HWClient({"x-request-id": "abc"})
+
+    assert client.request_id == 100
+    assert client.get_headers()["x-request-id"] == "101"
+
+
+def test_hwclient_reports_non_json_payload_as_invalid_payload():
+    """NaN など JSON にできない payload は invalid_payload として即返す。"""
+    from unittest.mock import MagicMock
+
+    from hw_genie.core.client import HWClient, ResponseStatus
+
+    session = MagicMock()
+    client = HWClient(
+        {"x-auth-token": TOKEN, "x-auth-session-id": SESSION_ID, "x-request-id": "0"},
+        session=session,
+    )
+
+    res = client.call(
+        {"calls": [{"name": "test", "args": {"value": float("nan")}, "ident": "x"}]}
+    )
+
+    assert res.status == ResponseStatus.UNEXPECTED
+    assert res.error_name == "invalid_payload"
+    # 送信前に弾くのでリトライもしない。
+    session.post.assert_not_called()
+
+
+def test_hwclient_classifies_http_403_invalid_signature_as_auth_error():
+    """HTTP 403 + text/plain の "Invalid signature" も認証エラーとして扱う。"""
+    from unittest.mock import MagicMock
+
+    from hw_genie.core.client import HWAuthError, HWClient
+
+    session = MagicMock()
+    response = MagicMock(status_code=403)
+    response.text = "Invalid signature"
+    response.raise_for_status.side_effect = HTTPError(response=response)
+    session.post.return_value = response
+
+    client = HWClient(
+        {"x-auth-token": TOKEN, "x-auth-session-id": SESSION_ID, "x-request-id": "0"},
+        session=session,
+    )
+
+    with pytest.raises(HWAuthError):
+        client.call({"calls": [{"name": "test", "args": {}, "ident": "x"}]})
+    # リトライせずに即座に認証エラーにする。
+    assert session.post.call_count == 1
 
 
 def test_get_user_info_signs_the_body_it_posts():
@@ -293,3 +370,38 @@ def test_get_user_info_keeps_input_headers_and_drops_signature_from_result():
     # 戻り値の headers は再計算前提のため署名を含めない。
     assert "x-auth-signature" not in {key.lower() for key in info["headers"]}
     assert info["headers"]["x-request-id"] == "101"
+
+
+def test_get_user_info_reads_case_variant_request_id_and_sends_one_key():
+    """``X-Request-Id`` のような大小違いキーも数値として読み、送信キーは 1 つにする。"""
+    from unittest.mock import MagicMock, patch
+
+    from hw_genie.core.auth import get_user_info
+
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "results": [
+            {"ident": "body", "result": {"response": {"id": "1", "name": "Alice"}}},
+            {"ident": "arena", "result": {"response": {}}},
+        ]
+    }
+    headers = {
+        "x-auth-token": TOKEN,
+        "x-auth-session-id": SESSION_ID,
+        "X-Request-Id": "10",
+    }
+    with patch("hw_genie.core.auth.requests.post", return_value=response) as post:
+        info = get_user_info(headers)
+
+    assert info["status"] == "success"
+    sent_headers = post.call_args.kwargs["headers"]
+    # 大小違いの request-id キーは 1 つだけ（送信値と署名対象をズラさない）。
+    assert [key.lower() for key in sent_headers].count("x-request-id") == 1
+    assert sent_headers["x-request-id"] == "11"
+    # 入力 dict は変更されない（非破壊）。
+    assert headers == {
+        "x-auth-token": TOKEN,
+        "x-auth-session-id": SESSION_ID,
+        "X-Request-Id": "10",
+    }
+    assert info["headers"]["x-request-id"] == "11"

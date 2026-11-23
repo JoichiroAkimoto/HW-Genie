@@ -3,11 +3,17 @@ import re
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
 import requests
-from hw_genie.core.client import AUTH_ERROR_NAMES, PlayerStatus, load_session_headers
+from hw_genie.core.client import (
+    AUTH_ERROR_NAMES,
+    PlayerStatus,
+    _safe_int,
+    load_session_headers,
+)
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.signing import (
     SIGNATURE_HEADER,
     ensure_json_content_type,
+    get_header,
     serialize_body,
     set_header,
     sign_headers,
@@ -91,17 +97,31 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
     # 呼び出し元（保存済みヘッダーを持つ dict）を書き換えないようコピーする。
     headers = dict(headers)
     url = "https://heroes-wb.nextersglobal.com/api/"
-    set_header(headers, "x-request-id", str(int(headers.get("x-request-id", 100)) + 1))
     payload = {"calls": [{"name": "userGetInfo", "args": {}, "ident": "body"}, {"name": "arenaGetAll", "args": {}, "ident": "arena"}]}
-    body = serialize_body(payload)
-    ensure_json_content_type(headers)
-    # 署名は body と x-request-id に紐づくため、送信直前に毎回計算する。
-    sign_headers(headers, body)
     try:
+        # 保存済みヘッダーのキーは大小が混ざり得るため大小文字を無視して読み、
+        # 数値でない値（空文字・"abc" 等）は既定値で補う。
+        set_header(
+            headers,
+            "x-request-id",
+            str(_safe_int(get_header(headers, "x-request-id"), 100) + 1),
+        )
+        body = serialize_body(payload)
+        ensure_json_content_type(headers)
+        # 署名は body と x-request-id に紐づくため、送信直前に毎回計算する。
+        sign_headers(headers, body)
         response = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=15)
         if response.status_code == 401:
             return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # 403 などで本文が "Invalid signature" の場合はセッション失効として
+            # 報告する（HTTPError の str() だけでは原因が伝わらない）。
+            error_text = getattr(exc.response, "text", "") or ""
+            if isinstance(error_text, str) and "Invalid signature" in error_text:
+                return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
+            raise
         try:
             res_data = response.json()
         except ValueError:

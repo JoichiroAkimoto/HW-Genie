@@ -62,6 +62,28 @@ test("非 2xx の JSON detail を SendResult.detail に載せる（500 の原因
   assert.strictEqual(result.detail, "Session expired or invalid signature.");
 });
 
+test("422 + JSON の detail 配列は生の本文を detail に出さない（秘匿値の露出回避）", async () => {
+  const fetchImpl = makeFetch({
+    nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),
+    authResponse: makeResponse(
+      422,
+      JSON.stringify({
+        detail: [
+          {
+            loc: ["body", "headers", "X-Auth-Token"],
+            msg: "field required",
+            input: "sensitive-value",
+          },
+        ],
+      }),
+    ),
+  });
+  const result = await sendHeadersToServer(BASE, { "x-auth-token": "t" }, 5000, fetchImpl);
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, "http-422");
+  assert.strictEqual(result.detail, undefined);
+});
+
 test("200 + status:success で true を返し、player 名も返す", async () => {
   const fetchImpl = makeFetch({
     nonceBody: makeResponse(200, JSON.stringify({ nonce: "n1" })),

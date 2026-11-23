@@ -77,26 +77,34 @@ export interface SendResult {
  * エラー本文から表示用の理由を取り出す。
  *
  * FastAPI はエラーを ``{"detail": "..."}`` で返すため、JSON なら detail
- * （無ければ message）を優先し、非 JSON は本文をそのまま使う（長すぎる
- * 場合は切り詰める）。
+ * （無ければ message）の文字列だけを使う。それ以外の JSON 本文
+ * （422 の ``detail`` 配列など）は生の本文を出さず undefined にする
+ * （送信ヘッダー等の秘匿値がコンソールに残るのを避ける）。
+ * 非 JSON 本文はそのまま使う（長すぎる場合は切り詰める）。
  */
 function extractErrorDetail(body: string): string | undefined {
   const text = body.trim();
   if (!text) {
     return undefined;
   }
+  let parsed: unknown;
   try {
-    const data = JSON.parse(text);
-    if (typeof data?.detail === "string" && data.detail.trim()) {
-      return data.detail.trim();
-    }
-    if (typeof data?.message === "string" && data.message.trim()) {
-      return data.message.trim();
-    }
+    parsed = JSON.parse(text);
   } catch {
     // JSON でない本文はそのまま表示する
+    return text.length > 300 ? `${text.slice(0, 300)}…` : text;
   }
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  if (typeof parsed !== "object" || parsed === null) {
+    return undefined;
+  }
+  const data = parsed as { detail?: unknown; message?: unknown };
+  if (typeof data.detail === "string" && data.detail.trim()) {
+    return data.detail.trim();
+  }
+  if (typeof data.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+  return undefined;
 }
 
 /**
