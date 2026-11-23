@@ -10,6 +10,8 @@ author: Akimoto Joichiro
 email: b1013066@gmail.com
 github_username: JoichiroAkimoto
 sponsor_url: "https://github.com/sponsors/JoichiroAkimoto"
+# logo は JSON-LD の publisher 用。jekyll-seo-tag は absolute_url（site.url + relative_url）で解決するため先頭は /assets で書く
+logo: "/assets/hw-genie-icon.png"
 
 # Plugins
 plugins:
@@ -21,3 +23,15 @@ plugins:
 exclude:
   - db_analysis.md
   - superpowers
+
+# jekyll-seo-tag は page.image だけを読んで og:image / twitter:image を出す（logo は無関係）
+# image.width / image.height があるとき og:image:width / og:image:height も出力される
+defaults:
+  - scope:
+      path: ""
+    values:
+      image:
+        path: "/assets/hw-genie-social-preview.png"
+        alt: "HW-Genie"
+        width: 1280
+        height: 640

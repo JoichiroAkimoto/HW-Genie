@@ -4,6 +4,10 @@ title: HW-Genie
 description: Hero Wars のプレイを強力にサポートする AI エージェント対応の自動化ツールキット
 ---
 
+<p align="center">
+  <img src="{{ '/assets/hw-genie-icon.png' | relative_url }}" alt="HW-Genie logo" width="128" height="128" />
+</p>
+
 **HW-Genie** は、Hero Wars のプレイを強力にサポートする AI エージェント対応の自動化ツールキットです。
 Python による高速な API 自動化 (CLI) と、ブラウザ画面での利便性を高めるユーザースクリプト (Userscript) を統合したハイブリッドな構成を採用しています。
 
