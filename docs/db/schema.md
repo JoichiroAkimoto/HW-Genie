@@ -68,6 +68,30 @@ Unique constraint: `(account_id, config_key)`
 
 ---
 
+### `asgard_raid_teams`
+
+Asgard（ギルドレイド）のボス戦チーム。アカウント × ボス（`osh` / `maestro`）× slot（1〜5）ごとに 1 行。
+
+| カラム | 型 | 制約 | 説明 |
+|--------|----|------|------|
+| `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
+| `account_id` | INTEGER | FK -> accounts.id (CASCADE), NOT NULL | アカウント参照 |
+| `boss` | VARCHAR | NOT NULL | ボスキー（`osh` / `maestro`） |
+| `slot` | INTEGER | NOT NULL | チーム枠（1〜5） |
+| `heroes` | JSON | NOT NULL | ヒーロー ID の配列（5 体） |
+| `pet` | INTEGER | | ペット ID |
+| `favor` | JSON | | `{"heroId": patronPetId}` |
+| `enabled` | BOOLEAN | NOT NULL, DEFAULT 1 | 実行対象か（デフォルト `true`） |
+| `memo` | VARCHAR | | チームメモ（任意） |
+| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 作成日時 |
+| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 更新日時 |
+
+Unique constraint: `(account_id, boss, slot)`
+
+`hw-genie asgard-raid team set/list/remove` で操作し、`asgard-raid run` / `multi asgard-raid` が `enabled=true` のチームを slot 順に実行します。
+
+---
+
 ### `run_logs`
 
 `multi` 実行（hwda / hwsa / CLI 直実行 / Docker）1 回ごとの結果サマリーと出力全文。
@@ -77,7 +101,7 @@ Unique constraint: `(account_id, config_key)`
 | `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
 | `started_at` | DATETIME | NOT NULL | 実行開始時刻（UTC） |
 | `finished_at` | DATETIME | NOT NULL | 実行終了時刻（UTC） |
-| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `consumable`） |
+| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `asgard-raid` / `consumable`） |
 | `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。クエスト失敗・consumable 失敗・購入エラー・ステータス取得不能・例外・割り込みは `failed`） |
 | `exit_code` | INTEGER | | プロセスの終了コード |
 | `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]`（`error` は失敗理由） |

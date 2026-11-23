@@ -12,7 +12,7 @@ import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy import util
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, JSON, Integer, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, String, JSON, Integer, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.dialects import registry
 from sqlalchemy_libsql.libsql import SQLiteDialect_libsql
@@ -481,6 +481,33 @@ class AccountConfig(Base):
     config_value = Column(JSON)
     __table_args__ = (UniqueConstraint("account_id", "config_key", name="_account_config_uc"),)
     # Using a unique constraint on (account_id, config_key) to ensure Key-Value uniqueness per account
+
+
+class AsgardRaidTeam(Base):
+    """One saved Asgard boss-battle team per account / boss / slot (1-5).
+
+    ``boss`` is the week/boss key (``osh`` / ``maestro``). Teams are registered
+    per boss because every account has a different lineup for each boss, and
+    the run command executes them in ``slot`` order.
+    """
+
+    __tablename__ = "asgard_raid_teams"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    boss = Column(String, nullable=False)
+    slot = Column(Integer, nullable=False)
+    heroes = Column(JSON, nullable=False)
+    pet = Column(Integer, nullable=True)
+    favor = Column(JSON, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    memo = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        UniqueConstraint("account_id", "boss", "slot", name="_asgard_raid_team_uc"),
+    )
 
 
 class RunLog(Base):

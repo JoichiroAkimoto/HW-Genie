@@ -507,6 +507,21 @@ def asgard_shop_routine(gold_buffs: bool | None = None) -> Callable[[HWClient, s
     return run
 
 
+def asgard_raid_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
+    """Build a routine that runs the Asgard boss teams for any account.
+
+    Team storage / week detection / start+auto-end live in
+    :mod:`hw_genie.commands.asgard_raid`. ``dry_run`` only reads
+    ``clanRaid_getInfo`` and the stored teams; it never starts a battle.
+    """
+    from hw_genie.commands.asgard_raid import run_asgard_raid
+
+    def run(client: HWClient, account: str) -> object:
+        return run_asgard_raid(client, account_alias=account, dry_run=dry_run)
+
+    return run
+
+
 def seers_game_routine(
     client: HWClient,
     account: str,
@@ -1326,6 +1341,127 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+# Asgard raid summary table (per-account boss / teams / run + account score / rewards).
+_ASGARD_RAID_HEADERS = [
+    "Account",
+    "Boss",
+    "✅ Teams",
+    "💥 Damage",
+    "📈 Score",
+    "🎯 Attempts",
+    "🎁 Reward",
+    "ℹ️ Note",
+]
+
+
+def _asgard_raid_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the Asgard raid summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_asgard_raid_table(rows: list[list[str]]) -> str:
+    """Render the per-account Asgard raid summary table."""
+    return _render_table(_ASGARD_RAID_HEADERS, rows, _asgard_raid_cell_styler)
+
+
+def summarize_asgard_raid(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account Asgard raid table and return the failed count.
+
+    A dry-run account is never a failure (nothing was started). A run error or
+    any failed team counts as failed. Accounts with no registered teams are
+    reported with a note and count as ok (nothing to do).
+    """
+    from hw_genie.commands.asgard_raid import (
+        BOSS_LABELS,
+        REWARD_STANDING_CLAN,
+        AsgardRaidRunResult,
+    )
+    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.utils import format_number_with_suffix
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is not None:
+            failed.append(account)
+            note = str(err).splitlines()[0] if str(err) else type(err).__name__
+            rows.append([account, "-", "0", "-", "-", "-", "-", note])
+            continue
+        if not isinstance(res, AsgardRaidRunResult):
+            failed.append(f"{account} (asgard-raid result unavailable)")
+            rows.append([account, "-", "0", "-", "-", "-", "-", "result unavailable"])
+            continue
+        label = BOSS_LABELS.get(res.boss or "", res.boss or "-")
+        executed = sum(1 for team in res.teams if team.status == ResponseStatus.SUCCESS)
+        attempts = "-"
+        if res.attempts_before is not None:
+            attempts = str(res.attempts_before)
+            if res.attempts_after is not None:
+                attempts = f"{res.attempts_before}->{res.attempts_after}"
+        score = "-" if res.dry_run else format_number_with_suffix(res.damage_after)
+        rewards = []
+        for reward in res.rewards:
+            name = "clan" if reward.reward_type == REWARD_STANDING_CLAN else "user"
+            mark = "✓" if reward.status == ResponseStatus.SUCCESS else "⏭"
+            rewards.append(f"{name}{mark}")
+        reward_cell = " ".join(rewards) or "-"
+        note = "dry-run" if dry_run or res.dry_run else "-"
+        if not res.teams:
+            note = (
+                "dry-run; no teams registered"
+                if dry_run or res.dry_run
+                else "no teams registered"
+            )
+        if not res.dry_run and not dry_run and res.attempts_before == 0:
+            note = "no attempts left"
+        if res.error:
+            note = res.error
+            failed.append(f"{account} ({res.error})")
+        elif res.failed_count:
+            note = f"{res.failed_count} team(s) failed"
+            failed.append(f"{account} ({res.failed_count} team(s) failed)")
+        else:
+            ok += 1
+        if any(
+            team.status == ResponseStatus.SUCCESS and not team.after_invalid
+            for team in res.teams
+        ):
+            # Warning only: the attempt was spent and the damage was recorded.
+            note = "end not auto-simulated" if note == "-" else f"{note}; end not auto-simulated"
+        rows.append(
+            [
+                account,
+                label,
+                str(executed),
+                format_number_with_suffix(res.total_damage),
+                score,
+                attempts,
+                reward_cell,
+                note,
+            ]
+        )
+
+    width = _table_layout(_ASGARD_RAID_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print("📊 --- Multi asgard-raid summary ---")
+    if rows:
+        print(_render_asgard_raid_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 # Seer's Game summary table (per-account games played / failed / note).
 _SEERS_HEADERS = ["Account", "🎮 Played", "❌ Failed", "ℹ️ Note"]
 
@@ -1650,6 +1786,7 @@ __all__ = [
     "full_routine",
     "quests_routine",
     "asgard_shop_routine",
+    "asgard_raid_routine",
     "seers_game_routine",
     "consumable_routine",
     "gift_up_routine",
@@ -1659,6 +1796,7 @@ __all__ = [
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",
+    "summarize_asgard_raid",
     "summarize_seers_game",
     "summarize_consumable",
     "summarize_gift",

@@ -528,6 +528,142 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def cmd_asgard_raid_team_set(args):
+    """Create/update one Asgard boss-battle team (1-5)."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardTeam,
+        format_team,
+        parse_favor_args,
+        parse_heroes,
+        set_asgard_raid_team,
+        validate_boss,
+        validate_pet,
+        validate_slot,
+    )
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        team = AsgardTeam(
+            boss=validate_boss(args.boss),
+            slot=validate_slot(args.slot),
+            heroes=parse_heroes(args.heroes),
+            pet=validate_pet(args.pet),
+            favor=parse_favor_args(args.favor),
+            enabled=not args.disabled,
+            memo=args.memo,
+        )
+        set_asgard_raid_team(account, team)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    state = "enabled" if team.enabled else "disabled"
+    memo = f" memo={team.memo}" if team.memo else ""
+    print(
+        f"{Emojis.SUCCESS}Saved {team.boss} slot {team.slot} for '{account}' "
+        f"[{state}] {format_team(team)}{memo}"
+    )
+
+
+def cmd_asgard_raid_team_list(args):
+    """List stored Asgard boss-battle teams."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        format_team,
+        list_asgard_raid_teams,
+    )
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        teams = list_asgard_raid_teams(account, args.boss)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not teams:
+        scope = f" ({args.boss})" if args.boss else ""
+        print(f"{Emojis.INFO}No Asgard raid teams registered for '{account}'{scope}.")
+        return
+    print(f"\n{Emojis.STEP}--- Asgard raid teams ({account}) ---")
+    for team in teams:
+        state = "enabled" if team.enabled else "disabled"
+        memo = f" memo={team.memo}" if team.memo else ""
+        print(
+            f"  {team.boss} slot {team.slot} [{state}] {format_team(team)}{memo}"
+        )
+
+
+def cmd_asgard_raid_team_remove(args):
+    """Delete one stored Asgard boss-battle team."""
+    from hw_genie.commands.asgard_raid import AsgardRaidError, remove_asgard_raid_team
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        remove_asgard_raid_team(account, args.boss, args.slot)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{Emojis.SUCCESS}Removed {args.boss} slot {args.slot} for '{account}'.")
+
+
+def cmd_asgard_raid_team_import_log(args):
+    """Rebuild boss-battle teams from clanRaid_logBoss."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardRaidReadError,
+        import_teams_from_log,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        import_teams_from_log(
+            client,
+            account_alias=account,
+            boss=args.boss,
+            user_id=args.user_id,
+            overwrite=bool(args.overwrite),
+            dry_run=bool(args.dry_run),
+            latest=bool(getattr(args, "latest", False)),
+        )
+    except (AsgardRaidReadError, AsgardRaidError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_asgard_raid_run(args):
+    """Run the enabled Asgard boss-battle teams for the current week."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardRaidReadError,
+        run_asgard_raid,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        result = run_asgard_raid(
+            client,
+            account_alias=account,
+            boss=args.boss,
+            dry_run=bool(args.dry_run),
+        )
+    except (AsgardRaidReadError, AsgardRaidError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if result.error or result.failed_count:
+        sys.exit(1)
+
+
 def cmd_seers_game(args):
     """Seer's Game をコイン枯渇まで自動周回する"""
     # argparse に choices= は付けない（live の event.size 上限は実行時に
@@ -1466,6 +1602,7 @@ def cmd_multi(args):
 
     from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
+        asgard_raid_routine,
         asgard_shop_routine,
         challenge_routine,
         consumable_routine,
@@ -1479,6 +1616,7 @@ def cmd_multi(args):
         request_cancel,
         reset_cancel,
         seers_game_routine,
+        summarize_asgard_raid,
         summarize_asgard_shop,
         summarize_challenge,
         summarize_consumable,
@@ -1508,10 +1646,10 @@ def cmd_multi(args):
     accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge", "asgard-raid") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests', 'consumable', 'seers-game', "
-            "'gift-up', 'gift-reset' and 'challenge' modes "
+            "'gift-up', 'gift-reset', 'challenge' and 'asgard-raid' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
@@ -1532,6 +1670,16 @@ def cmd_multi(args):
         # 明示ゲートを要求する（--dry-run は読み取りのみ）。
         print(
             "Error: multi challenge sends a challenge from every selected account. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "asgard-raid" and not dry_run and not getattr(args, "yes", False):
+        # 各アカウントでボス攻撃回数を消費するため、gift/challenge と同じ
+        # 明示ゲートを要求する（--dry-run は計画表示のみ）。
+        print(
+            "Error: multi asgard-raid spends boss attempts on every selected account. "
             "Add --yes to run it, or --dry-run to see the plan first.",
             file=sys.stderr,
         )
@@ -1600,6 +1748,9 @@ def cmd_multi(args):
     elif mode == "asgard-shop":
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
         max_parallel = args.parallel
+    elif mode == "asgard-raid":
+        routine = asgard_raid_routine(dry_run=dry_run)
+        max_parallel = 1 if dry_run else args.parallel
     elif mode == "consumable":
         routine = consumable_routine(
             lib_ids=args.lib, method_override=args.method, dry_run=dry_run
@@ -1740,7 +1891,7 @@ def cmd_multi(args):
                         routine,
                         accounts=ready_accounts,
                         max_parallel=max_parallel,
-                        cooperative_wait=(mode == "toe"),
+                        cooperative_wait=(mode in ("toe", "asgard-raid")),
                     )
                     results.update(worker_results)
                 # Preserve the original (registration/request) account order.
@@ -1749,6 +1900,8 @@ def cmd_multi(args):
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
                     failed = summarize_asgard_shop(results.items())
+                elif mode == "asgard-raid":
+                    failed = summarize_asgard_raid(results.items(), dry_run=dry_run)
                 elif mode == "seers-game":
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
                 elif mode == "consumable":
@@ -1929,6 +2082,18 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "asgard-raid":
+        from hw_genie.commands.asgard_raid import AsgardRaidRunResult
+
+        if isinstance(result, AsgardRaidRunResult):
+            if result.error is not None:
+                return result.error
+            return (
+                f"{result.failed_count} team(s) failed"
+                if result.failed_count
+                else None
+            )
+        return "asgard-raid result unavailable"
     if mode == "seers-game":
         from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
 
@@ -2175,6 +2340,104 @@ def main():
         help="Skip gold buff purchases (slot 1-5)",
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
+
+    # Asgard Raid (Guild Raid boss battles; save 5 teams per boss and run them)
+    p_asgard_raid = subparsers.add_parser(
+        "asgard-raid",
+        parents=[parent_parser],
+        help="Asgard Guild Raid boss battles (register 5 teams per boss and run them)",
+    )
+    asgard_raid_sub = p_asgard_raid.add_subparsers(
+        dest="asgard_raid_action", help="Asgard raid operation"
+    )
+
+    p_asgard_raid_team = asgard_raid_sub.add_parser(
+        "team", parents=[parent_parser], help="Manage boss-battle teams (slot 1-5)"
+    )
+    asgard_raid_team_sub = p_asgard_raid_team.add_subparsers(
+        dest="asgard_raid_team_action", help="Team operation"
+    )
+
+    p_asgard_raid_team_set = asgard_raid_team_sub.add_parser(
+        "set", parents=[parent_parser], help="Create/update one team"
+    )
+    p_asgard_raid_team_set.add_argument("slot", type=int, help="Team slot (1-5)")
+    p_asgard_raid_team_set.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_set.add_argument(
+        "--heroes", type=int, nargs=5, required=True, help="Exactly 5 hero IDs"
+    )
+    p_asgard_raid_team_set.add_argument("--pet", type=int, help="Pet ID")
+    p_asgard_raid_team_set.add_argument(
+        "--favor",
+        action="append",
+        help="Patron favor HERO=PATRON (repeatable)",
+    )
+    p_asgard_raid_team_set.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Store the team disabled (default: enabled)",
+    )
+    p_asgard_raid_team_set.add_argument("--memo", help="Free-form team memo")
+    p_asgard_raid_team_set.set_defaults(func=cmd_asgard_raid_team_set)
+
+    p_asgard_raid_team_list = asgard_raid_team_sub.add_parser(
+        "list", parents=[parent_parser], help="List stored teams"
+    )
+    p_asgard_raid_team_list.add_argument(
+        "--boss", choices=["osh", "maestro"], help="Only show this boss"
+    )
+    p_asgard_raid_team_list.set_defaults(func=cmd_asgard_raid_team_list)
+
+    p_asgard_raid_team_remove = asgard_raid_team_sub.add_parser(
+        "remove", parents=[parent_parser], help="Delete one team"
+    )
+    p_asgard_raid_team_remove.add_argument("slot", type=int, help="Team slot (1-5)")
+    p_asgard_raid_team_remove.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_remove.set_defaults(func=cmd_asgard_raid_team_remove)
+
+    p_asgard_raid_team_import = asgard_raid_team_sub.add_parser(
+        "import-log",
+        parents=[parent_parser],
+        help="Rebuild teams from clanRaid_logBoss",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--user-id",
+        help="Game player ID to import (default: this account via userGetInfo)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing slots (enabled / memo are preserved)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--latest",
+        action="store_true",
+        help="With more than 5 battles, use the 5 most recent instead of erroring",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--dry-run", action="store_true", help="Show the reconstructed teams without writing"
+    )
+    p_asgard_raid_team_import.set_defaults(func=cmd_asgard_raid_team_import_log)
+
+    p_asgard_raid_run = asgard_raid_sub.add_parser(
+        "run", parents=[parent_parser], help="Run enabled teams for the current week"
+    )
+    p_asgard_raid_run.add_argument(
+        "--boss",
+        choices=["osh", "maestro"],
+        help="Force the boss key (default: detect from clanRaid_getInfo)",
+    )
+    p_asgard_raid_run.add_argument(
+        "--dry-run", action="store_true", help="Show the plan without starting battles"
+    )
+    p_asgard_raid_run.set_defaults(func=cmd_asgard_raid_run)
 
     # Seer's Game (start -> play x4 -> finish until coins run out)
     p_seers = subparsers.add_parser(
@@ -2711,6 +2974,7 @@ def main():
             "full",
             "quests",
             "asgard-shop",
+            "asgard-raid",
             "consumable",
             "toe",
             "seers-game",
@@ -2720,7 +2984,7 @@ def main():
         ],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'asgard-raid' (run the registered Asgard boss teams, requires --yes), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
     )
     p_multi.add_argument(
         "--engine",
@@ -2808,7 +3072,7 @@ def main():
     p_multi.add_argument(
         "--yes",
         action="store_true",
-        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' / 'challenge' modes",
+        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' / 'challenge' / 'asgard-raid' modes",
     )
     p_multi.add_argument(
         "--user-id",
