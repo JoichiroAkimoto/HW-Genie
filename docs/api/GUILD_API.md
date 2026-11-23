@@ -617,7 +617,7 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 | `id` | int/string | バトル ID |
 | `result.damage` | object | defender ごとの与ダメージ |
 
-> `import-log` は `attackers` の `type="hero"` を heroes、`favorPetId` を favor、`type="pet"` をチーム pet として復元します。5体未満の不完全な履歴はスキップし、6件以上ある場合は slot 1〜5 への対応が曖昧になるためエラーにします。
+> `import-log` は `attackers` の `type="hero"` を heroes、`favorPetId`（無ければ `petId`）を favor、`type="pet"` をチーム pet として復元します。5体未満・重複ありの不完全な履歴はスキップし、6件以上ある場合は slot 1〜5 への対応が曖昧になるためエラーにします（`--latest` を付けると直近5件を攻撃順に slot 1〜5 へ割り当てます）。
 
 ---
 

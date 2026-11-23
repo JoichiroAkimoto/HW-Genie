@@ -90,6 +90,10 @@ class AsgardRaidTeamResult:
     stars: int = 0
     replay: str | None = None
     error: str | None = None
+    #: ``result.afterInvalid`` from the end response. ``True`` means the
+    #: server replaced the (empty) client simulation with its own auto-battle;
+    #: ``False`` means the damage may not reflect a completed battle.
+    after_invalid: bool = False
 
 
 @dataclass
@@ -466,8 +470,13 @@ def _user_points(response: dict[str, Any]) -> int:
     return _safe_int(stats.get("points"))
 
 
-def parse_end_detail(detail: Any) -> tuple[int, bool, int, str | None]:
-    """Parse ``clanRaid_endBossBattle`` into ``(damage, win, stars, replay)``."""
+def parse_end_detail(detail: Any) -> tuple[int, bool, int, str | None, bool]:
+    """Parse ``clanRaid_endBossBattle`` into ``(damage, win, stars, replay, after_invalid)``.
+
+    ``after_invalid`` mirrors ``result.afterInvalid``: the server only marks the
+    battle as auto-simulated when it rejected the (empty) client ``progress``.
+    A missing / false value means the reported damage may be unreliable.
+    """
     response = detail.get("response") if isinstance(detail, dict) else {}
     if not isinstance(response, dict):
         response = {}
@@ -482,23 +491,32 @@ def parse_end_detail(detail: Any) -> tuple[int, bool, int, str | None]:
     )
     replay_raw = response.get("replay")
     replay = str(replay_raw) if replay_raw is not None else None
-    return damage, bool(result.get("win")), _safe_int(result.get("stars")), replay
+    return (
+        damage,
+        bool(result.get("win")),
+        _safe_int(result.get("stars")),
+        replay,
+        bool(result.get("afterInvalid")),
+    )
 
 
 # --- run ------------------------------------------------------------------
 
 
 def parse_logged_teams(
-    log: dict[str, Any], user_id: str, *, limit: int = TEAM_SIZE
+    log: dict[str, Any], user_id: str, *, limit: int | None = None, latest: bool = False
 ) -> list[AsgardLoggedTeam]:
     """Reconstruct teams from ``clanRaid_logBoss`` in attack order (slots 1..N).
 
     Each battle's ``attackers`` map contains ``type="hero"`` units and one
-    ``type="pet"`` unit. A hero's ``favorPetId`` is the patron used for favor.
-    Battles with anything other than exactly five unique heroes are skipped
-    with a warning; more than ``limit`` battles is an error (slot mapping would
-    be ambiguous).
+    ``type="pet"`` unit. A hero's ``favorPetId`` is the patron used for favor
+    (``petId`` is used when ``favorPetId`` is missing/0). Battles with anything
+    other than exactly five unique heroes are skipped with a warning. More than
+    ``limit`` battles is an error (slot mapping would be ambiguous) unless
+    ``latest`` is set, in which case the most recent ``limit`` battles are used.
     """
+    if limit is None:
+        limit = len(TEAM_SLOTS)
     entries = log.get(str(user_id))
     if not isinstance(entries, dict) or not entries:
         raise AsgardRaidError(f"No boss battle logs found for player {user_id}.")
@@ -528,6 +546,8 @@ def parse_logged_teams(
                 continue
             heroes.append(unit_id)
             patron = _optional_int(unit.get("favorPetId"))
+            if patron is None or patron <= 0:
+                patron = _optional_int(unit.get("petId"))
             if patron is not None and patron > 0:
                 favor[unit_id] = patron
 
@@ -568,10 +588,13 @@ def parse_logged_teams(
         )
     parsed.sort(key=lambda item: item[0])
     if len(parsed) > limit:
-        raise AsgardRaidError(
-            f"Found {len(parsed)} boss battles for player {user_id}; "
-            f"cannot map more than {limit} battles to slots 1-{limit}. Refusing to guess."
-        )
+        if not latest:
+            raise AsgardRaidError(
+                f"Found {len(parsed)} boss battles for player {user_id}; "
+                f"cannot map more than {limit} battles to slots 1-{limit}. "
+                "Refusing to guess (use --latest to take the most recent 5)."
+            )
+        parsed = parsed[-limit:]
 
     teams: list[AsgardLoggedTeam] = []
     for slot, (_, team) in enumerate(parsed, 1):
@@ -597,19 +620,21 @@ def import_teams_from_log(
     user_id: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
+    latest: bool = False,
 ) -> AsgardRaidImportResult:
     """Register teams reconstructed from ``clanRaid_logBoss``.
 
     Existing slots are left untouched unless ``overwrite`` is set. When a slot
     is overwritten its ``enabled`` / ``memo`` values are preserved because the
-    battle log carries no such metadata.
+    battle log carries no such metadata. With more than five battles in the
+    log, ``latest`` selects the five most recent ones instead of erroring.
     """
     if not account_alias:
         raise AsgardRaidError("account alias is required")
     boss = validate_boss(boss)
     player_id = resolve_player_id(client, user_id)
     log = fetch_boss_log(client)
-    logged = parse_logged_teams(log, player_id)
+    logged = parse_logged_teams(log, player_id, latest=latest)
     existing = {
         team.slot: team for team in list_asgard_raid_teams(account_alias, boss)
     }
@@ -671,6 +696,8 @@ def claim_rating_rewards(client: HWClient) -> list[AsgardRewardResult]:
     """
     results: list[AsgardRewardResult] = []
     for reward_type in REWARD_TYPES:
+        # Space the clan / user calls (and the preceding end call) apart.
+        client.sleep()
         payload = {
             "calls": [
                 {
@@ -741,6 +768,7 @@ def _team_result(
     stars: int = 0,
     replay: str | None = None,
     error: str | None = None,
+    after_invalid: bool = False,
 ) -> AsgardRaidTeamResult:
     return AsgardRaidTeamResult(
         slot=team.slot,
@@ -752,6 +780,7 @@ def _team_result(
         stars=stars,
         replay=replay,
         error=error,
+        after_invalid=after_invalid,
     )
 
 
@@ -779,9 +808,10 @@ def _print_summary(account: str, result: AsgardRaidRunResult) -> None:
         memo = f" memo={team.memo}" if team.memo else ""
         if team.status == ResponseStatus.SUCCESS:
             replay = f" replay={team.replay}" if team.replay else ""
+            auto = "" if team.after_invalid else " auto=False"
             print(
                 f"  slot {team.slot}: damage={format_number_with_suffix(team.damage)} "
-                f"win={team.win} stars={team.stars}{replay}{memo}"
+                f"win={team.win} stars={team.stars}{replay}{auto}{memo}"
             )
         else:
             print(f"  slot {team.slot}: ERROR {team.error}{memo}")
@@ -801,9 +831,14 @@ def _print_summary(account: str, result: AsgardRaidRunResult) -> None:
         f"{format_number_with_suffix(result.damage_after)}"
     )
     print(f"  Score (points): {result.points_before} -> {result.points_after}")
+    not_auto = sum(
+        1
+        for team in result.teams
+        if team.status == ResponseStatus.SUCCESS and not team.after_invalid
+    )
     logger.info(
         "asgard-raid score (%s): damage %d -> %d, points %d -> %d, "
-        "bossAttempts %s -> %s, rewards %s",
+        "bossAttempts %s -> %s, rewards %s, end-not-auto %d",
         account,
         result.damage_before,
         result.damage_after,
@@ -815,13 +850,19 @@ def _print_summary(account: str, result: AsgardRaidRunResult) -> None:
             f"{reward.reward_type}={reward.status.value}" for reward in result.rewards
         )
         or "none",
+        not_auto,
     )
 
 
 def _refresh_after(
     client: HWClient, result: AsgardRaidRunResult, executed: int
 ) -> None:
-    """Refresh the post-run score / attempts (best effort)."""
+    """Refresh the post-run score / attempts (best effort).
+
+    Fields missing from the refreshed response fall back to local estimates
+    (``before - executed`` / ``before + total_damage``) instead of 0, so a
+    partial ``clanRaid_getInfo`` never wipes the displayed score.
+    """
     try:
         after = fetch_clan_raid_info(client)
     except HWAuthError:
@@ -829,18 +870,25 @@ def _refresh_after(
     except AsgardRaidError as exc:
         print(f"{Emojis.WARNING}Could not refresh raid info: {exc}")
         after = {}
-    if after:
-        result.attempts_after = _optional_int(after.get("bossAttempts"))
-        result.damage_after = _user_damage(after)
-        result.points_after = _user_points(after)
-    else:
-        result.attempts_after = (
+    attempts_after = _optional_int(after.get("bossAttempts")) if after else None
+    if attempts_after is None:
+        attempts_after = (
             None
             if result.attempts_before is None
             else result.attempts_before - executed
         )
-        result.damage_after = result.damage_before + result.total_damage
-        result.points_after = result.points_before
+    result.attempts_after = attempts_after
+    stats = after.get("userStats") if isinstance(after.get("userStats"), dict) else {}
+    damage_after = _optional_int(stats.get("damage")) if stats else None
+    points_after = _optional_int(stats.get("points")) if stats else None
+    result.damage_after = (
+        damage_after
+        if damage_after is not None
+        else result.damage_before + result.total_damage
+    )
+    result.points_after = (
+        points_after if points_after is not None else result.points_before
+    )
 
 
 def run_asgard_raid(
@@ -920,6 +968,14 @@ def run_asgard_raid(
                 result.teams.append(_team_result(team, ResponseStatus.SKIPPED))
                 continue
 
+            # Cooperative Ctrl+C: stop between battles (the attempt for the
+            # current slot has not been spent yet, so this is not an error).
+            from hw_genie.runner import is_cancelled
+
+            if is_cancelled():
+                print(f"{Emojis.INFO}cancelled; stopping before slot {team.slot}.")
+                break
+
             print(
                 f"{Emojis.STEP}slot {team.slot}: starting boss battle "
                 f"(heroes={list(team.heroes)} pet={team.pet})..."
@@ -948,7 +1004,17 @@ def run_asgard_raid(
                 result.error = f"end failed for slot {team.slot}: {error}"
                 break
 
-            damage, win, stars, replay = parse_end_detail(end_res.detail)
+            damage, win, stars, replay, after_invalid = parse_end_detail(end_res.detail)
+            if not after_invalid:
+                print(
+                    f"{Emojis.WARNING}slot {team.slot}: end was not auto-simulated "
+                    "(afterInvalid missing/false); damage may be unreliable."
+                )
+                logger.warning(
+                    "asgard-raid slot %s: end response has afterInvalid=false "
+                    "(damage may be unreliable)",
+                    team.slot,
+                )
             print(
                 f"{Emojis.SUCCESS}slot {team.slot}: damage="
                 f"{format_number_with_suffix(damage)} win={win} stars={stars}"
@@ -962,9 +1028,13 @@ def run_asgard_raid(
                     win=win,
                     stars=stars,
                     replay=replay,
+                    after_invalid=after_invalid,
                 )
             )
+            # Space the next start (if any) away from this end call.
+            client.sleep()
 
+    client.sleep()
     result.rewards = claim_rating_rewards(client)
     _refresh_after(client, result, executed)
     _print_summary(account_alias, result)

@@ -1413,7 +1413,13 @@ def summarize_asgard_raid(
         reward_cell = " ".join(rewards) or "-"
         note = "dry-run" if dry_run or res.dry_run else "-"
         if not res.teams:
-            note = "no teams registered"
+            note = (
+                "dry-run; no teams registered"
+                if dry_run or res.dry_run
+                else "no teams registered"
+            )
+        if not res.dry_run and not dry_run and res.attempts_before == 0:
+            note = "no attempts left"
         if res.error:
             note = res.error
             failed.append(f"{account} ({res.error})")
@@ -1422,6 +1428,12 @@ def summarize_asgard_raid(
             failed.append(f"{account} ({res.failed_count} team(s) failed)")
         else:
             ok += 1
+        if any(
+            team.status == ResponseStatus.SUCCESS and not team.after_invalid
+            for team in res.teams
+        ):
+            # Warning only: the attempt was spent and the damage was recorded.
+            note = "end not auto-simulated" if note == "-" else f"{note}; end not auto-simulated"
         rows.append(
             [
                 account,
@@ -1445,7 +1457,8 @@ def summarize_asgard_raid(
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
     print("=" * width)
-    print(f"✅ {ok} account(s) completed, ❌ {len(failed)} failed.\n")
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
 
 

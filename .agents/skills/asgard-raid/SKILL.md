@@ -15,7 +15,7 @@ description: HW-Genie を使用して、Asgard（ギルドレイド）のボス�
 - **重要**: `start` 後に `end` を送らないと、`clanRaid_getInfo` を何度読んでも `userStats.damage` は増えず、攻撃だけが消費されたままになります。必ず `end`（空 progress）を送ってください。
 - **スコア表示**: `end` レスポンスの `result.damage`（defender ごとの damage）を合計し、チーム別 damage / 合計 damage / `bossAttempts` の前後 / `userStats.damage`・`points` の前後を表示します。実行後スコアはサマリーとログ（`asgard-raid score (...)`）に残ります。
 - **週間ランキング報酬**: ボス戦の最後に `clanRaid_farmRatingReward` を `standingClan`（ギルド）→ `standingUser`（個人）の順で受け取ります。週1回のため、受取済みなどのエラーは**スキップ扱い**にしてラン整体を失敗にしません（認証エラーのみ再送出）。`--dry-run` では受け取りません。
-- **ログからの復元**: `team import-log --boss osh|maestro [--user-id ID] [--overwrite] [--dry-run]`。`clanRaid_logBoss` の自分の戦闘履歴を攻撃順に読み、`attackers` の `type="hero"`（`favorPetId` が favor）と `type="pet"` から heroes / pet / favor を復元して slot 1..N に登録します。既存 slot はデフォルトでスキップし、`--overwrite` で置換します（`enabled` / `memo` は保持）。`--user-id` 省略時は `userGetInfo` で自分の player ID を解決します。
+- **ログからの復元**: `team import-log --boss osh|maestro [--user-id ID] [--overwrite] [--dry-run] [--latest]`。`clanRaid_logBoss` の自分の戦闘履歴を攻撃順に読み、`attackers` の `type="hero"`（`favorPetId`、無ければ `petId` が favor）と `type="pet"` から heroes / pet / favor を復元して slot 1..N に登録します。既存 slot はデフォルトでスキップし、`--overwrite` で置換します（`enabled` / `memo` は保持）。履歴が6件以上ある場合は slot 対応が曖昧になるためエラーになりますが、`--latest` を付けると**直近5件**を攻撃順に slot 1..5 へ割り当てます。`--user-id` 省略時は `userGetInfo` で自分の player ID を解決します。
 - **停止条件**: 残り `bossAttempts` が 0、`start` 失敗、または `end` 失敗で残りチームを停止します（認証切れは `HWAuthError` として上位へ）。チームが0件・attempts 0 でも週間報酬の受け取りと実行後スコアの取得は行います。
 - **`--dry-run`**: 週判定と実行予定チームの表示のみ（攻撃しません）。
 - **`multi asgard-raid`**: 全アカウントで実行します。攻撃回数を消費するため **`--yes` 必須**（`--dry-run` は `--yes` 不要）。
@@ -44,6 +44,8 @@ description: HW-Genie を使用して、Asgard（ギルドレイド）のボス�
    # 既存 slot を埋めない（デフォルト） / 置換する
    uv run hw-genie asgard-raid team import-log --boss maestro -a <account>
    uv run hw-genie asgard-raid team import-log --boss maestro -a <account> --overwrite
+   # 履歴が6件以上あるときは直近5件を使う
+   uv run hw-genie asgard-raid team import-log --boss maestro -a <account> --latest
    # 別プレイヤーの履歴を指定
    uv run hw-genie asgard-raid team import-log --boss maestro -a <account> --user-id <playerId>
    ```

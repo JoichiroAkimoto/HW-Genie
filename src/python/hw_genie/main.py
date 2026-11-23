@@ -631,6 +631,7 @@ def cmd_asgard_raid_team_import_log(args):
             user_id=args.user_id,
             overwrite=bool(args.overwrite),
             dry_run=bool(args.dry_run),
+            latest=bool(getattr(args, "latest", False)),
         )
     except (AsgardRaidReadError, AsgardRaidError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -646,6 +647,7 @@ def cmd_asgard_raid_run(args):
     )
 
     account = resolve_account(args.account)
+    _require_registered_account(account)
     headers = _ensure_session(args)
     client = HWClient(headers)
     try:
@@ -1889,7 +1891,7 @@ def cmd_multi(args):
                         routine,
                         accounts=ready_accounts,
                         max_parallel=max_parallel,
-                        cooperative_wait=(mode == "toe"),
+                        cooperative_wait=(mode in ("toe", "asgard-raid")),
                     )
                     results.update(worker_results)
                 # Preserve the original (registration/request) account order.
@@ -2413,6 +2415,11 @@ def main():
         "--overwrite",
         action="store_true",
         help="Replace existing slots (enabled / memo are preserved)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--latest",
+        action="store_true",
+        help="With more than 5 battles, use the 5 most recent instead of erroring",
     )
     p_asgard_raid_team_import.add_argument(
         "--dry-run", action="store_true", help="Show the reconstructed teams without writing"

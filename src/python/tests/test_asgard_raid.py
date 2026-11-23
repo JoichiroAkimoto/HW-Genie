@@ -32,6 +32,9 @@ from hw_genie.core.client import HWAuthError, ResponseStatus
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.runner import summarize_asgard_raid
 
+# start / end / reward calls are spaced with client.sleep(); keep tests fast.
+pytestmark = pytest.mark.usefixtures("mock_sleep")
+
 
 def _register_alice(player_id: str = "11111111") -> None:
     SessionManager.save(
@@ -101,18 +104,13 @@ def _start_detail() -> dict:
     return {"response": {"battle": {"type": "clan_raid", "seed": 878872284}}}
 
 
-def _end_detail(damage: int = 35_790_884, replay: str = "r1") -> dict:
-    return {
-        "response": {
-            "result": {
-                "win": False,
-                "stars": 0,
-                "afterInvalid": True,
-                "damage": {"1": damage, "2": 0},
-            },
-            "replay": replay,
-        }
-    }
+def _end_detail(
+    damage: int = 35_790_884, replay: str = "r1", after_invalid: bool = True
+) -> dict:
+    result = {"win": False, "stars": 0, "damage": {"1": damage, "2": 0}}
+    if after_invalid:
+        result["afterInvalid"] = True
+    return {"response": {"result": result, "replay": replay}}
 
 
 def _reward_ok() -> MagicMock:
@@ -272,8 +270,16 @@ def test_detect_boss_falls_back_to_active_buffs():
 
 
 def test_parse_end_detail_sums_damage_and_reads_replay():
-    damage, win, stars, replay = parse_end_detail(_end_detail(12345, "r9"))
-    assert (damage, win, stars, replay) == (12345, False, 0, "r9")
+    damage, win, stars, replay, after_invalid = parse_end_detail(
+        _end_detail(12345, "r9")
+    )
+    assert (damage, win, stars, replay, after_invalid) == (
+        12345,
+        False,
+        0,
+        "r9",
+        True,
+    )
 
 
 def test_parse_end_detail_tolerates_string_damage_and_int_replay():
@@ -283,7 +289,18 @@ def test_parse_end_detail_tolerates_string_damage_and_int_replay():
             "replay": 456,
         }
     }
-    assert parse_end_detail(detail) == (123, True, 3, "456")
+    # result.afterInvalid missing -> False (damage may be unreliable)
+    assert parse_end_detail(detail) == (123, True, 3, "456", False)
+
+
+def test_parse_end_detail_falls_back_to_response_damage():
+    detail = {
+        "response": {
+            "result": {"win": True, "stars": 3, "afterInvalid": True},
+            "damage": {"1": 100, "2": "25"},
+        }
+    }
+    assert parse_end_detail(detail) == (125, True, 3, None, True)
 
 
 # --- import-log -----------------------------------------------------------
@@ -323,6 +340,59 @@ def test_parse_logged_teams_rejects_more_than_five_battles():
     }
     with pytest.raises(AsgardRaidError, match="cannot map more than 5"):
         parse_logged_teams(log, "111")
+    with pytest.raises(AsgardRaidError, match="--latest"):
+        parse_logged_teams(log, "111")
+
+
+def test_parse_logged_teams_latest_takes_most_recent_five_in_order():
+    log = {
+        "111": {
+            str(index): _battle_entry(
+                index,
+                [index, index + 10, index + 20, index + 30, index + 40],
+                None,
+                {},
+                index,
+                0,
+            )
+            for index in range(1, 7)
+        }
+    }
+    teams = parse_logged_teams(log, "111", latest=True)
+    assert [team.slot for team in teams] == [1, 2, 3, 4, 5]
+    # battles 2..6 (chronological), oldest dropped
+    assert teams[0].heroes == (2, 12, 22, 32, 42)
+    assert teams[-1].heroes == (6, 16, 26, 36, 46)
+
+
+def test_parse_logged_teams_skips_wrong_size_and_duplicate_heroes():
+    # duplicate hero IDs under distinct attacker keys (dict keys must differ)
+    dup = {
+        "id": "200",
+        "startTime": 200,
+        "attackers": {
+            key: {"id": hero, "type": "hero"}
+            for key, hero in zip("abcde", [1, 2, 3, 4, 4])
+        },
+        "result": {"damage": {}},
+    }
+    log = {
+        "111": {
+            "six": _battle_entry(100, [1, 2, 3, 4, 5, 6], None, {}, 100, 0),
+            "dup": dup,
+            "ok": _battle_entry(300, [7, 8, 9, 10, 11], None, {}, 300, 0),
+        }
+    }
+    teams = parse_logged_teams(log, "111")
+    assert [team.heroes for team in teams] == [(7, 8, 9, 10, 11)]
+
+
+def test_parse_logged_teams_uses_pet_id_when_favor_pet_id_missing():
+    entry = _battle_entry(100, [1, 2, 3, 4, 5], None, {1: 6001}, 100, 0)
+    entry["attackers"]["2"]["petId"] = 6002
+    log = {"111": {"b1": entry}}
+    teams = parse_logged_teams(log, "111")
+    assert teams[0].favor == {1: 6001, 2: 6002}
 
 
 def test_parse_logged_teams_missing_user_raises():
@@ -418,6 +488,38 @@ def test_import_teams_from_log_overwrite_preserves_enabled_and_memo(mock_client)
     assert team.memo == "keep"
 
 
+def test_import_teams_from_log_latest_imports_last_five(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    log = {
+        "11111111": {
+            str(index): _battle_entry(
+                index,
+                [index, index + 10, index + 20, index + 30, index + 40],
+                None,
+                {},
+                index,
+                0,
+            )
+            for index in range(1, 7)
+        }
+    }
+    mock_call.side_effect = [
+        _ok({"response": {"id": "11111111"}}),
+        _ok({"response": log}),
+    ]
+
+    result = import_teams_from_log(
+        client, account_alias="Alice", boss="maestro", latest=True
+    )
+
+    assert result.imported_slots == [1, 2, 3, 4, 5]
+    teams = list_asgard_raid_teams("Alice", "maestro")
+    assert [team.slot for team in teams] == [1, 2, 3, 4, 5]
+    assert teams[0].heroes == (2, 12, 22, 32, 42)
+    assert teams[4].heroes == (6, 16, 26, 36, 46)
+
+
 def test_import_teams_from_log_dry_run_writes_nothing(mock_client):
     client, mock_call = mock_client
     _register_alice()
@@ -489,7 +591,7 @@ def test_import_teams_from_log_no_logs_raises(mock_client):
 
 
 def test_parse_end_detail_tolerates_empty_detail():
-    assert parse_end_detail(None) == (0, False, 0, None)
+    assert parse_end_detail(None) == (0, False, 0, None, False)
 
 
 # --- run flow -------------------------------------------------------------
@@ -533,12 +635,41 @@ def test_run_starts_and_auto_ends_each_enabled_team(mock_client):
         "clanRaid_getInfo",
     ]
     assert calls[2]["args"] == {"result": {"win": False, "stars": 0}, "progress": []}
+    start_one = calls[1]["args"]
+    assert start_one["heroes"] == [50, 60, 58, 51, 72]
+    assert start_one["pet"] == 6005
+    assert start_one["favor"] == {"50": 6005}
     assert calls[5]["args"] == {"type": "standingClan"}
     assert calls[6]["args"] == {"type": "standingUser"}
     # start/end/reward are non-idempotent: never retried.
     assert mock_call.call_args_list[1].kwargs == {"max_retries": 0}
     assert mock_call.call_args_list[2].kwargs == {"max_retries": 0}
     assert mock_call.call_args_list[5].kwargs == {"max_retries": 0}
+
+
+def test_run_warns_when_end_was_not_auto_simulated(mock_client, capsys):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    mock_call.side_effect = [
+        _ok(_info(attempts=5)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10, "r1", after_invalid=False)),
+        _reward_ok(),
+        _reward_ok(),
+        _ok(_info(attempts=4, damage=10)),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice")
+
+    out = capsys.readouterr().out
+    assert "not auto-simulated" in out
+    assert "auto=False" in out
+    assert result.teams[0].status == ResponseStatus.SUCCESS
+    assert result.teams[0].after_invalid is False
+    # warning only: the attempt was spent, the team is still recorded
+    assert result.failed_count == 0
+    assert result.error is None
 
 
 def test_run_skips_disabled_team(mock_client):
@@ -823,6 +954,29 @@ def test_run_explicit_boss_when_week_is_unknown(mock_client):
     assert result.teams[0].status == ResponseStatus.SUCCESS
 
 
+def test_run_refresh_without_attempts_and_stats_falls_back(mock_client):
+    client, mock_call = mock_client
+    _register_alice()
+    set_asgard_raid_team("Alice", _team(slot=1))
+    refresh = _info()
+    del refresh["response"]["bossAttempts"]
+    del refresh["response"]["userStats"]
+    mock_call.side_effect = [
+        _ok(_info(attempts=5, damage=100, points=920)),
+        _ok(_start_detail()),
+        _ok(_end_detail(10)),
+        _reward_ok(),
+        _reward_ok(),
+        _ok(refresh),
+    ]
+
+    result = run_asgard_raid(client, account_alias="Alice")
+
+    assert result.attempts_after == 4  # before(5) - executed(1)
+    assert result.damage_after == 110  # damage_before(100) + total_damage(10)
+    assert result.points_after == 920  # unchanged points_before
+
+
 # --- multi summary --------------------------------------------------------
 
 
@@ -849,7 +1003,9 @@ def test_summarize_asgard_raid_counts_errors(capsys):
 def test_summarize_asgard_raid_dry_run_is_ok(capsys):
     result = AsgardRaidRunResult(boss="maestro", dry_run=True, teams=[])
     assert summarize_asgard_raid([("Alice", (result, None))], dry_run=True) == 0
-    assert "no teams registered" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "dry-run; no teams registered" in out
+    assert "planned" in out
 
 
 def test_summarize_asgard_raid_attempts_without_after_is_not_none(capsys):
@@ -901,6 +1057,49 @@ def test_summarize_asgard_raid_shows_score_and_rewards(capsys):
     assert "clan✓" in out
     assert "user⏭" in out
     assert "1.2K" in out
+
+
+def test_summarize_asgard_raid_notes_non_auto_end(capsys):
+    result = AsgardRaidRunResult(
+        boss="maestro",
+        dry_run=False,
+        attempts_before=5,
+        attempts_after=4,
+        teams=[
+            AsgardRaidTeamResult(
+                slot=1,
+                memo=None,
+                enabled=True,
+                status=ResponseStatus.SUCCESS,
+                damage=10,
+                after_invalid=False,
+            )
+        ],
+    )
+    # warning only, not a failure
+    assert summarize_asgard_raid([("Alice", (result, None))]) == 0
+    out = capsys.readouterr().out
+    assert "end not auto-simulated" in out
+
+
+def test_summarize_asgard_raid_reports_no_attempts_left(capsys):
+    result = AsgardRaidRunResult(
+        boss="maestro",
+        dry_run=False,
+        attempts_before=0,
+        attempts_after=0,
+        teams=[
+            AsgardRaidTeamResult(
+                slot=1,
+                memo=None,
+                enabled=True,
+                status=ResponseStatus.SKIPPED,
+            )
+        ],
+    )
+    assert summarize_asgard_raid([("Alice", (result, None))]) == 0
+    out = capsys.readouterr().out
+    assert "no attempts left" in out
 
 
 # --- CLI wiring -----------------------------------------------------------
@@ -1001,7 +1200,70 @@ def test_cli_team_set_rejects_wrong_hero_count(monkeypatch, capsys):
         expect_exit=True,
     )
     assert result.value.code == 2
-    assert "expected 5 arguments" in capsys.readouterr().err
+    assert "--heroes" in capsys.readouterr().err
+
+
+def _patch_run_cli(monkeypatch, fake_run):
+    class FakeClient:
+        def __init__(self, headers):
+            self.headers = headers
+
+        def sleep(self):
+            pass
+
+    monkeypatch.setattr("hw_genie.main.HWClient", FakeClient)
+    monkeypatch.setattr(
+        "hw_genie.main._ensure_session", lambda args: {"x-auth-token": "test"}
+    )
+    monkeypatch.setattr("hw_genie.commands.asgard_raid.run_asgard_raid", fake_run)
+
+
+def test_cli_run_passes_boss_and_dry_run(monkeypatch):
+    _register_alice()
+    captured = {}
+
+    def fake_run(client, **kwargs):
+        captured.update(kwargs)
+        return AsgardRaidRunResult(
+            boss=kwargs.get("boss"), dry_run=kwargs.get("dry_run", False)
+        )
+
+    _patch_run_cli(monkeypatch, fake_run)
+    _invoke_main(
+        [
+            "hw-genie",
+            "asgard-raid",
+            "run",
+            "-a",
+            "Alice",
+            "--boss",
+            "maestro",
+            "--dry-run",
+        ],
+        monkeypatch,
+    )
+
+    assert captured["account_alias"] == "Alice"
+    assert captured["boss"] == "maestro"
+    assert captured["dry_run"] is True
+
+
+def test_cli_run_exits_1_on_run_error(monkeypatch):
+    _register_alice()
+
+    def fake_run(client, **kwargs):
+        return AsgardRaidRunResult(
+            boss="maestro", dry_run=False, error="start failed for slot 1"
+        )
+
+    _patch_run_cli(monkeypatch, fake_run)
+    result = _invoke_main(
+        ["hw-genie", "asgard-raid", "run", "-a", "Alice"],
+        monkeypatch,
+        expect_exit=True,
+    )
+
+    assert result.value.code == 1
 
 
 def test_cli_multi_asgard_raid_requires_yes(monkeypatch, capsys):
