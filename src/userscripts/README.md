@@ -39,13 +39,71 @@ bash ./build.sh \
 
 ### アイコン（@icon）
 
-`index.ts` の `@icon` は GitHub Pages 上の `docs/assets/hw-genie-icon.png`
-（512px）を指す。Tampermonkey / Violentmonkey がインストール・更新時に取得し、
-一覧や詳細画面に表示する。DEV版も同じアイコンを使う（DEV版は `@name` と `-dev`
-サフィックスで区別される）。
+`index.ts` の `@icon` は GitHub Pages 上の 512px アイコンを指す。Tampermonkey /
+Violentmonkey がインストール・更新時に取得し、一覧や詳細画面に表示する。DEV版も同じアイコンを使う（DEV版は `@name` と `-dev` サフィックスで区別される）。
 
-`docs/assets/` が Source of Truth で、マスター `hw-genie-icon-1024.png` から
-512px 版と `favicon.ico`（16/32/48/64）を生成している。
+```
+https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
+```
+
+絶対 URL を**ドキュメント本文**に明記するのは本セクションだけにする（コード内の `@icon` は仕様上 絶対 URL が必須。それ他のドキュメントは `docs/assets/` への相対参照に留める）。
+
+- 参照の実在性は `github-pages.yml` の `Verify /assets references exist` が **Pages ビルド前**に検証する（走査対象は `src/userscripts/index.ts` / `docs/_includes/head-custom.html` / `docs/_config.yml` / `docs/index.md` / `README.md` / `src/userscripts/README.md`）。このステップは `build` ジョブにあるため、誤参照はアイコン限りでなく Pages デプロイ全体を止める。
+- `@icon` URL の到達性は **リリース後**に `release.yml` が確認し、未達でも warning にとどめてスクリプト配布は止めない（Pages デプロイ遅れの 404 でリリースを止めない）。
+
+#### 資産一覧（`docs/assets/` が Source of Truth）
+
+| ファイル | 用途 |
+| --- | --- |
+| `hw-genie-icon-1024.png` | マスター（1024px / フラット 8 色） |
+| `hw-genie-icon.png` | 配布用 512px（`@icon`・Pages の png favicon・README） |
+| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色） |
+| `hw-genie-social-preview.png` | 1280x640。og:image / twitter:image。原画はリポジトリ外のためリポジトリ内容からの再生成は不可 |
+
+Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 512px png → apple-touch-icon。テーマ本体の `head-custom-theme-colors.html` と Google Analytics フックは追加型で残す。`theme-color` はテーマが `#151515` 固定で出すため重複指定しない）と `docs/_config.yml`（`logo` は JSON-LD の publisher 用、`defaults` の `image` が og:image を生成）。
+
+#### 生成と検品
+
+ピクセルアートは既定の補間縮小で境界がにじむ（8 色が 100 色超に膨らむ）ため、縮小は必ず最近傍 (`-filter point`) ＋ 非ディザーの 8 色量子化で行う。さらに `-strip` を添えて、生成ツールの来歴メタデータ（`TC260:AIGC` の ContentProducer / ProduceID など）とタイムスタンプを公開資産に残さない。
+
+```bash
+cd "$(git rev-parse --show-toplevel)"   # 以降のパスはすべてリポジトリルート基準
+
+# 配布用 512px png
+magick docs/assets/hw-genie-icon-1024.png \
+  -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon.png
+
+# favicon.ico（各サイズを作ってから合成）
+for s in 16 32 48 64; do
+  magick docs/assets/hw-genie-icon-1024.png \
+    -filter point -resize ${s}x${s} -colors 8 -dither none -strip /tmp/ico${s}.png
+done
+magick /tmp/ico16.png /tmp/ico32.png /tmp/ico48.png /tmp/ico64.png \
+  -strip docs/assets/favicon.ico
+
+# 検品 1: favicon の全レイヤーが 8 色以下（16px は 7 色）
+identify -format "%s: %wx%h colors=%k\n" docs/assets/favicon.ico
+
+# 検品 2: コミット対象の PNG にメタデータチャンクが無いこと
+python3 - docs/assets/*.png <<'PY'
+import struct, sys
+for path in sys.argv[1:]:
+    data, off, bad = open(path, "rb").read(), 8, []
+    while off + 8 <= len(data):
+        ln = struct.unpack(">I", data[off:off + 4])[0]
+        ty = data[off + 4:off + 8].decode("latin-1")
+        if ty in ("tEXt", "zTXt", "iTXt", "tIME"):
+            bad.append(ty)
+        off += 12 + ln
+    print(path, "meta chunks:", bad or "none")
+PY
+```
+
+検品は**コミット前のそのファイルに対して**行うもの（`git add` する前に実行し、両方とも期待値が出たらコミットする）。マスター／原画の差し替え時も同じく `-strip` した原画を取り込んでから上の生成コマンドを流し直す。
+
+#### 反映タイミング
+
+アイコンは `index.ts` のメタブロックなので、**既存インストールに届くのはタグリリースを通じたスクリプト更新のときだけ**です。タグプッシュと Pages デプロイの順序ルールは RELEASE_PROCESS.md（Source of Truth）に記載。
 
 ### DEV版ビルド（ToE自動化時のみONにする開発版）
 
