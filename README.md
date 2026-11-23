@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/hw-genie-icon.png" alt="HW-Genie logo" width="128" height="128" />
+</p>
+
 # HW-Genie 🧞‍♂️
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-HW--Genie-ea4aaa.svg?style=for-the-badge&logo=github)](https://github.com/sponsors/JoichiroAkimoto)

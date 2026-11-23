@@ -71,6 +71,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **リクエスト署名**: ゲーム API は `X-Request-Id` / `X-Auth-Token` / `X-Auth-Session-Id` / リクエストボディ（compact JSON）/ `X-Env*` から算出した `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（署名式は同ファイル参照。キャプチャした署名値の再利用や `json=` での送信は `Invalid signature` になります）。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
+*   **ブランド資産**: アイコンの Source of Truth は `docs/assets/`（マスター `hw-genie-icon-1024.png`、配布用 `hw-genie-icon.png`、`favicon.ico`、`hw-genie-social-preview.png`）。Userscript の `@icon` は Pages の `.../HW-Genie/assets/hw-genie-icon.png` を指すため、画像の差し替え反映には `@version` を上げた再リリースが必要（詳細は `src/userscripts/README.md`）。
 
 ## 5. 複数アカウント・複数タスクの実行戦略
 大量の処理（例：複数アカウントでのレイド＋ショッピング）を行う際は、タイムアウトを避けるため以下の戦略を徹底してください。

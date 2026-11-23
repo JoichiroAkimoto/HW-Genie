@@ -37,6 +37,19 @@ bash ./build.sh \
 
 > **注意:** `--inject-download-url` や `--inject-update-url` を指定しないローカルビルドでは、`__DOWNLOAD_URL__` や `__UPDATE_URL__` のプレースホルダーが残るため、配布物として使用することはできません。
 
+### アイコン（@icon）
+
+`index.ts` の `@icon` は GitHub Pages 上の
+`docs/assets/hw-genie-icon.png`（512px）を指す。Tampermonkey / Violentmonkey が
+インストール・更新時に取得し、一覧や詳細画面に表示する。DEV版も同じアイコンを
+使う（DEV版は `@name` と `-dev` サフィックスで区別される）。
+
+画像の Source of Truth は `docs/assets/` 直下（マスター `hw-genie-icon-1024.png`、
+配布用 `hw-genie-icon.png`、`favicon.ico` に 16/32/48/64）。アイコンを差し替える
+場合はマスターを再配置して 512px 版と `favicon.ico` を再生成したうえで、Pages の
+デプロイ完了後に `@version` を上げて再リリースする（`@icon` は配布物である
+metadata の一部なので、反映には新しいリリースが必要）。
+
 ### DEV版ビルド（ToE自動化時のみONにする開発版）
 
 HW Goodwin 等との干渉を避けるため、ToE自動化を行うときだけDEV版を有効化し、
