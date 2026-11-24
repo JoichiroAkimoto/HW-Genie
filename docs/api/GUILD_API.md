@@ -352,13 +352,26 @@ userscript は全滅（dummy loss）を返す。`seed` が欠落・無効、ま�
 警告として 1 行で報告する（該当 rival は個別バトルで再試行される）。
 dummy loss は EndRaid に含めない（サーバーがレイド全体を無効化し得るため）。
 
+戦闘計算の dummy（空 progress）が連続 3 回続いた場合、個別バトル経路は
+`BridgeCalcError` で Tier ループを停止して原因（userscript の `diag`）を
+表示する（1〜2 回の一時的失敗は従来どおり次のチーム／シードへ継続）。
+レイド経路では検証済み結果が 1 件でもあれば検証済み分のみで EndRaid して
+そのまま通常どおり続行し（例外にしない）、`BridgeCalcError` を送出するのは
+検証済み結果が 1 件も無く（EndRaid はスキップ）かつ dummy が連続 3 回に
+達した場合だけである。連続判定は rival 単位のカウンタではなく、
+`_run_rivals` では同一実行内で rival / チーム / シードをまたいだ連続 3 回、
+`_run_raid` ではレイドバッチ内の rival をまたいだ連続 3 回を数える。
+seed／ロスター欠落によるスキップはダミー計数の前に確定するため、カウントを
+伸ばしもリセットもしない。bridge エラーと検証済み結果はカウントをリセットする。
+
 `hw-genie toe run` はこの形で Raid をステージ開始時に実行し、レイドで
 検証済み結果が 1 件も得られなかった場合は同一 Tier 内ではレイド再試行を
 打ち切り、Tier が変われば再試行する（抑止は Tier 単位。Tier の同一判定は
 数値正規化したキーで行い、API が `8` / `"8"` / `8.0` を揺らしても抑止を
-維持する）。`tier` を欠落した status は別 Tier 扱いで抑止をリセットする
-（不明な状態で古い抑止を引き継がないため）。残りの rival は個別バトル
-（`titanArenaStartBattle`）で継続する。
+維持する）。ただし 3 連続 dummy は計算基盤の故障なので、この抑止ではなく
+上記の `BridgeCalcError` として Tier を停止する。`tier` を欠落した status
+は別 Tier 扱いで抑止をリセットする（不明な状態で古い抑止を引き継がない
+ため）。残りの rival は個別バトル（`titanArenaStartBattle`）で継続する。
 レイドで負けた rival は `attackScore < threshold` のまま残るため、続く
 個別バトルの対象になる。レイドが一部の rival だけを落とした場合は、
 個別バトルの前に `titanArenaGetStatus` を再取得し、レイドで既にクリア
@@ -459,6 +472,165 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
   -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
   --data-raw '{"calls":[{"name":"clanRaid_shopBuy","args":{"slotId":17},"context":{"actionTs":3247542},"ident":"body"}]}'
 ```
+
+---
+
+### clanRaid_startBossBattle - ボス戦開始
+Asgard のボス戦を開始します。チーム（5 ヒーロー + ペット + favor）を指定します。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `heroes` | int[5] | ✓ | 攻撃側のヒーロー ID（5 体） |
+| `pet` | int | | ペット ID（例: 6002 / 6005） |
+| `favor` | dict | | `heroId -> patronPetId` のマップ（例: `{"12":6003,"13":6002}`） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_startBossBattle","args":{"heroes":[50,60,58,51,72],"pet":6005,"favor":{"50":6005,"51":6001,"58":6008,"60":6006,"72":6002}},"context":{"actionTs":15065795},"ident":"body"}]}'
+```
+
+### Response フィールド
+
+`response.battle` にバトルオブジェクトが返ります。
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `battle.type` | string | `clan_raid` |
+| `battle.seed` | int | バトルシード |
+| `battle.typeId` | int | バトル種別 ID（実測: `11002`） |
+| `battle.userId` | string | 攻撃側プレイヤー ID |
+| `battle.attackers` | object | 攻撃側ユニットの状態（hero ID → 状態） |
+
+> **重要**: `startBossBattle` を送った時点で `clanRaid_getInfo` の `bossAttempts` が 1 減ります。`endBossBattle` を送らないとバトルは未確定のまま残り、`userStats.damage` は増えません（`clanRaid_getInfo` を繰り返しても解決されません）。
+
+---
+
+### clanRaid_endBossBattle - ボス戦終了（オートバトル確定）
+ボス戦の結果を送信します。**空の `progress` を送ると、サーバーがクライアント側シミュレーションの不備とみなしてサーバー側オートバトルで結果を確定します**（実測 serverVersion 300, 2026-11-17）。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `result` | object | ✓ | `{"win": bool, "stars": int}` |
+| `progress` | array | | クライアント側シミュレーション結果。空配列 `[]` でオートバトル確定 |
+
+### curl 実行例（オートバトル）
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_endBossBattle","args":{"result":{"win":false,"stars":0},"progress":[]},"context":{"actionTs":0},"ident":"body"}]}'
+```
+
+### Response フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `response.result.win` | bool | 勝敗 |
+| `response.result.stars` | int | スター数 |
+| `response.result.afterInvalid` | bool | `true` = 空/不正 progress によりサーバー側オートバトルで確定 |
+| `response.result.damage` | object | defender インデックス → 与ダメージ（例: `{"1":35790884,"2":0}`） |
+| `response.result.raidId` | string | レイド ID |
+| `response.result.level` | string | ボスレベル |
+| `response.result.serverVersion` | int | サーバーバージョン（実測: `300`） |
+| `response.damage` | object | `result.damage` と同じ |
+| `response.states` | object | バトル後のボス状態（`state.hp` など） |
+| `response.replay` | string | リプレイ ID |
+
+> クライアントが通常送る `progress` は `[{"v":300,"b":0,"seed":<int>,"attackers":{"input":["auto",...],"heroes":{...}},"defenders":{"input":[],"heroes":{...}}}]` の形ですが、`hw-genie asgard-raid` はシミュレーションを行わず空配列でオートバトルを利用します。
+
+#### `clanRaid_getInfo` のスコア関連フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `bossAttempts` | int | 残りボス攻撃回数（`startBossBattle` で 1 減る） |
+| `attempts` | int | ミニオンフェーズの残り攻撃回数 |
+| `userStats.damage` | string | 自分の今週の累計ダメージ（数値文字列） |
+| `userStats.points` | string | 自分のクランポイント |
+| `stats.points` | string | クラン合計ポイント |
+
+---
+
+### clanRaid_farmRatingReward - 週間ランキング報酬の受け取り
+
+Asgard の週間ランキング報酬を受け取ります。ギルド（`standingClan`）と個人（`standingUser`）の2種類があり、**それぞれ週に1回**受け取れます。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `type` | string | ✓ | `standingClan`（ギルド）または `standingUser`（個人） |
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_farmRatingReward","args":{"type":"standingClan"},"context":{"actionTs":2649805},"ident":"body"}]}'
+```
+
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'accept: */*' -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"clanRaid_farmRatingReward","args":{"type":"standingUser"},"context":{"actionTs":2649805},"ident":"body"}]}'
+```
+
+> `hw-genie asgard-raid run` / `multi asgard-raid` はボス戦の最後にこの2種類を順に呼びます。受取済みなどでエラーになった場合は**スキップ**として扱い、ラン整体を失敗にしません（認証エラーのみ再送出）。`--dry-run` では受け取りません。
+
+---
+
+### clanRaid_logBoss - ボス戦の戦闘履歴
+
+ギルドメンバーのボス戦履歴を取得します。`hw-genie asgard-raid team import-log` はこの履歴からチーム構成（heroes / pet / favor）を復元します。
+
+### Request Arguments
+
+| 引数 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| なし | - | - | - |
+
+### Response Structure
+
+```json
+{
+  "response": {
+    "<userId>": {
+      "<battleId>": {
+        "userId": "12345678",
+        "typeId": "11002",
+        "type": "clan_raid",
+        "startTime": 1795371600,
+        "endTime": 1795371600,
+        "seed": "2094873982",
+        "attackers": {
+          "50": {"id": 50, "type": "hero", "petId": 6005, "favorPetId": 6005},
+          "60": {"id": 60, "type": "hero", "petId": 6006, "favorPetId": 6006},
+          "6005": {"id": 6005, "type": "pet", "petId": null, "favorPetId": null}
+        },
+        "defenders": {"1": {"id": 2025, "type": "hero"}},
+        "result": {"win": false, "stars": 0, "damage": {"1": 35790884, "2": 0}}
+      }
+    }
+  }
+}
+```
+
+### フィールド
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `response[userId][battleId]` | object | プレイヤー別・バトル別の履歴（レスポンスは大きくなり得る） |
+| `attackers` | object | 攻撃側ユニット。`type="hero"` がヒーロー、`type="pet"` がチームペット |
+| `attackers[].favorPetId` | int | そのヒーローに付けた patron（favor の値） |
+| `attackers[].petId` | int | ヒーロー側の patron（通常 `favorPetId` と同値） |
+| `startTime` | int | 攻撃時刻（秒）。履歴の攻撃順ソートに使う |
+| `id` | int/string | バトル ID |
+| `result.damage` | object | defender ごとの与ダメージ |
+
+> `import-log` は `attackers` の `type="hero"` を heroes、`favorPetId`（無ければ `petId`）を favor、`type="pet"` をチーム pet として復元します。5体未満・重複ありの不完全な履歴はスキップし、6件以上ある場合は slot 1〜5 への対応が曖昧になるためエラーにします（`--latest` を付けると直近5件を攻撃順に slot 1〜5 へ割り当てます）。
 
 ---
 

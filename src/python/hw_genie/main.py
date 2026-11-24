@@ -28,13 +28,42 @@ from hw_genie.runner import (
 from hw_genie.runner import run_all_accounts, summarize, resolve_max_parallel
 
 
+_SENSITIVE_HEADER_PREFIXES = ("x-auth-", "authorization", "cookie")
+
+
+def _redact_headers(headers: dict) -> dict:
+    """秘匿ヘッダーの値だけを ``***`` に置き換えた新しい dict を返す。
+
+    対象は :data:`_SENSITIVE_HEADER_PREFIXES`（``x-auth-*`` / ``authorization*``
+    / ``cookie*``）で始まるキー。キーの大小文字は無視する
+    （``--update '{"X-Auth-Token": ...}'`` のように大文字キーで保存された
+    トークンも伏字にする）。それ以外のヘッダー（``Content-Type`` 等）は
+    そのまま残す。入力 dict は変更しない。
+    """
+    return {
+        k: (
+            "***"
+            if str(k).lower().startswith(_SENSITIVE_HEADER_PREFIXES)
+            else v
+        )
+        for k, v in headers.items()
+    }
+
+
 def _prepare_info_for_json(info: dict) -> dict:
-    """JSON出力用に PlayerStatus オブジェクトを辞書に変換する"""
-    if "player" in info and hasattr(info["player"], "to_dict"):
-        output = info.copy()
-        output["player"] = info["player"].to_dict()
-        return output
-    return info
+    """JSON出力用にヘッダーを伏字化し、PlayerStatus オブジェクトを辞書に変換する
+
+    表示用の変換であり、元の ``info`` は変更しない（``update_session_with_headers``
+    が保存済みのデータに伏字が波及しないようにする）。
+    """
+    output = info.copy()
+    headers = output.get("headers")
+    if isinstance(headers, dict):
+        output["headers"] = _redact_headers(headers)
+    player = output.get("player")
+    if hasattr(player, "to_dict"):
+        output["player"] = player.to_dict()
+    return output
 
 
 def _positive_int(value: str) -> int:
@@ -109,13 +138,19 @@ def _run_host_identifier() -> str:
     return f"{user}@{machine}"
 
 
-def _ensure_session(args) -> dict[str, str]:
-    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+def _load_session_headers(account: str) -> dict[str, str] | None:
+    """セッションヘッダーを読み込む（未登録・ヘッダー欠落時は None）"""
     from hw_genie.core.session_manager import SessionManager
 
-    resolved = resolve_account(args.account)
-    data = SessionManager.load(resolved)
+    data = SessionManager.load(account)
     headers = data.get("headers") if data else None
+    return headers or None
+
+
+def _ensure_session(args) -> dict[str, str]:
+    """セッションヘッダーを検証し、なければエラーを出して終了する"""
+    resolved = resolve_account(args.account)
+    headers = _load_session_headers(resolved)
     if not headers:
         print(f"Error: Session not found for account '{resolved}'. Please provide a valid curl with --curl.")
         sys.exit(1)
@@ -374,8 +409,10 @@ def cmd_auth(args):
         print(json.dumps(_prepare_info_for_json(info), indent=2))
     else:
         headers = session_data.get("headers") or {}
-        redacted_headers = {k: ("***" if k.startswith("x-auth-") else v) for k, v in headers.items()}
-        print(json.dumps(redacted_headers, indent=2))
+        # キーの大小文字を無視して秘匿ヘッダー（x-auth-* / authorization /
+        # cookie）を伏字にする（``--update '{"X-Auth-Token": ...}'`` のように
+        # 大文字キーで保存されたトークンも平文表示しない）
+        print(json.dumps(_redact_headers(headers), indent=2))
 
 
 def cmd_auth_server(args):
@@ -522,6 +559,142 @@ def cmd_asgard_shop(args):
         sys.exit(1)
 
 
+def cmd_asgard_raid_team_set(args):
+    """Create/update one Asgard boss-battle team (1-5)."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardTeam,
+        format_team,
+        parse_favor_args,
+        parse_heroes,
+        set_asgard_raid_team,
+        validate_boss,
+        validate_pet,
+        validate_slot,
+    )
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        team = AsgardTeam(
+            boss=validate_boss(args.boss),
+            slot=validate_slot(args.slot),
+            heroes=parse_heroes(args.heroes),
+            pet=validate_pet(args.pet),
+            favor=parse_favor_args(args.favor),
+            enabled=not args.disabled,
+            memo=args.memo,
+        )
+        set_asgard_raid_team(account, team)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    state = "enabled" if team.enabled else "disabled"
+    memo = f" memo={team.memo}" if team.memo else ""
+    print(
+        f"{Emojis.SUCCESS}Saved {team.boss} slot {team.slot} for '{account}' "
+        f"[{state}] {format_team(team)}{memo}"
+    )
+
+
+def cmd_asgard_raid_team_list(args):
+    """List stored Asgard boss-battle teams."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        format_team,
+        list_asgard_raid_teams,
+    )
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        teams = list_asgard_raid_teams(account, args.boss)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not teams:
+        scope = f" ({args.boss})" if args.boss else ""
+        print(f"{Emojis.INFO}No Asgard raid teams registered for '{account}'{scope}.")
+        return
+    print(f"\n{Emojis.STEP}--- Asgard raid teams ({account}) ---")
+    for team in teams:
+        state = "enabled" if team.enabled else "disabled"
+        memo = f" memo={team.memo}" if team.memo else ""
+        print(
+            f"  {team.boss} slot {team.slot} [{state}] {format_team(team)}{memo}"
+        )
+
+
+def cmd_asgard_raid_team_remove(args):
+    """Delete one stored Asgard boss-battle team."""
+    from hw_genie.commands.asgard_raid import AsgardRaidError, remove_asgard_raid_team
+    from hw_genie.core.client import Emojis
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    try:
+        remove_asgard_raid_team(account, args.boss, args.slot)
+    except AsgardRaidError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{Emojis.SUCCESS}Removed {args.boss} slot {args.slot} for '{account}'.")
+
+
+def cmd_asgard_raid_team_import_log(args):
+    """Rebuild boss-battle teams from clanRaid_logBoss."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardRaidReadError,
+        import_teams_from_log,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        import_teams_from_log(
+            client,
+            account_alias=account,
+            boss=args.boss,
+            user_id=args.user_id,
+            overwrite=bool(args.overwrite),
+            dry_run=bool(args.dry_run),
+            latest=bool(getattr(args, "latest", False)),
+        )
+    except (AsgardRaidReadError, AsgardRaidError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_asgard_raid_run(args):
+    """Run the enabled Asgard boss-battle teams for the current week."""
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidError,
+        AsgardRaidReadError,
+        run_asgard_raid,
+    )
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    try:
+        result = run_asgard_raid(
+            client,
+            account_alias=account,
+            boss=args.boss,
+            dry_run=bool(args.dry_run),
+        )
+    except (AsgardRaidReadError, AsgardRaidError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if result.error or result.failed_count:
+        sys.exit(1)
+
+
 def cmd_seers_game(args):
     """Seer's Game をコイン枯渇まで自動周回する"""
     # argparse に choices= は付けない（live の event.size 上限は実行時に
@@ -563,6 +736,88 @@ def cmd_seers_game(args):
         and not is_clean_depletion(result.last_error)
     ):
         print(f"Error: Seer's Game failed: {result.last_error}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_power_tournament(args):
+    """Power Tournament の状態・グループ上位・受取可能報酬を表示/受取する。"""
+    from hw_genie.commands.power_tournament import (
+        MAX_TOP,
+        render_power_tournament,
+        run_power_tournament,
+    )
+
+    top = int(args.top)
+    if not 1 <= top <= MAX_TOP:
+        print(f"Error: --top must be between 1 and {MAX_TOP}", file=sys.stderr)
+        sys.exit(2)
+
+    headers = _ensure_session(args)
+    account = resolve_account(args.account)
+    client = HWClient(headers)
+    result = run_power_tournament(
+        client,
+        account_alias=account,
+        top=top,
+        dry_run=bool(args.dry_run),
+    )
+    render_power_tournament(result)
+    if result.error or result.ranking_error or result.failed_claims:
+        sys.exit(1)
+
+
+def cmd_gift(args):
+    """エレメントギフトの現況表示 / 一括 MAX 化 / 一括リセット"""
+    from hw_genie.commands.element_gift import (
+        DEFAULT_MAX_POWER,
+        GiftReadError,
+        print_status,
+        run_gift_reset,
+        run_gift_up,
+    )
+
+    limit = getattr(args, "limit", None)
+    if limit is not None and limit < 1:
+        print("Error: --limit must be 1 or more", file=sys.stderr)
+        sys.exit(2)
+    max_power = getattr(args, "max_power", None)
+    if max_power is not None and max_power < 0:
+        print("Error: --max-power must be 0 or more", file=sys.stderr)
+        sys.exit(2)
+
+    headers = _ensure_session(args)
+    client = HWClient(headers)
+    # `_ensure_session` 内で既に resolve_account を通っているので曖昧性は消えており、
+    # ここも解決後の実別名を返す（None のままだと `-a` 省略時に出力が "<account>" になる）。
+    account = resolve_account(args.account)
+
+    if args.action == "status":
+        try:
+            print_status(client, account, raw=bool(args.raw))
+        except GiftReadError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.action == "up":
+        result = run_gift_up(
+            client,
+            account_alias=account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+            limit=limit,
+        )
+    else:
+        result = run_gift_reset(
+            client,
+            account_alias=account,
+            dry_run=bool(args.dry_run),
+            confirm=bool(args.yes),
+            max_power=DEFAULT_MAX_POWER if max_power is None else max_power,
+            limit=limit,
+        )
+    if result.is_failure:
+        print(f"Error: gift {result.mode} failed: {result.error or f'{result.failed} hero(es)'}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1035,7 +1290,7 @@ def cmd_battle_stats(args):
 
 
 def cmd_chat(args):
-    """ギルドチャット（chatGetAll）の取得・表示"""
+    """チャット履歴（chatGetAll）または個人チャットの会話一覧（chatGetTalks）の取得・表示"""
     from hw_genie.commands.chat import run_chat
     from hw_genie.core.session_manager import SessionManager
 
@@ -1056,9 +1311,163 @@ def cmd_chat(args):
         raw=bool(args.raw),
         json_output=bool(args.json),
         last_id=getattr(args, "last_id", None),
+        user_id=getattr(args, "user_id", None),
     )
     # 失敗時は exit 1（空チャットは success=True なので正常終了）
     if hasattr(result, "success") and not result.success:
+        sys.exit(1)
+
+
+def _challenge_client(account: str) -> HWClient:
+    """Build an authenticated client for an already-resolved account alias."""
+    headers = _load_session_headers(account)
+    if not headers:
+        print(
+            f"Error: Session not found for account '{account}'. "
+            "Please provide a valid curl with --curl.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return HWClient(headers)
+
+
+def cmd_challenge_send(args):
+    """Send a friendly personal-chat challenge (chatSendChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_send
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_send(
+            client,
+            account,
+            args.user_id,
+            args.type,
+            args.heroes,
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_accept(args):
+    """Battle the newest pending challenge (chatAcceptChallenge)."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_accept
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_accept(
+            client,
+            account,
+            args.user_id,
+            message_id=args.message_id,
+            heroes=args.heroes,
+            count=args.count,
+            sent=bool(args.sent),
+            dry_run=bool(args.dry_run),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_list(args):
+    """List challenge messages and messageIds in one personal thread."""
+    from hw_genie.commands.challenge import ChallengeError, run_challenge_list
+
+    account = resolve_account(args.account)
+    client = _challenge_client(account)
+    try:
+        run_challenge_list(
+            client,
+            account,
+            args.user_id,
+            count=args.count,
+            json_output=bool(args.json),
+        )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_config(args):
+    """Show or update the per-account challenge target (challenge_defaults)."""
+    from hw_genie.commands.challenge import (
+        ChallengeError,
+        clear_challenge_defaults,
+        load_challenge_defaults,
+        set_challenge_defaults,
+    )
+
+    account = resolve_account(args.account)
+    if args.clear and (args.user_id is not None or args.type is not None):
+        print(
+            "Error: --clear cannot be combined with --user-id/--type.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    _require_registered_account(account)
+    try:
+        if args.clear:
+            clear_challenge_defaults(account)
+            print(f"ℹ️  Cleared challenge_defaults for {account}.")
+            return
+        if args.user_id is not None or args.type is not None:
+            defaults = set_challenge_defaults(
+                account, user_id=args.user_id, challenge_type=args.type
+            )
+            print(f"ℹ️  challenge_defaults for {account}: {json.dumps(defaults, ensure_ascii=False)}")
+            return
+        defaults = load_challenge_defaults(account)
+        body = json.dumps(defaults, ensure_ascii=False) if defaults else "(none)"
+        print(f"ℹ️  challenge_defaults for {account}: {body}")
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_challenge_battle(args):
+    """Send a challenge and battle it (same account or another registered account)."""
+    from hw_genie.commands.challenge import (
+        ChallengeError,
+        run_challenge_battle,
+        run_challenge_self_battle,
+    )
+
+    if args.accept_account is not None and not str(args.accept_account).strip():
+        print("Error: --accept-account must not be blank.", file=sys.stderr)
+        sys.exit(2)
+    sender_account = resolve_account(args.account)
+    sender_client = _challenge_client(sender_account)
+    try:
+        if args.accept_account is not None:
+            accept_account = resolve_account(args.accept_account)
+            run_challenge_battle(
+                sender_client,
+                sender_account,
+                _challenge_client(accept_account),
+                accept_account,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
+        else:
+            run_challenge_self_battle(
+                sender_client,
+                sender_account,
+                args.user_id,
+                challenge_type=args.type,
+                heroes=args.heroes,
+                accept_heroes=args.accept_heroes,
+                dry_run=bool(args.dry_run),
+                wait_seconds=float(args.wait),
+            )
+    except ChallengeError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1321,18 +1730,27 @@ def cmd_multi(args):
 
     from hw_genie.core.run_log import OutputCapture, record_run_log
     from hw_genie.runner import (
+        asgard_raid_routine,
         asgard_shop_routine,
+        challenge_routine,
         consumable_routine,
         daily_routine,
         full_routine,
+        gift_reset_routine,
+        gift_up_routine,
         is_cancelled,
         list_account_aliases,
+        power_tournament_routine,
         quests_routine,
         request_cancel,
         reset_cancel,
         seers_game_routine,
+        summarize_asgard_raid,
         summarize_asgard_shop,
+        summarize_challenge,
         summarize_consumable,
+        summarize_gift,
+        summarize_power_tournament,
         summarize_quests,
         summarize_seers_game,
         summarize_toe,
@@ -1358,13 +1776,76 @@ def cmd_multi(args):
     accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable", "seers-game") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge", "asgard-raid", "power-tournament") and dry_run:
         print(
-            "Error: --dry-run is only supported with the 'quests', 'consumable' and 'seers-game' modes "
+            "Error: --dry-run is only supported with the 'quests', 'consumable', 'seers-game', "
+            "'gift-up', 'gift-reset', 'challenge', 'asgard-raid' and 'power-tournament' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
         sys.exit(2)
+
+    if mode in ("gift-up", "gift-reset") and not dry_run and not getattr(args, "yes", False):
+        # multi は非対話なので確認プロンプトが無く、ギフトコインは全アカウント分を
+        # 一度に動かす。既存モードの `enabled` 相当の明示ゲートとして --yes を要求する。
+        print(
+            f"Error: multi {mode} changes every selected account without asking. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "challenge" and not dry_run and not getattr(args, "yes", False):
+        # 各アカウントから対象プレイヤーへ実メッセージを送るため、gift 系と同じ
+        # 明示ゲートを要求する（--dry-run は読み取りのみ）。
+        print(
+            "Error: multi challenge sends a challenge from every selected account. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "asgard-raid" and not dry_run and not getattr(args, "yes", False):
+        # 各アカウントでボス攻撃回数を消費するため、gift/challenge と同じ
+        # 明示ゲートを要求する（--dry-run は計画表示のみ）。
+        print(
+            "Error: multi asgard-raid spends boss attempts on every selected account. "
+            "Add --yes to run it, or --dry-run to see the plan first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if mode == "challenge" and getattr(args, "challenge_user_id", None) is not None:
+        from hw_genie.commands.challenge import ChallengeError, validate_user_id
+
+        try:
+            validate_user_id(args.challenge_user_id)
+        except ChallengeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+    # gift 系フラグの検証はモードごとに意味のあるものだけ行う（他モードで
+    # `--limit 0` 等を渡しても無意味な検証を発火させない）。`--max-power` は
+    # `gift-reset` 専用フラグなので、`gift-up` で明示された場合は worker 起動前に
+    # 拒否する（`--lib` / `--method` / `--pick` と同じ「意味のある場所で受け付ける」
+    # 一貫性。黙って無視すると閾値なしで全ヒーロー MAX に走ってしまう）。
+    _gift_limit = getattr(args, "limit", None)
+    _gift_max_power = getattr(args, "max_power", None)
+    if mode in ("gift-up", "gift-reset"):
+        if _gift_limit is not None and _gift_limit < 1:
+            print("Error: --limit must be 1 or more", file=sys.stderr)
+            sys.exit(2)
+        if mode == "gift-up" and _gift_max_power is not None:
+            print(
+                "Error: --max-power is only meaningful for the 'gift-reset' mode. "
+                "'gift-up' maxes heroes (strongest first) as far as the coins allow "
+                "and never applies a power threshold.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if mode == "gift-reset" and _gift_max_power is not None and _gift_max_power < 0:
+            print("Error: --max-power must be 0 or more", file=sys.stderr)
+            sys.exit(2)
 
     if mode == "quests":
         routine = quests_routine(dry_run=dry_run)
@@ -1386,12 +1867,44 @@ def cmd_multi(args):
         )
         # dry-run は read-only の計画表示のため逐次実行
         max_parallel = 1 if dry_run else args.parallel
+    elif mode == "power-tournament":
+        from hw_genie.commands.power_tournament import MAX_TOP as _PT_MAX_TOP
+
+        _top = int(getattr(args, "top", 5))
+        if not 1 <= _top <= _PT_MAX_TOP:
+            print(
+                f"Error: --top must be between 1 and {_PT_MAX_TOP}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        routine = power_tournament_routine(top=_top, dry_run=dry_run)
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "challenge":
+        routine = challenge_routine(
+            user_id=getattr(args, "challenge_user_id", None),
+            challenge_type=getattr(args, "challenge_type", None),
+            wait_seconds=float(getattr(args, "challenge_wait", 10)),
+            dry_run=dry_run,
+        )
+        max_parallel = 1 if dry_run else args.parallel
     elif mode == "asgard-shop":
         routine = asgard_shop_routine(gold_buffs=args.gold_buffs)
         max_parallel = args.parallel
+    elif mode == "asgard-raid":
+        routine = asgard_raid_routine(dry_run=dry_run)
+        max_parallel = 1 if dry_run else args.parallel
     elif mode == "consumable":
         routine = consumable_routine(
             lib_ids=args.lib, method_override=args.method, dry_run=dry_run
+        )
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "gift-up":
+        routine = gift_up_routine(limit=_gift_limit, dry_run=dry_run)
+        # dry-run は read-only の計画表示なので逐次実行（アカウント順に並べる）
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "gift-reset":
+        routine = gift_reset_routine(
+            max_power=_gift_max_power, limit=_gift_limit, dry_run=dry_run
         )
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "toe":
@@ -1520,7 +2033,7 @@ def cmd_multi(args):
                         routine,
                         accounts=ready_accounts,
                         max_parallel=max_parallel,
-                        cooperative_wait=(mode == "toe"),
+                        cooperative_wait=(mode in ("toe", "asgard-raid")),
                     )
                     results.update(worker_results)
                 # Preserve the original (registration/request) account order.
@@ -1529,10 +2042,24 @@ def cmd_multi(args):
                     failed = summarize_quests(results.items(), dry_run=dry_run)
                 elif mode == "asgard-shop":
                     failed = summarize_asgard_shop(results.items())
+                elif mode == "asgard-raid":
+                    failed = summarize_asgard_raid(results.items(), dry_run=dry_run)
                 elif mode == "seers-game":
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
+                elif mode == "power-tournament":
+                    failed = summarize_power_tournament(
+                        results.items(), dry_run=dry_run
+                    )
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
+                elif mode == "challenge":
+                    failed = summarize_challenge(results.items(), dry_run=dry_run)
+                elif mode in ("gift-up", "gift-reset"):
+                    failed = summarize_gift(
+                        results.items(),
+                        dry_run=dry_run,
+                        mode="up" if mode == "gift-up" else "reset",
+                    )
                 elif mode == "toe":
                     failed = summarize_toe(results.items())
                 else:
@@ -1662,8 +2189,9 @@ def _run_log_account_failure(
     Mirrors the per-account failure judgement of the runner's ``summarize_*``
     functions so ``run_logs`` rows stay consistent with the printed summary:
     quest failures, consumable ERROR/UNEXPECTED items, Asgard purchase errors,
-    Seer's Game failures and unavailable statuses all count as failures,
-    matching the ``failed`` counter returned by ``summarize``. A cooperative user cancel counts as
+    Seer's Game failures, element gift errors / failed heroes and unavailable
+    statuses all count as failures, matching the ``failed`` counter returned by
+    ``summarize``. A cooperative user cancel counts as
     COMPLETE (ok) for ``toe``: ``InterruptedError`` entries and
     ``interrupted=True`` tier summaries without real bridge/API errors map
     to None. Exceptions are reported by their first message line.
@@ -1700,6 +2228,18 @@ def _run_log_account_failure(
                 else None
             )
         return "asgard-shop result unavailable"
+    if mode == "asgard-raid":
+        from hw_genie.commands.asgard_raid import AsgardRaidRunResult
+
+        if isinstance(result, AsgardRaidRunResult):
+            if result.error is not None:
+                return result.error
+            return (
+                f"{result.failed_count} team(s) failed"
+                if result.failed_count
+                else None
+            )
+        return "asgard-raid result unavailable"
     if mode == "seers-game":
         from hw_genie.commands.seers_game import SeersGameResult, is_clean_depletion
 
@@ -1714,6 +2254,28 @@ def _run_log_account_failure(
                 return f"seers-game failed: {result.last_error}"
             return None
         return "seers-game result unavailable"
+    if mode == "power-tournament":
+        from hw_genie.commands.power_tournament import PowerTournamentResult
+
+        if isinstance(result, PowerTournamentResult):
+            if result.error:
+                return result.error
+            if result.ranking_error:
+                return f"ranking failed: {result.ranking_error}"
+            return (
+                f"{result.failed_claims} reward claim(s) failed"
+                if result.failed_claims
+                else None
+            )
+        return "power-tournament result unavailable"
+    if mode in ("gift-up", "gift-reset"):
+        from hw_genie.commands.element_gift import GiftRunResult
+
+        if isinstance(result, GiftRunResult):
+            if result.error:
+                return result.error
+            return f"{result.failed} hero(es) failed" if result.failed else None
+        return "gift result unavailable"
     if mode == "toe":
         if isinstance(result, dict):
             real_errors = _toe_real_errors(result.get("errors", []))
@@ -1730,6 +2292,14 @@ def _run_log_account_failure(
                 return "no rival cleared"
             return None
         return "toe result unavailable"
+    if mode == "challenge":
+        from hw_genie.commands.challenge import ChallengeRunResult
+
+        if isinstance(result, ChallengeRunResult):
+            if result.dry_run:
+                return None
+            return None if result.battle is not None else "battle result unavailable"
+        return "challenge result unavailable"
     # daily / full: 最終ステータスが取れない場合のみ失敗（summarize と同様）。
     from hw_genie.core.client import PlayerStatus
 
@@ -1931,6 +2501,104 @@ def main():
     )
     p_asgard_shop.set_defaults(func=cmd_asgard_shop)
 
+    # Asgard Raid (Guild Raid boss battles; save 5 teams per boss and run them)
+    p_asgard_raid = subparsers.add_parser(
+        "asgard-raid",
+        parents=[parent_parser],
+        help="Asgard Guild Raid boss battles (register 5 teams per boss and run them)",
+    )
+    asgard_raid_sub = p_asgard_raid.add_subparsers(
+        dest="asgard_raid_action", help="Asgard raid operation"
+    )
+
+    p_asgard_raid_team = asgard_raid_sub.add_parser(
+        "team", parents=[parent_parser], help="Manage boss-battle teams (slot 1-5)"
+    )
+    asgard_raid_team_sub = p_asgard_raid_team.add_subparsers(
+        dest="asgard_raid_team_action", help="Team operation"
+    )
+
+    p_asgard_raid_team_set = asgard_raid_team_sub.add_parser(
+        "set", parents=[parent_parser], help="Create/update one team"
+    )
+    p_asgard_raid_team_set.add_argument("slot", type=int, help="Team slot (1-5)")
+    p_asgard_raid_team_set.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_set.add_argument(
+        "--heroes", type=int, nargs=5, required=True, help="Exactly 5 hero IDs"
+    )
+    p_asgard_raid_team_set.add_argument("--pet", type=int, help="Pet ID")
+    p_asgard_raid_team_set.add_argument(
+        "--favor",
+        action="append",
+        help="Patron favor HERO=PATRON (repeatable)",
+    )
+    p_asgard_raid_team_set.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Store the team disabled (default: enabled)",
+    )
+    p_asgard_raid_team_set.add_argument("--memo", help="Free-form team memo")
+    p_asgard_raid_team_set.set_defaults(func=cmd_asgard_raid_team_set)
+
+    p_asgard_raid_team_list = asgard_raid_team_sub.add_parser(
+        "list", parents=[parent_parser], help="List stored teams"
+    )
+    p_asgard_raid_team_list.add_argument(
+        "--boss", choices=["osh", "maestro"], help="Only show this boss"
+    )
+    p_asgard_raid_team_list.set_defaults(func=cmd_asgard_raid_team_list)
+
+    p_asgard_raid_team_remove = asgard_raid_team_sub.add_parser(
+        "remove", parents=[parent_parser], help="Delete one team"
+    )
+    p_asgard_raid_team_remove.add_argument("slot", type=int, help="Team slot (1-5)")
+    p_asgard_raid_team_remove.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_remove.set_defaults(func=cmd_asgard_raid_team_remove)
+
+    p_asgard_raid_team_import = asgard_raid_team_sub.add_parser(
+        "import-log",
+        parents=[parent_parser],
+        help="Rebuild teams from clanRaid_logBoss",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--boss", choices=["osh", "maestro"], required=True, help="Boss key"
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--user-id",
+        help="Game player ID to import (default: this account via userGetInfo)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing slots (enabled / memo are preserved)",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--latest",
+        action="store_true",
+        help="With more than 5 battles, use the 5 most recent instead of erroring",
+    )
+    p_asgard_raid_team_import.add_argument(
+        "--dry-run", action="store_true", help="Show the reconstructed teams without writing"
+    )
+    p_asgard_raid_team_import.set_defaults(func=cmd_asgard_raid_team_import_log)
+
+    p_asgard_raid_run = asgard_raid_sub.add_parser(
+        "run", parents=[parent_parser], help="Run enabled teams for the current week"
+    )
+    p_asgard_raid_run.add_argument(
+        "--boss",
+        choices=["osh", "maestro"],
+        help="Force the boss key (default: detect from clanRaid_getInfo)",
+    )
+    p_asgard_raid_run.add_argument(
+        "--dry-run", action="store_true", help="Show the plan without starting battles"
+    )
+    p_asgard_raid_run.set_defaults(func=cmd_asgard_raid_run)
+
     # Seer's Game (start -> play x4 -> finish until coins run out)
     p_seers = subparsers.add_parser(
         "seers-game",
@@ -1953,6 +2621,25 @@ def main():
         help="Max games to play (default: until coins run out)",
     )
     p_seers.set_defaults(func=cmd_seers_game)
+
+    # Power Tournament (Hero / Titan): group top + claimable rewards
+    p_pt = subparsers.add_parser(
+        "power-tournament",
+        parents=[parent_parser],
+        help="Show the Power Tournament group top and claim available rewards",
+    )
+    p_pt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show state/ranking/claimable rewards without claiming",
+    )
+    p_pt.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        help="Group ranking rows to show (default: 5, max: 50)",
+    )
+    p_pt.set_defaults(func=cmd_power_tournament)
 
     # Arena (status / top / team presets / targeted attack)
     # NOTE: do not put parents=[parent_parser] on the intermediate `arena` /
@@ -2201,28 +2888,197 @@ def main():
     p_battle_stats.set_defaults(func=cmd_battle_stats)
 
     # Chat (guild chat)
+    # Chat (guild / personal)
     from hw_genie.commands.chat import CHAT_TYPES as _CHAT_TYPES
 
     p_chat = subparsers.add_parser(
-        "chat", parents=[parent_parser], help="Show guild chat (chatGetAll)"
+        "chat", parents=[parent_parser], help="Show chat history (chatGetAll)"
     )
     p_chat.add_argument(
         "--type",
         choices=_CHAT_TYPES,
         default="clan",
-        help="Chat type (default: clan)",
+        help="Chat type (default: clan; personal without --user-id lists recent talks)",
     )
     p_chat.add_argument(
         "--count",
         type=_positive_int,
         default=50,
-        help="Number of messages to fetch (default: 50, clamp 1-200)",
+        help="Number of messages (or talks for --type personal) to fetch (default: 50, clamp 1-200)",
     )
-    p_chat.add_argument("--last-id", dest="last_id", default=None, help="Pagination: fetch messages before this ID")
+    p_chat.add_argument(
+        "--last-id",
+        dest="last_id",
+        default=None,
+        help="Pagination: fetch messages before this ID (chatGetAll only; not supported for the personal talk list)",
+    )
+    p_chat.add_argument(
+        "--user-id",
+        dest="user_id",
+        default=None,
+        help="Peer userId for --type personal (omit to list recent talks)",
+    )
     raw_json_group = p_chat.add_mutually_exclusive_group()
-    raw_json_group.add_argument("--raw", action="store_true", help="Print raw chatGetAll response as JSON")
-    raw_json_group.add_argument("--json", action="store_true", help="Print parsed messages as JSON")
+    raw_json_group.add_argument(
+        "--raw", action="store_true", help="Print the raw response JSON (chatGetAll / chatGetTalks)"
+    )
+    raw_json_group.add_argument(
+        "--json", action="store_true", help="Print parsed messages/talks as JSON"
+    )
     p_chat.set_defaults(func=cmd_chat)
+
+    # Friendly challenge (personal chat)
+    from hw_genie.commands.challenge import CHALLENGE_TYPES as _CHALLENGE_TYPES
+
+    p_challenge = subparsers.add_parser(
+        "challenge", help="Friendly personal-chat challenge (send / accept / list / battle)"
+    )
+    challenge_sub = p_challenge.add_subparsers(dest="challenge_command", required=True)
+
+    p_challenge_send = challenge_sub.add_parser(
+        "send", parents=[parent_parser], help="Send a challenge to a player (chatSendChallenge)"
+    )
+    p_challenge_send.add_argument(
+        "--user-id",
+        default=None,
+        help="Target player id (default: challenge_defaults.user_id)",
+    )
+    p_challenge_send.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Challenge type (default: challenge_defaults.type or titan)",
+    )
+    p_challenge_send.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
+    )
+    p_challenge_send.add_argument(
+        "--dry-run", action="store_true", help="Resolve the team and print the plan only"
+    )
+    p_challenge_send.set_defaults(func=cmd_challenge_send)
+
+    p_challenge_accept = challenge_sub.add_parser(
+        "accept",
+        parents=[parent_parser],
+        help="Battle the newest pending challenge (chatAcceptChallenge)",
+    )
+    p_challenge_accept.add_argument(
+        "--user-id",
+        default=None,
+        help="Peer player id (default: challenge_defaults.user_id)",
+    )
+    p_challenge_accept.add_argument(
+        "--message-id",
+        type=_positive_int,
+        default=None,
+        help="Explicit challenge messageId (default: newest pending message)",
+    )
+    p_challenge_accept.add_argument(
+        "--sent",
+        action="store_true",
+        help="Battle a challenge this account sent (sender-side battle) instead of one received",
+    )
+    p_challenge_accept.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Battle team override (default: full saved challenge team)",
+    )
+    p_challenge_accept.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan for the challenge messageId (default: 200)",
+    )
+    p_challenge_accept.add_argument(
+        "--dry-run", action="store_true", help="Show the discovered messageId and team only"
+    )
+    p_challenge_accept.set_defaults(func=cmd_challenge_accept)
+
+    p_challenge_list = challenge_sub.add_parser(
+        "list", parents=[parent_parser], help="List challenge messages and messageIds in a thread"
+    )
+    p_challenge_list.add_argument(
+        "--user-id", default=None, help="Peer player id (default: challenge_defaults.user_id)"
+    )
+    p_challenge_list.add_argument(
+        "--count",
+        type=_positive_int,
+        default=200,
+        help="Personal thread messages to scan (default: 200)",
+    )
+    p_challenge_list.add_argument("--json", action="store_true", help="Print parsed JSON")
+    p_challenge_list.set_defaults(func=cmd_challenge_list)
+
+    p_challenge_config = challenge_sub.add_parser(
+        "config",
+        parents=[parent_parser],
+        help="Show/set the per-account challenge target (challenge_defaults)",
+    )
+    p_challenge_config.add_argument(
+        "--user-id", default=None, help="Default target player id"
+    )
+    p_challenge_config.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Default challenge type",
+    )
+    p_challenge_config.add_argument(
+        "--clear", action="store_true", help="Remove all stored challenge defaults"
+    )
+    p_challenge_config.set_defaults(func=cmd_challenge_config)
+
+    p_challenge_battle = challenge_sub.add_parser(
+        "battle",
+        parents=[parent_parser],
+        help="Send a challenge and battle it (same account, or --accept-account)",
+    )
+    battle_target = p_challenge_battle.add_mutually_exclusive_group()
+    battle_target.add_argument(
+        "--user-id",
+        default=None,
+        help="Peer player id; the sender battles its own challenge on -a (default: challenge_defaults.user_id)",
+    )
+    battle_target.add_argument(
+        "--accept-account",
+        default=None,
+        help="Registered account that receives and battles the challenge",
+    )
+    p_challenge_battle.add_argument(
+        "--type",
+        choices=_CHALLENGE_TYPES,
+        default=None,
+        help="Challenge type (default: challenge_defaults.type or titan)",
+    )
+    p_challenge_battle.add_argument(
+        "--heroes",
+        type=int,
+        nargs="+",
+        help="Challenge target/defending team override (default: 1 unit from the saved challenge team)",
+    )
+    p_challenge_battle.add_argument(
+        "--accept-heroes",
+        type=int,
+        nargs="+",
+        help="Battle team override (default: full saved challenge team)",
+    )
+    p_challenge_battle.add_argument(
+        "--wait",
+        type=_non_negative_int,
+        default=10,
+        help=(
+            "Seconds to wait for the challenge to appear in the accepter's thread "
+            "(default: 10; 0 = one immediate check only)"
+        ),
+    )
+    p_challenge_battle.add_argument(
+        "--dry-run", action="store_true", help="Resolve accounts/teams and print the plan only"
+    )
+    p_challenge_battle.set_defaults(func=cmd_challenge_battle)
 
     # Titan Arena (ToE)
     p_toe = subparsers.add_parser("toe", parents=[parent_parser], help="Titan Arena (ToE) operations")
@@ -2357,6 +3213,40 @@ def main():
     p_quests.add_argument("--edit-defaults", action="store_true", help="Edit quest_defaults interactively (numbered selection wizard)")
     p_quests.set_defaults(func=cmd_quests)
 
+    # Gift (element gift: heroTitanGiftLevelUp / heroTitanGiftDrop)
+    p_gift = subparsers.add_parser(
+        "gift",
+        parents=[parent_parser],
+        help="Element gift batch operations (status / up / reset)",
+    )
+    gift_sub = p_gift.add_subparsers(dest="action", required=True)
+    p_gift_status = gift_sub.add_parser(
+        "status", parents=[parent_parser], help="Show gift levels, coin balance and what up/reset would do"
+    )
+    p_gift_status.add_argument("--raw", action="store_true", help="Print the parsed gift state as JSON")
+    p_gift_status.set_defaults(func=cmd_gift)
+    p_gift_up = gift_sub.add_parser(
+        "up",
+        parents=[parent_parser],
+        help="Max the gift for all heroes, strongest first, as far as the coins allow",
+    )
+    p_gift_up.add_argument("--limit", type=int, help="Upgrade at most N heroes in this run")
+    p_gift_up.add_argument("--dry-run", action="store_true", help="Show the plan without sending any gift operation")
+    p_gift_up.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p_gift_up.set_defaults(func=cmd_gift)
+    p_gift_reset = gift_sub.add_parser(
+        "reset",
+        parents=[parent_parser],
+        help="Drop the gift of low-power heroes to recover the coins (gift coins are refunded in full)",
+    )
+    p_gift_reset.add_argument(
+        "--max-power", type=int, help="Drop heroes whose current power is at or below this value (default: 100000)"
+    )
+    p_gift_reset.add_argument("--limit", type=int, help="Drop at most N heroes in this run")
+    p_gift_reset.add_argument("--dry-run", action="store_true", help="Show the plan without sending any gift operation")
+    p_gift_reset.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p_gift_reset.set_defaults(func=cmd_gift)
+
     # Sync
     p_sync = subparsers.add_parser("sync", parents=[parent_parser], help="Sync local Turso replica with cloud")
     p_sync.set_defaults(func=cmd_sync)
@@ -2380,10 +3270,23 @@ def main():
     p_multi.add_argument("--debug", action="store_true", help="Enable debug logging")
     p_multi.add_argument(
         "mode",
-        choices=["daily", "full", "quests", "asgard-shop", "consumable", "toe", "seers-game"],
+        choices=[
+            "daily",
+            "full",
+            "quests",
+            "asgard-shop",
+            "asgard-raid",
+            "consumable",
+            "toe",
+            "seers-game",
+            "power-tournament",
+            "gift-up",
+            "gift-reset",
+            "challenge",
+        ],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), or 'seers-game' (play Seer's Game until coins run out)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'asgard-raid' (run the registered Asgard boss teams, requires --yes), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'power-tournament' (show the group top and claim available rewards), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
     )
     p_multi.add_argument(
         "--engine",
@@ -2455,6 +3358,45 @@ def main():
         help="Override the RPC method for the 'consumable' mode (e.g. consumableUseLootBox)",
     )
     p_multi.add_argument(
+        "--limit",
+        type=int,
+        help=(
+            "Max heroes per account for the 'gift-up' / 'gift-reset' modes "
+            "(gift-up default: every hero the coins allow, strongest first; "
+            "gift-reset default: every hero at or below --max-power, power desc)"
+        ),
+    )
+    p_multi.add_argument(
+        "--max-power",
+        type=int,
+        help="Power ceiling for the 'gift-reset' mode: drop gifts of heroes at or below this power (default: 100000; rejected with 'gift-up', which has no power threshold)",
+    )
+    p_multi.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required to actually run the non-interactive 'gift-up' / 'gift-reset' / 'challenge' / 'asgard-raid' modes",
+    )
+    p_multi.add_argument(
+        "--user-id",
+        dest="challenge_user_id",
+        default=None,
+        help="Target player id for the 'challenge' mode (default: each account's challenge_defaults.user_id)",
+    )
+    p_multi.add_argument(
+        "--type",
+        dest="challenge_type",
+        choices=list(_CHALLENGE_TYPES),
+        default=None,
+        help="Challenge type for the 'challenge' mode (default: challenge_defaults.type or titan)",
+    )
+    p_multi.add_argument(
+        "--wait",
+        dest="challenge_wait",
+        type=_non_negative_int,
+        default=10,
+        help="Seconds to wait for the challenge message in the 'challenge' mode (default: 10; 0 = one immediate check)",
+    )
+    p_multi.add_argument(
         "--pick",
         type=int,
         default=2,
@@ -2465,6 +3407,12 @@ def main():
         type=int,
         default=None,
         help="Max games to play for the 'seers-game' mode (default: until coins run out)",
+    )
+    p_multi.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        help="Group ranking rows for the 'power-tournament' mode (default: 5, max: 50)",
     )
     p_multi.add_argument(
         "accounts",
@@ -2481,7 +3429,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable/seers-game modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game/power-tournament/gift-up/gift-reset/challenge/asgard-raid modes only)",
     )
     p_multi.add_argument(
         "--iterations",

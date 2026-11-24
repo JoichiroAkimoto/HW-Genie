@@ -289,7 +289,7 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 def test_registry_covers_all_use_targets():
     """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 62  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508 + 478/509/513
+    assert len(CONSUMABLE_USE_TARGETS) == 68  # 既存 63 + Legacy/Harunian/Mead/Cosmic の追加 5 件
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
@@ -315,7 +315,7 @@ def test_registry_covers_all_use_targets():
     # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
-    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 7 件とは別概念）
+    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 13 件とは別概念）
     for lib_id in (149, 469, 492, 497, 176, 185, 187, 190):
         assert lib_id in CONSUMABLE_USE_TARGETS
 
@@ -329,9 +329,9 @@ def test_registry_recursive_flags_confirmed():
 
 
 def test_registry_recursive_flags_documented_unmeasured():
-    """recursive=True（既知マトリョーシカ 4 件：149/469/492/497）。
+    """recursive=True（既知マトリョーシカ + 新規宝箱）。
 
-    TODO: サーバー側 recursive の本番実測後に confirmed へ昇格させる。
+    508/493 は同名の別 libId だが、自体の根拠が無いため False のまま。
     """
     documented = {149, 469, 492, 497}
     assert len(documented) == 4
@@ -340,12 +340,20 @@ def test_registry_recursive_flags_documented_unmeasured():
     # 同名のみでは不十分：508（492 と同名）・493（513 と同名）は False
     assert CONSUMABLE_REGISTRY[508].recursive is False
     assert CONSUMABLE_REGISTRY[493].recursive is False
-    # サーバー側 recursive 対象は計 7 件
+    # 520（469 と同名の別 libId）も recursive=True
+    assert CONSUMABLE_REGISTRY[520].name == "Adventure Chest"
+    assert CONSUMABLE_REGISTRY[520].recursive is True
+    assert 520 in CONSUMABLE_USE_TARGETS
+    # 新規追加した宝箱は recursive=True を基本とする
+    new_recursive = {458, 514, 909, 914, 915}
+    for lib_id in new_recursive:
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+    # サーバー側 recursive 対象は計 13 件
     recursive_true = {
         lib_id for lib_id in CONSUMABLE_USE_TARGETS if CONSUMABLE_REGISTRY[lib_id].recursive
     }
-    assert recursive_true == documented | {478, 509, 513}
-    assert len(recursive_true) == 7
+    assert recursive_true == documented | {478, 509, 513, 520} | new_recursive
+    assert len(recursive_true) == 13
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert CONSUMABLE_REGISTRY[lib_id].recursive is (lib_id in recursive_true)
     assert CONSUMABLE_REGISTRY[17].recursive is False
@@ -359,6 +367,30 @@ def test_registry_new_items_478_509_513():
     for lib_id in (478, 509, 513):
         assert lib_id in CONSUMABLE_USE_TARGETS
         assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+
+
+def test_registry_new_items_458_514_909_914_915():
+    """Consumables.md 追加分の名前・対象登録・recursive=True。"""
+    expected = {
+        458: "Legacy Chest",
+        514: "Harunian Chest",
+        909: "Mead Festival Chest",
+        914: "Harunian Chest",
+        915: "Cosmic Titans Battle Chest",
+    }
+    for lib_id, name in expected.items():
+        assert CONSUMABLE_REGISTRY[lib_id].name == name
+        assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
+        assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
+        assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+        assert lib_id in CONSUMABLE_USE_TARGETS
+
+    # 同名の別 libId を明示（同一視しない）
+    assert CONSUMABLE_REGISTRY[514].name == CONSUMABLE_REGISTRY[914].name
+    assert CONSUMABLE_REGISTRY[909].name == CONSUMABLE_REGISTRY[509].name
+    assert CONSUMABLE_REGISTRY[915].name == CONSUMABLE_REGISTRY[492].name
+    assert CONSUMABLE_REGISTRY[915].name == CONSUMABLE_REGISTRY[508].name
 
 
 def test_registry_recursive_rejects_non_lootbox_method():

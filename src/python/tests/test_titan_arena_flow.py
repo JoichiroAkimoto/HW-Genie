@@ -161,6 +161,7 @@ def test_run_titan_arena_dummy_estimate_is_abandoned_not_submitted(mock_client, 
                 win=False,
                 stars=0,
                 progress=[{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}],
+                diag="ordinal drift: signal not found",
             )
 
     res = run_titan_arena(
@@ -173,6 +174,8 @@ def test_run_titan_arena_dummy_estimate_is_abandoned_not_submitted(mock_client, 
     )
     assert res["dummy"] is True
     assert res["abandoned"] is True
+    # The userscript diagnostic survives so the CLI can report the cause.
+    assert res["diag"] == "ordinal drift: signal not found"
     assert mock_call.call_count == 1  # StartBattle only; no EndBattle
     decision = _decide_attempt_action(res, attempt_no=1, plan_len=1)
     assert decision["unverified"] is True
@@ -1947,6 +1950,203 @@ def test_run_raid_dummy_loss_excluded_from_endraid(mock_client, mock_sleep):
     assert summary["completed"] is False
     assert summary["completed_basis"] == "status"
     assert summary["battles"][0] == {"rivalId": "r1", "win": False, "dummy": True}
+
+
+def test_run_rivals_stops_after_consecutive_dummies(mock_client, mock_sleep, mocker):
+    """3 straight dummy estimates raise BridgeCalcError carrying the diag."""
+    import pytest
+
+    from hw_genie.battle.engine import BridgeCalcError
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    calls = []
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        calls.append(1)
+        return {
+            "estimate": MagicMock(win=False),
+            "abandoned": True,
+            "dummy": True,
+            "diag": "BattleInstantPlay completion signal not found (prototype ordinal drift)",
+        }
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    with pytest.raises(BridgeCalcError) as excinfo:
+        _run_rivals(
+            client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+            threshold=250, stop_on_first_loss=False,
+            team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=9,
+        )
+    assert len(calls) == 3
+    assert "ordinal drift" in str(excinfo.value)
+
+
+def test_run_rivals_dummy_streak_resets_on_real_result(mock_client, mock_sleep, mocker):
+    """A verified result breaks the dummy streak, so mixed runs keep going."""
+    from hw_genie.commands.titan_arena import _run_rivals
+
+    status = {"status": "battle", "tier": 8, "rivals": {"-1": {"attackScore": 0, "power": "1"}}}
+    outcomes = [
+        {"estimate": MagicMock(win=False), "abandoned": True, "dummy": True, "diag": "calc failure"},
+        {"estimate": MagicMock(win=False), "abandoned": True, "dummy": True, "diag": "calc failure"},
+        {"estimate": MagicMock(win=False)},  # verified loss resets the streak
+        {"estimate": MagicMock(win=False), "abandoned": True, "dummy": True, "diag": "calc failure"},
+        {"estimate": MagicMock(win=False), "abandoned": True, "dummy": True, "diag": "calc failure"},
+    ]
+
+    def fake_run(client, rival_id=None, titans=None, engine=None, **kw):
+        return outcomes.pop(0)
+
+    mocker.patch("hw_genie.commands.titan_arena.run_titan_arena", side_effect=fake_run)
+    client, _ = mock_client
+    results = _run_rivals(
+        client, status, titans=[1, 2, 3, 4, 5], engine=PythonBattleEngine(),
+        threshold=250, stop_on_first_loss=False,
+        team_rotation=[[1, 2, 3, 4, 5]], seeds_per_team=5,
+    )
+    assert len(results) == 5
+
+
+def test_tier_bridge_calc_error_reports_specific_message(mock_client, mock_sleep, mocker):
+    """Calc failures are reported as calc errors, not as a dead bridge."""
+    from hw_genie.battle.engine import BridgeCalcError
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 7, "rivals": {"-1": {"attackScore": 0}}, "canRaid": False}
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": status}),
+    ]
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_rivals",
+        side_effect=BridgeCalcError(
+            "userscript battle calc failed 3 times in a row (ordinal drift)",
+            partial_results=[],
+        ),
+    )
+    summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
+    assert any(e.get("stage") == "rivals" for e in summary["errors"])
+    assert any("ordinal drift" in str(e.get("message", "")) for e in summary["errors"])
+
+
+def test_tier_raid_bridge_calc_error_marks_placeholder(mock_client, mock_sleep, mocker):
+    """A calc failure in the raid branch stops the loop as a raid-stage error."""
+    from hw_genie.battle.engine import BridgeCalcError
+    from hw_genie.commands.titan_arena import run_titan_arena_tier
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 9, "canRaid": True, "rivals": {"-1": {"attackScore": 0}}}
+    mock_call.side_effect = [
+        _ok({"response": {"titan_arena": [1, 2, 3, 4, 5]}}),
+        _ok({"response": status}),
+    ]
+    mocker.patch(
+        "hw_genie.commands.titan_arena._run_raid",
+        side_effect=BridgeCalcError(
+            "userscript battle calc failed 3 times in a row (ordinal drift)",
+            partial_results=[],
+        ),
+    )
+    summary = run_titan_arena_tier(client, titans=None, engine=PythonBattleEngine())
+    raid_errors = [e for e in summary["errors"] if e.get("stage") == "raid"]
+    assert raid_errors
+    assert "ordinal drift" in str(raid_errors[0].get("message", ""))
+    assert summary["raid_results"][0].get("calc_error") is True
+
+
+def test_run_raid_stops_after_consecutive_dummies(mock_client, mock_sleep):
+    """3 straight dummy raid results abort with the calc diagnostic.
+
+    The streak is classified after the whole batch, so nothing was verified
+    and EndRaid is never called.
+    """
+    import pytest
+
+    from hw_genie.battle.engine import BattleEstimate, BridgeCalcError
+    from hw_genie.commands.titan_arena import _run_raid
+
+    class DummyEngine:
+        @staticmethod
+        def calc(battle):
+            return BattleEstimate(
+                win=False, stars=0,
+                progress=[{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}],
+                diag="config lookup failed: TypeError",
+            )
+
+    client, mock_call = mock_client
+    status = {"status": "battle", "tier": 1, "userId": "1", "rivals": {}}
+    mock_call.side_effect = [
+        _ok({"response": _raid_start_payload(["r1", "r2", "r3"], attacker_ids=[1, 2, 3, 4, 5])}),
+    ]
+    with pytest.raises(BridgeCalcError) as excinfo:
+        _run_raid(client, status, [1, 2, 3, 4, 5], DummyEngine(), 250)
+    assert "config lookup failed" in str(excinfo.value)
+    assert mock_call.call_count == 1  # StartRaid only; no EndRaid
+
+
+def test_run_raid_verified_win_then_dummy_streak_still_endraids(mock_client, mock_sleep):
+    """A verified win is banked even when the rest of the batch is dummies.
+
+    ``_engine_calc_batch`` already computed every rival, so a trailing dummy
+    streak must not discard the verified result: EndRaid runs with the
+    verified subset and the post-end status decides completion.
+    """
+    from hw_genie.battle.engine import BattleEstimate
+    from hw_genie.commands.titan_arena import _run_raid
+
+    dummy = [{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}]
+
+    class MixedEngine:
+        @staticmethod
+        def calc(battle):
+            if battle["typeId"] == "r1":
+                return BattleEstimate(
+                    win=True,
+                    stars=3,
+                    progress=[{"attackers": {"heroes": {"1": {"hp": 1}}}, "defenders": {"heroes": {}}}],
+                )
+            return BattleEstimate(win=False, stars=0, progress=dummy, diag="ordinal drift")
+
+    client, mock_call = mock_client
+    status = {
+        "status": "battle",
+        "tier": 1,
+        "userId": "1",
+        "rivals": {rid: {"attackScore": 0} for rid in ("r1", "r2", "r3", "r4")},
+    }
+    mock_call.side_effect = [
+        _ok({"response": _raid_start_payload(["r1", "r2", "r3", "r4"], attacker_ids=[1, 2, 3, 4, 5])}),
+        _ok({"response": {"results": {"r1": {"attackScore": 250}}}}),
+        # Partial EndRaid echo → authoritative post-raid status refresh.
+        _ok(
+            {
+                "response": {
+                    "status": "battle",
+                    "tier": 1,
+                    "rivals": {
+                        "r1": {"attackScore": 250},
+                        "r2": {"attackScore": 0},
+                        "r3": {"attackScore": 0},
+                        "r4": {"attackScore": 0},
+                    },
+                }
+            }
+        ),
+    ]
+    summary = _run_raid(client, status, [1, 2, 3, 4, 5], MixedEngine(), 250)
+    assert summary["battles"][0].get("win") is True
+    assert [b.get("dummy") for b in summary["battles"][1:]] == [True, True, True]
+    # StartRaid + EndRaid + post-raid status refresh.
+    assert mock_call.call_count == 3
+    end_args = mock_call.call_args_list[1][0][0]["calls"][0]["args"]["results"]
+    assert set(end_args) == {"r1"}
+    assert summary["completed"] is False
+    assert summary["completed_basis"] == "status"
+    assert summary["remaining_rivals"] == 3
 
 
 def test_run_rivals_stop_on_first_loss_ignores_unverified(mock_client, mock_sleep, mocker):

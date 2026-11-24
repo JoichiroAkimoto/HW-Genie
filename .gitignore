@@ -189,6 +189,7 @@ docs/superpowers/
 # Temporary files
 implementer_task*.md
 fix_tests.py
+vibe_images/
 
 # Ralph Wiggum / TUI
 .ralph/

@@ -1,5 +1,6 @@
 from typing import Optional, List
 from .repository import SessionRepository, AccountData
+from .signing import SIGNATURE_HEADER
 
 
 class SessionManager:
@@ -28,6 +29,10 @@ class SessionManager:
         if player and hasattr(player, "to_dict"):
             save_data["player"] = player.to_dict()
 
+        # 読み取り境界（load）と同じ不変条件を保存境界でも担保する。
+        # 署名はリクエストごとに再計算する使い捨ての値なので保存しない。
+        save_data = cls._drop_signature_header(save_data)
+
         cls.repo.save_data(resolved_account, save_data)
 
     @classmethod
@@ -47,7 +52,34 @@ class SessionManager:
             if match:
                 data = cls.repo.get_data(match)
 
-        return data
+        return cls._drop_signature_header(data)
+
+    @staticmethod
+    def _drop_signature_header(data: AccountData) -> AccountData:
+        """``x-auth-signature`` を除外したデータを返す（load / save 共通）。
+
+        署名は送信のたびに body / request-id から再計算する使い捨ての値で、
+        保存済みの値を使い回すと ``Invalid signature`` になる。旧バージョンが
+        保存した行には署名が残っているため、読み取り（load）境界で常に除外し、
+        書き込み（save）時にも保存対象から外す。``load`` は新しい dict を返す
+        だけで DB 行は書き換えないため、既存行の署名は次回 save まで物理的に
+        残り得る。
+
+        ``headers`` が dict でない場合は従来どおり何もしない。
+        """
+        if not data:
+            return data
+        headers = data.get("headers")
+        if not isinstance(headers, dict):
+            return data
+        cleaned = {
+            key: value
+            for key, value in headers.items()
+            if str(key).lower() != SIGNATURE_HEADER
+        }
+        if len(cleaned) == len(headers):
+            return data
+        return {**data, "headers": cleaned}
 
     @classmethod
     def get_last_mission_id(cls, account: str = "default") -> Optional[int]:

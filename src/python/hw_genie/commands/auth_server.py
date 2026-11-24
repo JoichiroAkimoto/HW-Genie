@@ -7,6 +7,7 @@ Routes: ``POST /toe/job``, ``GET /toe/next``, ``GET /toe/job/{id}``,
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import threading
@@ -20,6 +21,8 @@ from pydantic import BaseModel
 
 from hw_genie.core.auth import update_session_with_headers
 from hw_genie.core.database import init_db
+
+logger = logging.getLogger(__name__)
 
 
 # TODO(security): Future enhancements
@@ -266,7 +269,16 @@ def create_app() -> FastAPI:
                 player_data = player_data.to_dict()
             return AuthSuccessResponse(status="success", player=player_data)
         else:
-            raise HTTPException(status_code=500, detail=result.get("message", "Failed to update session"))
+            message = result.get("message", "Failed to update session")
+            # 500 のレスポンス detail は userscript 側でしか見えないため、
+            # 常駐ログ（docker compose logs 等）にも理由を残す。トークン等の
+            # 秘匿値は出力せず、対象の x-auth-user-id と理由のみ記録する。
+            logger.warning(
+                "auth header capture failed for x-auth-user-id=%s: %s",
+                request.headers.get("x-auth-user-id", "unknown"),
+                message,
+            )
+            raise HTTPException(status_code=500, detail=message)
 
     # ---- ToE bridge ----------------------------------------------------
     # NOTE: Pydantic models declared as inner classes inside create_app() are

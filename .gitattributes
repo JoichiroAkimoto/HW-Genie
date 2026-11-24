@@ -5,6 +5,7 @@
 *.gif binary linguist-generated=true
 *.png binary linguist-generated=true
 *.jpg binary linguist-generated=true
+*.ico binary linguist-generated=true
 
 # Force LF for VHS tapes and shell scripts (CRLF would break vhs parsing)
 *.tape text eol=lf

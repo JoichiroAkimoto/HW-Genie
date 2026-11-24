@@ -29,6 +29,17 @@ def _err(name: str = "NotAvailable", detail: dict | None = None) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
+def test_dummy_remedy_matches_diagnostic_cause():
+    """Each dummy cause maps to the remedy that actually fixes it."""
+    from hw_genie.commands.titan_arena import _dummy_remedy
+
+    assert "game tab active" in _dummy_remedy("in-page calc timed out after 10s")
+    assert "open or reload" in _dummy_remedy("no engine in this frame")
+    assert "update the Dev userscript" in _dummy_remedy(
+        "BattleInstantPlay completion signal not found (prototype ordinal drift)"
+    )
+
+
 def test_python_engine_estimates_win_for_stronger_attackers():
     battle = {
         "attackers": {
@@ -139,6 +150,19 @@ def test_battle_estimate_from_bridge_result_safe_int():
     assert est3.stars == 0
 
 
+def test_battle_estimate_from_bridge_result_preserves_diag():
+    """Dummy submissions carry the userscript's calc-failure reason."""
+    est = battle_estimate_from_bridge_result(
+        {
+            "progress": [{"attackers": {"heroes": {}}, "defenders": {"heroes": {}}}],
+            "result": {"win": False, "stars": 0},
+            "error": "BattleInstantPlay completion signal not found (prototype ordinal drift)",
+        }
+    )
+    assert est.diag == "BattleInstantPlay completion signal not found (prototype ordinal drift)"
+    assert battle_estimate_from_bridge_result({"win": False, "stars": 0, "progress": []}).diag is None
+
+
 def test_bridge_dead_error_carries_partial_results():
     from hw_genie.battle.engine import BridgeDeadError
 
@@ -216,6 +240,55 @@ def test_playwright_battle_js_helpers_throw_descriptive_errors():
     assert "out of range in Haxe prototype keys" in PLAYWRIGHT_BATTLE_JS
     # The old unguarded one-liner must not come back.
     assert "filter(e => e[1] === name).pop()[0]" not in PLAYWRIGHT_BATTLE_JS
+
+
+def test_playwright_battle_js_resolves_signal_with_drift_fallback():
+    """The snippet must resolve the completion signal, not pin ordinal 9.
+
+    Regression: the game's 2026-11-20 update moved the BattleInstantPlay
+    completion signal from prototype ordinal 9 to 10 (HerowarsHelper 2.476+
+    uses 10). A pinned ordinal makes every headless battle a dummy.
+    """
+    from hw_genie.battle.engine import PLAYWRIGHT_BATTLE_JS
+
+    assert "getProtoFn(game.BattleInstantPlay, 10)" in PLAYWRIGHT_BATTLE_JS
+    assert "getProtoFn(game.BattleInstantPlay, 9)" not in PLAYWRIGHT_BATTLE_JS
+    assert "signal not found" in PLAYWRIGHT_BATTLE_JS
+
+
+def test_playwright_browser_headers_keep_only_auth_headers():
+    """``new_context(extra_http_headers=...)`` must not leak non-auth headers.
+
+    Playwright applies those headers to every page request (HTML/JS/images),
+    so a stored ``Content-Type`` must be dropped before handing them over.
+    """
+    from hw_genie.battle.engine import _browser_headers
+
+    headers = {
+        "X-Request-Id": "3",
+        "x-auth-token": "t",
+        "X-Auth-Session-Id": "s",
+        "Content-Type": "application/json; charset=UTF-8",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+    }
+
+    assert _browser_headers(headers) == {
+        "X-Request-Id": "3",
+        "x-auth-token": "t",
+        "X-Auth-Session-Id": "s",
+    }
+    # 元の dict は変更しない
+    assert "Content-Type" in headers
+
+
+def test_playwright_browser_headers_none_when_empty():
+    """空 dict / None / 対象ヘッダーなしは ``None``（Playwright の既定動作）。"""
+    from hw_genie.battle.engine import _browser_headers
+
+    assert _browser_headers(None) is None
+    assert _browser_headers({}) is None
+    assert _browser_headers({"Content-Type": "application/json"}) is None
 
 
 def _fake_bridge_fetch(monkeypatch, *, done_after=2, timeout_jobs=(), now=None):

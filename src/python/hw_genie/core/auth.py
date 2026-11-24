@@ -3,8 +3,22 @@ import re
 from datetime import datetime, timezone
 from typing import TypedDict, Optional
 import requests
-from hw_genie.core.client import PlayerStatus, load_session_headers
+from hw_genie.core.client import (
+    AUTH_ERROR_NAMES,
+    PlayerStatus,
+    _safe_int,
+    load_session_headers,
+)
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.signing import (
+    SIGNATURE_HEADER,
+    ensure_json_content_type,
+    get_header,
+    is_invalid_signature_response,
+    serialize_body,
+    set_header,
+    sign_headers,
+)
 
 
 class SessionData(TypedDict, total=False):
@@ -63,7 +77,7 @@ AUTH_EXPIRED_MESSAGE = "Session expired or invalid signature. Please update your
 def _unexpected_response_message(response) -> str:
     """JSON でない API レスポンスからユーザー向けエラーメッセージを組み立てる。"""
     text = (response.text or "").strip()
-    if "Invalid signature" in text:
+    if is_invalid_signature_response(text):
         return AUTH_EXPIRED_MESSAGE
     if text:
         return f"Unexpected response from API: {text[:200]}"
@@ -76,15 +90,39 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
     失敗時は ``{"status": "error", "message": ...}`` を返す。セッション失効
     （HTTP 401 / "Invalid signature" / ``InvalidSession`` エラー）は原因が
     特定できるメッセージで報告し、JSON でない応答は本文の一部を表示する。
+
+    引数の ``headers`` は変更しない（request-id 更新・Content-Type 付与・署名は
+    内部コピーに対して行う）。成功時の戻り値 ``headers`` には ``x-auth-signature``
+    を含めない（署名は送信のたびに再計算するため保存する意味がない）。
     """
+    # 呼び出し元（保存済みヘッダーを持つ dict）を書き換えないようコピーする。
+    headers = dict(headers)
     url = "https://heroes-wb.nextersglobal.com/api/"
-    headers["x-request-id"] = str(int(headers.get("x-request-id", 100)) + 1)
     payload = {"calls": [{"name": "userGetInfo", "args": {}, "ident": "body"}, {"name": "arenaGetAll", "args": {}, "ident": "arena"}]}
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        # 保存済みヘッダーのキーは大小が混ざり得るため大小文字を無視して読み、
+        # 数値でない値（空文字・"abc" 等）は既定値で補う。
+        set_header(
+            headers,
+            "x-request-id",
+            str(_safe_int(get_header(headers, "x-request-id"), 100) + 1),
+        )
+        body = serialize_body(payload)
+        ensure_json_content_type(headers)
+        # 署名は body と x-request-id に紐づくため、送信直前に毎回計算する。
+        sign_headers(headers, body)
+        response = requests.post(url, headers=headers, data=body.encode("utf-8"), timeout=15)
         if response.status_code == 401:
             return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # 403 などで本文が "Invalid signature" の場合はセッション失効として
+            # 報告する（HTTPError の str() だけでは原因が伝わらない）。
+            error_text = getattr(exc.response, "text", "") or ""
+            if is_invalid_signature_response(error_text):
+                return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
+            raise
         try:
             res_data = response.json()
         except ValueError:
@@ -92,7 +130,7 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
         if isinstance(res_data, dict):
             error = res_data.get("error")
             error_name = error.get("name") if isinstance(error, dict) else error
-            if error_name in ("auth", "InvalidSession"):
+            if str(error_name) in AUTH_ERROR_NAMES:
                 return {"status": "error", "message": AUTH_EXPIRED_MESSAGE}
         if "results" in res_data:
             user_info = {}
@@ -114,7 +152,14 @@ def get_user_info(headers: dict[str, str]) -> SessionData:
                 timezone=int(user_info.get("timeZone", 0) or 0),
                 next_day_ts=int(user_info.get("nextDayTs", 0) or 0),
             )
-            return {"headers": headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
+            # 署名はリクエスト毎に再計算する使い捨ての値なので保存しない。
+            # Content-Type は正しい値なので残す（除外するのは署名のみ）。
+            stored_headers = {
+                key: value
+                for key, value in headers.items()
+                if key.lower() != SIGNATURE_HEADER
+            }
+            return {"headers": stored_headers, "status": "success", "last_updated": datetime.now(timezone.utc).isoformat(), "player": player}
         return {"status": "error", "message": "API error"}
     except Exception as e:
         return {"status": "error", "message": str(e)}

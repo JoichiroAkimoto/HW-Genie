@@ -1,6 +1,7 @@
 from .engine import (
     BattleEngine,
     BattleEstimate,
+    BridgeCalcError,
     BridgeDeadError,
     BridgeError,
     BridgeTimeoutError,
@@ -12,6 +13,7 @@ from .engine import (
 __all__ = [
     "BattleEngine",
     "BattleEstimate",
+    "BridgeCalcError",
     "BridgeDeadError",
     "BridgeError",
     "BridgeTimeoutError",

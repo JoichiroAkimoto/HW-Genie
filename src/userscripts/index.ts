@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.11
+// @version      1.0.17
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
 // @supportURL   https://github.com/JoichiroAkimoto/HW-Genie/issues
+// @icon         https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
 // @match        https://www.hero-wars.com/*
 // @match        https://heroes-wb.nextersglobal.com/*
 // @grant        none
@@ -146,7 +147,13 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
       FETCH_TIMEOUT_MS,
     );
     if (!result.ok) {
-      log(`Failed to send auth headers to server (${result.reason ?? "unknown"}).`);
+      const reason = result.reason ?? "unknown";
+      // サーバー側の失敗理由（セッション失効など）まで出さないと原因が分からない。
+      log(
+        result.detail
+          ? `Failed to send auth headers to server (${reason}): ${result.detail}`
+          : `Failed to send auth headers to server (${reason}).`,
+      );
     } else {
       log(`Auth headers sent (Player: ${result.playerName ?? "unknown"})`);
     }
