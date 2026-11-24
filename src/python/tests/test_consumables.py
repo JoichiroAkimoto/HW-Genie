@@ -315,7 +315,7 @@ def test_registry_covers_all_use_targets():
     # 選択式以外は playerRewardChoiceIndex 未指定（args に含めない）
     for lib_id in set(CONSUMABLE_USE_TARGETS) - set(choices):
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
-    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 8 件とは別概念）
+    # クライアント側ラウンドループ対象の既存定義（サーバー側 recursive 対象の 13 件とは別概念）
     for lib_id in (149, 469, 492, 497, 176, 185, 187, 190):
         assert lib_id in CONSUMABLE_USE_TARGETS
 
@@ -329,9 +329,9 @@ def test_registry_recursive_flags_confirmed():
 
 
 def test_registry_recursive_flags_documented_unmeasured():
-    """recursive=True（既知マトリョーシカ：149/469/492/497/520）。
+    """recursive=True（既知マトリョーシカ + 新規宝箱）。
 
-    TODO: サーバー側 recursive の本番実測後に confirmed へ昇格させる。
+    508/493 は同名の別 libId だが、自体の根拠が無いため False のまま。
     """
     documented = {149, 469, 492, 497}
     assert len(documented) == 4
@@ -340,19 +340,20 @@ def test_registry_recursive_flags_documented_unmeasured():
     # 同名のみでは不十分：508（492 と同名）・493（513 と同名）は False
     assert CONSUMABLE_REGISTRY[508].recursive is False
     assert CONSUMABLE_REGISTRY[493].recursive is False
-    # 新規追加分も根拠が無いため False のまま
-    assert CONSUMABLE_REGISTRY[909].recursive is False
-    assert CONSUMABLE_REGISTRY[915].recursive is False
     # 520（469 と同名の別 libId）も recursive=True
     assert CONSUMABLE_REGISTRY[520].name == "Adventure Chest"
     assert CONSUMABLE_REGISTRY[520].recursive is True
     assert 520 in CONSUMABLE_USE_TARGETS
-    # サーバー側 recursive 対象は計 8 件
+    # 新規追加した宝箱は recursive=True を基本とする
+    new_recursive = {458, 514, 909, 914, 915}
+    for lib_id in new_recursive:
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+    # サーバー側 recursive 対象は計 13 件
     recursive_true = {
         lib_id for lib_id in CONSUMABLE_USE_TARGETS if CONSUMABLE_REGISTRY[lib_id].recursive
     }
-    assert recursive_true == documented | {478, 509, 513, 520}
-    assert len(recursive_true) == 8
+    assert recursive_true == documented | {478, 509, 513, 520} | new_recursive
+    assert len(recursive_true) == 13
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert CONSUMABLE_REGISTRY[lib_id].recursive is (lib_id in recursive_true)
     assert CONSUMABLE_REGISTRY[17].recursive is False
@@ -369,7 +370,7 @@ def test_registry_new_items_478_509_513():
 
 
 def test_registry_new_items_458_514_909_914_915():
-    """Consumables.md 追加分の名前・対象登録・既定フラグ。"""
+    """Consumables.md 追加分の名前・対象登録・recursive=True。"""
     expected = {
         458: "Legacy Chest",
         514: "Harunian Chest",
@@ -382,7 +383,7 @@ def test_registry_new_items_458_514_909_914_915():
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
         assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
         assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
-        assert CONSUMABLE_REGISTRY[lib_id].recursive is False
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is True
         assert lib_id in CONSUMABLE_USE_TARGETS
 
     # 同名の別 libId を明示（同一視しない）

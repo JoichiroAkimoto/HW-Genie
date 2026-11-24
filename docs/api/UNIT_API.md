@@ -315,9 +315,9 @@ args に `recursive: True` を追加するとサーバー側で再帰開封さ�
 （例: `{"libId":509,"amount":17,"recursive":true}`）。
 `hw-genie` では `ConsumableInfo.recursive=True` の対象のみ自動付与します
 （`consumableUseLootBox` 以外のメソッドには付与しない）。付与対象は
-149/469/492/497/478/509/513/520 の 8 件で、478/509/513 は 2026-10-07 の
-multi consumable 本番実行で recursive 付き消費 SUCCESS を確認済み、他は
-マトリョーシカであることから付与しており実測は未実施です。同名の別 libId でも
+149/469/492/497/478/509/513/520 と新規追加の 458/514/909/914/915 の計 13 件です。
+478/509/513 は 2026-10-07 の multi consumable 本番実行で recursive 付き消費 SUCCESS を
+確認済み、他は宝箱系として基本 True で登録しており実測は未実施です。同名の別 libId でも
 自体の根拠が無い 508（492 と同名）・493（513 と同名）は False のまま。
 recursive 起因の ERROR が出た場合は該当 libId を False に戻して再実行する
 （failed 扱いで取り残されるだけでサイレント消費はなし）。
