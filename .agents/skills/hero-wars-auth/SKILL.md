@@ -14,7 +14,7 @@ description: HW-Genie を使用してセッション情報を管理し、ユー�
    ```
 
 ### 便利なオプション
-- `--info`, `-i`: 現在のセッション情報を再取得して最新の状態に更新します。
+- `--info`, `-i`: 現在のセッション情報を再取得して最新の状態に更新します（JSON 出力の秘匿ヘッダー `x-auth-*` / `authorization` / `cookie` は伏字 `***` 表示。`--curl` / `--update` とフラグなしのヘッダー表示も同様）。
   ```bash
   uv run hw-genie auth --info -a sub1
   ```

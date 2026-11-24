@@ -1,4 +1,5 @@
 import copy
+import logging
 import time
 import random
 from dataclasses import dataclass, asdict
@@ -8,6 +9,14 @@ from typing import Any, ClassVar
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 from hw_genie.core.session_manager import SessionManager
+from hw_genie.core.signing import (
+    ensure_json_content_type,
+    get_header,
+    is_invalid_signature_response,
+    serialize_body,
+    set_header,
+    sign_headers,
+)
 from hw_genie.core.utils import max_energy_for_level
 
 
@@ -183,6 +192,7 @@ class ApiAction(str, Enum):
     QUEST_GET_ALL = "questGetAll"
     QUEST_FARM = "questFarm"
     GACHA_OPEN = "gacha_open"
+    HERO_GET_ALL = "heroGetAll"
     HERO_ARTIFACT_LEVEL_UP = "heroArtifactLevelUp"
     TITAN_ARTIFACT_LEVEL_UP = "titanArtifactLevelUp"
     HERO_SKIN_UPGRADE = "heroSkinUpgrade"
@@ -198,7 +208,15 @@ class ApiAction(str, Enum):
     CLAN_GET_INFO = "clanGetInfo"
     CLAN_RAID_GET_INFO = "clanRaid_getInfo"
     CLAN_RAID_SHOP_BUY = "clanRaid_shopBuy"
+    CLAN_RAID_START_BOSS_BATTLE = "clanRaid_startBossBattle"
+    CLAN_RAID_END_BOSS_BATTLE = "clanRaid_endBossBattle"
+    CLAN_RAID_FARM_RATING_REWARD = "clanRaid_farmRatingReward"
+    CLAN_RAID_LOG_BOSS = "clanRaid_logBoss"
     CHAT_GET_ALL = "chatGetAll"
+    CHAT_GET_TALKS = "chatGetTalks"
+    CHAT_SEND_CHALLENGE = "chatSendChallenge"
+    CHAT_ACCEPT_CHALLENGE = "chatAcceptChallenge"
+    USER_GET_INFO_BY_IDS = "userGetInfoByIds"
     # TODO: chatServerSubscribe は現在未使用（将来的なリアルタイム購読用に予約）。不要になれば削除を検討。
     CHAT_SERVER_SUBSCRIBE = "chatServerSubscribe"
     BATTLE_GET_BY_TYPE = "battleGetByType"
@@ -213,6 +231,9 @@ class ApiAction(str, Enum):
     EVENT_PICKER_START_GAME = "eventPicker_startGame"
     EVENT_PICKER_PLAY_ROUND = "eventPicker_playRound"
     EVENT_PICKER_FINISH_GAME = "eventPicker_finishGame"
+    POWER_TOURNAMENT_GET_STATE = "powerTournament_getState"
+    POWER_TOURNAMENT_GET_GROUP_INFO = "powerTournament_getGroupInfo"
+    POWER_TOURNAMENT_DAILY_FARM = "powerTournament_dailyFarm"
 
 
 class ErrorName(str, Enum):
@@ -221,6 +242,27 @@ class ErrorName(str, Enum):
     NOT_ENOUGH = "NotEnough"
     TOO_MANY = "TooMany"
     REFILLABLE = "Refillable"
+    #: 「対象が受理できない」系の実測エラー名（`docs/api/ARENA_API.md` /
+    #: `docs/api/GUILD_API.md` で観測済み。ここにある名前だけが既知の業務エラー）。
+    NOT_AVAILABLE = "NotAvailable"
+
+
+#: 認証系エラー名。`HWClient.call` が単一コール／グローバルエラーで HWAuthError に
+#: 変換する名前と、batch 内 per-call エラーを呼び出し側で判定する名前を同一定義にする
+#: （定義が分散すると「認証切れが認証経路に乗らない」事故が生まれる）。
+AUTH_ERROR_NAMES = frozenset({"auth", "InvalidSession"})
+
+#: 資源枯渇エラー名（残高が同じなら次の対象も同じ理由で失敗する）。
+#: `quests` のフォールバック候補判定と `element_gift` のコイン枯れ打ち切りが
+#: 同じ正を見るための共有定数。
+RESOURCE_EXHAUSTED_ERROR_NAMES = frozenset({ErrorName.NOT_ENOUGH.value})
+
+#: 対象（ヒーロー）単位の業務エラー名。この名前に一致した失敗だけが
+#: 「その対象だけ失敗、他は試行できる」を意味する。
+#: **docs/api か既存コードで実在が確認できる名前だけ**を持つ（推測で増やさない）。
+#: 未知の名前・transport 由来の名前（`network_or_parse_error` 等）・読めない形は
+#: 呼び出し側で「回復不能（全対象に共通の事故）」として打ち切る側の判定になる。
+HERO_SPECIFIC_ERROR_NAMES = frozenset({ErrorName.NOT_AVAILABLE.value})
 
 
 @dataclass
@@ -276,13 +318,19 @@ class HWClient:
     def __init__(self, headers: dict[str, str], session: requests.Session | None = None):
         self.session = session or requests.Session()
         self.headers = dict(headers)
-        self.request_id = int(headers.get("x-request-id", 100))
+        # 保存済みヘッダーのキーは ``X-Request-Id`` のように大小が混ざり得るため、
+        # 大小文字を無視して読み、数値でない値（空文字・"abc" 等）は既定値で補う。
+        self.request_id = _safe_int(get_header(headers, "x-request-id"), 100)
 
     def get_headers(self) -> dict[str, str]:
-        """現在の request-id を反映したヘッダーを取得"""
+        """現在の request-id を反映したヘッダーを取得
+
+        保存済みヘッダーに ``X-Request-Id`` のような大小文字違いのキーが
+        残っていてもよいよう、署名対象＝送信値になる単一キーに正規化する。
+        """
         self.request_id += 1
         headers = self.headers.copy()
-        headers["x-request-id"] = str(self.request_id)
+        set_header(headers, "x-request-id", str(self.request_id))
         return headers
 
     def call(
@@ -323,24 +371,50 @@ class HWClient:
                                 if isinstance(data_item, dict) and "params" in data_item and "actionTs" in data_item["params"]:
                                     data_item["params"]["actionTs"] = now
 
-                import logging
-                import json
-                logging.debug(f"Payload: {json.dumps(payload)}")
-                response = self.session.post(self.API_URL, headers=headers, json=payload, timeout=self.DEFAULT_TIMEOUT)
+                # ゲームは body + x-request-id に紐づく署名を要求する。
+                # 送信するバイト列と署名対象を一致させるため、compact JSON を
+                # 直接送る（署名はリトライ毎に actionTs 更新後の body で再計算）。
+                try:
+                    body = serialize_body(payload)
+                except (TypeError, ValueError) as e:
+                    # NaN / Infinity など厳密な JSON でない値や、JSON 直列化
+                    # できないオブジェクトはリトライしても直らないため、
+                    # 送信せずに payload 不正として即返す
+                    # （network_or_parse_error に混ぜると原因が読めなくなる）。
+                    return HWResponse(
+                        status=ResponseStatus.UNEXPECTED,
+                        error_name="invalid_payload",
+                        detail=str(e),
+                        request_id=current_request_id,
+                    )
+                # ログにも署名対象と同じバイト列（compact JSON）を出す。
+                logging.debug("Payload: %s", body)
+                ensure_json_content_type(headers)
+                sign_headers(headers, body)
+                response = self.session.post(
+                    self.API_URL, headers=headers, data=body.encode("utf-8"), timeout=self.DEFAULT_TIMEOUT
+                )
 
                 # 0. Auth error check (HTTP 401)
                 if response.status_code == 401:
                     raise HWAuthError(Messages.AUTH_ERROR)
 
                 response.raise_for_status()
-                res_data = response.json()
+                try:
+                    res_data = response.json()
+                except ValueError:
+                    # 署名不正はステータス 200 + text/plain で返ることがある。
+                    # JSON でない応答は従来どおり network_or_parse_error 経路へ流す。
+                    if is_invalid_signature_response(response.text):
+                        raise HWAuthError(Messages.AUTH_ERROR)
+                    raise
 
                 # 1. Global error check
                 if "error" in res_data:
                     error = res_data["error"]
                     error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                    if error_name in ["auth", "InvalidSession"]:
+                    if str(error_name) in AUTH_ERROR_NAMES:
                         raise HWAuthError(Messages.AUTH_ERROR)
 
                     return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
@@ -356,7 +430,7 @@ class HWClient:
                             error = call_result["error"]
                             error_name = error.get("name") if isinstance(error, dict) else str(error)
 
-                            if error_name in ["auth", "InvalidSession"]:
+                            if str(error_name) in AUTH_ERROR_NAMES:
                                 raise HWAuthError(Messages.AUTH_ERROR)
 
                             return HWResponse(status=ResponseStatus.ERROR, error_name=error_name, detail=error, request_id=current_request_id)
@@ -385,10 +459,15 @@ class HWClient:
             except HWAuthError:
                 raise
             except (Timeout, ConnectionError, HTTPError) as e:
-                # HTTPError の場合、リトライすべきステータスコードか確認
                 if isinstance(e, HTTPError):
                     status_code = e.response.status_code if e.response is not None else None
-                    response_text = e.response.text if e.response is not None else ""
+                    response_text = (
+                        str(e.response.text or "") if e.response is not None else ""
+                    )
+                    # 署名不正は 401 ではなく 4xx/5xx + text/plain で返ることもある。
+                    # リトライしても同じ署名で拒否されるだけなので認証エラーにする。
+                    if is_invalid_signature_response(response_text):
+                        raise HWAuthError(Messages.AUTH_ERROR)
                     # 429 (Too Many Requests) または 5xx (Server Error) はリトライ
                     if status_code != 429 and (status_code is None or not (500 <= status_code < 600)):
                         detail = f"{str(e)} | Response: {response_text[:500]}"
@@ -400,7 +479,7 @@ class HWClient:
                 if attempt > retries:
                     response_text = ""
                     if isinstance(e, HTTPError) and e.response is not None:
-                        response_text = f" | Response: {e.response.text[:500]}"
+                        response_text = f" | Response: {str(e.response.text or '')[:500]}"
                     
                     detail = f"{str(e)}{response_text}"
                     return HWResponse(
@@ -485,13 +564,17 @@ class HWClient:
         chat_type: str = "clan",
         count: int = 50,
         last_id: str | None = None,
+        user_id: str | None = None,
     ) -> HWResponse:
         """チャット履歴を取得する（chatGetAll）。
 
         Args:
-            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``）。
+            chat_type: チャット種別（``clan``/``training``/``xgvg``/``server``/``personal``）。
             count: 取得件数（1-200 にクランプ、既定 50）。
             last_id: ページネーション用（指定 ID 以前のメッセージを取得。CLI では ``--last-id`` で指定）。
+            user_id: 個人チャット（``personal``）の相手 userId。
+                省略時は ``userId`` を送らないだけで、会話一覧は返らない
+                （一覧は ``chat_get_talks()`` / ``chatGetTalks`` を使う）。
         """
         # count は 1-200 にクランプ（API 負荷とレスポンスサイズを制限）。ValueError 等はデフォルトにフォールバック。
         try:
@@ -502,8 +585,129 @@ class HWClient:
         args: dict[str, Any] = {"chatType": chat_type, "count": count_int}
         if last_id is not None:
             args["lastId"] = str(last_id)
+        if user_id:
+            args["userId"] = str(user_id)
         payload = {
             "calls": [{"name": ApiAction.CHAT_GET_ALL, "args": args, "ident": "body"}]
+        }
+        return self.call(payload)
+
+    def chat_get_talks(self) -> HWResponse:
+        """個人チャットの会話一覧を取得する（chatGetTalks）。
+
+        `response.talks` は ``userId`` / ``lastMessage`` / ``lastMessageType`` /
+        ``utime`` / ``seen`` / ``read`` を持ち、``utime`` 降順（最新順）で返る。
+        """
+        payload = {
+            "calls": [{"name": ApiAction.CHAT_GET_TALKS, "args": {}, "ident": "body"}]
+        }
+        return self.call(payload)
+
+    def chat_send_challenge(
+        self,
+        user_id: str | int,
+        heroes: list[int],
+        challenge_type: str = "titan",
+        favor: dict[str, int] | None = None,
+        text: str = "",
+        manual: bool = False,
+        max_upgrade: bool = True,
+    ) -> HWResponse:
+        """個人チャットの相手にフレンドリーチャレンジを送る（chatSendChallenge）。
+
+        チャレンジは相手側の personal スレッドに ``messageType=challenge`` の
+        メッセージとして届き、その ``id`` が ``chatAcceptChallenge`` に渡す
+        ``messageId`` になる。送信の重複を避けるためリトライしない
+        （``max_retries=0``）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.CHAT_SEND_CHALLENGE,
+                    "args": {
+                        "chatType": "personal",
+                        "heroes": [int(h) for h in heroes],
+                        "favor": favor or {},
+                        "text": text,
+                        "type": challenge_type,
+                        "manual": manual,
+                        "maxUpgrade": max_upgrade,
+                        "userId": str(user_id),
+                    },
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload, max_retries=0)
+
+    def chat_accept_challenge(
+        self,
+        user_id: str | int,
+        message_id: str | int,
+        heroes: list[int],
+        favor: dict[str, int] | None = None,
+        max_upgrade: bool = True,
+    ) -> HWResponse:
+        """チャレンジをバトルする（chatAcceptChallenge）。
+
+        受信者専用ではない。受信者・送信者のどちらも実行できる。
+        ``user_id`` は personal スレッドの相手（受信者なら送信者、送信者なら
+        受信者）、``message_id`` は双方で共有する personal スレッドの
+        ``challenge`` メッセージの ``id``、``heroes`` は攻撃側チーム
+        （自分の保存チーム全員）。レスポンスの ``response.battle`` に
+        ``result.win`` / ``result.stars`` / ``id``（リプレイID）が入る。
+        バトルの重複実行を避けるためリトライしない（``max_retries=0``）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.CHAT_ACCEPT_CHALLENGE,
+                    "args": {
+                        "messageId": message_id,
+                        "heroes": [int(h) for h in heroes],
+                        "favor": favor or {},
+                        "maxUpgrade": max_upgrade,
+                        "userId": str(user_id),
+                    },
+                    "context": {"actionTs": 0},
+                    "ident": "body",
+                }
+            ]
+        }
+        return self.call(payload, max_retries=0)
+
+    def team_get_all(self) -> HWResponse:
+        """保存済みチーム一覧を取得する（teamGetAll）。
+
+        ``response.challenge_titan`` / ``response.challenge`` がフレンドリー
+        チャレンジ用の保存チーム。
+        """
+        payload = {"calls": [{"name": ApiAction.TEAM_GET_ALL, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def user_get_info(self) -> HWResponse:
+        """自分のプレイヤー情報を取得する（userGetInfo）。
+
+        ``response.id`` がプレイヤーID（``x-auth-user-id`` ヘッダーとは別物）。
+        """
+        payload = {"calls": [{"name": ApiAction.USER_GET_INFO, "args": {}, "ident": "body"}]}
+        return self.call(payload)
+
+    def user_get_info_by_ids(self, ids: list[str]) -> HWResponse:
+        """複数プレイヤーの情報を一括取得する（userGetInfoByIds）。
+
+        Args:
+            ids: プレイヤーIDのリスト（最大300件）。
+        """
+        payload = {
+            "calls": [
+                {
+                    "name": ApiAction.USER_GET_INFO_BY_IDS,
+                    "args": {"ids": [str(i) for i in ids]},
+                    "ident": "body",
+                }
+            ]
         }
         return self.call(payload)
 

@@ -23,6 +23,39 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Verify /assets references exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ここで強制するのは「走査対象ファイルの存在」のみ。ファイルが欠損すると
+          # grep が 0 件で参照チェックが空転するため error にする（参照全削除は検出しない）。
+          targets=(
+            src/userscripts/index.ts
+            docs/_includes/head-custom.html
+            docs/_layouts/default.html
+            docs/_config.yml
+            docs/index.md
+            README.md
+            src/userscripts/README.md
+          )
+          for f in "${targets[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::scan target '$f' is missing; /assets references cannot be verified"
+              exit 1
+            fi
+          done
+          missing=0
+          while IFS= read -r ref; do
+            # remote_theme 側が用意するアセットは docs/ に置かないので検証対象外
+            case "$ref" in
+              /assets/css | /assets/css/*) continue ;;
+            esac
+            if [ ! -f "docs${ref}" ]; then
+              echo "::error::${ref} is referenced but docs${ref} is missing"
+              missing=1
+            fi
+          done < <(grep -hoE '/assets/[A-Za-z0-9._-]+' "${targets[@]}" | sort -u)
+          exit "$missing"
       - uses: actions/configure-pages@v6
       - uses: actions/jekyll-build-pages@v1
         with:

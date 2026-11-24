@@ -6,13 +6,13 @@ on:
     paths:
       - 'src/python/**'
       - '.github/scripts/**'
+      - 'docs/assets/**'
       - '.github/workflows/python-tests.yml'
   pull_request:
     branches: [ main ]
-    paths:
-      - 'src/python/**'
-      - '.github/scripts/**'
-      - '.github/workflows/python-tests.yml'
+    # パスフィルタは意図的に付けない。branch protection の必須チェック `test` が
+    # uv.lock だけを変更する Dependabot PR でも必ず生成されるようにするため。
+    # （必須チェックが生成されない PR は auto-merge が永久に待たされる）
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +29,7 @@ jobs:
     - name: Install uv
       # NOTE: setup-uv v8/v9 系はメジャータグ（v8/v9）が切られていないため
       # 完全版タグ v9.0.0 を指定する（@v9 だと resolve エラーになる）
-      uses: astral-sh/setup-uv@v10.3.2
+      uses: astral-sh/setup-uv@v10.4.0
       with:
         enable-cache: true
         prune-cache: true

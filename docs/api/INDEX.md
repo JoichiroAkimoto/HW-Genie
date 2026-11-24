@@ -29,6 +29,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 - [GUILD_API.md](./GUILD_API.html) (ギルド・PvP関連)
 - [ARENA_API.md](./ARENA_API.html) (アリーナ・ランキング・チーム・指定攻撃)
 - [QUEST_API.md](./QUEST_API.html) (クエスト・ミッション・報酬)
+- [POWER_TOURNAMENT_API.md](./POWER_TOURNAMENT_API.html) (Power Tournament: 開催状態・グループランキング・報酬受取)
 - [SHOP_API.md](./SHOP_API.html) (ショップ・資産関連)
 - [ADVENTURE_API.md](./ADVENTURE_API.html) (PVE・アドベンチャー)
 
@@ -37,6 +38,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ### 1. ユーザー基本情報・設定
 プレイヤーの基礎データや設定を取得します。
 *   **`userGetInfo`**: プレイヤーID、レベル、経験値、アバターなどの基本情報。
+*   **`userGetInfoByIds`**: 複数プレイヤーの情報を ID 指定で一括取得（`args: {"ids": [...]}`、最大300件）。個人チャットの会話相手名の解決などに使用（USER_API.md）。
 *   **`getTime`**: サーバー時刻の同期。
 *   **`settingsGetAll`**: ゲーム設定（音量、通知設定など）。
 *   **`tutorialGetInfo`**: チュートリアルの進行状況。
@@ -54,12 +56,14 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 
 ### 3. ユニット管理（ヒーロー・タイタン・ペット）
 育成キャラクターたちのステータス情報です。
-*   **`heroGetAll`**: 全ヒーローのレベル、ランク、スキル、スキン、グリフ、アーティファクト等の詳細。
+*   **`heroGetAll`**: 全ヒーローのレベル、ランク、スキル、スキン、グリフ、アーティファクト、エレメントギフト（`titanGiftLevel` / `titanCoinsSpent`）等の詳細。
 *   **`titanGetAll`**: 全タイタンのステータス。
 *   **`pet_getAll`**: 全ペットのステータス。
 *   **`teamGetAll`**: 保存されている防衛チームや攻撃チームの編成情報。
 *   **`titanSpirit_getAll`**: タイタンの「精霊（トーテム）」の状況。
 *   **`artifactGetChestLevel` / `titanArtifactGetChest`**: アーティファクトチェストのレベルや開封状況。
+*   **`heroEnchantRune`**: ヒーローのグリフ（ルーン）強化（`guild_glyph_defaults` で `quests` から実行）。
+*   **`heroTitanGiftLevelUp` / `heroTitanGiftDrop`**: エレメントギフトのレベル +1 / 降ろしてコイン全額返却（`hw-genie gift up|reset`。詳細は `UNIT_API.md`）。
 
 ### 4. クエスト・ミッション・報酬
 デイリー活動や報酬に関連する機能です。
@@ -73,9 +77,15 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ギルド活動やチャット機能です。
 *   **`clanGetInfo`**: 所属ギルドの情報、メンバーリスト。
 *   **`clanWarGetBriefInfo`**: ギルド戦（ゴールドリーグ等）の概要・対戦相手。
-*   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗（`response.shop` にショップ在庫・`coins` に残高。詳細は GUILD_API.md）。
+*   **`clanRaid_getInfo` / `clanDomination_getInfo`**: ギルドレイド（Asgard）の進捗（`response.shop` にショップ在庫・`coins` に残高・`bossAttempts` に残りボス攻撃回数・`userStats.damage` に累計ダメージ。詳細は GUILD_API.md）。
 *   **`clanRaid_shopBuy`**: ギルドレイド（Asgard）のショップ購入（`args: {"slotId": N}`。詳細は GUILD_API.md）。
-*   **`chatGetAll`**: チャット履歴取得（chatType指定）。
+*   **`clanRaid_startBossBattle` / `clanRaid_endBossBattle`**: ギルドレイド（Asgard）のボス戦。`endBossBattle` に空の `progress` を送るとサーバー側オートバトルで確定する（`afterInvalid: true`。詳細は GUILD_API.md）。
+*   **`clanRaid_farmRatingReward`**: ギルドレイド（Asgard）の週間ランキング報酬（`type`: `standingClan` / `standingUser`、週1回。詳細は GUILD_API.md）。
+*   **`clanRaid_logBoss`**: ギルドレイド（Asgard）のボス戦履歴（userId → battleId → attackers / result。`asgard-raid team import-log` の復元元。詳細は GUILD_API.md）。
+*   **`chatGetAll`**: チャット履歴取得（chatType指定。個人チャットは `chatType=personal` + 相手の `userId` でスレッド取得、CHAT_API.md）。
+*   **`chatGetTalks`**: 個人チャットの会話一覧（直近の相手・最新メッセージ・既読状態。utime 降順、CHAT_API.md）。
+*   **`chatSendChallenge`**: 個人チャットの相手にフレンドリーチャレンジを送信（CHAT_API.md）。
+*   **`chatAcceptChallenge`**: チャレンジをバトル。受信者・送信者のどちらも実行できる。`messageId` は personal スレッドの challenge メッセージ `id`（双方で共有）、`heroes` は攻撃側チーム（CHAT_API.md）。
 *   **`chatServerSubscribe`**: リアルタイムチャット購読。
 *   **`userGetAvailableStickers`**: 利用可能なスタンプ一覧。
 *   **`friendsGetInfo`**: フレンドリストとギフト交換状況。
@@ -93,6 +103,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ### 7. イベント・その他
 *   **`eventPicker_getInfo`**: 現在開催中のスペシャルイベント一覧。
 *   **`eventPicker_getState` / `eventPicker_startGame` / `eventPicker_playRound` / `eventPicker_finishGame`**: Seer's Game の状態確認・開始・カード引き・終了（詳細は QUEST_API.md の `eventPicker_getState` 節）。
+*   **`powerTournament_getState` / `powerTournament_getGroupInfo` / `powerTournament_dailyFarm`**: Power Tournament（Hero / Titan）の開催状態・グループランキング・報酬受取（詳細は [POWER_TOURNAMENT_API.md](./POWER_TOURNAMENT_API.html)）。
 *   **`newYear_getInfo`**: （季節イベント）新年イベント等の特定イベント情報。
 *   **`gacha_getInfo`**: 英雄の宝箱（ガチャ）の状態。
 *   **`rewardedVideo_boxyGetInfo`**: 広告視聴ボーナス（Boxy）の状態。

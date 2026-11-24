@@ -5,6 +5,7 @@ from typing import Any, Callable, List, TypedDict
 from sqlalchemy import text
 from .database import (
     Account,
+    AsgardRaidTeam,
     _wal_io_lock,
     get_engine,
     get_session_local,
@@ -17,11 +18,20 @@ from .database import (
 
 
 class HeadersConfig(TypedDict, total=False):
-    """``config_key = "headers"`` — authentication headers stored per account."""
+    """``config_key = "headers"`` — request headers stored per account.
+
+    The stored dict is NOT limited to ``x-auth-*`` keys: ``Content-Type``
+    (added by :func:`hw_genie.core.signing.ensure_json_content_type`) and
+    other request headers may be persisted alongside them, and keys keep
+    their original casing. ``x-auth-signature`` is deliberately never
+    stored (it is recomputed per request); legacy values are dropped at
+    both the read and write boundaries by :class:`SessionManager`.
+    """
     x_auth_session_id: str
     x_auth_token: str
     x_auth_user_id: str
     x_request_id: str
+    content_type: str
 
 
 class PlayerInfo(TypedDict, total=False):
@@ -509,3 +519,150 @@ class SessionRepository:
                 "config_value": json.dumps(value),
             },
         )
+
+    # --- Asgard raid teams (dedicated table, one row per account/boss/slot) ---
+
+    def list_asgard_raid_teams(
+        self, account: str, boss: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return stored teams for ``account`` ordered by boss then slot."""
+        def _read() -> list[dict[str, Any]]:
+            with get_session_local()() as db:
+                account_rec = _find_account_by_alias(db, account)
+                if account_rec is None:
+                    return []
+                query = db.query(AsgardRaidTeam).filter(
+                    AsgardRaidTeam.account_id == account_rec.id
+                )
+                if boss is not None:
+                    query = query.filter(AsgardRaidTeam.boss == boss)
+                rows = query.order_by(AsgardRaidTeam.boss, AsgardRaidTeam.slot).all()
+                return [_asgard_team_to_dict(row) for row in rows]
+
+        return self._read_with_retry(_read)
+
+    def save_asgard_raid_team(
+        self,
+        account: str,
+        *,
+        boss: str,
+        slot: int,
+        heroes: list[int],
+        pet: int | None,
+        favor: dict[int, int],
+        enabled: bool,
+        memo: str | None,
+    ) -> dict[str, Any]:
+        """Insert or replace one team (unique per account/boss/slot)."""
+        def _attempt() -> dict[str, Any]:
+            try:
+                with _wal_io_lock:
+                    with get_write_session_local()() as db:
+                        account_rec = _find_account_by_alias(db, account)
+                        if account_rec is None:
+                            raise ValueError(f"Account not found for alias: {account}")
+                        row = (
+                            db.query(AsgardRaidTeam)
+                            .filter(
+                                AsgardRaidTeam.account_id == account_rec.id,
+                                AsgardRaidTeam.boss == boss,
+                                AsgardRaidTeam.slot == slot,
+                            )
+                            .first()
+                        )
+                        if row is None:
+                            row = AsgardRaidTeam(
+                                account_id=account_rec.id,
+                                boss=boss,
+                                slot=slot,
+                            )
+                            db.add(row)
+                        row.heroes = list(heroes)
+                        row.pet = pet
+                        row.favor = _favor_to_json(favor)
+                        row.enabled = bool(enabled)
+                        row.memo = memo
+                        db.commit()
+                        return _asgard_team_to_dict(row)
+            except Exception as exc:
+                if is_hrana_stream_error(exc):
+                    logger.warning(
+                        "Transient Hrana stream error; disposing write pool "
+                        "before retry: %s",
+                        exc,
+                    )
+                    self._dispose_pool(get_write_engine, "write")
+                raise
+
+        return retry_on_wal_contention(_attempt, logger=logger)
+
+    def delete_asgard_raid_team(self, account: str, *, boss: str, slot: int) -> bool:
+        """Delete one team; returns ``False`` when it did not exist."""
+        def _attempt() -> bool:
+            try:
+                with _wal_io_lock:
+                    with get_write_session_local()() as db:
+                        account_rec = _find_account_by_alias(db, account)
+                        if account_rec is None:
+                            return False
+                        row = (
+                            db.query(AsgardRaidTeam)
+                            .filter(
+                                AsgardRaidTeam.account_id == account_rec.id,
+                                AsgardRaidTeam.boss == boss,
+                                AsgardRaidTeam.slot == slot,
+                            )
+                            .first()
+                        )
+                        if row is None:
+                            return False
+                        db.delete(row)
+                        db.commit()
+                        return True
+            except Exception as exc:
+                if is_hrana_stream_error(exc):
+                    logger.warning(
+                        "Transient Hrana stream error; disposing write pool "
+                        "before retry: %s",
+                        exc,
+                    )
+                    self._dispose_pool(get_write_engine, "write")
+                raise
+
+        return retry_on_wal_contention(_attempt, logger=logger)
+
+
+def _asgard_team_to_dict(row: AsgardRaidTeam) -> dict[str, Any]:
+    heroes_raw = row.heroes if isinstance(row.heroes, list) else []
+    heroes: list[int] = []
+    for value in heroes_raw:
+        try:
+            heroes.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "boss": row.boss,
+        "slot": int(row.slot),
+        "heroes": heroes,
+        "pet": int(row.pet) if row.pet is not None else None,
+        "favor": _favor_from_json(row.favor),
+        "enabled": bool(row.enabled),
+        "memo": row.memo,
+    }
+
+
+def _favor_to_json(favor: dict[int, int]) -> dict[str, int]:
+    return {str(int(hero)): int(patron) for hero, patron in favor.items()}
+
+
+def _favor_from_json(raw: Any) -> dict[int, int]:
+    if not isinstance(raw, dict):
+        return {}
+    favor: dict[int, int] = {}
+    for hero, patron in raw.items():
+        try:
+            favor[int(hero)] = int(patron)
+        except (TypeError, ValueError):
+            continue
+    return favor
+

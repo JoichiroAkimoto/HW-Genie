@@ -26,6 +26,9 @@ class BattleEstimate:
     win: bool
     stars: int
     progress: list[dict[str, Any]]
+    # Calc-failure reason reported by the userscript on dummy results
+    # (ordinal drift, config lookup failure, ...). Display/diagnosis only.
+    diag: str | None = None
 
 
 class BattleEngine(Protocol):
@@ -373,10 +376,17 @@ def battle_estimate_from_bridge_result(envelope: dict[str, Any]) -> BattleEstima
     if not isinstance(inner, dict):
         inner = {}
     progress = envelope.get("progress")
+    raw_diag = envelope.get("error")
+    # Page text is printed and persisted, so collapse newlines/ANSI-ish
+    # whitespace into single spaces and drop an empty diagnostic.
+    diag = None
+    if raw_diag is not None:
+        diag = " ".join(str(raw_diag).split())[:300] or None
     return BattleEstimate(
         win=bool(inner.get("win")),
         stars=_safe_int(inner.get("stars")),
         progress=progress if isinstance(progress, list) else [],
+        diag=diag,
     )
 
 
@@ -420,6 +430,16 @@ class BridgeDeadError(BridgeError):
         self.partial_results: list = list(partial_results or [])
 
 
+class BridgeCalcError(BridgeDeadError):
+    """Raised when the userscript answers but its in-page calc keeps failing.
+
+    A run of empty-progress (dummy) results means the page-side computation
+    is broken — typically Haxe prototype ordinal drift after a game update —
+    not that the bridge is unreachable. Aborts the tier loop early with the
+    userscript's diagnostic so a full rotation sweep is not wasted.
+    """
+
+
 #: Battle sim snippet evaluated in the headless page by
 #: :meth:`PlaywrightBattleEngine.calc`. Kept module-level so tests can pin
 #: its error handling. The ``getF``/``getFn``/``getProtoFn`` helpers resolve
@@ -452,9 +472,35 @@ PLAYWRIGHT_BATTLE_JS = """(arg) => {
                         const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, configGetter)]();
                         const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
                         const instant = new game.BattleInstantPlay(battle, presets);
-                        return new Promise((resolve) => {
+                        const isSignal = (v) => !!v && typeof v.add === 'function' && typeof v.dispatch === 'function';
+                        return new Promise((resolve, reject) => {
                             let done = null;
-                            instant[getProtoFn(game.BattleInstantPlay, 9)].add((bi) => {
+                            // Haxe prototype ordinals drift between game builds; the
+                            // pinned ordinal is only a hint (mirrors toe-bridge.ts
+                            // resolveSignalKey): try it first, then fall back to any
+                            // prototype/own field whose value has the signal shape.
+                            let signalKey = null;
+                            let pinned = null;
+                            try { pinned = getProtoFn(game.BattleInstantPlay, 10); } catch (e) { pinned = null; }
+                            if (pinned && isSignal(instant[pinned])) {
+                                signalKey = pinned;
+                            } else {
+                                const seen = new Set();
+                                const candidates = [];
+                                for (const key of Object.keys(game.BattleInstantPlay.prototype).concat(Object.keys(instant))) {
+                                    if (seen.has(key)) continue;
+                                    seen.add(key);
+                                    candidates.push(key);
+                                }
+                                for (const key of candidates) {
+                                    if (isSignal(instant[key])) { signalKey = key; break; }
+                                }
+                            }
+                            if (!signalKey) {
+                                reject(new Error("BattleInstantPlay completion signal not found (prototype ordinal drift)"));
+                                return;
+                            }
+                            instant[signalKey].add((bi) => {
                                 const results = bi[getF(game.BattleInstantPlay, 'get_result')]();
                                 done = {
                                     progress: results[getF(game.MultiBattleResult, 'get_progress')]() || [],
@@ -487,6 +533,25 @@ def config_getter_for(battle_type: str | None) -> str:
         battle_type,
     )
     return "get_titanPvpManual"
+
+
+def _browser_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
+    """Keep only the auth-related headers for ``browser.new_context``.
+
+    Playwright's ``extra_http_headers`` applies to **every** request the page
+    makes (HTML/JS/images included). Stored session headers may grow beyond
+    auth (``Content-Type``, ...), and sending those on plain GETs can confuse
+    the game/CDN, so filter down to the headers the game API actually uses.
+    """
+    if not headers:
+        return None
+    keep = {"x-request-id"}
+    filtered = {
+        k: v
+        for k, v in headers.items()
+        if str(k).lower() in keep or str(k).lower().startswith("x-auth-")
+    }
+    return filtered or None
 
 
 class PlaywrightBattleEngine:
@@ -530,7 +595,9 @@ class PlaywrightBattleEngine:
                 browser = p.chromium.launch(headless=self.headless)
                 try:
                     # Isolated context per battle (equiv. to Firefox container)
-                    context = browser.new_context(extra_http_headers=self.headers or None)
+                    context = browser.new_context(
+                        extra_http_headers=_browser_headers(self.headers)
+                    )
                     page = context.new_page()
                     page.goto(self.game_url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000))
                     # Wait for Haxe Game to appear (poll, cross-origin safe via evaluate)
@@ -543,7 +610,10 @@ class PlaywrightBattleEngine:
                     # computeBattle (ported from HerowarsHelper's BattleCalc): Haxe
                     # signal subscription, NOT DOM addEventListener.
                     # NOTE: Haxe minified ordinals below (DataStorage key 25,
-                    # BattleInstantPlay signal 9) are brittle across game builds.
+                    # BattleInstantPlay signal 10) are brittle across game builds.
+                    # The signal moved from 9 to 10 with the 2026-11-20 game update
+                    # (HerowarsHelper 2.476+ uses 10); the snippet also falls back to
+                    # scanning for the signal shape when the pinned ordinal drifts.
                     # They were ported from HerowarsHelper's working BattleCalc;
                     # re-validate against that source when resolution throws
                     # (the page.evaluate error below carries the failing key).

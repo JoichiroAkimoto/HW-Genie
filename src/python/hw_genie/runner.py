@@ -510,6 +510,35 @@ def asgard_shop_routine(gold_buffs: bool | None = None) -> Callable[[HWClient, s
     return run
 
 
+def asgard_raid_routine(dry_run: bool = False) -> Callable[[HWClient, str], object]:
+    """Build a routine that runs the Asgard boss teams for any account.
+
+    Team storage / week detection / start+auto-end live in
+    :mod:`hw_genie.commands.asgard_raid`. ``dry_run`` only reads
+    ``clanRaid_getInfo`` and the stored teams; it never starts a battle.
+    """
+    from hw_genie.commands.asgard_raid import run_asgard_raid
+
+    def run(client: HWClient, account: str) -> object:
+        return run_asgard_raid(client, account_alias=account, dry_run=dry_run)
+
+    return run
+
+
+def power_tournament_routine(
+    top: int = 5, dry_run: bool = False
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that reads the Power Tournament state and claims rewards."""
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    def run(client: HWClient, account: str) -> object:
+        return run_power_tournament(
+            client, account_alias=account, top=top, dry_run=dry_run
+        )
+
+    return run
+
+
 def seers_game_routine(
     client: HWClient,
     account: str,
@@ -535,6 +564,47 @@ def seers_game_routine(
         dry_run=dry_run,
         account_alias=account,
     )
+
+
+def challenge_routine(
+    user_id: str | None = None,
+    challenge_type: str | None = None,
+    wait_seconds: float = 10.0,
+    dry_run: bool = False,
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that sends + battles one challenge per account.
+
+    Each account uses ``challenge_defaults`` unless ``user_id`` / ``challenge_type``
+    are given (shared override for every account). The sender-side flow is used:
+    send a 1-unit target challenge, then battle it on the same account.
+
+    Returns:
+        A routine whose per-account result is ``ChallengeRunResult``.
+    """
+    from hw_genie.commands.challenge import (
+        ChallengeRunResult,
+        resolve_challenge_target,
+        run_challenge_self_battle,
+    )
+
+    def run(client: HWClient, account: str) -> object:
+        target, resolved_type = resolve_challenge_target(account, user_id, challenge_type)
+        battle = run_challenge_self_battle(
+            client,
+            account,
+            target,
+            challenge_type=resolved_type,
+            dry_run=dry_run,
+            wait_seconds=wait_seconds,
+        )
+        return ChallengeRunResult(
+            peer_id=target,
+            challenge_type=resolved_type,
+            dry_run=dry_run,
+            battle=battle,
+        )
+
+    return run
 
 
 def full_routine(
@@ -833,6 +903,63 @@ def consumable_routine(
     return run
 
 
+def gift_up_routine(limit: int | None = None, dry_run: bool = False) -> Callable[[HWClient, str], object]:
+    """Build a routine that maxes the element gift for any account.
+
+    Wraps :func:`hw_genie.commands.element_gift.run_gift_up` with
+    ``confirm=True`` (multi is non-interactive). The explicit ``--yes`` on the
+    ``multi gift-up`` command is the safety gate instead of a stored
+    ``enabled`` flag, because the gift level is server-side state and is
+    re-read before every plan.
+
+    Args:
+        limit: Upgrade at most this many heroes per account.
+        dry_run: Show the per-account plan without sending gift operations.
+
+    Returns:
+        A routine whose result per account is the ``GiftRunResult`` returned
+        by ``run_gift_up``.
+    """
+    from hw_genie.commands.element_gift import run_gift_up
+
+    def run(client: HWClient, account: str) -> object:
+        return run_gift_up(
+            client, account_alias=account, dry_run=dry_run, confirm=True, limit=limit
+        )
+
+    return run
+
+
+def gift_reset_routine(
+    max_power: int | None = None, limit: int | None = None, dry_run: bool = False
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that drops low-power heroes' gifts to refund the coins.
+
+    ``max_power`` が None の場合は ``element_gift.DEFAULT_MAX_POWER``（10 万）を
+    使う。drop は消費コインを全額返すので 1 体の失敗も資源を消費せず、他の体を
+    続行できる（``multi gift-reset`` は実行時に ``--yes`` を要求する）。
+
+    Returns:
+        A routine whose result per account is the ``GiftRunResult`` returned
+        by ``run_gift_reset``.
+    """
+    from hw_genie.commands.element_gift import DEFAULT_MAX_POWER, run_gift_reset
+
+    threshold = DEFAULT_MAX_POWER if max_power is None else max_power
+
+    def run(client: HWClient, account: str) -> object:
+        return run_gift_reset(
+            client,
+            account_alias=account,
+            dry_run=dry_run,
+            confirm=True,
+            max_power=threshold,
+            limit=limit,
+        )
+
+    return run
+
+
 def _status_cells(account: str, result: object) -> list[str] | None:
     """Return the column cells for one account, or None if status is unavailable."""
     from hw_genie.core.client import PlayerStatus
@@ -1052,6 +1179,91 @@ def summarize_consumable(
     verb = "planned" if dry_run else "consumed"
     print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
     return len(failed)
+
+
+_GIFT_HEADERS = ["Account", "✅ Done", "💰 Coins", "🪙 Left", "⏭️ Blocked", "❌ Failed", "ℹ️ Note"]
+
+
+def _gift_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the element gift summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_gift_table(rows: list[list[str]]) -> str:
+    """Render the per-account element gift summary table."""
+    return _render_table(_GIFT_HEADERS, rows, _gift_cell_styler)
+
+
+def summarize_gift(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    mode: str,
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account element gift table and return the failed count.
+
+    Results come from routines built by :func:`gift_up_routine` /
+    :func:`gift_reset_routine`: per account a ``GiftRunResult``. ``mode`` is
+    the multi mode label (``"up"`` / ``"reset"``); it is required because it
+    names the table and picks the verb (``maxed`` / ``reset``) — a neutral
+    default would print a label no mode ever uses.
+    "Coins" is the spent amount for ``up`` and the refunded amount for
+    ``reset``; "Blocked" only counts the heroes ``up`` could not afford (reset
+    has no such gate). Accounts whose routine errored, or whose result reports
+    an error or any failed hero, count as failed. The account name comes from
+    the ``results`` key (``GiftRunResult`` intentionally does not carry it).
+    Reason strings go to the dedicated "Note" column (``GiftRunResult.details``
+    last entry, else ``error``) so the "Failed" column stays a plain count —
+    same column split as ``summarize_seers_game``'s Note column, and it keeps
+    the table narrow.
+    With ``dry_run`` the result holds the *plan* (planned heroes in Done,
+    planned coins in Coins), mirroring ``multi consumable --dry-run``.
+    """
+    from hw_genie.commands.element_gift import GiftRunResult
+    from hw_genie.core.utils import format_number_with_suffix
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is None and isinstance(res, GiftRunResult):
+            note = (res.details[-1] if res.details else res.error) or "-"
+            rows.append(
+                [
+                    account,
+                    str(res.changed),
+                    format_number_with_suffix(res.coins),
+                    format_number_with_suffix(res.balance) if res.balance is not None else "-",
+                    str(res.blocked) if res.mode == "up" else "-",
+                    str(res.failed),
+                    note,
+                ]
+            )
+            if res.is_failure:
+                failed.append(account)
+            else:
+                ok += 1
+        elif err is None:
+            failed.append(f"{account} (gift result unavailable)")
+        else:
+            failed.append(account)
+
+    width = _table_layout(_GIFT_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print(f"📊 --- Multi gift {mode} summary ---")
+    if rows:
+        print(_render_gift_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else ("maxed" if mode == "up" else "reset")
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 _QUEST_SUMMARY_HEADERS = ["Account", "✅ Completed", "⏭️ Skipped", "❌ Failed"]
 
 
@@ -1247,6 +1459,127 @@ def summarize_asgard_shop(
     return len(failed)
 
 
+# Asgard raid summary table (per-account boss / teams / run + account score / rewards).
+_ASGARD_RAID_HEADERS = [
+    "Account",
+    "Boss",
+    "✅ Teams",
+    "💥 Damage",
+    "📈 Score",
+    "🎯 Attempts",
+    "🎁 Reward",
+    "ℹ️ Note",
+]
+
+
+def _asgard_raid_cell_styler(i: int, cell: str, padded: str, dim: bool) -> str:
+    """Cell styling for the Asgard raid summary table."""
+    if i == 0:
+        return style(padded, bold=True, dim=dim)
+    return style(padded, dim=dim)
+
+
+def _render_asgard_raid_table(rows: list[list[str]]) -> str:
+    """Render the per-account Asgard raid summary table."""
+    return _render_table(_ASGARD_RAID_HEADERS, rows, _asgard_raid_cell_styler)
+
+
+def summarize_asgard_raid(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account Asgard raid table and return the failed count.
+
+    A dry-run account is never a failure (nothing was started). A run error or
+    any failed team counts as failed. Accounts with no registered teams are
+    reported with a note and count as ok (nothing to do).
+    """
+    from hw_genie.commands.asgard_raid import (
+        BOSS_LABELS,
+        REWARD_STANDING_CLAN,
+        AsgardRaidRunResult,
+    )
+    from hw_genie.core.client import ResponseStatus
+    from hw_genie.core.utils import format_number_with_suffix
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is not None:
+            failed.append(account)
+            note = str(err).splitlines()[0] if str(err) else type(err).__name__
+            rows.append([account, "-", "0", "-", "-", "-", "-", note])
+            continue
+        if not isinstance(res, AsgardRaidRunResult):
+            failed.append(f"{account} (asgard-raid result unavailable)")
+            rows.append([account, "-", "0", "-", "-", "-", "-", "result unavailable"])
+            continue
+        label = BOSS_LABELS.get(res.boss or "", res.boss or "-")
+        executed = sum(1 for team in res.teams if team.status == ResponseStatus.SUCCESS)
+        attempts = "-"
+        if res.attempts_before is not None:
+            attempts = str(res.attempts_before)
+            if res.attempts_after is not None:
+                attempts = f"{res.attempts_before}->{res.attempts_after}"
+        score = "-" if res.dry_run else format_number_with_suffix(res.damage_after)
+        rewards = []
+        for reward in res.rewards:
+            name = "clan" if reward.reward_type == REWARD_STANDING_CLAN else "user"
+            mark = "✓" if reward.status == ResponseStatus.SUCCESS else "⏭"
+            rewards.append(f"{name}{mark}")
+        reward_cell = " ".join(rewards) or "-"
+        note = "dry-run" if dry_run or res.dry_run else "-"
+        if not res.teams:
+            note = (
+                "dry-run; no teams registered"
+                if dry_run or res.dry_run
+                else "no teams registered"
+            )
+        if not res.dry_run and not dry_run and res.attempts_before == 0:
+            note = "no attempts left"
+        if res.error:
+            note = res.error
+            failed.append(f"{account} ({res.error})")
+        elif res.failed_count:
+            note = f"{res.failed_count} team(s) failed"
+            failed.append(f"{account} ({res.failed_count} team(s) failed)")
+        else:
+            ok += 1
+        if any(
+            team.status == ResponseStatus.SUCCESS and not team.after_invalid
+            for team in res.teams
+        ):
+            # Warning only: the attempt was spent and the damage was recorded.
+            note = "end not auto-simulated" if note == "-" else f"{note}; end not auto-simulated"
+        rows.append(
+            [
+                account,
+                label,
+                str(executed),
+                format_number_with_suffix(res.total_damage),
+                score,
+                attempts,
+                reward_cell,
+                note,
+            ]
+        )
+
+    width = _table_layout(_ASGARD_RAID_HEADERS, rows)[1] if rows else 48
+
+    print("\n" + "=" * width)
+    print("📊 --- Multi asgard-raid summary ---")
+    if rows:
+        print(_render_asgard_raid_table(rows))
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
 # Seer's Game summary table (per-account games played / failed / note).
 _SEERS_HEADERS = ["Account", "🎮 Played", "❌ Failed", "ℹ️ Note"]
 
@@ -1323,6 +1656,116 @@ def summarize_seers_game(
             f"{key} x{amount}" for key, amount in sorted(totals.items())
         )
         print(f"🎁 Total rewards: {totals_str}")
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
+def summarize_power_tournament(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print each account's Power Tournament block and return the failed count."""
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        render_power_tournament,
+    )
+
+    ok = 0
+    failed: list[str] = []
+    for account, (res, err) in results:
+        if err is not None:
+            print(f"\n❌ Power Tournament — {account}: {err}")
+            failed.append(account)
+            continue
+        if not isinstance(res, PowerTournamentResult):
+            print(f"\n❌ Power Tournament — {account}: result unavailable")
+            failed.append(f"{account} (result unavailable)")
+            continue
+
+        render_power_tournament(res)
+        reasons: list[str] = []
+        if res.error:
+            reasons.append(res.error)
+        if res.ranking_error:
+            reasons.append(f"ranking: {res.ranking_error}")
+        if res.failed_claims:
+            reasons.append(f"{res.failed_claims} claim(s) failed")
+        if reasons:
+            failed.append(f"{account} ({'; '.join(reasons)})")
+        else:
+            ok += 1
+
+    width = 60
+    print("\n" + "=" * width)
+    print("📊 --- Multi power-tournament summary ---")
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
+_CHALLENGE_HEADERS = ["Account", "🎯 Peer", "⚔️ Result", "⭐ Stars", "ℹ️ Type"]
+
+
+def summarize_challenge(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print a per-account challenge summary and return the failed count.
+
+    Results come from :func:`challenge_routine`: per account a
+    ``ChallengeRunResult``. A LOSS still counts as completed (the battle ran);
+    only routine errors, missing results, or a missing battle in a non-dry run
+    are failures. With ``dry_run=True`` the footer says "planned".
+    """
+    from hw_genie.commands.challenge import ChallengeRunResult
+
+    ok = 0
+    failed: list[str] = []
+    rows: list[list[str]] = []
+    for account, (res, err) in results:
+        if err is not None:
+            message = str(err).strip().splitlines()
+            note = message[0] if message else type(err).__name__
+            rows.append([account, "-", "-", "-", note])
+            failed.append(account)
+            continue
+        if not isinstance(res, ChallengeRunResult):
+            rows.append([account, "-", "-", "-", "result unavailable"])
+            failed.append(account)
+            continue
+        if res.dry_run:
+            rows.append([account, res.peer_id, "planned", "-", res.challenge_type])
+            ok += 1
+            continue
+        if res.battle is None:
+            rows.append([account, res.peer_id, "-", "-", "battle result unavailable"])
+            failed.append(account)
+            continue
+        rows.append(
+            [
+                account,
+                res.peer_id,
+                "WIN" if res.battle.win else "LOSS",
+                str(res.battle.stars),
+                res.challenge_type,
+            ]
+        )
+        ok += 1
+
+    width = _table_layout(_CHALLENGE_HEADERS, rows)[1] if rows else 52
+    print("\n" + "=" * width)
+    print("📊 --- Multi challenge summary ---")
+    if rows:
+        print(_render_table(_CHALLENGE_HEADERS, rows))
     if failed:
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
@@ -1509,14 +1952,19 @@ __all__ = [
     "battle_import_routine",
     "quests_routine",
     "asgard_shop_routine",
+    "asgard_raid_routine",
     "seers_game_routine",
     "consumable_routine",
+    "gift_up_routine",
+    "gift_reset_routine",
     "toe_routine",
     "summarize_toe",
     "summarize",
     "summarize_quests",
     "summarize_asgard_shop",
+    "summarize_asgard_raid",
     "summarize_seers_game",
     "summarize_consumable",
     "summarize_battle",
+    "summarize_gift",
 ]

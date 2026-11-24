@@ -23,6 +23,7 @@ from typing import Any
 from hw_genie.battle.engine import (
     BattleEngine,
     BattleEstimate,
+    BridgeCalcError,
     BridgeError,
     BridgeDeadError,
     BridgeTimeoutError,
@@ -404,6 +405,12 @@ def _tier_key(tier: Any) -> str:
 # always goes first and duplicates are skipped.
 MAX_CONSECUTIVE_BRIDGE_TIMEOUTS = 3
 
+# Consecutive userscript dummy estimates (empty hero progress) before the run
+# is aborted. One dummy can be a transient in-page calc failure; a streak
+# means the calc itself is broken (usually Haxe ordinal drift after a game
+# update), so sweeping the whole team rotation would only burn time.
+MAX_CONSECUTIVE_DUMMY_ESTIMATES = 3
+
 # Consecutive raid-tier (canRaid=True) passes with zero new clears before
 # stopping. Banks do not clear rivals, so each pass draws independent fresh
 # seeds: a few retries are intentional (seed gacha), but grinding them
@@ -436,6 +443,22 @@ _INVALID_BATTLE_WARNED_ACCOUNTS: set[str] = set()
 _INVALID_BATTLE_STREAK = 0
 _INVALID_BATTLE_WARNED = False
 INVALID_BATTLE_STREAK_WARN_AT = 3
+
+
+def _dummy_remedy(diag: str | None) -> str:
+    """Map a userscript diagnostic to the action that actually fixes it.
+
+    A dummy estimate (empty hero progress) has several causes and the remedy
+    differs: an in-page timeout is fixed by keeping the tab active, a missing
+    engine by opening the game, and anything else (a completion-signal /
+    ordinal failure) by updating the Dev userscript.
+    """
+    text = (diag or "").lower()
+    if "timed out" in text:
+        return "in-page calc timed out; keep the game tab active and retry"
+    if "no engine" in text or "pickgame" in text:
+        return "no game engine in the tab; open or reload the game"
+    return "update the Dev userscript (game-update ordinal drift?)"
 
 
 def _warn_userscript_hint_once() -> None:
@@ -879,6 +902,7 @@ def run_titan_arena(
             "estimate": est,
             "abandoned": True,
             "dummy": True,
+            "diag": getattr(est, "diag", None),
         }
     if estimate_only:
         _vprint(progress, f"{Emojis.INFO}Estimate-only: not calling titanArenaEndBattle.")
@@ -1216,6 +1240,12 @@ def run_titan_arena_tier(
         ):
             try:
                 raid_summary = _run_raid(client, status, titans, engine, attack_score_threshold, progress, dashboard)
+            except BridgeCalcError as exc:
+                summary["raid_results"].append({"stage": "raid", "battles": [], "completed": False, "calc_error": True})
+                summary["rival_results"].extend(exc.partial_results)
+                summary["errors"].append({"stage": "raid", "message": str(exc)})
+                print(f"{Emojis.WARNING}Userscript battle calc failing during raid ({exc}); stopping tier loop.", flush=True)
+                return summary
             except BridgeDeadError as exc:
                 summary["raid_results"].append({"stage": "raid", "battles": [], "completed": False, "bridge_dead": True})
                 summary["rival_results"].extend(exc.partial_results)
@@ -1346,6 +1376,11 @@ def run_titan_arena_tier(
                 tier=tier,
                 banked_best_by_rival=banked_best_by_rival,
             )
+        except BridgeCalcError as exc:
+            summary["rival_results"].extend(exc.partial_results)
+            summary["errors"].append({"stage": "rivals", "message": str(exc)})
+            print(f"{Emojis.WARNING}Userscript battle calc failing ({exc}); stopping tier loop.", flush=True)
+            return summary
         except BridgeDeadError as exc:
             summary["rival_results"].extend(exc.partial_results)
             summary["errors"].append({"stage": "rivals", "message": str(exc)})
@@ -1653,9 +1688,11 @@ def _run_raid(
     authoritative remaining-rival view). If neither is usable, completion is
     left unverified (``completed_basis="unverified"``, ``no_verified=True``) so
     the caller retries with individual battles instead of guessing a
-    CompleteTier. API failures set ``api_error`` and payload mismatches
-    ``payload_error`` so the caller can surface them without treating the
-    fallback as an account failure.
+    CompleteTier. That non-streak ``no_verified`` fallback is unchanged; only a
+    dummy streak with nothing verified raises :class:`BridgeCalcError` (and
+    only then is EndRaid never attempted). API failures set ``api_error`` and
+    payload mismatches ``payload_error`` so the caller can surface them without
+    treating the fallback as an account failure.
     """
     progress = _normalize_progress(progress)
     rivals = (status.get("rivals") or {}) if isinstance(status.get("rivals"), dict) else {}
@@ -1749,6 +1786,8 @@ def _run_raid(
     # Every battle is in flight at once, so a burst of errors is only fatal
     # when the bridge never answered at all (no dummy/verified outcome).
     bridge_contact = False
+    dummy_streak = 0
+    last_diag: str | None = None
     pending: list[tuple[str, dict[str, Any]]] = []
     for rival_id, raw_rival in raid_rivals.items():
         if _cancel_requested():
@@ -1789,6 +1828,8 @@ def _run_raid(
                 "skipped": True,
                 "reason": f"missing {'/'.join(missing)}",
             }
+            # Nothing was simulated for this rival and this branch runs before
+            # any dummy is counted, so the streak needs no reset here.
             _vprint(progress, f"  - raid rival {rid}: skipped (missing {'/'.join(missing)})")
             continue
         pending.append(
@@ -1827,6 +1868,8 @@ def _run_raid(
                 raise outcome
             bridge_errors += 1
             battle_entries[rid] = {"rivalId": rid, "error": str(outcome)}
+            # A bridge error is not a dummy estimate: the calc streak is broken.
+            dummy_streak = 0
             _vprint(progress, f"  - raid rival {rid}: bridge error {outcome} ({bridge_errors}/{MAX_CONSECUTIVE_BRIDGE_TIMEOUTS})")
             # Skip fake progress: without a verified engine result we must
             # not fabricate progress for EndRaid. The rival is simply left
@@ -1839,12 +1882,18 @@ def _run_raid(
             # Userscript dummy loss (in-page calc failed): unverified, so
             # keep it out of EndRaid. The per-rival path retries it later.
             # A dummy proves the bridge answered, so it resets the
-            # consecutive-error count like any successful contact.
+            # consecutive-error count like any successful contact. The streak
+            # is classified only after the whole batch: raising here would
+            # discard the verified results ``_engine_calc_batch`` already
+            # computed and lose the no_verified → individual-battle fallback.
             bridge_errors = 0
             bridge_contact = True
+            dummy_streak += 1
+            last_diag = est.diag or last_diag
             battle_entries[rid] = {"rivalId": rid, "win": False, "dummy": True}
             _vprint(progress, f"  - raid rival {rid}: dummy loss skipped (unverified calc)")
             continue
+        dummy_streak = 0
         bridge_errors = 0
         bridge_contact = True
         results[rid] = {"progress": est.progress, "result": {"win": est.win, "stars": est.stars}}
@@ -1888,6 +1937,15 @@ def _run_raid(
     if _cancel_requested():
         raise _interrupted_error([])
     if not results:
+        if dummy_streak >= MAX_CONSECUTIVE_DUMMY_ESTIMATES:
+            # Nothing was verified and the calc never recovered: a persistent
+            # userscript failure, so stop the tier loop instead of walking
+            # every rival. The remedy depends on the reported cause.
+            raise BridgeCalcError(
+                f"userscript battle calc failed {dummy_streak} times in a row "
+                f"({last_diag or 'no hero progress'}); {_dummy_remedy(last_diag)}.",
+                partial_results=[],
+            )
         raid_summary["error"] = "no verified raid results; EndRaid skipped"
         raid_summary["no_verified"] = True
         print(f"{Emojis.WARNING}{raid_summary['error']}", flush=True)
@@ -2142,6 +2200,7 @@ def _run_rivals(
     )
     results: list[dict[str, Any]] = []
     bridge_errors = 0
+    dummy_streak = 0
     acc_key = str(account_label or "?")
     line_state: dict[str, Any] = {"last_emit": 0.0, "throttle_secs": PROGRESS_THROTTLE_SECS}
 
@@ -2202,6 +2261,30 @@ def _run_rivals(
                 _aprint(progress, f"  - rival {rival_id}: exception {exc}")
                 _update_line(str(rival_id), attempt_no, "error", rival_start)
                 break
+            # A dummy result still proves bridge contact, but a streak means
+            # the page-side calc itself is broken (typically Haxe ordinal
+            # drift after a game update): abort instead of sweeping every
+            # team/seed. One-off dummies keep the rotation going as before.
+            if res.get("dummy"):
+                dummy_streak += 1
+                if dummy_streak == 1:
+                    _aprint(
+                        progress,
+                        f"{Emojis.WARNING}userscript returned no battle progress "
+                        f"({res.get('diag') or 'calc failure'}); repeating this "
+                        f"streak means: {_dummy_remedy(res.get('diag'))}.",
+                    )
+                if dummy_streak >= MAX_CONSECUTIVE_DUMMY_ESTIMATES:
+                    msg = (
+                        f"userscript battle calc failed {dummy_streak} times in a row "
+                        f"({res.get('diag') or 'no hero progress'}); "
+                        f"{_dummy_remedy(res.get('diag'))} and re-run. "
+                        "Stopping tier loop."
+                    )
+                    _aprint(progress, f"{Emojis.WARNING}{msg}")
+                    raise BridgeCalcError(msg, partial_results=results)
+            else:
+                dummy_streak = 0
             # Any bridge failure (timeout or fast-fail like 404/connection
             # refused, i.e. any bridge_error) counts toward the dead-bridge
             # abort, mirroring _run_raid. Pure estimate-only without

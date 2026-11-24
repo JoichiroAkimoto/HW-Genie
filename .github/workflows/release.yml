@@ -233,6 +233,19 @@ jobs:
           curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 3 -o fixed-artifact.user.js "$DOWNLOAD_URL"
           bash src/userscripts/release-metadata.sh validate-artifact fixed-artifact.user.js "$VERSION" "$REPO"
 
+          # 2b. @icon reachability. Deliberately non-fatal: a Pages deploy lag must not
+          #     block a userscript release, but the operator must see it, so warn only.
+          ICON_URL=$(sed -n '/^\/\/ ==UserScript==$/,/^\/\/ ==\/UserScript==$/p' fixed-artifact.user.js | sed -n 's/^\/\/ @icon[[:space:]]*//p' | head -n 1 | tr -d ' \r\n')
+          if [[ -n "$ICON_URL" ]]; then
+            ICON_STATUS=$(curl --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 3 -o /dev/null -w '%{http_code}' "$ICON_URL" || true)
+            [[ -z "$ICON_STATUS" ]] && ICON_STATUS=000
+            if [[ "$ICON_STATUS" != "200" ]]; then
+              echo "::warning::@icon URL not reachable yet (HTTP $ICON_STATUS): $ICON_URL. Pages deploy may still be in progress; release is not blocked."
+            else
+              echo "@icon URL reachable (HTTP 200): $ICON_URL"
+            fi
+          fi
+
           # 3. Verify latest URL and API latest pointer
           UPDATE_URL="https://github.com/${REPO}/releases/latest/download/hw-genie-auth-capture.user.js"
           echo "Fetching latest update URL: $UPDATE_URL"

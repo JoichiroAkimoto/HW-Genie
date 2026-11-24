@@ -264,6 +264,139 @@ def test_cmd_multi_dispatch_daily(monkeypatch):
 
 
 @pytest.mark.usefixtures("bypass_multi_preflight")
+def test_cmd_multi_asgard_raid_uses_dedicated_summary(monkeypatch):
+    """Normal completion must dispatch to summarize_asgard_raid, not summarize()."""
+    from hw_genie import main
+    from hw_genie.commands.asgard_raid import AsgardRaidRunResult
+
+    result = AsgardRaidRunResult(boss="maestro", dry_run=False, teams=[])
+    calls = {"summary": 0, "generic": 0}
+
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+        return {"a": (result, None)}
+
+    def fake_summary(items, dry_run=False):
+        calls["summary"] += 1
+        return 0
+
+    def fake_generic(items):
+        calls["generic"] += 1
+        return 0
+
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.runner.summarize_asgard_raid", fake_summary)
+    monkeypatch.setattr("hw_genie.main.summarize", fake_generic)
+
+    args = type(
+        "A",
+        (),
+        {
+            "mode": "asgard-raid",
+            "accounts": ["a"],
+            "parallel": 1,
+            "debug": False,
+            "dry_run": False,
+            "yes": True,
+        },
+    )()
+
+    main.cmd_multi(args)
+
+    assert calls["summary"] == 1
+    assert calls["generic"] == 0
+
+
+@pytest.mark.usefixtures("bypass_multi_preflight")
+def test_cmd_multi_asgard_raid_dry_run_without_yes(monkeypatch):
+    """multi asgard-raid --dry-run needs no --yes and forwards dry_run."""
+    from hw_genie import main
+    from hw_genie.commands.asgard_raid import AsgardRaidRunResult
+
+    captured = {}
+
+    def fake_routine(dry_run=False):
+        captured["routine_dry_run"] = dry_run
+        return lambda client, account: AsgardRaidRunResult(
+            boss="maestro", dry_run=dry_run
+        )
+
+    def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
+        captured["cooperative_wait"] = cooperative_wait
+        return {acc: (routine(None, acc), None) for acc in (accounts or [])}
+
+    def fake_summary(items, dry_run=False):
+        captured["summary_dry_run"] = dry_run
+        return 0
+
+    monkeypatch.setattr("hw_genie.runner.asgard_raid_routine", fake_routine)
+    monkeypatch.setattr("hw_genie.main.run_all_accounts", fake_run)
+    monkeypatch.setattr("hw_genie.runner.summarize_asgard_raid", fake_summary)
+    monkeypatch.setattr("hw_genie.main.summarize", lambda items: 1)
+
+    args = type(
+        "A",
+        (),
+        {
+            "mode": "asgard-raid",
+            "accounts": ["a"],
+            "parallel": 1,
+            "debug": False,
+            "dry_run": True,
+            "yes": False,
+        },
+    )()
+
+    main.cmd_multi(args)
+
+    assert captured["routine_dry_run"] is True
+    assert captured["summary_dry_run"] is True
+    # boss Attempts are spent per account -> cooperative cancel waits
+    assert captured["cooperative_wait"] is True
+
+
+def test_run_log_asgard_raid_matches_summary_semantics():
+    from hw_genie.commands.asgard_raid import (
+        AsgardRaidRunResult,
+        AsgardRaidTeamResult,
+    )
+    from hw_genie.core.client import ResponseStatus
+    from hw_genie.main import _run_log_account_failure
+
+    def team(**kwargs):
+        return AsgardRaidTeamResult(
+            slot=1, memo=None, enabled=True, status=ResponseStatus.SUCCESS, **kwargs
+        )
+
+    ok = AsgardRaidRunResult(boss="maestro", dry_run=False, teams=[team(damage=10)])
+    assert _run_log_account_failure("asgard-raid", ok, None) is None
+    # afterInvalid=false is a warning only, never a failure
+    warn = AsgardRaidRunResult(
+        boss="maestro", dry_run=False, teams=[team(after_invalid=False)]
+    )
+    assert _run_log_account_failure("asgard-raid", warn, None) is None
+    errored = AsgardRaidRunResult(
+        boss="maestro",
+        dry_run=False,
+        teams=[
+            AsgardRaidTeamResult(
+                slot=1,
+                memo=None,
+                enabled=True,
+                status=ResponseStatus.ERROR,
+                error="start failed",
+            )
+        ],
+    )
+    assert _run_log_account_failure("asgard-raid", errored, None) == "1 team(s) failed"
+    run_error = AsgardRaidRunResult(boss="maestro", dry_run=False, error="boom")
+    assert _run_log_account_failure("asgard-raid", run_error, None) == "boom"
+    assert (
+        _run_log_account_failure("asgard-raid", None, None)
+        == "asgard-raid result unavailable"
+    )
+
+
+@pytest.mark.usefixtures("bypass_multi_preflight")
 def test_cmd_multi_default_all_accounts(monkeypatch):
     from hw_genie import main
 

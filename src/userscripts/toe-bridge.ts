@@ -63,6 +63,8 @@ interface BattleProgress {
 interface BattleResultPayload {
   progress: BattleProgress[];
   result: { win: boolean; stars: number };
+  /** Calc-failure reason carried on dummy submissions (diagnostics only). */
+  error?: string;
 }
 
 function log(msg: string, ...args: unknown[]): void {
@@ -537,9 +539,11 @@ function pickGame(): { BattlePresets?: unknown; BattleInstantPlay?: unknown } | 
  * The game mangles method names per build, but keeps a
  * ``__properties__`` map (minified -> original). These helpers resolve the
  * current minified key, ported verbatim from HerowarsHelper's working
- * ``BattleCalc`` (ordinals DataStorage key 25 / BattleInstantPlay signal 9
+ * ``BattleCalc`` (ordinals DataStorage key 25 / BattleInstantPlay signal 10
  * pinned to that source; re-validate there when a game update breaks
  * resolution — every throw below is diag-logged with the failing key).
+ * The signal moved from 9 to 10 with the 2026-11-20 game update
+ * (HerowarsHelper 2.476 made the same change).
  * Exported for unit tests.
  */
 export function getF(classF: unknown, nameF: string): string {
@@ -559,7 +563,49 @@ export function getProtoFn(classF: unknown, nF: number): string {
   return Object.keys((classF as { prototype?: object })?.prototype ?? {})[nF];
 }
 
-/** Battle ``type`` -> ``BattleConfigStorage`` getter. */
+/**
+ * Resolve the BattleInstantPlay completion-signal key on a live instance.
+ *
+ * Haxe prototype key order (ordinals) shifts with game builds, so the pinned
+ * ordinal is only a hint: try it first (the value HerowarsHelper currently
+ * uses), then fall back to any field (prototype or own) whose instance value
+ * exposes the Haxe signal shape (``add`` + ``dispatch``; a plain List also has
+ * ``add``). A drifted build self-heals instead of failing every job. Exported
+ * for unit tests.
+ */
+export function resolveSignalKey(
+  instant: unknown,
+  classF: unknown,
+  preferredIndex: number,
+): { key: string; index: number } | null {
+  const protoKeys = Object.keys((classF as { prototype?: object })?.prototype ?? {});
+  const instance = (instant ?? {}) as Record<string, unknown>;
+  const isSignal = (v: unknown) =>
+    !!v &&
+    typeof (v as { add?: unknown }).add === "function" &&
+    typeof (v as { dispatch?: unknown }).dispatch === "function";
+  const preferred = getProtoFn(classF, preferredIndex);
+  if (preferred && isSignal(instance[preferred])) {
+    return { key: preferred, index: preferredIndex };
+  }
+  // Prototype order first (its indexes are the ordinals callers reason
+  // about), then own enumerable fields: a signal can be an instance field.
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const key of [...protoKeys, ...Object.keys(instance)]) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  for (let i = 0; i < keys.length; i += 1) {
+    if (isSignal(instance[keys[i]])) {
+      return { key: keys[i], index: protoKeys.indexOf(keys[i]) };
+    }
+  }
+  return null;
+}
+
+/** Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE. */
 export function battleConfigFor(battleType: unknown): string {
   const value = typeof battleType === "string" ? battleType.toLowerCase() : "";
   if (value.includes("titan")) return "get_titanPvpManual";
@@ -643,6 +689,13 @@ export async function submitResult(
 }
 
 /**
+ * Why the most recent :func:`computeBattle` returned null. Sent along with
+ * the dummy loss so Python can surface the real cause (ordinal drift, config
+ * lookup failure, ...) without the browser console.
+ */
+let lastComputeError: string | null = null;
+
+/**
  * Compute a titan battle using the in-page game engine.
  *
  * Returns ``null`` when the game bundle is not loaded, ``DataStorage`` is
@@ -650,10 +703,12 @@ export async function submitResult(
  * only after such a genuine calc failure on an engine frame.
  */
 async function computeBattle(battle: unknown): Promise<BattleResultPayload | null> {
+  lastComputeError = null;
   const game = pickGame() as unknown as Record<string, unknown> | null;
   // Same callable gate as the frame gate: a cohabitant may have replaced
   // window.Game between poll and compute.
   if (!game || !hasBattleEngine(game)) {
+    lastComputeError = "no engine in this frame (pickGame miss)";
     log("computeBattle: no engine in this frame (pickGame miss)");
     return null;
   }
@@ -674,6 +729,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     } catch (e) {
       // Ordinal drift after a game update lands here — the key names above
       // identify which resolver broke, so compare with HerowarsHelper.
+      lastComputeError = `engine ordinal resolution failed: ${String(e)}`;
       log("computeBattle: engine ordinal resolution failed:", e);
       return null;
     }
@@ -683,6 +739,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     try {
       config = dataStores[configStorageKey][configGetter]();
     } catch (e) {
+      lastComputeError = `config lookup failed: ${String(e)}`;
       log("computeBattle: config lookup failed:", e);
       return null;
     }
@@ -712,35 +769,64 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     let result: BattleResultPayload | null = null;
     return new Promise<BattleResultPayload | null>((resolve) => {
       try {
-        const signal = instant[getProtoFn(game["BattleInstantPlay"], 9)] as {
+        const preferredSignalIndex = 10;
+        const signalSpec = resolveSignalKey(instant, game["BattleInstantPlay"], preferredSignalIndex);
+        if (!signalSpec) {
+          lastComputeError = "BattleInstantPlay completion signal not found (prototype ordinal drift)";
+          log("computeBattle: no completion signal on BattleInstantPlay instance");
+          resolve(null);
+          return;
+        }
+        if (signalSpec.index !== preferredSignalIndex) {
+          log(
+            `computeBattle: signal ordinal drifted — using #${signalSpec.index} (${signalSpec.key}; pinned ${preferredSignalIndex})`,
+          );
+        }
+        const signal = instant[signalSpec.key] as {
           add: (cb: (bi: unknown) => void) => void;
         };
         signal.add((battleInstant: unknown) => {
-          const bi = battleInstant as Record<string, () => unknown>;
-          const getters = bi[getF(game["BattleInstantPlay"], "get_result")]() as Record<string, () => unknown>;
-          const progress = getters[getF(game["MultiBattleResult"], "get_progress")]() as BattleProgress[];
-          const res = getters[getF(game["MultiBattleResult"], "get_result")]() as {
-            win: boolean;
-            stars: number;
-          };
-          result = { progress: progress ?? [], result: res ?? { win: false, stars: 0 } };
-          resolve(result);
+          // A wrongly-scanned listener must not throw uncaught; the timeout
+          // below still turns a bad payload into a diagnosable dummy.
+          try {
+            const bi = battleInstant as Record<string, () => unknown>;
+            const getters = bi[getF(game["BattleInstantPlay"], "get_result")]() as Record<string, () => unknown>;
+            const progress = getters[getF(game["MultiBattleResult"], "get_progress")]() as BattleProgress[];
+            const res = getters[getF(game["MultiBattleResult"], "get_result")]() as {
+              win: boolean;
+              stars: number;
+            };
+            result = { progress: progress ?? [], result: res ?? { win: false, stars: 0 } };
+            resolve(result);
+          } catch (e) {
+            lastComputeError = `result extraction failed: ${String(e)}`;
+            log("computeBattle: result extraction failed:", e);
+            // Resolve now so the job's diagnostic is submitted immediately
+            // instead of waiting out the 10s safety timeout.
+            resolve(null);
+          }
         });
         (instant["start"] as () => void).call(instant);
         // Safety timeout: if the engine never completes, resolve null so
-        // tick submits the fast loss instead of hanging.
+        // tick submits the fast loss instead of hanging. Kept conditional so
+        // a real failure diagnostic is not overwritten by the timeout one.
         setTimeout(() => {
           if (result === null) {
-            log("computeBattle: engine timed out without completing");
+            if (!lastComputeError) {
+              lastComputeError = "engine timed out without completing";
+              log("computeBattle: engine timed out without completing");
+            }
             resolve(null);
           }
         }, 10_000);
       } catch (e) {
+        lastComputeError = `engine setup failed: ${String(e)}`;
         log("computeBattle threw:", e);
         resolve(null);
       }
     });
   } catch (e) {
+    lastComputeError = `computeBattle outer error: ${String(e)}`;
     log("computeBattle outer error:", e);
     return null;
   }
@@ -776,11 +862,13 @@ export async function tick(
     if (!computed) {
       // The engine exists but this battle failed to compute (calc error or
       // timeout). Submit a fast loss so Python proceeds instead of waiting
-      // out its full bridge timeout.
+      // out its full bridge timeout. ``error`` carries the failing stage so
+      // the CLI can diagnose an ordinal drift without the browser console.
       log(`job ${job.id}: compute failed, submitting dummy loss`);
       await submitWithRetry(job.id, account, {
         progress: [{ attackers: { heroes: {} }, defenders: { heroes: {} } }],
         result: { win: false, stars: 0 },
+        error: lastComputeError ?? "compute failed",
       }, baseUrl);
       continue;
     }

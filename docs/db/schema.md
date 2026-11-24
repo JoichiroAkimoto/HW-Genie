@@ -58,12 +58,37 @@ Unique constraint: `(account_id, config_key)`
 
 | config_key | config_value の型 | 説明 |
 |------------|-------------------|------|
-| `"headers"` | `dict[str, str]` | 認証ヘッダー（x-auth-*） |
+| `"headers"` | `dict[str, str]` | リクエストヘッダー。`x-auth-*` に限らず `Content-Type` 等も保存され得る（キーの大小文字は保持）。`x-auth-signature` は `SessionManager.load` が無視し、`save` 時に除去する（既存行は次回 save まで物理的に残り得る） |
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
 | `"arena_team_presets"` | `dict[str, dict[str, dict]]` | Arena チームプリセット。`{"arena": {"atk1": {"heroes": [...], "pet": 6008, "favor": {"13": 6003}, "banners": [2]}}}` の形（`pet` / `banners` は任意、Grand Arena 用の `grand` キーは将来拡張） |
 | `"arena_snapshot"` | `dict[str, dict]` | 手動検証用の直近 `arenaFindEnemies` スナップショット。`{"arena": {"saved_at": "2026-10-29T16:10:15+09:00", "own_place": 16, "candidates": [{"user_id": 111, "place": 4, "name": "Bob", "power": 5000}]}}` |
+| `"challenge_defaults"` | `dict[str, str]` | フレンドリーチャレンジの既定値。`{"user_id": "12345678", "type": "titan"}`。`hw-genie challenge config` で設定し、`send` / `accept` / `list` / `battle` / `multi challenge` が `--user-id` 省略時に使う（`type` は `titan` / `hero`） |
 | `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
+
+---
+
+### `asgard_raid_teams`
+
+Asgard（ギルドレイド）のボス戦チーム。アカウント × ボス（`osh` / `maestro`）× slot（1〜5）ごとに 1 行。
+
+| カラム | 型 | 制約 | 説明 |
+|--------|----|------|------|
+| `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
+| `account_id` | INTEGER | FK -> accounts.id (CASCADE), NOT NULL | アカウント参照 |
+| `boss` | VARCHAR | NOT NULL | ボスキー（`osh` / `maestro`） |
+| `slot` | INTEGER | NOT NULL | チーム枠（1〜5） |
+| `heroes` | JSON | NOT NULL | ヒーロー ID の配列（5 体） |
+| `pet` | INTEGER | | ペット ID |
+| `favor` | JSON | | `{"heroId": patronPetId}` |
+| `enabled` | BOOLEAN | NOT NULL, DEFAULT 1 | 実行対象か（デフォルト `true`） |
+| `memo` | VARCHAR | | チームメモ（任意） |
+| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 作成日時 |
+| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | 更新日時 |
+
+Unique constraint: `(account_id, boss, slot)`
+
+`hw-genie asgard-raid team set/list/remove` で操作し、`asgard-raid run` / `multi asgard-raid` が `enabled=true` のチームを slot 順に実行します。
 
 ---
 
@@ -76,7 +101,7 @@ Unique constraint: `(account_id, config_key)`
 | `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
 | `started_at` | DATETIME | NOT NULL | 実行開始時刻（UTC） |
 | `finished_at` | DATETIME | NOT NULL | 実行終了時刻（UTC） |
-| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `consumable`） |
+| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `asgard-raid` / `consumable` / `toe` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge`） |
 | `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。クエスト失敗・consumable 失敗・購入エラー・ステータス取得不能・例外・割り込みは `failed`） |
 | `exit_code` | INTEGER | | プロセスの終了コード |
 | `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]`（`error` は失敗理由） |
@@ -195,6 +220,8 @@ class HeadersConfig(TypedDict, total=False):
     x_auth_token: str
     x_auth_user_id: str
     x_request_id: str
+    content_type: str  # Content-Type 等、x-auth-* 以外のヘッダーも保存され得る
+    # x-auth-signature は保存しない（送信のたびに再計算する使い捨ての値）
 
 
 class PlayerInfo(TypedDict, total=False):
@@ -229,12 +256,14 @@ SessionManager.load(alias)
     → 各 config_key を data dict にマージ（`player_*` はレガシー行として player_info へ再構成）
     → Account カラムを player_info にオーバーレイ
     → AccountData を返す
+  → `x-auth-signature` を除外（読み取り境界）
 ```
 
 ### Write
 
 ```
 SessionManager.save(alias, data)
+  → `x-auth-signature` を除外（保存境界）
   → SessionRepository.update_config(alias, data)
     → Account: 存在確認 / 作成 → カラム更新
     → AccountConfig: 各 key を upsert

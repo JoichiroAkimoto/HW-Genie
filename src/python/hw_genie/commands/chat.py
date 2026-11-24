@@ -1,11 +1,16 @@
-"""Guild chat (chatGetAll) fetch, table display and summary.
+"""Guild / personal chat (chatGetAll / chatGetTalks) fetch, table display and summary.
 
-Fetch latest 50 messages (default) via ``chatGetAll`` (``chatType=clan``)
-and display as table + statistical summary.
+Fetch latest 50 messages (default) via ``chatGetAll`` (``chatType=clan``
+and other types) and display as table + statistical summary. For personal
+chat, both modes are supported: omit ``--user-id`` to list recent
+conversations via ``chatGetTalks``, or pass it to fetch one thread via
+``chatGetAll``.
 
 - ``hw-genie chat``: show guild chat table + summary
-- ``--type``: chatType selection (clan / training / xgvg / server)
-- ``--count``: number of messages
+- ``--type``: chatType selection (clan / training / xgvg / server / personal)
+- ``--user-id``: peer userId for ``--type personal`` (optional; omit it to list
+  recent talks via ``chatGetTalks``)
+- ``--count``: number of messages / talks (clamped to 1-200)
 - ``--raw``: raw response JSON, ``--json``: parsed JSON
 """
 
@@ -14,7 +19,7 @@ import logging
 import os
 import sys
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -28,7 +33,7 @@ from hw_genie.core.utils import display_timezone_name, format_timestamp_for_disp
 
 logger = logging.getLogger(__name__)
 
-CHAT_TYPES = ("clan", "training", "xgvg", "server")
+CHAT_TYPES = ("clan", "training", "xgvg", "server", "personal")
 
 HEADER_DATETIME = "Time"
 HEADER_SENDER = "Sender"
@@ -144,6 +149,82 @@ def parse_chat_response(response: dict[str, Any]) -> list[ChatMessage]:
     return messages
 
 
+@dataclass
+class ChatTalk:
+    """``chatGetTalks`` が返す個人チャットの会話1件（相手ごとの最新メッセージ）。"""
+
+    user_id: str
+    utime: int
+    message_type: str
+    last_message: str
+    seen: int = 0
+    read: int = 0
+    name: str | None = None
+
+    @property
+    def display_time(self) -> str:
+        return _format_ctime(self.utime)
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.name} ({self.user_id})" if self.name else self.user_id
+
+    @property
+    def display_text(self) -> str:
+        return self.last_message or f"({self.message_type})"
+
+
+def parse_talks_response(response: dict[str, Any]) -> list[ChatTalk]:
+    """``chatGetTalks`` の ``response``（``{talks: [...]}``）をパースする。"""
+    if not isinstance(response, dict):
+        logger.warning("chatGetTalks response is not a dict: %r", type(response))
+        return []
+    talks = response.get("talks")
+    if not isinstance(talks, list):
+        logger.warning("chatGetTalks response.talks is not a list: %r", type(talks))
+        return []
+    parsed: list[ChatTalk] = []
+    for item in talks:
+        if not isinstance(item, dict):
+            continue
+        user_id = str(item.get("userId") or "")
+        if not user_id:
+            continue
+        parsed.append(
+            ChatTalk(
+                user_id=user_id,
+                utime=_safe_int(item.get("utime"), 0),
+                message_type=str(item.get("lastMessageType") or "text"),
+                last_message=str(item.get("lastMessage") or ""),
+                seen=_safe_int(item.get("seen"), 0),
+                read=_safe_int(item.get("read"), 0),
+            )
+        )
+    # サーバーは utime 降順で返すが、欠損や順序変更に備えて明示的に並べる
+    parsed.sort(key=lambda t: t.utime, reverse=True)
+    return parsed
+
+
+def fetch_talk_names(client: HWClient, talks: list[ChatTalk]) -> list[ChatTalk]:
+    """``userGetInfoByIds`` で会話相手の名前を一括解決する（失敗時は ID 表示のまま）。"""
+    if not talks:
+        return talks
+    res = client.user_get_info_by_ids([t.user_id for t in talks])
+    if res.status != ResponseStatus.SUCCESS:
+        logger.warning("userGetInfoByIds failed: %s (%s)", res.status, res.error_name or "-")
+        return talks
+    response = res.detail.get("response") if isinstance(res.detail, dict) else None
+    users = response.get("users") if isinstance(response, dict) else None
+    if not isinstance(users, list):
+        return talks
+    names = {
+        str(u.get("id")): str(u.get("name")).strip()
+        for u in users
+        if isinstance(u, dict) and u.get("id") and u.get("name")
+    }
+    return [replace(t, name=names.get(t.user_id)) for t in talks]
+
+
 def summarize_chat(messages: list[ChatMessage]) -> dict[str, Any]:
     """Generate statistical summary and natural language summary."""
     if not messages:
@@ -238,11 +319,12 @@ def summarize_chat(messages: list[ChatMessage]) -> dict[str, Any]:
     }
 
 
-def print_chat_table(messages: list[ChatMessage], account: str, chat_type: str) -> None:
+def print_chat_table(messages: list[ChatMessage], account: str, chat_type: str, user_id: str | None = None) -> None:
     """Display chat as table."""
     tz_label = display_timezone_name()
+    chat_label = f"{chat_type}:{user_id}" if chat_type == "personal" and user_id else chat_type
     table = Table(
-        title=f"Chat ({chat_type}) - {account}  latest {len(messages)}  [{tz_label}]",
+        title=f"Chat ({chat_label}) - {account}  latest {len(messages)}  [{tz_label}]",
         box=box.ROUNDED,
         show_lines=False,
         header_style="bold cyan",
@@ -258,6 +340,29 @@ def print_chat_table(messages: list[ChatMessage], account: str, chat_type: str) 
         if len(text) > 200:
             text = text[:197] + "..."
         table.add_row(m.display_time, m.name, text)
+
+    _console.print(table)
+
+
+def print_talks_table(talks: list[ChatTalk], account: str) -> None:
+    """Display personal talk list (newest first)."""
+    tz_label = display_timezone_name()
+    table = Table(
+        title=f"Personal talks - {account}  latest {len(talks)}  [{tz_label}]",
+        box=box.ROUNDED,
+        show_lines=False,
+        header_style="bold cyan",
+    )
+    table.add_column(HEADER_DATETIME, style="dim", no_wrap=True, justify="left")
+    table.add_column("Partner", style="bold", no_wrap=False, overflow="fold")
+    table.add_column("Type", style="dim", no_wrap=True)
+    table.add_column(HEADER_MESSAGE, no_wrap=False, overflow="fold", ratio=1)
+
+    for t in talks:
+        text = t.display_text
+        if len(text) > 200:
+            text = text[:197] + "..."
+        table.add_row(t.display_time, t.display_name, t.message_type, text)
 
     _console.print(table)
 
@@ -281,6 +386,56 @@ def print_chat_summary(summary: dict[str, Any]) -> None:
     print(f"  {summary.get('summary_text', '-')}")
 
 
+def _run_personal_talks(
+    client: HWClient,
+    account: str,
+    count_int: int,
+    *,
+    raw: bool,
+    json_output: bool,
+    last_id: str | None,
+) -> ChatResult:
+    """個人チャットの会話一覧（chatGetTalks）を表示する。"""
+    if last_id is not None:
+        print(
+            "❌ --last-id is not supported for the personal talk list (use --user-id to fetch a thread).",
+            file=sys.stderr,
+        )
+        return ChatResult([], success=False)
+
+    res = client.chat_get_talks()
+    if res.status != ResponseStatus.SUCCESS:
+        print(f"❌ Failed to fetch personal talks: {res.status.value} ({res.error_name or '-'})", file=sys.stderr)
+        return ChatResult([], success=False)
+
+    raw_data = res.detail.get("response") if isinstance(res.detail, dict) else None
+    if raw_data is None or not isinstance(raw_data, dict) or "talks" not in raw_data:
+        print("❌ Unexpected chatGetTalks response format.", file=sys.stderr)
+        logger.warning("Unexpected chatGetTalks detail format: %r", res.detail)
+        return ChatResult([], success=False)
+
+    if raw:
+        print(json.dumps(raw_data, ensure_ascii=False, indent=1))
+        return ChatResult(parse_talks_response(raw_data), success=True)
+
+    talks = parse_talks_response(raw_data)
+    # サーバーは utime 降順で返すので、最新 count 件は先頭のスライスになる
+    if len(talks) > count_int:
+        talks = talks[:count_int]
+    talks = fetch_talk_names(client, talks)
+
+    if json_output:
+        print(json.dumps([asdict(t) for t in talks], ensure_ascii=False, indent=1))
+        return ChatResult(talks, success=True)
+
+    if not talks:
+        print(f"ℹ️  [{account}] No personal talks found.")
+        return ChatResult([], success=True)
+
+    print_talks_table(talks, account)
+    return ChatResult(talks, success=True)
+
+
 def run_chat(
     client: HWClient,
     account_alias: str | None = None,
@@ -289,20 +444,25 @@ def run_chat(
     raw: bool = False,
     json_output: bool = False,
     last_id: str | None = None,
+    user_id: str | None = None,
 ) -> ChatResult:
-    """Fetch guild chat and display as table + summary.
+    """Fetch chat and display as table + summary.
 
     Args:
         client: authenticated HWClient
         account_alias: account alias for display
         chat_type: chatType to fetch
-        count: number of messages
+        count: number of messages / talks (clamped to 1-200)
         raw: print raw response JSON
         json_output: print parsed messages as JSON
-        last_id: pagination (fetch before this ID)
+        last_id: pagination (fetch before this ID; not supported for the
+            personal talk list)
+        user_id: peer userId for ``chat_type="personal"``. Omit it to list recent
+            personal talks (``chatGetTalks``, newest first).
 
     Returns:
-        Parsed ChatMessage list (``ChatResult`` with ``success`` flag).
+        Parsed ChatMessage list (or ChatTalk list for the personal talk list mode),
+        wrapped in ``ChatResult`` with its ``success`` flag.
     """
     if raw and json_output:
         print("❌ --raw and --json cannot be used together.", file=sys.stderr)
@@ -313,13 +473,40 @@ def run_chat(
         print(f"❌ Unknown chatType: {chat_type} (choices: {', '.join(CHAT_TYPES)})", file=sys.stderr)
         return ChatResult([], success=False)
 
+    # 指定有無は strip 前の値で判定する（空白のみの指定も「指定あり」として扱う）。
+    user_id_supplied = user_id is not None
+    user_id = str(user_id).strip() if user_id_supplied else None
+    if chat_type == "personal":
+        # userId 省略時は会話一覧（chatGetTalks）、指定時は個別スレッドを取得する。
+        if user_id_supplied and not user_id:
+            print("❌ --user-id must not be empty.", file=sys.stderr)
+            return ChatResult([], success=False)
+        # str.isdigit は非 ASCII 数字も通すため isascii と併用する。
+        if user_id and not (user_id.isascii() and user_id.isdigit()):
+            print(f"❌ Invalid --user-id: {user_id!r} (numeric userId required).", file=sys.stderr)
+            return ChatResult([], success=False)
+    else:
+        # 非 personal では空白のみの指定もエラーにする（payload に空 userId を送らない）。
+        if user_id_supplied:
+            print("❌ --user-id is only valid with --type personal.", file=sys.stderr)
+            return ChatResult([], success=False)
+        user_id = None
+
     try:
         count_int = int(count) if count is not None else 50
     except (TypeError, ValueError):
         print(f"❌ Invalid count: {count!r}", file=sys.stderr)
         return ChatResult([], success=False)
+    # 会話一覧のスライスと userGetInfoByIds の送信件数の両方に効くよう、ここで 1-200 にクランプする
+    # （chat_get_all / ドキュメントが約束する範囲と揃える）。
+    count_int = max(1, min(200, count_int))
 
-    res = client.chat_get_all(chat_type=chat_type, count=count_int, last_id=last_id)
+    if chat_type == "personal" and user_id is None:
+        return _run_personal_talks(
+            client, account, count_int, raw=raw, json_output=json_output, last_id=last_id
+        )
+
+    res = client.chat_get_all(chat_type=chat_type, count=count_int, last_id=last_id, user_id=user_id)
     if res.status != ResponseStatus.SUCCESS:
         print(f"❌ Failed to fetch chat: {res.status.value} ({res.error_name or '-'})", file=sys.stderr)
         return ChatResult([], success=False)
@@ -341,17 +528,25 @@ def run_chat(
     # messages は ctime 昇順にソート済みなので、最新 count 件は末尾のスライスになる
     if count_int is not None and len(messages) > count_int:
         messages = messages[-count_int:]
-    if not messages:
-        print(f"ℹ️  [{account}] No chat history found ({chat_type}).")
-        return ChatResult([], success=True)
-
     if json_output:
+        # JSON モードは空結果でも必ず ``[]`` を出す（stdout を常にパース可能に保つ）。
         data = [asdict(m) for m in messages]
         print(json.dumps(data, ensure_ascii=False, indent=1))
         return ChatResult(messages, success=True)
 
+    if not messages:
+        chat_label = f"personal: {user_id}" if chat_type == "personal" else chat_type
+        print(f"ℹ️  [{account}] No chat history found ({chat_label}).")
+        if chat_type == "personal":
+            print(
+                "   Note: the server may return only unread PMs for a conversation; "
+                "messages already read in-game can come back empty.",
+                file=sys.stderr,
+            )
+        return ChatResult([], success=True)
+
     # 通常表示: 表＋要約
-    print_chat_table(messages, account, chat_type)
+    print_chat_table(messages, account, chat_type, user_id)
     summary = summarize_chat(messages)
     print_chat_summary(summary)
     return ChatResult(messages, success=True)

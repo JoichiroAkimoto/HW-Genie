@@ -221,3 +221,87 @@ def test_save_normalizes_trailing_space_existing_alias():
     # 大文字小文字・前後空白を無視した照合により、スペース付きでも正しくロードできる
     assert SessionManager.load("Trailing ")["player"]["name"] == "Trailing Fixed"
 
+
+def test_load_drops_stored_signature_header():
+    """旧バージョンが保存した x-auth-signature は load 時に除外される。
+
+    署名は送信のたびに再計算するため、保存値を使い回すと Invalid signature
+    になる。キーの大小文字を無視して除外し、他のヘッダーは保持する。
+    """
+    account = "stale_signature_user"
+    # 旧バージョン相当: 読み取り境界を検証するため repo へ直接保存する
+    SessionManager.repo.save_data(
+        account,
+        {
+            "player": {"id": "sig_id", "name": "Sig User"},
+            "headers": {
+                "x-auth-token": "fake-token",
+                "x-auth-session-id": "fake-session",
+                "X-Auth-Signature": "stale-signature-value",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+        },
+    )
+
+    loaded = SessionManager.load(account)
+    header_names = {key.lower() for key in loaded["headers"]}
+    assert "x-auth-signature" not in header_names
+    # 署名以外のヘッダーは保持される。
+    assert loaded["headers"]["x-auth-token"] == "fake-token"
+    assert loaded["headers"]["x-auth-session-id"] == "fake-session"
+    assert loaded["headers"]["Content-Type"] == "application/json; charset=UTF-8"
+
+
+def test_save_drops_signature_header():
+    """保存境界でも x-auth-signature は除外される（読み取り境界と同じ不変条件）。
+
+    署名は送信のたびに再計算する使い捨ての値で、保存してしまうと次回以降に
+    使い回されて ``Invalid signature`` になる。キーの大小文字を無視して除外し、
+    他のヘッダー（Content-Type 等）は保持する。
+    """
+    account = "save_signature_user"
+    SessionManager.save(
+        account,
+        {
+            "player": {"id": "save_sig_id", "name": "SaveSig"},
+            "headers": {
+                "x-auth-token": "fake-token",
+                "X-Auth-Signature": "stale-signature-value",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+        },
+    )
+
+    # load を挟まず repo から直接読み、保存データ自体に署名が無いことを確認する
+    stored = SessionManager.repo.get_data(account)
+    header_names = {str(key).lower() for key in stored["headers"]}
+    assert "x-auth-signature" not in header_names
+    assert stored["headers"]["x-auth-token"] == "fake-token"
+    assert stored["headers"]["Content-Type"] == "application/json; charset=UTF-8"
+
+
+def test_load_is_unchanged_when_no_signature_header_is_stored():
+    """署名が無い行は従来どおり（同じ dict をそのまま返す）。"""
+    account = "no_signature_user"
+    SessionManager.save(
+        account,
+        {
+            "player": {"id": "nosig_id", "name": "NoSig"},
+            "headers": {"x-auth-token": "fake-token"},
+        },
+    )
+
+    loaded = SessionManager.load(account)
+    assert loaded["headers"] == {"x-auth-token": "fake-token"}
+
+
+def test_load_keeps_non_dict_headers_as_is():
+    """headers が dict でない保存内容は従来どおり触らない。"""
+    account = "non_dict_headers_user"
+    SessionManager.repo.save_data(
+        account,
+        {"player": {"id": "ndh_id", "name": "NonDictHeaders"}, "headers": "legacy-value"},
+    )
+
+    loaded = SessionManager.load(account)
+    assert loaded["headers"] == "legacy-value"

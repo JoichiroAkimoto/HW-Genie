@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from datetime import datetime
 import json
+from requests.exceptions import HTTPError
 from hw_genie.core.session_manager import SessionManager
 
 
@@ -135,6 +136,39 @@ def test_get_user_info_http_401(mock_post):
 
     assert info["status"] == "error"
     assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+def test_get_user_info_http_403_invalid_signature(mock_post):
+    """HTTP 403 + text/plain の "Invalid signature" もセッション失効として報告される"""
+    mock_response = MagicMock()
+    mock_response.status_code = 403
+    mock_response.text = "Invalid signature"
+    mock_response.raise_for_status.side_effect = HTTPError(response=mock_response)
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] == AUTH_EXPIRED_MESSAGE
+
+
+@patch("requests.post")
+def test_get_user_info_http_error_without_signature_keeps_generic_message(mock_post):
+    """署名以外の理由の HTTP エラーは従来どおり例外メッセージ（失効と誤分類しない）"""
+    mock_response = MagicMock()
+    mock_response.status_code = 502
+    mock_response.text = "Bad Gateway"
+    mock_response.raise_for_status.side_effect = HTTPError(
+        "502 Server Error: Bad Gateway", response=mock_response
+    )
+    mock_post.return_value = mock_response
+
+    info = get_user_info({"x-request-id": "100"})
+
+    assert info["status"] == "error"
+    assert info["message"] != AUTH_EXPIRED_MESSAGE
+    assert "Bad Gateway" in info["message"]
 
 
 @patch("requests.post")

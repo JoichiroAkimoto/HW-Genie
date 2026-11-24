@@ -68,6 +68,51 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 ---
 
+## userGetInfoByIds - 複数ユーザー情報の一括取得
+
+複数のプレイヤーIDを指定し、名前・レベルなどの基本情報をまとめて取得します（個人チャットの会話相手名の解決などに使用）。
+
+### Request Arguments
+`ids`: プレイヤーIDの配列（最大300件）
+
+```json
+{"ids": ["26754937", "62081929"]}
+```
+
+### curl 実行例
+```bash
+curl -s 'https://heroes-wb.nextersglobal.com/api/' \
+  -H 'content-type: application/json; charset=UTF-8' \
+  --data-raw '{"calls":[{"name":"userGetInfoByIds","args":{"ids":["26754937","62081929"]},"ident":"body"}]}'
+```
+
+### Response Structure (主要フィールド)
+```json
+{
+  "results": [{
+    "ident": "body",
+    "result": {
+      "response": {
+        "users": [
+          {"id": "26754937", "name": "Alice", "level": "130", "avatarId": "1617"},
+          {"id": "62081929", "name": "Bob", "level": "125", "avatarId": "1618"}
+        ]
+      }
+    }
+  }]
+}
+```
+
+### 主要フィールド説明
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `users[].id` | string | プレイヤーID |
+| `users[].name` | string | プレイヤー名 |
+| `users[].level` | string | プレイヤーレベル |
+| `users[].avatarId` | string | 使用中アバターID |
+
+---
+
 ## getTime - サーバー時刻取得
 
 サーバーの現在時刻（Unixタイムスタンプ）を取得します。
