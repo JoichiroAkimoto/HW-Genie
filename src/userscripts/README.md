@@ -55,11 +55,12 @@ https://joichiroakimoto.github.io/HW-Genie/assets/hw-genie-icon.png
 
 | ファイル | 用途 |
 | --- | --- |
-| `hw-genie-icon-1024.png` | マスター（1024px / フラット 8 色 / 不透明） |
-| `hw-genie-icon.png` | 配布用 512px **背景透過**（`@icon`・Pages の png favicon・README と Pages ヘッダーのタイトル行・`_config.yml` の `logo`（JSON-LD の publisher）） |
-| `hw-genie-icon-solid.png` | 配布用 512px 不透明（apple-touch-icon 専用。iOS は透過 PNG を黒で塗り潰すため別ファイルにする） |
-| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（各レイヤー 8 色以下、16px は 7 色。indexed BMP 4bpp は 1 ビットの AND マスクで完全透過を表現できる＝部分的な alpha だけが不可で、magick も実際にマスクを書く。現行の favicon.ico は地色を抜いていない＝不透明な紺タイルを意図的に残したものであり、形式上の制限ではない。透過のタブアイコンを望むなら per-size ループに `-transparent "#03104D"` を追加する） |
-| `hw-genie-social-preview.png` | 1280x640。og:image / twitter:image。原画はリポジトリ外のためリポジトリ内容からの再生成は不可 |
+| `hw-genie-icon.grid.txt` | **Source of Truth**。64x64 のドットマップ（1 文字 = 1 セル、コメント行に 6 色の宣言 `CH=#RRGGBB`）。下の PNG はすべてここから `render_brand_assets.py` で描画する。意図の審査は画像ではなくこのテキストで行うので **PNG を手編集しない** |
+| `hw-genie-icon-1024.png` | マスター 1024px（マップを scale 16 で描画。6 色・不透明） |
+| `hw-genie-icon.png` | 配布用 512px **背景透過**（マップを scale 8 で描画し、地色 `X` のセルだけ alpha 0。6 色）。使いどころ: `@icon`・Pages の png favicon・README と Pages ヘッダーのタイトル行・`_config.yml` の `logo`（JSON-LD の publisher） |
+| `hw-genie-icon-solid.png` | 配布用 512px 不透明（マップを scale 8 で描画。apple-touch-icon 専用。iOS は透過 PNG を黒で塗り潰すため別ファイルにする） |
+| `favicon.ico` | 16 / 32 / 48 / 64 レイヤー（マスターから最近傍縮小。各レイヤー 6 色で 8 色以下に収まる。indexed BMP 4bpp は 1 ビットの AND マスクで完全透過を表現できる＝部分的な alpha だけが不可で、magick も実際にマスクを書く。現行の favicon.ico は地色を抜いていない＝不透明な紺タイルを意図的に残したものであり、形式上の制限ではない。透過のタブアイコンを望むなら per-size ループに `-transparent "#03104D"` を追加する） |
+| `hw-genie-social-preview.png` | 1280x640。og:image / twitter:image。**マップから描画したマーク（scale 8）＋ 現行ファイルから写したワードマーク（文字）ブロックとスパーク**を `compose_banner` が組み直す（7 色）。文字は描き直さず元の実描画をそのまま写すので、差し替え元がコミット済みファイルである限り何度流しても同じバイト列になる（冪等） |
 
 Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 透過 512px png → apple-touch-icon（不透明）。テーマ本体の `head-custom-theme-colors.html` と Google Analytics フックは追加型で残す。`theme-color` はテーマが `#151515` 固定で出すため重複指定しない）、`docs/_layouts/default.html`（テーマの同ファイルをコピーして h1 のタイトル行に透過アイコンを 34px インライン化。**テーマ更新を自動追跡しないので、hacker テーマ側の変更は手動で反映する**）と `docs/_config.yml`（`logo` は JSON-LD の publisher 用、`defaults` の `image` が og:image を生成）。
 
@@ -67,22 +68,25 @@ Pages 側の組み込みは `docs/_includes/head-custom.html`（favicon.ico → 
 
 #### 生成と検品
 
-ピクセルアートは既定の補間縮小で境界がにじむ（8 色が 100 色超に膨らむ）ため、縮小は必ず最近傍 (`-filter point`) ＋ 非ディザーの 8 色量子化で行う。さらに `-strip` を添えて、生成ツールの来歴メタデータ（`TC260:AIGC` の ContentProducer / ProduceID など）とタイムスタンプを公開資産に残さない。
+ピクセルアートは既定の補間縮小で境界がにじむ（6 色が 100 色超に膨らむ）ため、縮小は必ず最近傍 (`-filter point`) ＋ 非ディザーの 8 色上限量子化で行う。さらに `-strip` を添えて、生成ツールの来歴メタデータ（`TC260:AIGC` の ContentProducer / ProduceID など）とタイムスタンプを公開資産に残さない。
 
-透過版は、地色を抜いたあと外周に残る暗色斑点 `#2F2434`（旧 609px、うち 571px がシルエット外周）をランプの影色 `#AD5914` に書き換えてから量子化する。そのまま残すと淡い背景の上で縁が黒く崩れて見えるためで、結果は 7 色（斑点 0 / 影色 6570px、透過画素数は差し替え前と同一）になる。
+マーク本体は `docs/assets/hw-genie-icon.grid.txt`（64x64 ドットマップ）から `.github/scripts/render_brand_assets.py` が決定的に描画する。1 セルを `scale x scale` のブロックへ引き伸ばすだけで、補間もノイズ後処理も手作業のかすれも介在しない。生成ツールノイズはマップ化の時点で消えているので、マスターに対する `despeckle` 工程は不要になった。
+
+`.github/scripts/despeckle_assets.py` は **マップ外のラスターを取り込むとき**のクリーナーとして残す。現行バナーのワードマーク（文字部分）はこれでノイズを落としたもので、`compose_banner` はその結果をそのまま写しているだけ。文字を差し替える／手描き原画を取り直すときは `-strip` した 1280x640 を `docs/assets/hw-genie-social-preview.png` の位置に置き、
+
+```bash
+python3 .github/scripts/despeckle_assets.py --min-area 48 docs/assets/hw-genie-social-preview.png
+```
+
+で 48px 未満の色島を吸収してから `render_brand_assets.py` を流す（閾値は実見で決めた値で、48 なら 3 個の＋型スパークも 2-3 ロジカル px の煙リボンも「形」として残り、256 からは絵が簡略化しすぎる。背景の ±1 揺れまで落とす `--palette-from` を併用する場合は、参照パレットに文字の影色 `#2F2434` が入っていないと影が地色へ吸収される点に注意。現行マークは 6 色でそれを持たないため、参照に使うのは従来マスター相当の 8 色パレットまで）。
+
+透過版はマップの地色 `X`（`#03104D`）を alpha 0 に抜いて描画する（RGB は地色のままなので `identify` の `colors=` は 6、透過は 217,664px / 不透明 44,480px）。旧運用で外周に必要だった暗色斑点 `#2F2434` → 影色 `#AD5914` の書き換えは、マップに斑点自体が存在しないため無くなった。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"   # 以降のパスはすべてリポジトリルート基準
 
-# 配布用 512px png（透過版: マスターの地色 #03104D を alpha 0 に抜き、外周に残る暗色斑点 #2F2434 をランプの影色 #AD5914 に寄せる）
-magick docs/assets/hw-genie-icon-1024.png -transparent "#03104D" \
-  -fill "#AD5914" -opaque "#2F2434" \
-  -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon.png
-# 注意: `-opaque` に `+opaque` は使えない（選択が反転して斑点以外が塗り替わり、alpha も落ちて透過版が壊れる）
-
-# 配布用 512px png（不透明版: apple-touch-icon 用）
-magick docs/assets/hw-genie-icon-1024.png \
-  -filter point -resize 512x512 -colors 8 -dither none -strip docs/assets/hw-genie-icon-solid.png
+# マーク描画（マスター 1024 / 透過 512 / 不透明 512 / og:image バナー）をマップから再生成
+python3 .github/scripts/render_brand_assets.py
 
 # favicon.ico（各サイズを作ってから合成）
 for s in 16 32 48 64; do
@@ -92,7 +96,7 @@ done
 magick /tmp/ico16.png /tmp/ico32.png /tmp/ico48.png /tmp/ico64.png \
   -strip docs/assets/favicon.ico
 
-# 検品 1: favicon の全レイヤーが 8 色以下（16px は 7 色）
+# 検品 1: favicon の全レイヤーが 8 色以下（現行マークは 6 色なので各レイヤー 6 になる）
 identify -format "%s: %wx%h colors=%k\n" docs/assets/favicon.ico
 
 # 検品 2: コミット対象の PNG にメタデータチャンクが無いこと # ※ tRNS はパレット透過そのもの（検品 3 の alpha=Blend の根拠）なので対象外。blacklist は来歴/時刻チャンクのみ。
@@ -111,9 +115,19 @@ PY
 
 # 検品 3: 透過版は alpha=Blend、不透明版は alpha=Undefined（地色を抜いていないなら Blend にならない）
 identify -format "%f alpha=%A\n" docs/assets/hw-genie-icon.png docs/assets/hw-genie-icon-solid.png
+
+# 検品 4: ノイズゲート。閾値未満の色島が残っていれば exit 1（各ファイルの最小島も印字される。マップ由来の描画は 1 セル = 256px（マスター）/ 64px（バナーのマーク）なので構造上必ず通過し、実効で効くのはバナーの**文字部分**とマップ外から取り込んだラスター）
+python3 .github/scripts/despeckle_assets.py --check --min-area 128 docs/assets/hw-genie-icon-1024.png
+python3 .github/scripts/despeckle_assets.py --check --min-area 48 docs/assets/hw-genie-social-preview.png
+# ※ 512px png と favicon.ico は面積ゲートの対象外: 最近傍縮小が細線を分解して作った 1-4px の断片は「形」であって迷彩色ではない（吸収すると線が消える）。迷彩色はマップを通らない取り込み経路でしか入らないので、検品 4 の 2 行が通れば縮小派生も迷彩色を継承しない。色枚数は検品 1、alpha は検品 3 で見る。
+# ※ 検品 2 と同じく tRNS はメタデータではなくパレット透過そのもの。ゲートは透過画素を別色として数える（alpha を無視した色判定はしない）。ICO は読み取りのみ対応で、レイヤーごとに #0..#3 と印字される。
+
+# 検品 5: drift ゲート。マップから描画し直した結果をコミット済み PNG と画素単位で比べ、差があれば exit 1（1 アセット 1 行で一致／差分画素数を印字）
+python3 .github/scripts/render_brand_assets.py --check
+# ※ マップを通さない PNG 手編集（1px の塗り潰しや色の差し替え）は必ずここで落ちる。検品 1〜4 がすべてパスしても検品 5 が落ちる状態は「意図と成果物が食い違っている」ので、マップ本文／色宣言を直すか描画を流し直すどちらかで直す。
 ```
 
-検品は**コミット前のそのファイルに対して**行うもの（`git add` する前に実行し、検品 1〜3 すべてが期待値になったらコミットする）。マスター／原画の差し替え時も同じく `-strip` した原画を取り込んでから上の生成コマンドを流し直す。
+検品は**コミット前のそのファイルに対して**行うもの（`git add` する前に実行し、検品 1〜5 すべてが期待値になったらコミットする）。マークの意図を変えたいときは `docs/assets/hw-genie-icon.grid.txt` を編集して `python3 .github/scripts/render_brand_assets.py` を流し、上の検品をまとめて回す。バナーの文字だけ差し替えるときは `-strip` した 1280x640 を取り込んでから上の生成コマンド（ノイズ吸収を含む）を流し直す。
 
 #### 反映タイミング
 
