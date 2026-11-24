@@ -1999,6 +1999,29 @@ def fetch_clan_member_ids(client: HWClient) -> set[int]:
     return ids
 
 
+def fetch_registered_account_ids() -> set[int]:
+    """Return the player ids of every account registered in this tool.
+
+    Used to keep automation from attacking the user's own accounts. A DB read
+    failure aborts the caller rather than silently allowing self-attacks.
+    """
+    from hw_genie.core.database import Account, get_session_local
+
+    try:
+        with get_session_local()() as db:
+            rows = db.query(Account).all()
+    except Exception as exc:
+        raise ArenaError(
+            f"Could not read registered accounts ({exc}); refusing to attack."
+        ) from exc
+    ids: set[int] = set()
+    for row in rows:
+        player_id = _safe_int(getattr(row, "player_id", None), None)
+        if player_id is not None and player_id > 0:
+            ids.add(player_id)
+    return ids
+
+
 def select_auto_targets(
     candidates: list[ArenaTopEntry],
     own_place: int,
@@ -2328,16 +2351,22 @@ def _capture_matching_targets(
     target_set: frozenset[int],
     retries: int,
     mode: ArenaMode = ARENA_MODE,
+    *,
+    excluded_ids: set[int] | None = None,
 ) -> list[ArenaTopEntry]:
     """Collect up to 3 candidates whose defense matches at capture time.
 
     ``arenaFindEnemies`` rotates, so a single response may not contain three
     matching defenses. Each refresh is a new candidate list; matching entries
-    are accumulated by user id and returned highest rank first.
+    are accumulated by user id and returned highest rank first. Own accounts
+    and guild members are skipped.
     """
+    excluded = excluded_ids or set()
     pool: dict[int, ArenaTopEntry] = {}
     for _ in range(retries + 1):
         for entry in fetch_arena_candidates(client, mode):
+            if entry.user_id in excluded:
+                continue
             if len(entry.heroes) == 5 and frozenset(entry.heroes) == target_set:
                 pool.setdefault(entry.user_id, entry)
         if len(pool) >= 3:
@@ -2391,7 +2420,14 @@ def run_arena_target_watch(
             "Create it with `arena team set`."
         )
     initial_status = fetch_arena_status(client, mode)
+    if initial_status.user_id is None:
+        raise ArenaError(
+            "Could not read your player id; refusing target-watch."
+        )
     team, missing = resolve_team(preset=preset, saved=initial_status.saved_team)
+    excluded_ids = fetch_registered_account_ids()
+    excluded_ids |= fetch_clan_member_ids(client)
+    excluded_ids.add(initial_status.user_id)
 
     if from_snapshot:
         snapshot = load_arena_snapshot(account, mode)
@@ -2402,21 +2438,29 @@ def run_arena_target_watch(
         targets = [
             entry
             for entry in snapshot.candidates
-            if len(entry.heroes) == 5 and frozenset(entry.heroes) == target_set
+            if entry.user_id not in excluded_ids
+            and len(entry.heroes) == 5
+            and frozenset(entry.heroes) == target_set
         ][:3]
         if not targets:
             raise ArenaError(
                 "The saved snapshot has no candidate whose defense matches "
-                "--target-heroes. Take a new snapshot or adjust the target."
+                "--target-heroes (after excluding own/guild accounts). Take a "
+                "new snapshot or adjust the target."
             )
     else:
         targets = _capture_matching_targets(
-            client, target_set, capture_retries, mode
+            client,
+            target_set,
+            capture_retries,
+            mode,
+            excluded_ids=excluded_ids,
         )
         if not targets:
             raise ArenaError(
                 "No candidate with the requested defense appeared after "
-                f"{capture_retries + 1} arenaFindEnemies call(s)."
+                f"{capture_retries + 1} arenaFindEnemies call(s) "
+                "(after excluding own/guild accounts)."
             )
 
     if len(targets) < 3:
@@ -2432,6 +2476,9 @@ def run_arena_target_watch(
             f"  {Emojis.WARNING}Preset has no favor for hero(es) {missing}; "
             "those heroes will attack without favor."
         )
+    print(
+        f"  {Emojis.INFO}Excluded {len(excluded_ids)} own/guild account id(s)"
+    )
     print(
         f"  {Emojis.INFO}Watching {len(targets)} target(s) captured with "
         f"defense {sorted(target_heroes)}; a target must be at least {min_gap} "
@@ -2453,6 +2500,8 @@ def run_arena_target_watch(
         try:
             status = fetch_arena_status(client, mode)
             candidates = fetch_arena_candidates(client, mode)
+            current_excluded = fetch_registered_account_ids()
+            current_excluded |= fetch_clan_member_ids(client)
         except ArenaError as exc:
             poll_errors += 1
             print(
@@ -2468,6 +2517,24 @@ def run_arena_target_watch(
                 break
             continue
         poll_errors = 0
+        if status.user_id is not None:
+            current_excluded.add(int(status.user_id))
+        active_targets = [
+            entry for entry in targets if entry.user_id not in current_excluded
+        ]
+        if len(active_targets) != len(targets):
+            removed = sorted(
+                entry.user_id for entry in targets
+                if entry.user_id in current_excluded
+            )
+            print(
+                f"{Emojis.INFO}Excluding target(s) that are now own/guild: "
+                f"{removed}"
+            )
+            targets = active_targets
+        if not targets:
+            print(f"{Emojis.WARNING}No remaining targets to watch; stopping.")
+            break
         print(
             f"\n[{Emojis.INFO}poll {polls}] own rank {status.place}, "
             f"defense {_format_team(status.defense_team)}"
@@ -2735,6 +2802,7 @@ __all__ = [
     "fetch_arena_top",
     "fetch_candidate",
     "fetch_clan_member_ids",
+    "fetch_registered_account_ids",
     "fetch_own_place",
     "fetch_saved_team",
     "load_arena_snapshot",

@@ -1,6 +1,7 @@
 """Tests for `arena target-watch` (pre-fetched targets + one gated attack)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,11 +33,12 @@ def _status(
     place: int = 100,
     attempts: int | None = 5,
     defense: ArenaTeam | None = DEFENSE,
+    user_id: int = 111,
 ) -> ArenaStatus:
     return ArenaStatus(
         place=place,
         grand_place=20,
-        user_id=111,
+        user_id=user_id,
         name="Alice",
         attempts=attempts,
         cooldown=0,
@@ -85,6 +87,10 @@ def _patch_watch(
         lambda *_a, **_k: list(candidates[:3]),
     )
     monkeypatch.setattr(arena_mod, "fetch_own_place", lambda *_a, **_k: 100)
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
     monkeypatch.setattr(arena_mod, "save_arena_snapshot", lambda *_a, **_k: None)
     status_iter = iter(statuses)
     monkeypatch.setattr(
@@ -283,6 +289,10 @@ def test_target_watch_errors_when_capture_finds_no_matching_defense(monkeypatch)
     monkeypatch.setattr(
         arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
     )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
     monkeypatch.setattr(
         arena_mod, "_capture_matching_targets", lambda *_a, **_k: []
     )
@@ -335,6 +345,10 @@ def test_target_watch_from_snapshot_rejects_mismatched_defense(monkeypatch):
     monkeypatch.setattr(
         arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
     )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
 
     with pytest.raises(ArenaError, match="no candidate whose defense matches"):
         run_arena_target_watch(
@@ -345,6 +359,141 @@ def test_target_watch_from_snapshot_rejects_mismatched_defense(monkeypatch):
             from_snapshot=True,
             once=True,
         )
+
+
+def test_fetch_registered_account_ids_parses_and_skips_invalid(monkeypatch):
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def query(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return [
+                SimpleNamespace(player_id="222"),
+                SimpleNamespace(player_id="bad"),
+                SimpleNamespace(player_id=None),
+            ]
+
+    monkeypatch.setattr(
+        "hw_genie.core.database.get_session_local", lambda: FakeSession
+    )
+
+    assert arena_mod.fetch_registered_account_ids() == {222}
+
+
+def test_fetch_registered_account_ids_fails_closed_on_db_error(monkeypatch):
+    class BrokenSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def query(self, *_args, **_kwargs):
+            raise RuntimeError("replica unavailable")
+
+    monkeypatch.setattr(
+        "hw_genie.core.database.get_session_local", lambda: BrokenSession
+    )
+
+    with pytest.raises(ArenaError, match="Could not read registered accounts"):
+        arena_mod.fetch_registered_account_ids()
+
+
+def test_capture_matching_targets_excludes_own_and_guild(monkeypatch):
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: [
+            _entry(10, 222),
+            _entry(11, 333),
+            _entry(12, 444),
+            _entry(13, 555),
+        ],
+    )
+
+    targets = arena_mod._capture_matching_targets(
+        MagicMock(),
+        frozenset(TARGET_HEROES),
+        retries=0,
+        excluded_ids={222, 333},
+    )
+
+    assert [entry.user_id for entry in targets] == [444, 555]
+
+
+def test_target_watch_from_snapshot_excludes_own_and_guild(monkeypatch):
+    snapshot = _snapshot(_entry(10, 222), _entry(11, 333), _entry(12, 444))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status(user_id=999)
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_registered_account_ids", lambda: {222, 999}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: {333}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_candidates", lambda *_a, **_k: [_entry(12, 444)]
+    )
+    attacked = []
+    monkeypatch.setattr(
+        arena_mod, "run_arena_attack", lambda *a, **k: attacked.append((a, k))
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        once=True,
+    )
+
+    assert [record["target_user_id"] for record in history] == [444]
+    assert attacked[0][1]["dry_run"] is True
+
+
+def test_target_watch_removes_target_that_becomes_guild(monkeypatch, capsys):
+    _patch_watch(
+        monkeypatch,
+        statuses=[_status(), _status()],
+        candidates=[_entry(20, 222), _entry(21, 333)],
+    )
+    clan_calls = iter([set(), {222}])
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_clan_member_ids",
+        lambda *_a, **_k: next(clan_calls, {222}),
+    )
+    dry_calls = []
+
+    def fake_attack(client, status, target, team, **kwargs):
+        dry_calls.append(target.user_id)
+
+    monkeypatch.setattr(arena_mod, "run_arena_attack", fake_attack)
+
+    run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        once=True,
+    )
+
+    assert dry_calls == [333]
+    assert "now own/guild: [222]" in capsys.readouterr().out
 
 
 def test_target_watch_dry_run_matches_and_does_not_attack(monkeypatch, capsys):
