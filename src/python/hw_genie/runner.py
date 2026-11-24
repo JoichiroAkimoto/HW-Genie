@@ -522,6 +522,20 @@ def asgard_raid_routine(dry_run: bool = False) -> Callable[[HWClient, str], obje
     return run
 
 
+def power_tournament_routine(
+    top: int = 5, dry_run: bool = False
+) -> Callable[[HWClient, str], object]:
+    """Build a routine that reads the Power Tournament state and claims rewards."""
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    def run(client: HWClient, account: str) -> object:
+        return run_power_tournament(
+            client, account_alias=account, top=top, dry_run=dry_run
+        )
+
+    return run
+
+
 def seers_game_routine(
     client: HWClient,
     account: str,
@@ -1538,6 +1552,53 @@ def summarize_seers_game(
             f"{key} x{amount}" for key, amount in sorted(totals.items())
         )
         print(f"🎁 Total rewards: {totals_str}")
+    if failed:
+        print("-" * width)
+        print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")
+    print("=" * width)
+    verb = "planned" if dry_run else "completed"
+    print(f"✅ {ok} account(s) {verb}, ❌ {len(failed)} failed.\n")
+    return len(failed)
+
+
+def summarize_power_tournament(
+    results: Iterable[tuple[str, tuple[object | None, BaseException | None]]],
+    dry_run: bool = False,
+) -> int:
+    """Print each account's Power Tournament block and return the failed count."""
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        render_power_tournament,
+    )
+
+    ok = 0
+    failed: list[str] = []
+    for account, (res, err) in results:
+        if err is not None:
+            print(f"\n❌ Power Tournament — {account}: {err}")
+            failed.append(account)
+            continue
+        if not isinstance(res, PowerTournamentResult):
+            print(f"\n❌ Power Tournament — {account}: result unavailable")
+            failed.append(f"{account} (result unavailable)")
+            continue
+
+        render_power_tournament(res)
+        reasons: list[str] = []
+        if res.error:
+            reasons.append(res.error)
+        if res.ranking_error:
+            reasons.append(f"ranking: {res.ranking_error}")
+        if res.failed_claims:
+            reasons.append(f"{res.failed_claims} claim(s) failed")
+        if reasons:
+            failed.append(f"{account} ({'; '.join(reasons)})")
+        else:
+            ok += 1
+
+    width = 60
+    print("\n" + "=" * width)
+    print("📊 --- Multi power-tournament summary ---")
     if failed:
         print("-" * width)
         print(f"❌ Failed ({len(failed)}): {', '.join(failed)}")

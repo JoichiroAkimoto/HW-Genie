@@ -29,6 +29,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 - [GUILD_API.md](./GUILD_API.html) (ギルド・PvP関連)
 - [ARENA_API.md](./ARENA_API.html) (アリーナ・ランキング・チーム・指定攻撃)
 - [QUEST_API.md](./QUEST_API.html) (クエスト・ミッション・報酬)
+- [POWER_TOURNAMENT_API.md](./POWER_TOURNAMENT_API.html) (Power Tournament: 開催状態・グループランキング・報酬受取)
 - [SHOP_API.md](./SHOP_API.html) (ショップ・資産関連)
 - [ADVENTURE_API.md](./ADVENTURE_API.html) (PVE・アドベンチャー)
 
@@ -101,6 +102,7 @@ Hero WarsのAPIは、**「機能ごとに独立したメソッド (`xxxGetAll` �
 ### 7. イベント・その他
 *   **`eventPicker_getInfo`**: 現在開催中のスペシャルイベント一覧。
 *   **`eventPicker_getState` / `eventPicker_startGame` / `eventPicker_playRound` / `eventPicker_finishGame`**: Seer's Game の状態確認・開始・カード引き・終了（詳細は QUEST_API.md の `eventPicker_getState` 節）。
+*   **`powerTournament_getState` / `powerTournament_getGroupInfo` / `powerTournament_dailyFarm`**: Power Tournament（Hero / Titan）の開催状態・グループランキング・報酬受取（詳細は [POWER_TOURNAMENT_API.md](./POWER_TOURNAMENT_API.html)）。
 *   **`newYear_getInfo`**: （季節イベント）新年イベント等の特定イベント情報。
 *   **`gacha_getInfo`**: 英雄の宝箱（ガチャ）の状態。
 *   **`rewardedVideo_boxyGetInfo`**: 広告視聴ボーナス（Boxy）の状態。
