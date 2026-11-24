@@ -230,6 +230,9 @@ class ApiAction(str, Enum):
     EVENT_PICKER_START_GAME = "eventPicker_startGame"
     EVENT_PICKER_PLAY_ROUND = "eventPicker_playRound"
     EVENT_PICKER_FINISH_GAME = "eventPicker_finishGame"
+    POWER_TOURNAMENT_GET_STATE = "powerTournament_getState"
+    POWER_TOURNAMENT_GET_GROUP_INFO = "powerTournament_getGroupInfo"
+    POWER_TOURNAMENT_DAILY_FARM = "powerTournament_dailyFarm"
 
 
 class ErrorName(str, Enum):

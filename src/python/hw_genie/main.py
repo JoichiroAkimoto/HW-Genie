@@ -739,6 +739,33 @@ def cmd_seers_game(args):
         sys.exit(1)
 
 
+def cmd_power_tournament(args):
+    """Power Tournament の状態・グループ上位・受取可能報酬を表示/受取する。"""
+    from hw_genie.commands.power_tournament import (
+        MAX_TOP,
+        render_power_tournament,
+        run_power_tournament,
+    )
+
+    top = int(args.top)
+    if not 1 <= top <= MAX_TOP:
+        print(f"Error: --top must be between 1 and {MAX_TOP}", file=sys.stderr)
+        sys.exit(2)
+
+    headers = _ensure_session(args)
+    account = resolve_account(args.account)
+    client = HWClient(headers)
+    result = run_power_tournament(
+        client,
+        account_alias=account,
+        top=top,
+        dry_run=bool(args.dry_run),
+    )
+    render_power_tournament(result)
+    if result.error or result.ranking_error or result.failed_claims:
+        sys.exit(1)
+
+
 def cmd_gift(args):
     """エレメントギフトの現況表示 / 一括 MAX 化 / 一括リセット"""
     from hw_genie.commands.element_gift import (
@@ -1643,6 +1670,7 @@ def cmd_multi(args):
         gift_up_routine,
         is_cancelled,
         list_account_aliases,
+        power_tournament_routine,
         quests_routine,
         request_cancel,
         reset_cancel,
@@ -1652,6 +1680,7 @@ def cmd_multi(args):
         summarize_challenge,
         summarize_consumable,
         summarize_gift,
+        summarize_power_tournament,
         summarize_quests,
         summarize_seers_game,
         summarize_toe,
@@ -1677,10 +1706,10 @@ def cmd_multi(args):
     accounts = deduped
 
     dry_run = bool(getattr(args, "dry_run", False))
-    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge", "asgard-raid") and dry_run:
+    if mode not in ("quests", "consumable", "seers-game", "gift-up", "gift-reset", "challenge", "asgard-raid", "power-tournament") and dry_run:
         print(
             "Error: --dry-run is only supported with the 'quests', 'consumable', 'seers-game', "
-            "'gift-up', 'gift-reset', 'challenge' and 'asgard-raid' modes "
+            "'gift-up', 'gift-reset', 'challenge', 'asgard-raid' and 'power-tournament' modes "
             "(daily/full/asgard-shop/toe routines always execute their operations).",
             file=sys.stderr,
         )
@@ -1767,6 +1796,18 @@ def cmd_multi(args):
             dry_run=dry_run,
         )
         # dry-run は read-only の計画表示のため逐次実行
+        max_parallel = 1 if dry_run else args.parallel
+    elif mode == "power-tournament":
+        from hw_genie.commands.power_tournament import MAX_TOP as _PT_MAX_TOP
+
+        _top = int(getattr(args, "top", 5))
+        if not 1 <= _top <= _PT_MAX_TOP:
+            print(
+                f"Error: --top must be between 1 and {_PT_MAX_TOP}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        routine = power_tournament_routine(top=_top, dry_run=dry_run)
         max_parallel = 1 if dry_run else args.parallel
     elif mode == "challenge":
         routine = challenge_routine(
@@ -1935,6 +1976,10 @@ def cmd_multi(args):
                     failed = summarize_asgard_raid(results.items(), dry_run=dry_run)
                 elif mode == "seers-game":
                     failed = summarize_seers_game(results.items(), dry_run=dry_run)
+                elif mode == "power-tournament":
+                    failed = summarize_power_tournament(
+                        results.items(), dry_run=dry_run
+                    )
                 elif mode == "consumable":
                     failed = summarize_consumable(results.items(), dry_run=dry_run)
                 elif mode == "challenge":
@@ -2139,6 +2184,20 @@ def _run_log_account_failure(
                 return f"seers-game failed: {result.last_error}"
             return None
         return "seers-game result unavailable"
+    if mode == "power-tournament":
+        from hw_genie.commands.power_tournament import PowerTournamentResult
+
+        if isinstance(result, PowerTournamentResult):
+            if result.error:
+                return result.error
+            if result.ranking_error:
+                return f"ranking failed: {result.ranking_error}"
+            return (
+                f"{result.failed_claims} reward claim(s) failed"
+                if result.failed_claims
+                else None
+            )
+        return "power-tournament result unavailable"
     if mode in ("gift-up", "gift-reset"):
         from hw_genie.commands.element_gift import GiftRunResult
 
@@ -2492,6 +2551,25 @@ def main():
         help="Max games to play (default: until coins run out)",
     )
     p_seers.set_defaults(func=cmd_seers_game)
+
+    # Power Tournament (Hero / Titan): group top + claimable rewards
+    p_pt = subparsers.add_parser(
+        "power-tournament",
+        parents=[parent_parser],
+        help="Show the Power Tournament group top and claim available rewards",
+    )
+    p_pt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show state/ranking/claimable rewards without claiming",
+    )
+    p_pt.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        help="Group ranking rows to show (default: 5, max: 50)",
+    )
+    p_pt.set_defaults(func=cmd_power_tournament)
 
     # Arena (status / top / team presets / targeted attack)
     # NOTE: do not put parents=[parent_parser] on the intermediate `arena` /
@@ -3009,13 +3087,14 @@ def main():
             "consumable",
             "toe",
             "seers-game",
+            "power-tournament",
             "gift-up",
             "gift-reset",
             "challenge",
         ],
         nargs="?",
         default="daily",
-        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'asgard-raid' (run the registered Asgard boss teams, requires --yes), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
+        help="Routine to run: 'daily' (default), 'full' (raid+shop+daily), 'quests' (daily quest auto-completion), 'asgard-shop' (Osh/Maestro Guild Raid merchant auto-buy), 'asgard-raid' (run the registered Asgard boss teams, requires --yes), 'consumable' (consume all registered consumables), 'toe' (Titan Arena tier clear), 'seers-game' (play Seer's Game until coins run out), 'power-tournament' (show the group top and claim available rewards), 'gift-up' (max every hero's element gift, requires --yes), 'gift-reset' (drop low-power heroes' gifts to refund the coins, requires --yes) or 'challenge' (send + self-battle one challenge per account, requires --yes)",
     )
     p_multi.add_argument(
         "--engine",
@@ -3138,6 +3217,12 @@ def main():
         help="Max games to play for the 'seers-game' mode (default: until coins run out)",
     )
     p_multi.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        help="Group ranking rows for the 'power-tournament' mode (default: 5, max: 50)",
+    )
+    p_multi.add_argument(
         "accounts",
         nargs="*",
         help="Optional account aliases to limit the run (default: all)",
@@ -3152,7 +3237,7 @@ def main():
     p_multi.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the execution plan without running anything (quests/consumable/seers-game/gift-up/gift-reset/challenge modes only)",
+        help="Show the execution plan without running anything (quests/consumable/seers-game/power-tournament/gift-up/gift-reset/challenge/asgard-raid modes only)",
     )
     p_multi.add_argument(
         "--iterations",

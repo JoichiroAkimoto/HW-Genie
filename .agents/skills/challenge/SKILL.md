@@ -1,6 +1,6 @@
 ---
 name: challenge
-description: Send and battle Hero Wars friendly personal-chat challenges (chatSendChallenge / chatAcceptChallenge) with automatic messageId discovery — the recipient or the sender can battle, either step-by-step or end-to-end.
+description: HW-Genie を使用して、個人チャットのフレンドリーチャレンジ（chatSendChallenge / chatAcceptChallenge）を送信・バトルします。messageId を自動特定し、受信側・送信側のどちらでも実行できます。
 ---
 # Challenge (Friendly Battle) Skill (HW-Genie)
 
