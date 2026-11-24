@@ -71,7 +71,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **リクエスト署名**: ゲーム API は `X-Request-Id` / `X-Auth-Token` / `X-Auth-Session-Id` / リクエストボディ（compact JSON）/ `X-Env*` から算出した `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（署名式は同ファイル参照。キャプチャした署名値の再利用や `json=` での送信は `Invalid signature` になります）。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
-*   **ブランド資産**: Source of Truth は 2 つ —— `docs/assets/hw-genie-icon.grid.txt`（64x64 ドットマップ）と `docs/assets/hw-genie-wordmark.png`（バナーの文字）。配布 PNG は必ず `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` の drift ゲートが落ちる。比較は画素単位）。ゲートは `docs/assets/**` を触る PR でも `Python Checks` が走る。詳細（資産一覧・favicon・ブートストラップ・検品 1〜5）は `src/userscripts/README.md` を参照。
+*   **ブランド資産**: Source of Truth は 2 つ —— `docs/assets/hw-genie-icon.grid.txt`（64x64 ドットマップ）と `docs/assets/hw-genie-wordmark.png`（バナーの文字）。配布 PNG は必ず `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` の drift ゲートが落ちる。比較は画素単位）。ゲートは `Python Checks` が検証する（PR はパスフィルタ無しで必ず走る。main への push は `docs/assets/**` を含む変更で走る）。詳細（資産一覧・favicon・ブートストラップ・検品 1〜5）は `src/userscripts/README.md` を参照。
 
 ## 5. 複数アカウント・複数タスクの実行戦略
 大量の処理（例：複数アカウントでのレイド＋ショッピング）を行う際は、タイムアウトを避けるため以下の戦略を徹底してください。
@@ -99,7 +99,11 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **`src/python/pyproject.toml` (`dependencies`)**: ツールの実行に必要なライブラリ。
 *   **ルートディレクトリの `pyproject.toml` (`dependency-groups`)**: `pytest` や `ruff` など、開発・テストに必要なツール（`dev` グループ）。
 
-**依存更新の運用**: 依存関係の更新 PR は Dependabot（週次、`python-dependencies` グループ）が作成します。マージ後に `git pull` したら、`uv sync --locked`（または `make sync`）を一度実行してください。`bin/hwda` / `bin/hwsa` は `uv run --no-sync` 起動のため、未同期のまま実行すると実行時エラーになります（スクリプトが起動時に未同期を検出し警告します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
+**依存更新の運用**: 依存関係の更新 PR は Dependabot（月次、`python-dependencies` グループ）が作成します。patch アップデート（`uv` エコシステムのみ）は `dependabot-auto-merge` workflow が auto-merge を有効化し、CI（Python Checks の `test`）成功後に自動マージされます（リポジトリ設定で **Allow auto-merge** と **main の保護（Rulesets の `Main Protection` 等）／必須チェック `test`** が必要。本リポジトリは設定済み。minor / major と `github-actions` の更新は手動マージ）。マージ後に `git pull` したら、`uv sync --locked`（または `make sync`）を一度実行してください。`bin/hwda` / `bin/hwsa` は `uv run --no-sync` 起動のため、未同期のまま実行すると実行時エラーになります（スクリプトが起動時に未同期を検出し警告します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
+
+> **⚠️ リポジトリ設定と自動マージの注意**: 設定は **先に** main の保護（Rulesets の `Main Protection` 等）で必須チェック `test` を強制し、**その後に** Allow auto-merge を有効にしてください。Allow auto-merge だけが有効で必須チェックが無い場合は CI を待たずに **即時マージ** される危険があるため、必ずこの順序を守ってください。本リポジトリは Ruleset と Allow auto-merge の両方が **設定済み** です。
+>
+> 自動マージ対象は `uv` エコシステムの patch のみで、`github-actions` の更新は手動マージです（GITHUB_TOKEN には workflow ファイル変更のマージ権限がなく、`test` も workflow 構文を検証しないため）。workflow 導入前に作成済みの open PR は自動対象外なので、`gh workflow run '.github/workflows/dependabot-auto-merge.yml' -f pr_number=<番号>` で処理するか、手動で `gh pr merge --auto --squash <PR>` を実行してください。`workflow_dispatch` は patch 判定をスキップする手動オーバーライドですが、uv PR のみ受け付けます。初回自動マージ後は main への push ワークフロー（Docker ビルド等）が起動することも確認してください（GITHUB_TOKEN 経由のマージで push ワークフローが起動しない可能性の運用確認）。
 
 > **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
 
