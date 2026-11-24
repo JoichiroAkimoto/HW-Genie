@@ -72,7 +72,17 @@ def _status_detail(
     name: str = "Alice",
     attempts: int = 5,
     cooldown: int = 0,
+    defense: list[int] | None = None,
+    defense_pet: int | None = 6008,
 ) -> dict:
+    arena_response: dict = {
+        "arenaPlace": str(place),
+        "grandPlace": str(grand),
+    }
+    if defense is not None:
+        arena_response["arenaHeroes"] = [{"id": hero} for hero in defense]
+        if defense_pet is not None:
+            arena_response["arenaHeroes"].append({"id": defense_pet})
     return {
         "user": {
             "result": {
@@ -86,11 +96,7 @@ def _status_detail(
                 }
             }
         },
-        "arena": {
-            "result": {
-                "response": {"arenaPlace": str(place), "grandPlace": str(grand)}
-            }
-        },
+        "arena": {"result": {"response": arena_response}},
     }
 
 
@@ -163,7 +169,14 @@ def test_fetch_arena_status_parses_rank_attempts_and_saved_team(
 ):
     client, mock_call = mock_client
     mock_call.side_effect = [
-        _ok(_status_detail(place=22, attempts=4, cooldown=120)),
+        _ok(
+            _status_detail(
+                place=22,
+                attempts=4,
+                cooldown=120,
+                defense=[46, 62, 71, 35, 70],
+            )
+        ),
         _ok(
             _saved_team_detail(
                 heroes=[29, 13, 73, 71, 35],
@@ -185,6 +198,9 @@ def test_fetch_arena_status_parses_rank_attempts_and_saved_team(
         pet=6008,
         favor={13: 6002, 29: 6011},
         banners=[2],
+    )
+    assert status.defense_team == ArenaTeam(
+        heroes=[46, 62, 71, 35, 70], pet=6008, banners=[]
     )
 
 
@@ -502,6 +518,29 @@ def test_run_arena_attack_dry_run_does_not_call_attack(mock_client, mock_sleep):
         "arenaFindEnemies",
         "arenaGetAll",
         "arenaCheckTargetRange",
+    ]
+
+
+def test_run_arena_attack_min_gap_uses_fresh_own_place(mock_client, mock_sleep):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response(22)),
+        _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response(22)),
+    ]
+    with pytest.raises(ArenaError, match="--min-gap 15"):
+        run_arena_attack(
+            client,
+            _make_status(place=5),
+            _target(),
+            _team(),
+            dry_run=True,
+            min_gap=15,
+        )
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaGetAll",
     ]
 
 

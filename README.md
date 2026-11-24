@@ -161,6 +161,29 @@ uv run hw-genie arena auto -a Alice --execute --max-attacks 5
 - `NotEnough` / `Refillable` で攻撃が送られなかった場合は攻撃回数に数えず、そのまま停止します。結果が不明な通信エラーは、二重攻撃を避けるため即座に中断します。
 - `--execute` を付けない限り `arenaAttack` は送りません。
 
+### ターゲット監視（arena target-watch）
+
+```bash
+# 攻撃用プリセットを登録（例: auto）
+uv run hw-genie arena team set auto -a Alice \
+  --heroes 29 73 35 48 52 --pet 6008 --banner 2 \
+  --favor 29=6011 --favor 35=6006 --favor 48=6005 --favor 52=6001 --favor 73=6004
+
+# 事前に3人を取得して監視（既定 dry-run、30秒間隔）
+uv run hw-genie arena target-watch -a Alice --team auto \
+  --target-heroes 46 62 71 35 70 --min-gap 15
+
+# 条件一致時に1回だけ攻撃
+uv run hw-genie arena target-watch -a Alice --team auto \
+  --target-heroes 46 62 71 35 70 --min-gap 15 --execute
+```
+
+- 開始時に `arenaFindEnemies` から最大3人を監視対象として選び、候補一覧をスナップショットに保存します。以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定30秒）。
+- 攻撃条件は「対象が現在の候補にいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。
+- 条件を満たすとプリセットの編成で `arenaAttack` を**1回だけ**送り、そのまま終了します。`--execute` なしでも range check まで実行し、攻撃は送りません。
+- **防衛編成は読み取り専用**です。`target-watch` は `arenaSetHeroes` を送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、サーバー側で防衛が変わった場合は警告します（自動復元はしません）。
+- `arena status` は「防衛編成」と「保存済み攻撃編成」を分けて表示します。
+
 ### Oracle パリティ（Phase 2-A）
 
 ```bash

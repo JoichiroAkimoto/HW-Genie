@@ -1010,6 +1010,31 @@ def cmd_arena_auto(args):
         sys.exit(1)
 
 
+def cmd_arena_target_watch(args):
+    """Watch pre-fetched targets and attack one matching defense once."""
+    from hw_genie.commands.arena import ArenaError, run_arena_target_watch
+
+    account = resolve_account(args.account)
+    _require_registered_account(account)
+    client = HWClient(_ensure_session(args))
+    try:
+        run_arena_target_watch(
+            client,
+            account,
+            team_name=args.team,
+            target_heroes=list(args.target_heroes),
+            min_gap=args.min_gap,
+            interval=args.interval,
+            once=bool(args.once),
+            max_polls=args.max_polls,
+            from_snapshot=bool(args.from_snapshot),
+            execute=bool(args.execute),
+        )
+    except ArenaError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_battle_import(args):
     """Import battle replays into the local corpus."""
     from hw_genie.commands.battle import BattleLogError, run_battle_import
@@ -2364,6 +2389,59 @@ def main():
         help="Continue to the next target after a loss (default: stop)",
     )
     p_arena_auto.set_defaults(func=cmd_arena_auto)
+
+    p_arena_target_watch = arena_sub.add_parser(
+        "target-watch",
+        parents=[parent_parser],
+        help="Watch 3 saved targets and attack one matching defense (once)",
+    )
+    p_arena_target_watch.add_argument(
+        "--team",
+        required=True,
+        help="Attack team preset name (e.g. auto)",
+    )
+    p_arena_target_watch.add_argument(
+        "--target-heroes",
+        nargs=5,
+        type=_positive_int,
+        required=True,
+        metavar=("H1", "H2", "H3", "H4", "H5"),
+        help="Defense hero IDs to match (pet/banner ignored; order ignored)",
+    )
+    p_arena_target_watch.add_argument(
+        "--min-gap",
+        type=_non_negative_int,
+        default=15,
+        help="Minimum ranks above us required to attack (default: 15; 0 = any higher rank)",
+    )
+    p_arena_target_watch.add_argument(
+        "--interval",
+        type=_positive_int,
+        default=30,
+        help="Seconds between polls (default: 30)",
+    )
+    p_arena_target_watch.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one poll and exit",
+    )
+    p_arena_target_watch.add_argument(
+        "--max-polls",
+        type=_positive_int,
+        default=None,
+        help="Stop after N polls (default: unlimited until a match/attack)",
+    )
+    p_arena_target_watch.add_argument(
+        "--from-snapshot",
+        action="store_true",
+        help="Reuse the saved find-enemies snapshot instead of capturing new targets",
+    )
+    p_arena_target_watch.add_argument(
+        "--execute",
+        action="store_true",
+        help="Send arenaAttack when a target matches (default: dry-run)",
+    )
+    p_arena_target_watch.set_defaults(func=cmd_arena_target_watch)
 
     p_arena_find = arena_sub.add_parser(
         "find-enemies",

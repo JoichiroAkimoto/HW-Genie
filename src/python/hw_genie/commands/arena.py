@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Iterator
@@ -198,6 +199,7 @@ class ArenaStatus:
     attempts: int | None
     cooldown: int | None
     saved_team: ArenaTeam | None
+    defense_team: ArenaTeam | None = None
 
 
 @dataclass
@@ -671,6 +673,32 @@ def fetch_saved_team(
     return team
 
 
+def _parse_defense_team(arena: dict[str, Any]) -> ArenaTeam | None:
+    """Parse ``arenaGetAll.arenaHeroes`` (defense heroes + pet)."""
+    raw = arena.get("arenaHeroes")
+    if not isinstance(raw, list):
+        return None
+    heroes: list[int] = []
+    pet: int | None = None
+    for item in raw:
+        hero_id = _safe_int(item.get("id") if isinstance(item, dict) else item, None)
+        if hero_id is None or hero_id <= 0:
+            continue
+        if hero_id >= 6000:
+            pet = hero_id
+        else:
+            heroes.append(hero_id)
+    if len(heroes) != 5 or len(set(heroes)) != 5:
+        return None
+    return ArenaTeam(heroes=heroes, pet=pet, banners=[])
+
+
+def _defense_signature(team: ArenaTeam | None) -> tuple[frozenset[int], int | None] | None:
+    if team is None:
+        return None
+    return frozenset(team.heroes), team.pet
+
+
 def fetch_arena_status(
     client: HWClient, mode: ArenaMode = ARENA_MODE
 ) -> ArenaStatus:
@@ -718,6 +746,7 @@ def fetch_arena_status(
         attempts=_refillable_amount(user, ARENA_ATTACK_REFILLABLE_ID),
         cooldown=_refillable_amount(user, ARENA_COOLDOWN_REFILLABLE_ID),
         saved_team=saved_team,
+        defense_team=_parse_defense_team(arena),
     )
 
 
@@ -1096,6 +1125,7 @@ def run_arena_attack(
     *,
     dry_run: bool = False,
     candidate_retries: int = DEFAULT_CANDIDATE_RETRIES,
+    min_gap: int | None = None,
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaAttackResult:
     """Verify the target and attack (unless ``dry_run``).
@@ -1106,9 +1136,13 @@ def run_arena_attack(
     and live attacks require candidate membership, keeping the dry-run
     prediction accurate. When ``resolve_target`` already captured the entry in
     ``target.candidate``, it is reused instead of re-running the retry loop.
+    ``min_gap`` re-checks the rank gap against the fresh own rank immediately
+    before the range check.
     """
     _require_arena_mode(mode)
     candidate_retries = _validate_candidate_retries(candidate_retries)
+    if min_gap is not None and min_gap < 0:
+        raise ArenaError("min_gap must be >= 0")
     validate_team(team)
 
     # Re-read the own rank immediately before the checks: a rank change since
@@ -1153,6 +1187,12 @@ def run_arena_attack(
             f"Target {_format_target(target)} is not above your current rank "
             f"{fresh_place}; only players ranked above you can be attacked "
             "(upper-only). Re-run after checking the ranking."
+        )
+    if min_gap is not None and fresh_place - target.place < min_gap:
+        raise ArenaError(
+            f"Target {_format_target(target)} is only {fresh_place - target.place} "
+            f"rank(s) above your current rank {fresh_place}; --min-gap {min_gap} "
+            "is not met. No attack was sent."
         )
 
     allowed = check_target_range(client, [target.user_id], mode)
@@ -1669,7 +1709,8 @@ def run_arena_status(
     if status.cooldown is not None:
         cooldown = f"{status.cooldown}s" if status.cooldown else "none"
         print(f"  {Emojis.INFO}Cooldown: {cooldown}")
-    print(f"  {Emojis.INFO}Saved team: {_format_team(status.saved_team)}")
+    print(f"  {Emojis.INFO}Defense team: {_format_team(status.defense_team)}")
+    print(f"  {Emojis.INFO}Saved attack team: {_format_team(status.saved_team)}")
     print(
         f"  {Emojis.INFO}Attack window: rank/league-dependent; "
         "use `arena attack --dry-run` to check a target"
@@ -2282,6 +2323,294 @@ def run_arena_auto(
     return history
 
 
+def run_arena_target_watch(
+    client: HWClient,
+    account: str,
+    *,
+    team_name: str,
+    target_heroes: list[int],
+    min_gap: int = 15,
+    interval: int = 30,
+    once: bool = False,
+    max_polls: int | None = None,
+    from_snapshot: bool = False,
+    execute: bool = False,
+    mode: ArenaMode = ARENA_MODE,
+) -> list[dict[str, Any]]:
+    """Watch pre-fetched candidates and attack one matching defender.
+
+    The first poll captures up to three ``arenaFindEnemies`` candidates (or
+    reuses a saved snapshot). Every poll re-reads own rank and the rotating
+    candidate list; a target is attacked only when its current defense hero
+    set equals ``target_heroes`` (pet/banner ignored) and it is at least
+    ``min_gap`` ranks above us. Exactly one attack is sent, then the command
+    stops. The defense is only read (``arenaGetAll.arenaHeroes``); this
+    function never calls ``arenaSetHeroes``.
+    """
+    _require_arena_mode(mode)
+    _validate_hero_ids(target_heroes)
+    if min_gap < 0:
+        raise ArenaError("--min-gap must be >= 0")
+    if interval < 1:
+        raise ArenaError("--interval must be >= 1 second")
+    if max_polls is not None and max_polls < 1:
+        raise ArenaError("--max-polls must be >= 1")
+    target_set = frozenset(target_heroes)
+
+    preset = load_arena_presets(account, mode).get(team_name)
+    if preset is None:
+        raise ArenaError(
+            f"Arena team preset {team_name!r} was not found for {account!r}. "
+            "Create it with `arena team set`."
+        )
+    initial_status = fetch_arena_status(client, mode)
+    team, missing = resolve_team(preset=preset, saved=initial_status.saved_team)
+
+    if from_snapshot:
+        snapshot = load_arena_snapshot(account, mode)
+        if snapshot is None:
+            raise ArenaError(
+                "No saved Arena snapshot. Run `arena find-enemies` first."
+            )
+    else:
+        snapshot = capture_arena_snapshot(client, mode)
+        save_arena_snapshot(account, snapshot, mode)
+
+    targets = snapshot.candidates[:3]
+    if not targets:
+        raise ArenaError("No candidates were returned; nothing to watch.")
+
+    print(f"\n{Emojis.STEP}--- Arena target watch ({account}) ---")
+    print(f"  {Emojis.INFO}Attack team ({team_name}): {_format_team(team)}")
+    if missing:
+        print(
+            f"  {Emojis.WARNING}Preset has no favor for hero(es) {missing}; "
+            "those heroes will attack without favor."
+        )
+    print(
+        f"  {Emojis.INFO}Watching {len(targets)} target(s) for defense "
+        f"{sorted(target_heroes)}; a target must be at least {min_gap} rank(s) "
+        f"above you (your rank - target rank >= {min_gap})"
+    )
+    for entry in targets:
+        heroes = ",".join(str(hero) for hero in entry.heroes) or "?"
+        print(
+            f"  {Emojis.INFO}rank {entry.place} userId {entry.user_id} "
+            f"defense {heroes}"
+        )
+
+    history: list[dict[str, Any]] = []
+    error_counts: dict[int, int] = {}
+    poll_errors = 0
+    polls = 0
+    while True:
+        polls += 1
+        try:
+            status = fetch_arena_status(client, mode)
+            candidates = fetch_arena_candidates(client, mode)
+        except ArenaError as exc:
+            poll_errors += 1
+            print(
+                f"{Emojis.WARNING}Poll {polls} failed ({exc}); "
+                f"{poll_errors}/3 consecutive error(s)."
+            )
+            if once or poll_errors >= 3:
+                break
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                print(f"\n{Emojis.INFO}Stopped.")
+                break
+            continue
+        poll_errors = 0
+        print(
+            f"\n[{Emojis.INFO}poll {polls}] own rank {status.place}, "
+            f"defense {_format_team(status.defense_team)}"
+        )
+        if status.attempts is not None and status.attempts <= 0:
+            print(f"{Emojis.WARNING}No arena attack attempts left; stopping.")
+            break
+
+        current = {entry.user_id: entry for entry in candidates}
+        matches: list[tuple[int, ArenaTopEntry, int]] = []
+        for entry in targets:
+            live = current.get(entry.user_id)
+            if live is None:
+                print(
+                    f"  {Emojis.INFO}userId {entry.user_id}: not in the current "
+                    "candidate list"
+                )
+                continue
+            heroes = ",".join(str(hero) for hero in live.heroes) or "?"
+            if live.place >= status.place:
+                print(
+                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place} "
+                    f"is not above your rank {status.place}; only higher ranks "
+                    "are eligible"
+                )
+                continue
+            gap = status.place - live.place
+            if frozenset(live.heroes) != target_set:
+                print(
+                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"defense {heroes} (does not match)"
+                )
+                continue
+            if gap < min_gap:
+                print(
+                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"{gap} rank(s) above you < {min_gap}; waiting"
+                )
+                continue
+            print(
+                f"  {Emojis.SUCCESS}userId {entry.user_id}: rank {live.place}, "
+                f"{gap} rank(s) above you >= {min_gap}, defense matches"
+            )
+            matches.append((live.place, live, gap))
+
+        if matches:
+            place, entry, gap = min(matches, key=lambda item: item[0])
+            target = ArenaTarget(
+                user_id=entry.user_id,
+                place=place,
+                name=entry.name,
+                power=entry.power,
+                candidate=entry,
+            )
+            record: dict[str, Any] = {
+                "target_user_id": target.user_id,
+                "target_place": target.place,
+                "own_place": status.place,
+                "gap": gap,
+                "target_name": target.name,
+                "attacker_heroes": list(team.heroes),
+                "pet": team.pet,
+                "banner": team.banner,
+                "favor": dict(team.favor),
+                "attacked": False,
+                "win": None,
+            }
+            print(
+                f"{Emojis.INFO}Rank check: you are rank {status.place}; target is "
+                f"rank {target.place}, i.e. {gap} rank(s) above you "
+                f"(required >= {min_gap})."
+            )
+            if not execute:
+                try:
+                    run_arena_attack(
+                        client,
+                        status,
+                        target,
+                        team,
+                        dry_run=True,
+                        candidate_retries=0,
+                        min_gap=min_gap,
+                        mode=mode,
+                    )
+                except ArenaAttackUncertain:
+                    raise
+                except ArenaError as exc:
+                    print(
+                        f"{Emojis.WARNING}Dry-run check for userId "
+                        f"{target.user_id} failed: {exc}"
+                    )
+                    record["error"] = str(exc)
+                else:
+                    print(
+                        f"{Emojis.INFO}Dry-run verified; rerun with --execute "
+                        "to send the attack."
+                    )
+                history.append(record)
+                break
+
+            pre_defense = _defense_signature(status.defense_team)
+            try:
+                outcome = run_arena_attack(
+                    client,
+                    status,
+                    target,
+                    team,
+                    dry_run=False,
+                    candidate_retries=0,
+                    min_gap=min_gap,
+                    mode=mode,
+                )
+            except ArenaAttackUncertain:
+                raise
+            except ArenaError as exc:
+                count = error_counts.get(target.user_id, 0) + 1
+                error_counts[target.user_id] = count
+                record["error"] = str(exc)
+                history.append(record)
+                print(
+                    f"{Emojis.WARNING}Attack for userId {target.user_id} "
+                    f"was not accepted ({exc})."
+                )
+                if count >= 3:
+                    print(
+                        f"{Emojis.WARNING}Stopping after {count} failed "
+                        "attack attempt(s) for the same target."
+                    )
+                    break
+                if once:
+                    break
+                print(f"{Emojis.INFO}Resuming the watch ({count}/3).")
+            else:
+                record["attacked"] = outcome.accepted
+                record["win"] = outcome.win
+                record["old_place"] = outcome.old_place
+                record["new_place"] = outcome.new_place
+                history.append(record)
+                if not outcome.accepted:
+                    print(
+                        f"{Emojis.WARNING}"
+                        f"{outcome.warning or 'Arena attack was not sent.'}"
+                    )
+                else:
+                    print(
+                        f"{Emojis.SUCCESS if outcome.win else Emojis.WARNING}"
+                        f"Attack result: win={outcome.win} "
+                        f"rank {outcome.old_place}->{outcome.new_place}"
+                    )
+                    if outcome.warning:
+                        print(f"{Emojis.WARNING}{outcome.warning}")
+                try:
+                    post = fetch_arena_status(client, mode)
+                except ArenaError as exc:
+                    print(
+                        f"{Emojis.WARNING}Could not re-read the defense after "
+                        f"the attack: {exc}"
+                    )
+                else:
+                    post_defense = _defense_signature(post.defense_team)
+                    if (
+                        pre_defense is not None
+                        and post_defense is not None
+                        and post_defense != pre_defense
+                    ):
+                        print(
+                            f"{Emojis.WARNING}Defense team changed during the "
+                            f"attack ({_format_team(status.defense_team)} -> "
+                            f"{_format_team(post.defense_team)}). No "
+                            "arenaSetHeroes call was made by this tool."
+                        )
+                break
+
+        if once:
+            break
+        if max_polls is not None and polls >= max_polls:
+            print(f"{Emojis.INFO}Reached --max-polls {max_polls}; stopping.")
+            break
+        print(f"{Emojis.INFO}Waiting {interval}s for the next poll...")
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            print(f"\n{Emojis.INFO}Stopped.")
+            break
+
+    return history
+
+
 def run_arena_team_set(
     account: str,
     name: str,
@@ -2377,6 +2706,7 @@ __all__ = [
     "run_arena_attack",
     "run_arena_attack_from_snapshot",
     "run_arena_auto",
+    "run_arena_target_watch",
     "run_arena_find_enemies",
     "run_arena_snapshot",
     "run_arena_status",

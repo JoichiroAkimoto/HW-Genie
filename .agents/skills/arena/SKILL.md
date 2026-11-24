@@ -97,6 +97,12 @@ uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
 uv run hw-genie arena auto -a Alice --min-samples 3 --min-win-rate 1.0
 uv run hw-genie arena auto -a Alice --execute --max-attacks 5
 
+# 3b) 事前取得した3人を監視し、指定防衛編成・15位以上の差で1回だけ攻撃
+uv run hw-genie arena target-watch -a Alice --team auto \
+  --target-heroes 46 62 71 35 70 --min-gap 15
+uv run hw-genie arena target-watch -a Alice --team auto \
+  --target-heroes 46 62 71 35 70 --min-gap 15 --execute
+
 # 4) REC が出たら、表示されたコマンドで攻撃（まず --dry-run）
 uv run hw-genie arena attack -a Alice --user-id 11111111 \
   --heroes 1 2 3 4 5 --pet 6001 --banner 2 --dry-run
@@ -115,8 +121,10 @@ uv run hw-genie battle prune --days 90 --dry-run
 - 順位付けは Wilson 下限です（1勝0敗の「100%」が3勝0敗より上に来ないようにするため）。
 - ゲートは `--min-samples`（既定3）と `--min-win-rate`（既定1.0）。満たさない候補は `REC` になりません。
 - `arena auto` は最新候補から**ギルドメンバーを除外**し、上位順にゲートを満たす攻撃編成を探します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。既定では **`same_defender` プランのみ**を使い、同一防衛編成の他プレイヤー戦しかない場合は攻撃しません（`--allow-same-lineup` でフォールバック可。編成が同じでも実ステータス/favorが異なると勝率は再現されません）。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、解決後の編成が `attacker_lineup_key` と一致した最初のプランを使います。すべての推奨プランが使用できない場合のみそのターゲットをスキップします。攻撃編成はプランのヒーロー・ペット・バナー・favor をそのまま使います（favor はプランが参照した最新の勝利編成の `favorPetId`。ログに無いヒーローは favor なしで送信し、保存済みチームの favor は流用しません。勝率は `lineup_key` 単位の集計で favor が異なる観測も含むため、favor は最新勝利編成による再現である点に注意）。クラン情報が取れない・形式不正の場合は攻撃しません。`--execute` を付けるまで攻撃しません。攻撃済み・gate を満たすプランなし・編成不一致のターゲットは同じ実行内で再選択・再クエリしません。`NotEnough` / `Refillable` で送信されなかった攻撃は回数に数えず停止、結果不明の通信エラーは即中断します。負けは既定で停止（`--no-stop-on-loss` で継続）。
+- `arena target-watch` は開始時に `arenaFindEnemies` から最大3人を監視対象として選び（候補一覧はスナップショットにも保存）、以降のポーリングで「対象が現在の候補にいる」「防衛ヒーロー集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「順位差が `--min-gap` 以上」を満たしたときに、`--team` プリセットで `arenaAttack` を1回だけ送ります。送信直前にも最新順位で `--min-gap` と range check を再確認します。`--execute` なしでも range check まで実行し、攻撃は送りません。**防衛編成は読み取り専用**で、`arenaSetHeroes` は送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、変わった場合は警告します（自動復元なし）。`--from-snapshot` で保存済み候補を再利用できます。送信前エラーは最大3回まで再試行し、結果不明の通信エラーは即中断します。
+- `arena status` は防衛編成（`arenaGetAll.arenaHeroes`）と保存済み攻撃編成（`teamGetAll.arena`）を分けて表示します。
 - `--game-version` で特定のサーバーバージョンの戦闘だけに絞り込めます（既定は全バージョン）。
-- 防衛編成は `topGet` を優先し、見つからなければ `arenaFindEnemies`（候補）にフォールバックして取得します（`--json` を汚さないよう候補更新の進捗表示は抑制）。どちらにも編成が無い場合のみエラーになります。
+- 対象の現在編成は `topGet` を優先し、見つからなければ `arenaFindEnemies`（候補）にフォールバックして取得します（`--json` を汚さないよう候補更新の進捗表示は抑制）。どちらにも編成が無い場合のみエラーになります。
 - コーパスが空の場合は `battle import` を先に実行してください。
 
 ## 注意
