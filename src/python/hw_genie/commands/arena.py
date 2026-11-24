@@ -2352,7 +2352,7 @@ def run_arena_target_watch(
     team_name: str,
     target_heroes: list[int],
     min_gap: int = 15,
-    interval: int = 30,
+    interval: int = 60,
     once: bool = False,
     max_polls: int | None = None,
     capture_retries: int = DEFAULT_CANDIDATE_RETRIES,

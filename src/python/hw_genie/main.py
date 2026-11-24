@@ -3105,8 +3105,11 @@ def main():
     p_arena_target_watch.add_argument(
         "--interval",
         type=_positive_int,
-        default=30,
-        help="Seconds between polls (default: 30)",
+        default=60,
+        help=(
+            "Seconds between polls (default: 60; arena attacks are at most "
+            "about once per minute)"
+        ),
     )
     p_arena_target_watch.add_argument(
         "--once",
@@ -3117,7 +3120,11 @@ def main():
         "--max-polls",
         type=_positive_int,
         default=None,
-        help="Stop after N polls (default: unlimited until a match/attack)",
+        help=(
+            "Stop after N polls (default: unlimited until a match/attack). "
+            "This is a poll count, not a strict time limit; runtime is about "
+            "(N-1)*interval plus capture/API time"
+        ),
     )
     p_arena_target_watch.add_argument(
         "--capture-retries",
