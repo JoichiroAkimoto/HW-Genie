@@ -466,7 +466,7 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 ### AI エージェント連携
 
-本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。スキルの一覧と開発ルールは [AGENTS.md](AGENTS.md)、実行手順・引数・注意点は各 `.agents/skills/*/SKILL.md` を参照してください。
+本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。スキルの探し方と開発ルールは [AGENTS.md](AGENTS.md)、実行手順・引数・注意点は各 `.agents/skills/*/SKILL.md` を参照してください。
 
 ## 開発環境
 

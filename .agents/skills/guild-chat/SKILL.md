@@ -1,6 +1,6 @@
 ---
 name: guild-chat
-description: Fetch guild chat (chatGetAll / chatType=clan) and personal chat (PM) — recent conversation list (chatGetTalks) or a single thread (chatType=personal + peer userId) — and display as a table with summary. Translates to user's language.
+description: HW-Genie を使用して、ギルドチャット（chatGetAll / chatType=clan）と個人チャット（PM、chatGetTalks / スレッド）を取得し、表形式と要約で表示します。
 ---
 # Guild / Personal Chat Skill (HW-Genie)
 
