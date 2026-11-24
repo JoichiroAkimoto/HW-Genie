@@ -71,7 +71,7 @@ Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、�
 *   **リクエスト署名**: ゲーム API は `X-Request-Id` / `X-Auth-Token` / `X-Auth-Session-Id` / リクエストボディ（compact JSON）/ `X-Env*` から算出した `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（署名式は同ファイル参照。キャプチャした署名値の再利用や `json=` での送信は `Invalid signature` になります）。
 *   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
 *   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
-*   **ブランド資産**: アイコンの Source of Truth は `docs/assets/`。@icon / favicon / og:image の構成と画像の再生成コマンドは `src/userscripts/README.md` を参照。
+*   **ブランド資産**: Source of Truth は 2 つ —— `docs/assets/hw-genie-icon.grid.txt`（64x64 ドットマップ）と `docs/assets/hw-genie-wordmark.png`（バナーの文字）。配布 PNG は必ず `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` の drift ゲートが落ちる。比較は画素単位）。ゲートは `docs/assets/**` を触る PR でも `Python Checks` が走る。詳細（資産一覧・favicon・ブートストラップ・検品 1〜5）は `src/userscripts/README.md` を参照。
 
 ## 5. 複数アカウント・複数タスクの実行戦略
 大量の処理（例：複数アカウントでのレイド＋ショッピング）を行う際は、タイムアウトを避けるため以下の戦略を徹底してください。
