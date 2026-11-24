@@ -182,8 +182,10 @@ uv run hw-genie arena target-watch -a Alice --team auto \
   --target-heroes 46 62 71 35 70 --min-gap 15 --execute
 ```
 
-- 開始時に `arenaFindEnemies` から最大3人を監視対象として選び、候補一覧をスナップショットに保存します。以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定30秒）。
-- 攻撃条件は「対象が現在の候補にいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。
+- 開始時に `arenaFindEnemies` から、**その時点で防衛ヒーロー集合が `--target-heroes` と一致する候補だけ**を最大3人選びます（`--capture-retries`、既定10回まで再取得して3人を集めます。3人未満なら警告、0人なら停止）。選んだ3人は実行中だけ保持し、共有スナップショットは上書きしません。`--from-snapshot` は事前の `arena find-enemies` スナップショットから一致する候補を選びます。
+- 以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定30秒）。開始時に候補が下位でも、自分の順位が下がる／相手が上がることで差が付けば攻撃対象になります。
+- 攻撃条件は「対象が**最新の** `arenaFindEnemies` レスポンスにいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。
+- 候補の有効性: 実攻撃が受理されるのは **直近の `arenaFindEnemies` に含まれる候補**です。`arenaGetAll` / `arenaCheckTargetRange` など他のRPCを挟んでも失効しません（実攻撃で確認済み）が、再度 `arenaFindEnemies` を呼ぶと候補リストが更新されるため、`target-watch` は**同じポーリングで取得した最新リスト**に対して即座に攻撃します。古いリストの候補は、最新リストに再登場しない限り攻撃しません。
 - 条件を満たすとプリセットの編成で `arenaAttack` を**1回だけ**送り、そのまま終了します。`--execute` なしでも range check まで実行し、攻撃は送りません。
 - **防衛編成は読み取り専用**です。`target-watch` は `arenaSetHeroes` を送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、サーバー側で防衛が変わった場合は警告します（自動復元はしません）。
 - `arena status` は「防衛編成」と「保存済み攻撃編成」を分けて表示します。

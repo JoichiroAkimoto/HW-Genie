@@ -81,9 +81,10 @@ def _patch_watch(
     )
     monkeypatch.setattr(
         arena_mod,
-        "capture_arena_snapshot",
-        lambda *_a, **_k: snapshot or _snapshot(*candidates[:3]),
+        "_capture_matching_targets",
+        lambda *_a, **_k: list(candidates[:3]),
     )
+    monkeypatch.setattr(arena_mod, "fetch_own_place", lambda *_a, **_k: 100)
     monkeypatch.setattr(arena_mod, "save_arena_snapshot", lambda *_a, **_k: None)
     status_iter = iter(statuses)
     monkeypatch.setattr(
@@ -235,6 +236,115 @@ def test_target_watch_defense_change_ignores_hero_order(monkeypatch, capsys):
     )
 
     assert "Defense team changed" not in capsys.readouterr().out
+
+
+def test_capture_matching_targets_filters_and_accumulates(monkeypatch):
+    responses = iter(
+        [
+            [_entry(20, 1, heroes=[1, 2, 3, 4, 5]), _entry(21, 2)],
+            [_entry(22, 3), _entry(23, 4)],
+        ]
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_candidates", lambda *_a, **_k: next(responses)
+    )
+
+    targets = arena_mod._capture_matching_targets(
+        MagicMock(), frozenset(TARGET_HEROES), retries=5
+    )
+
+    assert [entry.user_id for entry in targets] == [2, 3, 4]
+    assert all(frozenset(entry.heroes) == frozenset(TARGET_HEROES) for entry in targets)
+
+
+def test_capture_matching_targets_stops_after_retries_without_match(monkeypatch):
+    calls = []
+
+    def fake_candidates(*_args, **_kwargs):
+        calls.append(1)
+        return [_entry(20, 1, heroes=[1, 2, 3, 4, 5])]
+
+    monkeypatch.setattr(arena_mod, "fetch_arena_candidates", fake_candidates)
+
+    targets = arena_mod._capture_matching_targets(
+        MagicMock(), frozenset(TARGET_HEROES), retries=2
+    )
+
+    assert targets == []
+    assert len(calls) == 3
+
+
+def test_target_watch_errors_when_capture_finds_no_matching_defense(monkeypatch):
+    monkeypatch.setattr(
+        arena_mod,
+        "load_arena_presets",
+        lambda *_a, **_k: {"auto": ATTACK_TEAM},
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod, "_capture_matching_targets", lambda *_a, **_k: []
+    )
+
+    with pytest.raises(
+        ArenaError, match="No candidate with the requested defense"
+    ):
+        run_arena_target_watch(
+            MagicMock(),
+            "Alice",
+            team_name="auto",
+            target_heroes=TARGET_HEROES,
+            once=True,
+        )
+
+
+def test_target_watch_warns_when_fewer_than_three_targets(monkeypatch, capsys):
+    _patch_watch(
+        monkeypatch,
+        statuses=[_status(), _status()],
+        candidates=[_entry(80, 222)],
+    )
+    monkeypatch.setattr(
+        arena_mod, "run_arena_attack", lambda *_a, **_k: None
+    )
+
+    run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        once=True,
+    )
+
+    assert "Only 1 target(s) to watch" in capsys.readouterr().out
+
+
+def test_target_watch_from_snapshot_rejects_mismatched_defense(monkeypatch):
+    snapshot = _snapshot(_entry(80, 222, heroes=[1, 2, 3, 4, 5]))
+    monkeypatch.setattr(
+        arena_mod,
+        "load_arena_snapshot",
+        lambda *_a, **_k: snapshot,
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "load_arena_presets",
+        lambda *_a, **_k: {"auto": ATTACK_TEAM},
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+
+    with pytest.raises(ArenaError, match="no candidate whose defense matches"):
+        run_arena_target_watch(
+            MagicMock(),
+            "Alice",
+            team_name="auto",
+            target_heroes=TARGET_HEROES,
+            from_snapshot=True,
+            once=True,
+        )
 
 
 def test_target_watch_dry_run_matches_and_does_not_attack(monkeypatch, capsys):
@@ -390,13 +500,13 @@ def test_target_watch_reuses_saved_snapshot(monkeypatch):
     )
     monkeypatch.setattr(
         arena_mod,
-        "capture_arena_snapshot",
-        lambda *_a, **_k: pytest.fail("should not capture a new snapshot"),
+        "load_arena_snapshot",
+        lambda *_a, **_k: snapshot,
     )
     monkeypatch.setattr(
         arena_mod,
-        "load_arena_snapshot",
-        lambda *_a, **_k: snapshot,
+        "_capture_matching_targets",
+        lambda *_a, **_k: pytest.fail("should not capture new targets"),
     )
     attacked = []
     monkeypatch.setattr(

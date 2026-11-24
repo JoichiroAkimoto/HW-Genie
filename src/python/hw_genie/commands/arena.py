@@ -2323,6 +2323,28 @@ def run_arena_auto(
     return history
 
 
+def _capture_matching_targets(
+    client: HWClient,
+    target_set: frozenset[int],
+    retries: int,
+    mode: ArenaMode = ARENA_MODE,
+) -> list[ArenaTopEntry]:
+    """Collect up to 3 candidates whose defense matches at capture time.
+
+    ``arenaFindEnemies`` rotates, so a single response may not contain three
+    matching defenses. Each refresh is a new candidate list; matching entries
+    are accumulated by user id and returned highest rank first.
+    """
+    pool: dict[int, ArenaTopEntry] = {}
+    for _ in range(retries + 1):
+        for entry in fetch_arena_candidates(client, mode):
+            if len(entry.heroes) == 5 and frozenset(entry.heroes) == target_set:
+                pool.setdefault(entry.user_id, entry)
+        if len(pool) >= 3:
+            break
+    return sorted(pool.values(), key=lambda entry: entry.place)[:3]
+
+
 def run_arena_target_watch(
     client: HWClient,
     account: str,
@@ -2333,19 +2355,22 @@ def run_arena_target_watch(
     interval: int = 30,
     once: bool = False,
     max_polls: int | None = None,
+    capture_retries: int = DEFAULT_CANDIDATE_RETRIES,
     from_snapshot: bool = False,
     execute: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
     """Watch pre-fetched candidates and attack one matching defender.
 
-    The first poll captures up to three ``arenaFindEnemies`` candidates (or
-    reuses a saved snapshot). Every poll re-reads own rank and the rotating
-    candidate list; a target is attacked only when its current defense hero
-    set equals ``target_heroes`` (pet/banner ignored) and it is at least
-    ``min_gap`` ranks above us. Exactly one attack is sent, then the command
-    stops. The defense is only read (``arenaGetAll.arenaHeroes``); this
-    function never calls ``arenaSetHeroes``.
+    The initial capture keeps only candidates whose defense hero set matches
+    ``target_heroes`` (pet/banner ignored); ``arenaFindEnemies`` is refreshed
+    up to ``capture_retries`` times to collect up to three such targets. Every
+    poll then re-reads own rank and the latest rotating candidate list; a
+    target is attacked only when it is in the latest list, its defense still
+    matches, and it is at least ``min_gap`` ranks above us. Exactly one attack
+    is sent, then the command stops. The defense is only read
+    (``arenaGetAll.arenaHeroes``); this function never calls
+    ``arenaSetHeroes``.
     """
     _require_arena_mode(mode)
     _validate_hero_ids(target_heroes)
@@ -2355,6 +2380,8 @@ def run_arena_target_watch(
         raise ArenaError("--interval must be >= 1 second")
     if max_polls is not None and max_polls < 1:
         raise ArenaError("--max-polls must be >= 1")
+    if capture_retries < 0:
+        raise ArenaError("--capture-retries must be >= 0")
     target_set = frozenset(target_heroes)
 
     preset = load_arena_presets(account, mode).get(team_name)
@@ -2372,13 +2399,31 @@ def run_arena_target_watch(
             raise ArenaError(
                 "No saved Arena snapshot. Run `arena find-enemies` first."
             )
+        targets = [
+            entry
+            for entry in snapshot.candidates
+            if len(entry.heroes) == 5 and frozenset(entry.heroes) == target_set
+        ][:3]
+        if not targets:
+            raise ArenaError(
+                "The saved snapshot has no candidate whose defense matches "
+                "--target-heroes. Take a new snapshot or adjust the target."
+            )
     else:
-        snapshot = capture_arena_snapshot(client, mode)
-        save_arena_snapshot(account, snapshot, mode)
+        targets = _capture_matching_targets(
+            client, target_set, capture_retries, mode
+        )
+        if not targets:
+            raise ArenaError(
+                "No candidate with the requested defense appeared after "
+                f"{capture_retries + 1} arenaFindEnemies call(s)."
+            )
 
-    targets = snapshot.candidates[:3]
-    if not targets:
-        raise ArenaError("No candidates were returned; nothing to watch.")
+    if len(targets) < 3:
+        print(
+            f"{Emojis.WARNING}Only {len(targets)} target(s) to watch "
+            "(requested up to 3)."
+        )
 
     print(f"\n{Emojis.STEP}--- Arena target watch ({account}) ---")
     print(f"  {Emojis.INFO}Attack team ({team_name}): {_format_team(team)}")
@@ -2388,9 +2433,9 @@ def run_arena_target_watch(
             "those heroes will attack without favor."
         )
     print(
-        f"  {Emojis.INFO}Watching {len(targets)} target(s) for defense "
-        f"{sorted(target_heroes)}; a target must be at least {min_gap} rank(s) "
-        f"above you (your rank - target rank >= {min_gap})"
+        f"  {Emojis.INFO}Watching {len(targets)} target(s) captured with "
+        f"defense {sorted(target_heroes)}; a target must be at least {min_gap} "
+        f"rank(s) above you (your rank - target rank >= {min_gap})"
     )
     for entry in targets:
         heroes = ",".join(str(hero) for hero in entry.heroes) or "?"

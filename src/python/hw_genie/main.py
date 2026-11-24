@@ -1282,6 +1282,7 @@ def cmd_arena_target_watch(args):
             interval=args.interval,
             once=bool(args.once),
             max_polls=args.max_polls,
+            capture_retries=args.capture_retries,
             from_snapshot=bool(args.from_snapshot),
             execute=bool(args.execute),
         )
@@ -3117,6 +3118,15 @@ def main():
         type=_positive_int,
         default=None,
         help="Stop after N polls (default: unlimited until a match/attack)",
+    )
+    p_arena_target_watch.add_argument(
+        "--capture-retries",
+        type=_non_negative_int,
+        default=10,
+        help=(
+            "Extra arenaFindEnemies calls while capturing 3 matching targets "
+            "(default: 10; not used with --from-snapshot)"
+        ),
     )
     p_arena_target_watch.add_argument(
         "--from-snapshot",
