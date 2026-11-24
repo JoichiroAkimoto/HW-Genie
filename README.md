@@ -472,7 +472,11 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 ### 依存関係の更新
 
-依存関係は Dependabot が週次で更新 PR を出します。マージ後に `git pull` したら `uv sync --locked`（または `make sync`）を 1 回実行してください。
+依存関係は Dependabot が月次で更新 PR を出します。patch アップデート（`uv` エコシステムのみ）は `.github/workflows/dependabot-auto-merge.yml` が auto-merge を有効化し、CI（Python Checks の `test`）成功後に自動マージされます（リポジトリ設定で **Allow auto-merge** と **main の保護（Rulesets の `Main Protection` 等）／必須チェック `test`** が必要。本リポジトリは設定済み。`github-actions` の更新と minor / major は手動マージ）。マージ後に `git pull` したら `uv sync --locked`（または `make sync`）を 1 回実行してください。
+
+> **⚠️ リポジトリ設定と自動マージの注意**: 設定は **先に** main の保護（Rulesets の `Main Protection` 等）で必須チェック `test` を強制し、**その後に** Allow auto-merge を有効にしてください。Allow auto-merge だけが有効で必須チェックが無い場合は CI を待たずに **即時マージ** される危険があるため、必ずこの順序を守ってください。本リポジトリは Ruleset と Allow auto-merge の両方が **設定済み** です。
+>
+> 自動マージ対象は `uv` エコシステムの patch のみで、`github-actions` の更新は手動マージです（GITHUB_TOKEN には workflow ファイル変更のマージ権限がなく、`test` も workflow 構文を検証しないため）。workflow 導入前に作成済みの open PR は自動対象外なので、`gh workflow run '.github/workflows/dependabot-auto-merge.yml' -f pr_number=<番号>` で処理するか、手動で `gh pr merge --auto --squash <PR>` を実行してください。`workflow_dispatch` は patch 判定をスキップする手動オーバーライドですが、uv PR のみ受け付けます。初回自動マージ後は main への push ワークフロー（Docker ビルド等）が起動することも確認してください（GITHUB_TOKEN 経由のマージで push ワークフローが起動しない可能性の運用確認）。
 
 ```bash
 git pull
