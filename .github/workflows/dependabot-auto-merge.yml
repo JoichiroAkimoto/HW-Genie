@@ -1,0 +1,92 @@
+name: '🤖 Dependabot Auto Merge'
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  # workflow 導入前に作成済みの open PR は pull_request_target の対象外のため、
+  # 設定完了後に手動で処理できるようにする（下記 pr_number を指定）。
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '処理する Dependabot PR の番号'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # Dependabot の PR だけを対象にする。pull_request_target は base 側の
+    # コンテキストで動くため、PR から渡されたコードは一切 checkout / 実行しない。
+    # workflow_dispatch は「明示的に dispatch した人が選んだ PR に対する手動オーバーライド」
+    # なので patch 判定は行わないが、作者が dependabot[bot] かつ head が dependabot/uv/
+    # であること（uv エコシステムの PR であること）は検証する。
+    if: github.repository == 'JoichiroAkimoto/HW-Genie' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        if: github.event_name == 'pull_request_target'
+        uses: dependabot/fetch-metadata@v3
+
+      # dispatch 時は github.event.pull_request が無いため fetch-metadata が使えない。
+      # 代わりに API の生の .user.login で作者を確認し、dependabot[bot] でなければ失敗させる。
+      # (gh pr view の .author.login は app/dependabot に正規化されるため使わない)
+      # さらに head ブランチが dependabot/uv/ で始まること（uv の PR であること）も検証する。
+      # github-actions の PR は GITHUB_TOKEN に workflow ファイル変更のマージ権限がなく対象外。
+      - name: Verify dispatched PR is from Dependabot
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # 先頭の # / 前後の空白 / 空文字は弾く（数値のみ受け付ける）
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::PR 番号が不正です: '$PR_NUMBER'（先頭の # や空白を除いた数字のみ指定してください）"
+            exit 1
+          fi
+
+          author=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.user.login')
+          if [ "$author" != 'dependabot[bot]' ]; then
+            echo "::error::PR #$PR_NUMBER は dependabot[bot] の PR ではありません（API user.login: $author）"
+            exit 1
+          fi
+
+          head_ref=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.ref')
+          if [[ "$head_ref" != dependabot/uv/* ]]; then
+            echo "::error::PR #$PR_NUMBER の head ブランチ '$head_ref' は dependabot/uv/ ではありません（github-actions の更新は対象外です）"
+            exit 1
+          fi
+
+      # update-type は PR 内の「最大」のセマンティック変更を返すため、
+      # グループ PR に minor/major が 1 つでも混ざっていれば対象外になる。
+      # さらに package-ecosystem が uv の PR のみ対象とする。github-actions の更新は
+      # 対象外（GITHUB_TOKEN では workflow ファイル変更をマージできず、
+      # test も workflow を検証しないため）。
+      - name: Enable auto-merge for patch updates
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' &&
+           steps.metadata.outputs.package-ecosystem == 'uv')
+        # 既に CLEAN な PR では --auto が失敗するため、status を見て直接マージする。
+        # 権限不足などの他のエラーは握り潰さず失敗させる（安全側に倒す）。
+        run: |
+          set -euo pipefail
+          status=$(gh pr view "$PR_URL" --json mergeStateStatus -q .mergeStateStatus)
+          if [ "$status" = "CLEAN" ]; then
+            echo "PR is already mergeable (CLEAN); merging without --auto"
+            gh pr merge --squash "$PR_URL"
+          else
+            gh pr merge --auto --squash "$PR_URL"
+          fi
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url || format('https://github.com/{0}/pull/{1}', github.repository, inputs.pr_number) }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
