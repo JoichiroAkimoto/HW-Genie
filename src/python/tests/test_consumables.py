@@ -289,7 +289,7 @@ def test_use_consumable_empty_response_falls_back_to_requested(mock_client):
 
 def test_registry_covers_all_use_targets():
     """CONSUMABLE_USE_TARGETS の全対象がレジストリ登録済みで lootbox メソッドを持つ。"""
-    assert len(CONSUMABLE_USE_TARGETS) == 63  # 215 + Add-Consumables.md 記載 + Doll/Box 5 種 + Boxy/Doll/Bag 4 種 + Ascension Chest 502 + Cosmic Titans Battle Chest 508 + 478/509/513/520
+    assert len(CONSUMABLE_USE_TARGETS) == 68  # 既存 63 + Legacy/Harunian/Mead/Cosmic の追加 5 件
     for lib_id in CONSUMABLE_USE_TARGETS:
         assert lib_id in CONSUMABLE_REGISTRY
         assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
@@ -340,6 +340,9 @@ def test_registry_recursive_flags_documented_unmeasured():
     # 同名のみでは不十分：508（492 と同名）・493（513 と同名）は False
     assert CONSUMABLE_REGISTRY[508].recursive is False
     assert CONSUMABLE_REGISTRY[493].recursive is False
+    # 新規追加分も根拠が無いため False のまま
+    assert CONSUMABLE_REGISTRY[909].recursive is False
+    assert CONSUMABLE_REGISTRY[915].recursive is False
     # 520（469 と同名の別 libId）も recursive=True
     assert CONSUMABLE_REGISTRY[520].name == "Adventure Chest"
     assert CONSUMABLE_REGISTRY[520].recursive is True
@@ -363,6 +366,30 @@ def test_registry_new_items_478_509_513():
     for lib_id in (478, 509, 513):
         assert lib_id in CONSUMABLE_USE_TARGETS
         assert CONSUMABLE_REGISTRY[lib_id].recursive is True
+
+
+def test_registry_new_items_458_514_909_914_915():
+    """Consumables.md 追加分の名前・対象登録・既定フラグ。"""
+    expected = {
+        458: "Legacy Chest",
+        514: "Harunian Chest",
+        909: "Mead Festival Chest",
+        914: "Harunian Chest",
+        915: "Cosmic Titans Battle Chest",
+    }
+    for lib_id, name in expected.items():
+        assert CONSUMABLE_REGISTRY[lib_id].name == name
+        assert CONSUMABLE_REGISTRY[lib_id].method == "consumableUseLootBox"
+        assert CONSUMABLE_REGISTRY[lib_id].max_amount == 0
+        assert CONSUMABLE_REGISTRY[lib_id].player_reward_choice_index is None
+        assert CONSUMABLE_REGISTRY[lib_id].recursive is False
+        assert lib_id in CONSUMABLE_USE_TARGETS
+
+    # 同名の別 libId を明示（同一視しない）
+    assert CONSUMABLE_REGISTRY[514].name == CONSUMABLE_REGISTRY[914].name
+    assert CONSUMABLE_REGISTRY[909].name == CONSUMABLE_REGISTRY[509].name
+    assert CONSUMABLE_REGISTRY[915].name == CONSUMABLE_REGISTRY[492].name
+    assert CONSUMABLE_REGISTRY[915].name == CONSUMABLE_REGISTRY[508].name
 
 
 def test_registry_recursive_rejects_non_lootbox_method():

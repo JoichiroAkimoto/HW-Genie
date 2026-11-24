@@ -220,6 +220,11 @@ CONSUMABLE_REGISTRY: dict[int, ConsumableInfo] = {
         method="consumableUseLootBox",
         recursive=True,
     ),
+    458: ConsumableInfo(name="Legacy Chest", method="consumableUseLootBox"),
+    514: ConsumableInfo(name="Harunian Chest", method="consumableUseLootBox"),
+    909: ConsumableInfo(name="Mead Festival Chest", method="consumableUseLootBox"),
+    914: ConsumableInfo(name="Harunian Chest", method="consumableUseLootBox"),
+    915: ConsumableInfo(name="Cosmic Titans Battle Chest", method="consumableUseLootBox"),
 }
 
 #: 一括消費（``consumable run``・``multi consumable``）の対象 libId。
@@ -292,6 +297,11 @@ CONSUMABLE_USE_TARGETS: list[int] = [
     509,
     513,
     520,
+    458,
+    514,
+    909,
+    914,
+    915,
 ]
 
 

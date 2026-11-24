@@ -33,6 +33,7 @@ description: HW-Genie を使用して所持している consumable（消費ア�
 - 選択式報酬ボックス（Chest of X Titans / Titan of Your Choice / Artifact 系 Chest 等）は `ConsumableInfo` の `player_reward_choice_index` で報酬選択インデックスを指定します（例: Titan チェストは 2、Titan of Your Choice は 0、Artifact チェストは 4。`consumableUseLootBox` の args に `playerRewardChoiceIndex` として渡されます）。
 - 再帰開封（サーバー側で入れ子を自動開封）は `ConsumableInfo` の `recursive=True` で指定します（`consumableUseLootBox` の args に `recursive: True` として渡されます。付与対象は `docs/api/UNIT_API.md` の consumableUseLootBox 節に記載の8件に限定し、他は実測待ちのため `False` のままにします）。
 - 一括消費の対象は `CONSUMABLE_USE_TARGETS` リスト（hero_raid の `DEFAULT_HERO_MISSION_IDS` と同じ固定管理の流儀）。
+- 2026-11-24 に Legacy Chest (458) / Harunian Chest (514, 914) / Mead Festival Chest (909) / Cosmic Titans Battle Chest (915) を追加しました。同名の別 libId は別物として扱い、`recursive` は実測根拠が無いため False のままです。914 は消費ラウンドで再出現が観測されていますが、供給元の chest を特定できないため、クライアント側ラウンドループで処理します。
 - 新しいアイテムはまず `--method` 上書きで実績を確認してからレジストリへ追加してください。
 - 未登録アイテムを `--method` で試す際は recursive を付与できない（登録後に有効化される）。
 
