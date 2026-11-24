@@ -350,9 +350,9 @@ def test_claim_rewards_sleeps_after_every_claim(mock_client, mock_sleep):
     client, mock_call = mock_client
     mock_call.side_effect = [_res({}), _res({})]
     rewards = [
-        TournamentReward(5, "", 300, True),
-        TournamentReward(6, "", 800, True),
-        TournamentReward(7, "", 1500, False),
+        TournamentReward(5, 300, True, False),
+        TournamentReward(6, 800, True, False),
+        TournamentReward(7, 1500, False, False),
     ]
     results = claim_rewards(client, rewards)
 
@@ -428,8 +428,8 @@ def test_render_shows_top_and_claims(capsys):
         state=state,
         ranking=parse_group_info(GROUP_PAYLOAD, own_user_id="2")[:5],
         claims=[
-            TournamentClaimResult(5, "", ResponseStatus.SUCCESS),
-            TournamentClaimResult(6, "", ResponseStatus.SKIPPED, "NotAvailable"),
+            TournamentClaimResult(5, ResponseStatus.SUCCESS),
+            TournamentClaimResult(6, ResponseStatus.SKIPPED, "NotAvailable"),
         ],
         own_user_id="2",
         own_place=1,
@@ -438,10 +438,12 @@ def test_render_shows_top_and_claims(capsys):
     out = capsys.readouterr().out
     assert "Power Tournament" in out
     assert "Type: Titan" in out
+    assert "Alice: rank" in out
     assert "Last login" in out
+    assert "UserID" not in out
     assert "Bob" in out
     assert "← you" in out
-    assert "claimed 1, skipped 1, failed 0" in out
+    assert "Rewards: received 3 / unreceived 1" in out
 
 
 def test_render_dry_run(capsys):
@@ -463,10 +465,53 @@ def test_render_dry_run(capsys):
     )
     render_power_tournament(result, now=1_700_050_000)
     out = capsys.readouterr().out
-    assert (
-        "Claimable rewards: id 5 (consumable:149×2), id 6 (consumable:20×2500)" in out
-    )
+    assert "Rewards: received 1 / unreceived 3 (claimable 2)" in out
     assert "Dry-run: rewards were not claimed." in out
+
+
+def test_reward_counts_do_not_treat_limit_reached_as_received():
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentClaimResult,
+        _reward_counts,
+        parse_state,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=False,
+        state=state,
+        claims=[
+            TournamentClaimResult(5, ResponseStatus.SUCCESS),
+            TournamentClaimResult(6, ResponseStatus.SKIPPED, "limitReached"),
+        ],
+    )
+    # farmed (id 7) + success (id 5) = 2 received; id 6 and id 8 remain unreceived.
+    assert _reward_counts(result) == (2, 2, 0)
+
+
+def test_render_reports_failed_claim_count(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentClaimResult,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=False,
+        state=state,
+        claims=[
+            TournamentClaimResult(5, ResponseStatus.ERROR, "ServerBoom"),
+            TournamentClaimResult(6, ResponseStatus.ERROR, "ServerBoom"),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+    assert "Rewards: received 1 / unreceived 3 (failed 2)" in out
 
 
 def test_cli_registered(monkeypatch, capsys):
@@ -521,7 +566,7 @@ def test_run_log_account_failure_power_tournament():
         account="Alice",
         dry_run=False,
         claims=[
-            TournamentClaimResult(5, "", ResponseStatus.ERROR, "ServerBoom"),
+            TournamentClaimResult(5, ResponseStatus.ERROR, "ServerBoom"),
         ],
     )
     assert (

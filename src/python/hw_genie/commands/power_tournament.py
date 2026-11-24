@@ -75,9 +75,9 @@ class PowerTournamentReadError(PowerTournamentError):
 @dataclass(frozen=True)
 class TournamentReward:
     reward_id: int
-    label: str
     points: int | None
     claimable: bool
+    is_farmed: bool
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,6 @@ class TournamentState:
 @dataclass
 class TournamentClaimResult:
     reward_id: int
-    label: str
     status: ResponseStatus
     error: str | None = None
 
@@ -139,27 +138,6 @@ def _unwrap_item(item: Any) -> Any:
     if "response" in item:
         return item.get("response")
     return item
-
-
-def _reward_label(reward: Any) -> str:
-    """Compact one-line summary of a ``currentDayRewards[].reward`` payload."""
-    if not isinstance(reward, dict):
-        return ""
-    parts: list[str] = []
-    for category, payload in reward.items():
-        if isinstance(payload, dict):
-            for lib_id, amount in list(payload.items())[:3]:
-                parts.append(f"{category}:{lib_id}×{amount}")
-        elif payload is not None:
-            parts.append(f"{category}×{payload}")
-        if len(parts) >= 3:
-            break
-    return ", ".join(parts)
-
-
-def _reward_ref(reward_id: int, label: str) -> str:
-    """Format a reward id, appending its computed label when available."""
-    return f"id {reward_id} ({label})" if label else f"id {reward_id}"
 
 
 def parse_state(response: Any, *, now: int | None = None) -> TournamentState:
@@ -221,9 +199,9 @@ def parse_state(response: Any, *, now: int | None = None) -> TournamentState:
         rewards.append(
             TournamentReward(
                 reward_id=reward_id,
-                label=_reward_label(item.get("reward")),
                 points=threshold,
                 claimable=claimable,
+                is_farmed=is_farmed,
             )
         )
 
@@ -393,21 +371,20 @@ def claim_rewards(
         except Exception as exc:  # noqa: BLE001 - one claim must not stop the rest
             results.append(
                 TournamentClaimResult(
-                    reward.reward_id, reward.label, ResponseStatus.ERROR, str(exc)
+                    reward.reward_id, ResponseStatus.ERROR, str(exc)
                 )
             )
         else:
             if res.is_success:
                 results.append(
                     TournamentClaimResult(
-                        reward.reward_id, reward.label, ResponseStatus.SUCCESS
+                        reward.reward_id, ResponseStatus.SUCCESS
                     )
                 )
             elif res.error_name in CLAIM_SKIP_ERRORS:
                 results.append(
                     TournamentClaimResult(
                         reward.reward_id,
-                        reward.label,
                         ResponseStatus.SKIPPED,
                         res.error_name,
                     )
@@ -416,7 +393,6 @@ def claim_rewards(
                 results.append(
                     TournamentClaimResult(
                         reward.reward_id,
-                        reward.label,
                         ResponseStatus.ERROR,
                         res.error_name or res.status.value,
                     )
@@ -527,7 +503,6 @@ def _clip(text: str, width: int) -> str:
 _RANK_COLUMNS = (
     ("#", 4),
     ("Name", 22),
-    ("UserID", 11),
     ("Points", 11),
     ("Last login", 16),
     ("Seen", 6),
@@ -543,14 +518,37 @@ def _render_rank_table(entries: list[TournamentRankEntry], *, now: int | None) -
         cells = [
             pad(str(entry.place), _RANK_COLUMNS[0][1]),
             pad(name, _RANK_COLUMNS[1][1]),
-            pad(entry.user_id, _RANK_COLUMNS[2][1]),
-            pad(format_number_with_suffix(entry.points), _RANK_COLUMNS[3][1]),
-            pad(_format_epoch(entry.last_login_ts), _RANK_COLUMNS[4][1]),
+            pad(format_number_with_suffix(entry.points), _RANK_COLUMNS[2][1]),
+            pad(_format_epoch(entry.last_login_ts), _RANK_COLUMNS[3][1]),
         ]
-        seen = pad(_age(entry.last_login_ts, now=now), _RANK_COLUMNS[5][1])
+        seen = pad(_age(entry.last_login_ts, now=now), _RANK_COLUMNS[4][1])
         seen = style(seen, fg=_age_color(entry.last_login_ts, now=now))
         marker = style(" ← you", bold=True) if entry.is_self else ""
         print("  " + " | ".join(cells) + " | " + seen + marker)
+
+
+def _reward_counts(
+    result: PowerTournamentResult,
+) -> tuple[int, int, int]:
+    """Return ``(received, unreceived, claimable)`` for the current-day rewards."""
+    state = result.state
+    if state is None:
+        return 0, 0, 0
+    total = len(state.rewards)
+    farmed = sum(1 for reward in state.rewards if reward.is_farmed)
+    if result.dry_run:
+        claimable = sum(1 for reward in state.rewards if reward.claimable)
+        return farmed, total - farmed, claimable
+
+    claimed = sum(1 for c in result.claims if c.status == ResponseStatus.SUCCESS)
+    already_farmed = sum(
+        1
+        for c in result.claims
+        if c.status == ResponseStatus.SKIPPED
+        and c.error == ErrorName.NOT_AVAILABLE.value
+    )
+    received = min(total, farmed + claimed + already_farmed)
+    return received, total - received, 0
 
 
 def render_power_tournament(
@@ -580,7 +578,10 @@ def render_power_tournament(
         if state.daily_points is not None
         else "-"
     )
-    print(f"  {Emojis.INFO}You: rank {own_place} | points {total} (today {today})")
+    print(
+        f"  {Emojis.INFO}{result.account or '?'}: "
+        f"rank {own_place} | points {total} (today {today})"
+    )
 
     if result.ranking:
         _render_rank_table(result.ranking, now=now)
@@ -593,33 +594,17 @@ def render_power_tournament(
     else:
         print(f"  {Emojis.INFO}No group ranking entries returned.")
 
+    received, unreceived, claimable = _reward_counts(result)
+    reward_line = (
+        f"  {Emojis.INFO}Rewards: received {received} / unreceived {unreceived}"
+    )
     if result.dry_run:
-        available = [reward for reward in state.rewards if reward.claimable]
-        if available:
-            labels = ", ".join(
-                _reward_ref(reward.reward_id, reward.label) for reward in available
-            )
-            print(f"  {Emojis.INFO}Claimable rewards: {labels}")
-        else:
-            print(f"  {Emojis.INFO}No claimable rewards.")
+        reward_line += f" (claimable {claimable})"
+    elif result.failed_claims:
+        reward_line += f" (failed {result.failed_claims})"
+    print(reward_line)
+    if result.dry_run:
         print(f"  {Emojis.INFO}Dry-run: rewards were not claimed.")
-    else:
-        claimed = sum(1 for c in result.claims if c.status == ResponseStatus.SUCCESS)
-        skipped = sum(1 for c in result.claims if c.status == ResponseStatus.SKIPPED)
-        failed = result.failed_claims
-        print(
-            f"  {Emojis.INFO}Rewards: claimed {claimed}, "
-            f"skipped {skipped}, failed {failed}"
-        )
-        for claim in result.claims:
-            if claim.status == ResponseStatus.SUCCESS:
-                mark = Emojis.SUCCESS
-            elif claim.status == ResponseStatus.SKIPPED:
-                mark = "⏭ "
-            else:
-                mark = Emojis.ERROR
-            detail = f" ({claim.error})" if claim.error else ""
-            print(f"    {mark}{_reward_ref(claim.reward_id, claim.label)}{detail}")
 
     if state.ended:
         if state.final_reward_farmed:

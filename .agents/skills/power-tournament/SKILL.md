@@ -13,15 +13,15 @@ description: HW-Genie を使用して Power Tournament（Hero / Titan）の状�
    uv run hw-genie multi power-tournament --dry-run
    ```
    - 開催種別（Titan / Hero）・終了時刻・自分の順位/ポイント
-   - グループ上位 N 名（既定 5、`--top N` で最大 50）の名前・UserID・ポイント・最終ログイン
-   - 受取可能な報酬 ID
+   - グループ上位 N 名（既定 5、`--top N` で最大 50）の名前・ポイント・最終ログイン
+   - 受取可能（claimable）な報酬数
 2. **受取実行**（ユーザーが明示的に指示した場合、または定期運用として承認済みの場合）:
    ```bash
    uv run hw-genie power-tournament -a <アカウント名>
    uv run hw-genie multi power-tournament
    ```
    - `currentDayRewards` の `isFarmed == 0` かつ当日ポイントが閾値以上の報酬だけを受け取ります。
-   - 受取済み（`NotAvailable` / `already farmed`）はスキップ表示、未知エラーは失敗計上します。
+   - 受取済み（`NotAvailable` / `already farmed`）は received に含め、未知エラーは failed として未受取に残します。
    - `multi` は報酬受取のみで資源を消費しないため `--yes` は不要です。
 
 ## 挙動と注意
@@ -36,17 +36,17 @@ description: HW-Genie を使用して Power Tournament（Hero / Titan）の状�
 ```
 🚀 [Alice] Power Tournament
   ℹ️  Type: Titan | Ends: 2026-11-29 10:59
-  ℹ️  You: rank #23 | points 12.2K (today 6.0K)
-  #    | Name      | UserID   | Points | Last login       | Seen
-  1    | Bob       | 12345678 | 104.5K | 2026-11-24 19:05 | 2h
+  ℹ️  Alice: rank #23 | points 12.2K (today 6.0K)
+  #    | Name      | Points | Last login       | Seen
+  1    | Bob       | 104.5K | 2026-11-24 19:05 | 2h
   ...
-  ℹ️  Rewards: claimed 2, skipped 1, failed 0
+  ℹ️  Rewards: received 2 / unreceived 1
 ```
 
 ## 完了後の報告
 - 開催種別・自分の順位/ポイント
 - 上位5名のポイントと最終ログイン（特に直近のログインがあるか）
-- 受取した報酬 ID とスキップ/失敗の有無
+- 受取済み／未受取件数（received / unreceived）と失敗件数
 - `multi` の場合はアカウント別ブロックと失敗一覧
 
 ## 注意
