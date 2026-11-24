@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/python/**'
       - '.github/scripts/**'
+      - 'docs/assets/**'
       - '.github/workflows/python-tests.yml'
   pull_request:
     branches: [ main ]

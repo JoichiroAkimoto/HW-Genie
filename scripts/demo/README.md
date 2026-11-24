@@ -4,7 +4,7 @@
 
 ## 生成物
 
-- `docs/assets/hw-genie-demo.gif` — `vhs` で生成された GIF（約 2.4 MB 圧縮後 / 3.8 MB 生、1100×800, 約 33 秒, Dracula テーマ）
+- `docs/assets/hw-genie-demo.gif` — `vhs` で生成された GIF（約 2.4 MB 圧縮後 / 3.8 MB 生、1100×750（テープの `Set Width 1100` / `Set Height 750` と GIF 実測の論理画面が一致）, 約 33 秒, Dracula テーマ）
 - ソース: `scripts/demo/demo.tape`（VHS テープ）+ `scripts/demo/mock_uv.sh`（`uv` シム）
 
 > **Git LFS 見送りの根拠**: GIF は単発・約 2.4 MB（圧縮後）のみ。今後の追加予定はなく、リポジトリ肥大化の牽引にはなりません。LFS 導入の複雑さに見合わないため通常の Git 管理としています（`.gitattributes` で `*.gif binary linguist-generated` を付与）。
@@ -16,7 +16,7 @@
 - `gifsicle` (`brew install gifsicle`) — 生成後の圧縮に使用
 - `sleep` / `mktemp`（coreutils）
 
-フォントは `Menlo, JetBrains Mono, monospace` の順にフォールバックします。Linux で Menlo が無い場合は代替フォントで表の幅が若干変わりますが、崩れません（1100×800 で検証済み、表がギリギリ収まる幅）。
+フォントは `Menlo, JetBrains Mono, monospace` の順にフォールバックします。Linux で Menlo が無い場合は代替フォントで表の幅が若干変わりますが、崩れません（表がギリギリ収まるのは幅の側で、その幅 1100 はテープ指定 && GIF の論理画面実測と一致。ここに書いていた `1100×800` の高さ側は実測 1100×750 の古い記述だったので直した）。
 
 ## 再生成
 
