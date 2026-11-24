@@ -64,8 +64,8 @@ uv sync
 # 2. 実行 (ルートディレクトリから直接可能)
 uv run hw-genie --help
 
-# デバッグログを表示する場合 (--debug はサブコマンドの前に配置)
-uv run hw-genie --debug auth --list
+# デバッグログを表示する場合 (--debug はサブコマンドの後ろに配置)
+uv run hw-genie auth --list --debug
 ```
 
 ### Arena（上位プレイヤーへの指定攻撃）
@@ -269,6 +269,7 @@ bin/hwsa
 - `multi consumable`: 全アカウントの登録済み consumable 一括消費のみ（1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`--dry-run` で予行確認可、`--lib` / `--method` で対象・メソッド上書き）
 - `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
 - `multi gift-up` / `multi gift-reset`: 全アカウントのエレメントギフト一括 MAX 化／低 power ヒーローのギフト drop（コイン全額回収）のみ（未 MAX は power 降順に 1 体ずつレベル 30 まで。`--limit` は両モード対応で既定は gift-up=コインが続く限り／gift-reset=閾値以下の全対象、`--max-power`（既定 100,000）は `gift-reset` のみ対応で `gift-up` に指定すると worker 起動前に exit 2、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、`--dry-run` で予行確認可（アカウント別サマリ表 `Account | ✅ Done | 💰 Coins | 🪙 Left | ⏭️ Blocked | ❌ Failed | ℹ️ Note` に計画体数・計画コインが載り、`Failed` は計数専用・理由は `Note` 列）。書き込みは非対話で全アカウントに及ぶため **`--yes` 必須**（無いと worker を起動せず exit 2）、dry-run は読み取りのみなので `--yes` 不要で逐次実行に強制、実行中の失敗は失敗計上なので exit 1（3 分類の打ち切り契約は **`gift-up` のみ**: コイン枯れ `NotEnough` ＝打ち切り／既知のヒーロー個別業務エラー `NotAvailable` ＝その体だけ失敗で継続／未知エラー名・transport 失敗＝打ち切り＝安全側。`gift-reset` は drop が資源を消費しないため、非認証の失敗（`NotEnough` を含む）はその体を失敗計上して次へ継続し、失敗が残れば exit 1、認証切れだけは即中断））
+- `multi --dry-run`: 対応は `quests` / `consumable` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge` / `asgard-raid` のみ。`daily` / `full` / `asgard-shop` / `toe` では exit 2。
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用
@@ -465,7 +466,7 @@ HW_GENIE_AUTH_PORT=9000 hw-genie auth-server
 
 ### AI エージェント連携
 
-本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。各スキル（`daily-raid`・`hero-raid`・`hero-shopping` 等）の説明は [AGENTS.md](AGENTS.md) を参照してください。
+本リポジトリの `.agents/skills/` を読み込ませることで、Gemini CLI や Claude Code 等の AI エージェントツールから自然言語でレイド等を指示できます。スキルの一覧と開発ルールは [AGENTS.md](AGENTS.md)、実行手順・引数・注意点は各 `.agents/skills/*/SKILL.md` を参照してください。
 
 ## 開発環境
 
@@ -485,7 +486,7 @@ git pull
 make sync   # = uv sync --locked（依存のダウンロードはこの時だけ）
 ```
 
-`hwda` / `hwsa` は `uv run --no-sync` で起動するため、未同期のまま実行すると実行時エラーになります（起動時に未同期を検出して警告を表示します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
+`hwda` / `hwsa` は `uv run --no-sync` で起動するため、未同期のまま実行すると実行時エラーになります（起動時に未同期を検出して警告を表示します）。実行依存は `src/python/pyproject.toml` の `dependencies`、開発依存はルート `pyproject.toml` の `dependency-groups`（`dev`）に定義します。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
 
 ## サポート
 

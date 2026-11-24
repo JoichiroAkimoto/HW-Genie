@@ -1,122 +1,82 @@
 # AGENTS.md 🧞‍♂️
 
-このファイルは、AI エージェントが **HW-Genie** リポジトリ内のツールやスキルを効果的に使用するためのガイドです。詳細仕様は各リンク先を参照してください。
+Hero Wars API 自動化ツールキット。**このファイルは入口とハードルールだけ**を持ち、機能仕様は README・各 `SKILL.md`・`docs/api` に置きます。重複を増やさず、変更時はリンク先を直してください。
 
-## リポジトリ概要
-Hero Wars の API 自動化ツールキットです。Python CLI (`hw-genie`) を通じてレイドやショッピング等の操作を行います。
+## まず見る場所
 
-## エージェント向け操作ガイド
+| 目的 | 参照 |
+|---|---|
+| 機能概要・全コマンド・Docker / 環境変数 | [README.md](README.md) |
+| RPC 仕様・レスポンス例 | [docs/api/INDEX.md](docs/api/INDEX.md) |
+| DB スキーマ | [docs/db/schema.md](docs/db/schema.md) |
+| リリース手順 | [RELEASE_PROCESS.md](RELEASE_PROCESS.md) |
+| ブランド資産の運用 | [src/userscripts/README.md](src/userscripts/README.md) |
+| 設計メモ・実装計画（新規は .gitignore 対象） | `docs/superpowers/specs/`, `docs/superpowers/plans/` |
 
-### 1. スキルの活用
-`.agents/skills/` フォルダ内には、エージェントが各機能を実行するための定義（`SKILL.md`）が格納されています。各スキルの実行例・詳細は該当ファイルを参照してください。
+## クイックスタート
 
-*   **daily-raid**: レイド＋ショッピングの連続実行（アイテムのスタミナ限界収集対応）。
-*   **hero-raid**: 指定ミッションのヒーローレイド。
-*   **hero-shopping**: ヒーローソウルとソウルショップ・タウンショップ（slot 2,4,5,6）の一括購入。
-*   **asgard-shop**: Asgard（ギルドレイド）の Realm Traveler ショップ（Osh / Maestro 週）で Valor Emblem を使ったバフとゴールドバフの自動購入。
-*   **asgard-raid**: Asgard（ギルドレイド）のボス戦を自動化。ボス（Osh / Maestro）ごとに最大5チームを専用テーブル `asgard_raid_teams` に登録し、有効なチームを slot 順に `clanRaid_startBossBattle` → 空 progress の `clanRaid_endBossBattle`（サーバー側オートバトル、`afterInvalid: true`）で実行。`team import-log` で `clanRaid_logBoss` の戦闘履歴から heroes / pet / favor を復元可能。最後に週間ランキング報酬（`clanRaid_farmRatingReward` の `standingClan` / `standingUser`）を受け取り、受取済み等はスキップ。チーム別 damage / 合計 damage / 残り bossAttempts / 実行後スコアを表示し、スコアはログにも残る。`--disabled` でチーム単位の実行可否、`--memo` でメモ、`--dry-run` で計画表示のみ（報酬も受け取らない）。
-*   **seers-game**: Seer's Game（開始→カード4択×4→終了）を Seer's Coin 枯渇まで自動周回（`--dry-run` / `--pick` / `--max-games`、`multi seers-game` 対応）。
-*   **power-tournament**: Power Tournament（Hero / Titan を `getState` から自動判定）の状態とグループ上位5名（ポイント・最終ログイン）をアカウントごとに表示し、受取可能な報酬を `powerTournament_dailyFarm` で受け取ります。`--dry-run` / `--top N`、`multi power-tournament` 対応。詳細は `.agents/skills/power-tournament/SKILL.md`。
-*   **arena**: Arena の状態・トップ50ランキング確認、名前付きチームプリセット管理、自分より上位の指定プレイヤーへの攻撃（`--rank` / `--user-id`、`--dry-run`、`--candidate-retries`、`--team` / `--heroes` / `--pet` / `--banner` / `--favor`）。上位のみ対象で、通常攻撃は最新の `arenaFindEnemies` 候補にいる相手だけが受理される（13位という固定上限はない）。手動検証用に `arena find-enemies`（候補を1回取得して保存）、`arena snapshot`（保存候補と現在順位の比較）、`arena attack --from-snapshot`（候補を更新せず攻撃、`--force` は `--from-snapshot` 併用時のみ range false を許可）も利用可能。`multi arena` 非対応。詳細は `.agents/skills/arena/SKILL.md`。
-*   **consumable**: 所持品（inventory）の在庫確認と、登録済み consumable の一括全消費（`--dry-run` で予行確認。1000 上限アイテムは分割消費、マトリョーシカ系は残りが無くなるまでラウンドを自動繰り返し）。
-*   **guild-chat**: チャット（`chatGetAll`）の履歴取得・表形式と要約表示（`--type` / `--count` / `--last-id` / `--raw` / `--json`）。個人チャット（PM）は `--type personal` で会話一覧（`chatGetTalks`、最新順・相手名解決付き）、`--type personal --user-id <相手ID>` で個別スレッドを取得（スレッドは未読分のみ返ることがある）。
-*   **challenge**: 個人チャットのフレンドリーチャレンジ送信・バトル（`chatSendChallenge` / `chatAcceptChallenge`）。送信は対象（防御側）1 体、バトルは保存チーム全員。`messageId` は personal スレッドの `challenge` メッセージ `id` から自動特定し、`replay.data.challengeId` でバトル済みを判定。`send` / `accept`（`--sent` で送信者側バトル）/ `list`（messageId 確認）/ `config`（対象 UserID・type を `account_configs.challenge_defaults` に保存）/ `battle`（`--user-id` = 送信→同一アカウントでバトル、`--accept-account` = 受信側アカウントでバトル）に対応。`multi challenge` は各アカウントの既定値で一括実行（`--yes` 必須、`--dry-run` 可）。詳細は `.agents/skills/challenge/SKILL.md`。
-*   **hero-wars-auth**: セッション管理・ユーザー情報取得（curl コマンドで認証更新）。
-*   **titan-arena**: Titan Arena (ToE) の status / attack / run（`--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250。新 Tier は Raid を最初に実行し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバック。負けは既定で毎回バンクし（attackScore はバトルスコアの max 保持なので劣る負けは無害）、勝ちのないパスでもバンクでスコアが伸びている間はパスを継続する。`--no-end-on-loss` で「ベスト更新時のみ」バンクの高速掃引、`--no-bank-best-loss` は改善バンクを無効化（+1 の best-loss fallback は廃止）。userscript ブリッジはゲーム更新による Haxe ordinal ずれを自動フォールバックで吸収し、それでも戦闘計算が連続 3 回ダミー（空 progress）なら原因（`ordinal drift` 等）を表示して即停止する。詳細は `docs/api/GUILD_API.md#titan-arena-toe`）。
-*   **item-raid**: 特定アイテムの繰り返し収集。
-*   **quest-status**: クエスト状態の取得・表示と自動完了（`--execute`。デイリー／ギルドクエストに加え、`guild_glyph_defaults.enabled=true` ならギルド活動のグリフ強化 `heroEnchantRune` も実行）。
-*   **element-gift**: エレメントギフトの一括操作（`gift status` / `gift up` / `gift reset`）。up は未 MAX ヒーローを power 降順に 1 体ずつ MAX（レベル 30、65,150 コイン）まで上げ、コインが続くところまで実行。エラーは 3 分岐（コイン枯れ `NotEnough` ＝打ち切り／既知のヒーロー個別業務エラー `NotAvailable` ＝その体だけ失敗で継続／未知・transport ＝打ち切り）。reset は実行時点の power（ギフト込み）が既定 10 万以下のヒーローを drop してコインを全額回収。状態は DB に持たず `heroGetAll` を毎回読む。`multi gift-up` / `multi gift-reset` 対応（`--yes` 必須、`--dry-run` は読み取りのみ）。詳細は `.agents/skills/element-gift/SKILL.md`。
-*   **db-inspect**: データベース（Turso クラウド / ローカルレプリカ）の確認。
+すべてリポジトリルートで `uv run hw-genie ...`（`uv run` が依存を解決）。
 
-### 2. コマンドラインツールの使用法
-すべての操作はルートディレクトリから `uv run hw-genie` を通じて行われます。実行前にルートディレクトリにいることを確認してください（`uv run` が依存関係の解決と仮想環境構築を自動で行います）。
+```bash
+uv run hw-genie daily
+uv run hw-genie multi daily
+uv run hw-genie power-tournament --dry-run -a <account>
+uv run hw-genie consumable run --dry-run -a <account>
+uv run hw-genie auth --list
+uv run hw-genie log ls
+uv run hw-genie db-check
+```
 
-*   **ミッションレイド**: `uv run hw-genie raid hero <id1> <id2> --times 3`
-*   **アイテムレイド**: `uv run hw-genie raid item --curl '...' --iterations N`（`--times` は `--iterations` のエイリアス。反復回数 = 1 リクエストあたり `times:10` × N。デフォルトはスタミナ限界まで）
-*   **ショップ購入**: `uv run hw-genie shop`
-*   **Asgard ショップ購入**: `uv run hw-genie asgard-shop`（Osh / Maestro 週を自動判定。`--dry-run` で計画表示のみ、`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off（デフォルトは週依存: Osh 週 off / Maestro 週 on）。詳細は `.agents/skills/asgard-shop/SKILL.md`）
-*   **Asgard ボス戦**: `uv run hw-genie asgard-raid team set <1-5> --boss osh|maestro --heroes <5個> [--pet N] [--favor HERO=PATRON ...] [--disabled] [--memo TEXT]` / `asgard-raid team list [--boss ...]` / `asgard-raid team remove <1-5> --boss ...` / `asgard-raid team import-log --boss osh|maestro [--user-id ID] [--overwrite] [--dry-run] [--latest]` / `asgard-raid run [--boss osh|maestro] [--dry-run]` / `multi asgard-raid [--yes] [--dry-run]`。チームは専用テーブル `asgard_raid_teams` に保存（`enabled` デフォルト true）。`import-log` は `clanRaid_logBoss` の自分の戦闘履歴（攻撃順）から heroes / pet / favor を復元し、既存 slot はデフォルトでスキップ（`--overwrite` で置換、enabled/memo は保持）。履歴が6件以上なら `--latest` で直近5件を slot 1..5 に割り当てる（未指定はエラー）。`run` は週を自動判定し、有効チームを slot 順に start → 空 progress の end（サーバー側オートバトル）で実行して damage と残り bossAttempts を表示。最後に週次ランキング報酬（`clanRaid_farmRatingReward`）を受け取り、受取済み等はスキップ。実行後スコアはサマリーとログに残る。`multi` は攻撃回数を消費するため `--yes` 必須。詳細は `.agents/skills/asgard-raid/SKILL.md`
-*   **Seer's Game**: `uv run hw-genie seers-game`（開始→カード4択×4→終了を Seer's Coin 枯渇まで自動周回。`--dry-run` で状態・残高表示のみ、`--pick N` で毎ラウンド引くカード指定（デフォルト 2、live の `event.size` に対して検証）、`--max-games N` で打ち切り。`multi seers-game` で全アカウント一括（`--dry-run` 可）。詳細は `.agents/skills/seers-game/SKILL.md`）
-*   **Power Tournament**: `uv run hw-genie power-tournament --dry-run -a <account>` / `power-tournament -a <account>` / `multi power-tournament [--dry-run]`（Hero / Titan を自動判定し、自分の順位・ポイントとグループ上位5名のポイント・最終ログインを表示。受取可能な報酬だけを `powerTournament_dailyFarm` で受取。`--top N` で上位件数を変更、`--dry-run` は読み取りのみ。詳細は `.agents/skills/power-tournament/SKILL.md` / `docs/api/POWER_TOURNAMENT_API.md`）
-*   **Arena**: `uv run hw-genie arena status -a <account>` / `arena top -a <account> [--limit N] [--raw]` / `arena find-enemies -a <account> [--raw]` / `arena snapshot -a <account>` / `arena team set <name> -a <account> (--from-saved | --heroes 5個) [--pet] [--banner] [--favor HERO=PATRON]` / `arena team list|remove` / `arena attack -a <account> (--rank N | --user-id ID) [--team NAME] [--heroes 5個] [--pet] [--banner] [--favor ...] [--dry-run] [--candidate-retries N] [--from-snapshot] [--force]`（**自分より上位のみ**攻撃。実攻撃は最新の `arenaFindEnemies` 候補にいる相手だけが受理され、候補外は `NotAvailable`。`--candidate-retries`（既定10）で候補リストを更新しながら対象の登場を待てる。`--from-snapshot` は保存済み候補に `arenaFindEnemies` を呼ばず攻撃し、`--force` は `--from-snapshot` 併用時のみ有効で range false は `--force` がない限り停止。`--dry-run` も候補確認と `arenaCheckTargetRange` まで実行し `arenaAttack` は送らない。`topGet` はトップ50のみ。詳細は `.agents/skills/arena/SKILL.md` / `docs/api/ARENA_API.md`）
-*   **デイリールーチン**: `uv run hw-genie daily`（`--iterations N` でアイテムレイドの反復回数を指定可能 = 1 リクエストあたり `times:10` × N。ヒーローレイドは固定 3 回、デフォルトはスタミナ限界まで）
-*   **クエスト状態・自動完了**: `uv run hw-genie quests`（実行可否は `quest_defaults` / `quest_guild_defaults` / `guild_glyph_defaults` の `enabled` フラグでアカウントごとに制御。`--set-default glyph ...` でギルド活動のグリフ強化（`heroEnchantRune`）を設定。詳細は `.agents/skills/quest-status/SKILL.md`）
-*   **在庫確認**: `uv run hw-genie inventory`（consumable 中心の所持品一覧。`--all` で全カテゴリ、`--min N` でフィルタ、`--raw` で生 JSON）
-*   **consumable 一括消費**: `uv run hw-genie consumable run`（レジストリ `CONSUMABLE_USE_TARGETS` 登録済みアイテムを在庫全量消費。1000 上限アイテムは分割、マトリョーシカ系は残りが無くなるまで自動繰り返し。`<libId>` 位置引数で指定、未登録アイテムは `--method` でメソッド指定、`--dry-run` で予行。詳細は `.agents/skills/consumable/SKILL.md`）
-*   **チャット**: `uv run hw-genie chat`（`chatGetAll` の履歴を表形式と要約で表示。`--type` / `--count` / `--last-id` / `--raw` / `--json`。個人チャットは `--type personal` で会話一覧（最新順・相手名解決付き）、`--type personal --user-id <相手ID>` で個別スレッド。詳細は `.agents/skills/guild-chat/SKILL.md`）
-*   **チャレンジ（フレンドリーバトル）**: `uv run hw-genie challenge config -a <account> [--user-id <相手ID>] [--type titan|hero] [--clear]`（対象IDを `challenge_defaults` に保存）/ `challenge send [--user-id <相手ID>] [--type titan|hero] [--heroes ...] [--dry-run]` / `challenge list [--user-id <相手ID>] [--count N] [--json]` / `challenge accept [--user-id <相手ID>] [--message-id N] [--sent] [--heroes ...] [--dry-run]` / `challenge battle [--user-id <相手ID> | --accept-account <受信側>] [--type titan|hero] [--wait 秒] [--dry-run]` / `multi challenge [--user-id <相手ID>] [--type titan|hero] [--yes] [--dry-run]`。送信は対象（防御側）1 体、バトルは保存チーム全員。`--user-id` 省略時は `challenge_defaults.user_id` を使用。`messageId` は personal スレッドの `challenge` メッセージ `id` から自動特定し、`replay.data.challengeId` が一致するものはバトル済みとして除外。送信者も自分のチャレンジをバトルできる（`--sent` / `battle --user-id`）。詳細は `.agents/skills/challenge/SKILL.md` / `docs/api/CHAT_API.md`
-*   **Titan Arena**: `uv run hw-genie toe status -a <account>` / `toe attack -a <account> [--rival ID] [--titans 5個] [--dry-run]`（省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決、閾値 250）/ `toe run -a <account> [--titans 5個] [--threshold 250]`（詳細は `docs/api/GUILD_API.md#titan-arena-toe`）
-*   **エレメントギフト一括**: `uv run hw-genie gift status -a <account>`（現況：コイン残高・MAX 体数・up 可能体数・reset 対象、`--raw` で JSON）/ `gift up -a <account> [--limit N] [--dry-run] [--yes]`（未 MAX を power 降順に 1 体ずつ MAX=レベル30 まで。0→30 は 65,150 コイン。コインが続くところまで）/ `gift reset -a <account> [--max-power 100000] [--limit N] [--dry-run] [--yes]`（実行時点の power が閾値以下のヒーローのギフトを drop し全額回収）。状態は DB に持たず毎回 `heroGetAll` を読む。詳細は `.agents/skills/element-gift/SKILL.md`
-*   **アカウント指定**: アカウントは実名（プレイヤー名）で保存されます。`-a`/`--account` 未指定時は、登録が 1 件なら自動選択、複数件なら指定を要求します。`multi` は対象未指定時は全アカウント実行です。
-*   **全アカウント一括**: `uv run hw-genie multi daily`（`full` でレイド＋ショップ＋デイリー、`quests` でクエスト自動完了のみ、`asgard-shop` で Asgard ショップ購入のみ（`--gold` / `--no-gold` でゴールドバフ購入を常時 on / off、デフォルトは週依存: Osh 週 off / Maestro 週 on）、`consumable` で consumable 一括消費のみ、`toe` で Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応）、`seers-game` で Seer's Game 自動周回のみ（`--pick` / `--max-games` 対応）、`power-tournament` で Power Tournament の状態・グループ上位・報酬受取のみ（`--top` 対応）、`gift-up` でエレメントギフト一括 MAX 化のみ、`gift-reset` で低 power ヒーローのギフト drop（コイン回収）のみ（`--limit` は両モード対応で既定は gift-up=コインが続く限り／gift-reset=閾値以下の全対象、`--max-power` は `gift-reset` のみ対応で `gift-up` に指定すると exit 2、非対話実行なので **`--yes` 必須**、無ければ exit 2）、`--dry-run` でプラン表示のみ（quests / consumable / seers-game / power-tournament / gift-up / gift-reset / challenge / asgard-raid のみ。daily/full/asgard-shop/toe ではエラー終了する）。`--parallel N` で同時実行数、`account1 account2 ...` で対象限定（dry-run は逐次実行に強制）、`--iterations N` で `daily`/`full` モードのアイテムレイド反復回数を指定。クエスト／consumable／gift（`gift-up` / `gift-reset`）で失敗アカウントがあると exit 1（gift は**実行中の失敗を失敗計上**：3 分類の打ち切り契約は `gift-up` のみで、コイン枯れ（`NotEnough`）＝途中打ち切り／既知のヒーロー個別業務エラー（`NotAvailable`）＝個別体失敗で継続／未知エラー名・transport 失敗＝打ち切り。`gift-reset` は drop が資源を消費しないため非認証の失敗（`NotEnough` を含む）でもその体を失敗計上して続行し、失敗が残れば exit 1（認証切れのみ即中断））。計画時点で対象 0 体／コイン不足のまま何もしなかった場合は exit 0）。詳細は README.md の「Docker での実行」セクションを参照。
-*   **登録アカウント一覧**: `uv run hw-genie auth --list`（`--fresh` で最新ステータス取得）
-*   **認証状態確認**: `uv run hw-genie auth --info`（JSON 出力の `x-auth-*` ヘッダーは伏字 `***` 表示）
-*   **認証サーバー起動**: `uv run hw-genie auth-server`（`--once` で 1 回限り）
-*   **同期**: `uv run hw-genie sync`（ローカル Turso レプリカをクラウドと明示的に同期）
-*   **実行ログ確認**: `uv run hw-genie log ls` / `log show <id>`（`multi` 実行の結果サマリーと出力全文が DB の `run_logs` に保存される。Turso 同期経由で別ホストからも閲覧可。保持日数は `HW_LOG_KEEP_DAYS`、デフォルト 7 日）
-*   **DB 整合性チェック**: `uv run hw-genie db-check`（壊れた config JSON を検出・一覧表示。壊れがあれば exit 1）
-*   **デバッグ出力**: 各コマンドに `--debug` を付与（例: `uv run hw-genie --debug daily`）
+- アカウントは実名（プレイヤー名）。`-a` 省略時は登録1件なら自動、複数なら指定が必要。`multi` は未指定で全アカウント。
+- 破壊的・資源消費操作はまず `--dry-run`。`--debug` はサブコマンドの後ろに置く（例: `hw-genie daily --debug`）。
+- `multi --dry-run` の対応モードは README の multi 節を参照（`daily` / `full` / `asgard-shop` / `toe` は非対応）。
+- コマンドの引数・挙動は README と各スキルに書く（このファイルには重複して書かない）。
 
-> **環境変数・表示設定**: `HWGENIE_TZ` / `FORCE_COLOR` / `NO_COLOR` / `HW_LOG_KEEP_DAYS` / `HWGENIE_HOST` / Turso 関連（`TURSO_WRITE_REMOTE` / `TURSO_SYNC_INTERVAL` 等）の詳細は README.md の環境変数表・「libSQL (Turso) の利用」セクションを参照してください。
+## スキル（タスク別ルーティング）
 
-### 3. API 仕様とメソッドの理解
-Hero Wars の RPC API（メソッド一覧やデータ構造）の詳細は、以下のドキュメントを参照してください。
+依頼が該当したら、実行前に `.agents/skills/<name>/SKILL.md` を読む。実行例・引数・注意点はすべてそこにある。
 
-👉 **[docs/api/INDEX.md](docs/api/INDEX.md)**
+| スキル | 用途 |
+|---|---|
+| [daily-raid](.agents/skills/daily-raid/SKILL.md) | レイド＋ショッピングの日次ルーチン |
+| [hero-raid](.agents/skills/hero-raid/SKILL.md) | 指定ミッションのヒーローレイド |
+| [item-raid](.agents/skills/item-raid/SKILL.md) | 特定アイテムのスタミナ限界まで収集 |
+| [hero-shopping](.agents/skills/hero-shopping/SKILL.md) | ヒーローソウル・ソウルショップ・タウンショップ購入 |
+| [asgard-shop](.agents/skills/asgard-shop/SKILL.md) | Asgard ショップのバフ購入（Osh / Maestro 週） |
+| [asgard-raid](.agents/skills/asgard-raid/SKILL.md) | Asgard ボス戦チーム実行・週次報酬 |
+| [quest-status](.agents/skills/quest-status/SKILL.md) | クエスト状態・自動完了 |
+| [element-gift](.agents/skills/element-gift/SKILL.md) | エレメントギフトの MAX 化／リセット |
+| [arena](.agents/skills/arena/SKILL.md) | Arena 状態・ランキング・指定攻撃 |
+| [challenge](.agents/skills/challenge/SKILL.md) | フレンドリーチャレンジ送信・バトル |
+| [guild-chat](.agents/skills/guild-chat/SKILL.md) | ギルド／個人チャット取得 |
+| [seers-game](.agents/skills/seers-game/SKILL.md) | Seer's Game 周回 |
+| [power-tournament](.agents/skills/power-tournament/SKILL.md) | Power Tournament 表示・報酬受取 |
+| [consumable](.agents/skills/consumable/SKILL.md) | 在庫確認・一括消費 |
+| [hero-wars-auth](.agents/skills/hero-wars-auth/SKILL.md) | セッション管理・認証更新 |
+| [db-inspect](.agents/skills/db-inspect/SKILL.md) | DB の確認・デバッグ |
 
-エージェントが新しいレイド対象を提案したり、特定の API レスポンスを解析したりする際に、このドキュメントが役立ちます。
+スキル外の主要 API: Titan Arena (ToE) は [docs/api/GUILD_API.md#titan-arena-toe](docs/api/GUILD_API.md#titan-arena-toe)。
 
-### 4. 重要事項（エージェント向け）
-*   **DB 構成**: データは Turso クラウド (`hw-genie-db`) とローカルレプリカ (`data/hw_genie.db`) で同期されています。クラウドが単一ソースオブトゥルースです。確認方法は `.agents/skills/db-inspect/SKILL.md`、スキーマは **[docs/db/schema.md](docs/db/schema.md)** を参照。
-    *   **worktree / 新規クローンの準備**: `.env` は `.gitignore` 済みのため checkout に含まれません。worktree で DB 操作する前に main worktree の `.env` へのシンボリックリンクを貼ってください（例: `ln -s /path/to/main-worktree/.env .env`）。解除は `unlink .env`（`rm` は main の `.env` を誤削除する恐れがあるため使用しないこと）。
-*   **認証エラー**: 認証エラーが発生した場合は、ユーザーに新しい `curl` コマンドの提供を求めるか、`auth-server` を起動して Userscript 経由での同期を促してください。
-*   **リクエスト署名**: ゲーム API は `X-Request-Id` / `X-Auth-Token` / `X-Auth-Session-Id` / リクエストボディ（compact JSON）/ `X-Env*` から算出した `X-Auth-Signature`（MD5）を検証します。送信は `src/python/hw_genie/core/signing.py` で毎回署名してから行ってください（署名式は同ファイル参照。キャプチャした署名値の再利用や `json=` での送信は `Invalid signature` になります）。
-*   **レートリミット**: `HWClient` クラスの `sleep()` メソッドによりリクエスト間に待機時間が設けられていますが、大量の並列実行は避けてください。
-*   **タイプ安全なレスポンス**: `src/python/hw_genie/core/client.py` で定義されている `ResponseStatus` や `Emojis` を使用して、実行結果を分かりやすく報告するようにしてください。
-*   **ブランド資産**: Source of Truth は 2 つ —— `docs/assets/hw-genie-icon.grid.txt`（64x64 ドットマップ）と `docs/assets/hw-genie-wordmark.png`（バナーの文字）。配布 PNG は必ず `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` の drift ゲートが落ちる。比較は画素単位）。ゲートは `Python Checks` が検証する（PR はパスフィルタ無しで必ず走る。main への push は `docs/assets/**` を含む変更で走る）。詳細（資産一覧・favicon・ブートストラップ・検品 1〜5）は `src/userscripts/README.md` を参照。
+## 不変条件（必ず守る）
 
-## 5. 複数アカウント・複数タスクの実行戦略
-大量の処理（例：複数アカウントでのレイド＋ショッピング）を行う際は、タイムアウトを避けるため以下の戦略を徹底してください。
+- **署名**: 送信は `HWClient.call` 経由。署名は `src/python/hw_genie/core/signing.py` が送信バイト列から毎回計算する。キャプチャした `X-Auth-Signature` の再利用や `json=` での送信は `Invalid signature` になる（詳細は同ファイルの docstring）。
+- **認証切れ**: ユーザーに新しい `curl` の提供を依頼するか、`auth-server` を案内する（[hero-wars-auth](.agents/skills/hero-wars-auth/SKILL.md)）。
+- **レートリミット**: `HWClient.sleep()` に従う。大量の並列実行を避ける。
+- **結果表示**: `core/client.py` の `ResponseStatus` / `Emojis` を使う。
+- **DB**: クラウド Turso が正、`data/hw_genie.db` はローカルレプリカ。`.env` は未追跡。worktree では main worktree の `.env` にシンボリックリンクを張る（`ln -s /path/to/main/.env .env`。解除は `unlink .env`、`rm` は main の `.env` を誤削除し得るので禁止）。確認は [db-inspect](.agents/skills/db-inspect/SKILL.md)、スキーマは [docs/db/schema.md](docs/db/schema.md)。
+- **ブランド資産**: マークは `docs/assets/hw-genie-icon.grid.txt`、文字は `docs/assets/hw-genie-wordmark.png` が正。配布 PNG は `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` が drift を検出）。詳細は [src/userscripts/README.md](src/userscripts/README.md)。
+- **実名禁止**: コード・コメント・ドキュメント・テスト・コミットメッセージに実在のプレイヤー名／アカウント名を書かない。例は `Alice` / `Bob` / `Carol` / `Dave`。
 
-*   **単一アカウントの逐次実行**: 一つのアカウントに対して複数のタスクを順番に行う場合は、サブエージェント (`Task`) を使用せず、メインセッションで直接 `bash` ツールを実行してください。これにより、不要なコンテキスト転送のオーバーヘッドを削減できます。
-*   **アカウント単位の並列化**: 複数のアカウントで同様の処理を行う場合は、`Task` ツールを使用してアカウントごとにサブエージェントを起動し、並列に実行してください。これにより、単一プロセスのタイムアウトを回避し、全体の処理時間を短縮できます。
-*   **タイムアウトの制御**: 長時間の実行が予想されるコマンド（大量のミッションレイドなど）を実行する場合、`bash` ツールの `timeout` パラメータ（ミリ秒指定）を適切に設定して実行してください（例: 600秒なら `timeout: 600000`）。
-*   **タスク単位の逐次実行**: 同一アカウント内での異なるタスク（例：レイド完了後にショッピングを行う）は、一つの `bash` コマンドに `&&` で繋いで詰め込むのではなく、個別のツール呼び出しとして逐次実行してください。
+## 複数アカウント・複数タスク
 
-## 6. エージェント向け開発ルール
+- 1アカウント内の複数タスクはメインセッションで逐次実行する（サブエージェント不要）。
+- 複数アカウントはアカウント単位でサブエージェントを並列起動する。
+- 長時間コマンドは Bash の `timeout` を明示する（例: 600 秒 = `600000`）。
+- 同一アカウントの逐次タスクを 1 つの `bash` に `&&` で詰めない（個別呼び出しにする）。
 
-本リポジトリのスクリプトやスキルを開発・修正する際は、以下のルールを **徹底** してください。
+## 開発ルール
 
-### テストとリンターの実行（必須）
-`src/python/hw_genie` 以下のコードを変更した場合は、必ず以下のコマンドを実行し、エラーがないことを確認してください。
-
-*   **リンター**: `uv run --locked ruff check . --fix`
-*   **テスト**: `uv run --locked pytest`
-
-新機能の追加やバグ修正の際は、`src/python/tests` に適切なテストケースを追加・更新し、既存のテストを壊していないことを確認してください。
-
-### 依存関係の管理（重要）
-本リポジトリでは、依存関係の唯一の正解（Source of Truth）として `pyproject.toml` を使用しています。新しいライブラリを追加する際は、用途に応じて適切なファイルとセクションを更新してください。
-
-*   **`src/python/pyproject.toml` (`dependencies`)**: ツールの実行に必要なライブラリ。
-*   **ルートディレクトリの `pyproject.toml` (`dependency-groups`)**: `pytest` や `ruff` など、開発・テストに必要なツール（`dev` グループ）。
-
-**依存更新の運用**: 依存関係の更新 PR は Dependabot（月次、`python-dependencies` グループ）が作成します。patch アップデート（`uv` エコシステムのみ）は `dependabot-auto-merge` workflow が auto-merge を有効化し、CI（Python Checks の `test`）成功後に自動マージされます（リポジトリ設定で **Allow auto-merge** と **main の保護（Rulesets の `Main Protection` 等）／必須チェック `test`** が必要。本リポジトリは設定済み。minor / major と `github-actions` の更新は手動マージ）。マージ後に `git pull` したら、`uv sync --locked`（または `make sync`）を一度実行してください。`bin/hwda` / `bin/hwsa` は `uv run --no-sync` 起動のため、未同期のまま実行すると実行時エラーになります（スクリプトが起動時に未同期を検出し警告します）。新規依存の追加は `uv add --project src/python <pkg>` で行ってください。
-
-> **⚠️ リポジトリ設定と自動マージの注意**: 設定は **先に** main の保護（Rulesets の `Main Protection` 等）で必須チェック `test` を強制し、**その後に** Allow auto-merge を有効にしてください。Allow auto-merge だけが有効で必須チェックが無い場合は CI を待たずに **即時マージ** される危険があるため、必ずこの順序を守ってください。本リポジトリは Ruleset と Allow auto-merge の両方が **設定済み** です。
->
-> 自動マージ対象は `uv` エコシステムの patch のみで、`github-actions` の更新は手動マージです（GITHUB_TOKEN には workflow ファイル変更のマージ権限がなく、`test` も workflow 構文を検証しないため）。workflow 導入前に作成済みの open PR は自動対象外なので、`gh workflow run '.github/workflows/dependabot-auto-merge.yml' -f pr_number=<番号>` で処理するか、手動で `gh pr merge --auto --squash <PR>` を実行してください。`workflow_dispatch` は patch 判定をスキップする手動オーバーライドですが、uv PR のみ受け付けます。初回自動マージ後は main への push ワークフロー（Docker ビルド等）が起動することも確認してください（GITHUB_TOKEN 経由のマージで push ワークフローが起動しない可能性の運用確認）。
-
-> **AI エージェントへのヒント**: `uv sync` を実行するだけで、開発ツールを含む全ての依存関係がインストールされます。
-
-### ドキュメントの同期更新
-Python スクリプトの仕様（引数、動作、出力等）を変更した場合は、必要に応じて以下のドキュメントをセットで更新してください。
-
-1.  **.agents/skills/*/SKILL.md**: 各スキルの実行例や説明。
-2.  **AGENTS.md**: このファイル自体（スキル一覧や操作ガイド）。
-3.  **README.md**: プロジェクト全体の機能概要。
-
-エージェントは「コードを直して終わり」ではなく、常にこれらドキュメントとの整合性を保つ責任があります。
-
-### 実在アカウント名の非混入（重要）
-コード・コメント・ドキュメント・スキル・テスト・コミットメッセージのいずれにも、実在のプレイヤー名／アカウント名（登録アカウントの実名など）を書かないでください。実行例やテストデータには `Alice` / `Bob` / `Carol` / `Dave` などの一般的なプレースホルダ名を使ってください。既存の混入を見つけた場合は同PRで置換してください。
+- **必須検証**: `uv run --locked ruff check . --fix` と `uv run --locked pytest`。新機能・修正には `src/python/tests` のテスト追加/更新も行う。
+- **依存関係**: Source of Truth は実行依存が `src/python/pyproject.toml` の `dependencies`、開発依存がルート `pyproject.toml` の `dependency-groups`（`dev`）。追加は `uv add --project src/python <pkg>`。更新運用（Dependabot / auto-merge / `uv sync --locked`）は README の「開発環境 > 依存関係の更新」を参照。
+- **ドキュメント同期**: 仕様変更時は `.agents/skills/*/SKILL.md`、`README.md`、必要なら `AGENTS.md` / `docs/api` を同時更新する。DB 変更なら `docs/db/schema.md`、リリースなら `RELEASE_PROCESS.md`。
+- **実名禁止**: 上記の不変条件を参照。既存の混入を見つけたら同じ PR で置換する。
