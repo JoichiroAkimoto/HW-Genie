@@ -42,14 +42,28 @@ COMMENT_POST_ATTEMPTS = 3
 COMMENT_POST_DELAYS = (2, 4)
 
 # OpenRouter フォールバック用（環境変数で上書き可能）
-# 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
-# `openrouter/free` のみを使用。環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
+# 個別 :free モデルを先に試し、最後に動的ルーター `openrouter/free` を安全網として残す。
+# :free モデルは頻繁に無効化されるため単独依存は避け、ルーターが全滅を拾う構成にする。
+# 環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能（gemma は常に除外）。
+# workflow の repo variable `vars.OPENROUTER_FALLBACK_MODELS` が設定されていれば上記既定より優先される。
 OPENROUTER_API_URL = os.environ.get("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
 OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60") or 60)
 OPENROUTER_FALLBACK_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-lightning:free",
     "openrouter/free",
 ]
-OPENROUTER_DEFAULT_MAX_TOKENS = 8000
+# reasoning トークンは completion 予算にカウントされるため、本文が途中終了しないよう倍増。
+OPENROUTER_DEFAULT_MAX_TOKENS = 16000
+
+# ``reasoning.effort`` 非対応の明記モデル。effort の代わりに enabled + exclude を送る。
+# super-vl は既定 chain には無いが、env 上書き・保険用として保持する。
+OPENROUTER_NO_EFFORT_MODELS = frozenset({
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+})
+# effort 経路ではないが内部推論は有効なモデル用の専用表示値（値そのものが表示文字列）。
+OPENROUTER_REASONING_ENABLED_DISPLAY = "有効（effort 非対応モデル・既定）"
 
 
 class _DetailsExtractor(HTMLParser):
@@ -209,6 +223,11 @@ def build_system_instruction() -> str:
 2. 依然として残っている問題や、新しい変更によって導入された問題がないかを確認してください。
 3. 「軽微な指摘（スタイルの好みなど）」と「クリティカルな問題（バグ、セキュリティリスク、重大な設計ミス）」を明確に区別してください。
 4. 重大な問題がすべて解消されており、残りが軽微な指摘のみである場合、冒頭に「【✅ APPROVE】」と明記してください。そうでなければ、問題が解消されるまで「【🔴 CHANGES_REQUESTED】」として扱い、厳しい指摘を続けてください。
+
+【出力契約（厳守）】
+- 思考過程・調査メモ・内省モノローグ（"Let me..." のような内省トーン）は一切出力しないでください。思考（reasoning）は API 側で内部利用するものであり、レビュー本文に書き写してはいけません。
+- 指摘は重大度の高い順に最大 8 件までとし、各指摘は見出し 1 行＋説明 2 文以内で簡潔に書いてください。
+- 前置き・謝罪・指定フォーマット外の文章は不要です。出力は下記フォーマットのセクションのみにしてください。
 
 フォーマット（必ず日本語で出力すること）：
 - **判定**: 【✅ APPROVE】または【🔴 CHANGES_REQUESTED】
@@ -567,10 +586,15 @@ def _resolve_effort_display(
       表示。--effort 帰属は「``--effort`` が env / models.json より優先され、
       かつ ``_openrouter_reasoning`` が返した effort が実際に使われた」場合のみ。
       auto・不正値（解決勝者は --effort でも送信値と一致しない）は「既定」扱い。
+    - OpenRouter が ``enabled + exclude`` 経路（effort 非対応モデル）だった場合:
+      内部推論は有効だが effort は送っていないため、effort 値も「reasoning なし」も
+      表示せず専用表示 ``reasoning: 有効（effort 非対応モデル・既定）`` にする。
     - OpenRouter 経路が成功したのに reasoning パラメータを送らなかった場合:
       Gemini 向けの解決結果を表示すると実送信と乖離するため「reasoning なし」。
     - それ以外（Gemini 経路）: ``_thinking_effort_display`` に委ねる。
     """
+    if or_used_effort == OPENROUTER_REASONING_ENABLED_DISPLAY:
+        return f"reasoning: {or_used_effort}"
     if or_used_effort is not None:
         attributed = (
             _effort_display_source(model_info, thinking_effort) == "--effort"
@@ -732,11 +756,14 @@ class OpenRouterResponse:
         usage_metadata: _OpenRouterUsage | None = None,
         model_version: str | None = None,
         retry_count: int = 0,
+        truncated: bool = False,
     ) -> None:
         self.text = text
         self.usage_metadata = usage_metadata
         self.model_version = model_version
         self._retry_count = retry_count
+        # finish_reason=length で本文が途中終了した場合に True（実行情報に注記する）
+        self.truncated = truncated
         self.candidates: list = []
 
 
@@ -760,6 +787,78 @@ def _openrouter_reasoning(effort: str | None, model_info: dict) -> str | None:
     return None
 
 
+def _openrouter_fallback_reasoning(thinking_effort: str | None, model_config: dict) -> str | None:
+    """Gemini→OpenRouter フォールバックで送る ``reasoning.effort`` を解決する。
+
+    プライマリの ``model_info``（例: ``hydrogen``）は ``thinking_level`` のみで
+    ``reasoning_effort`` を持たないため、その値をそのまま使うと ``--effort``
+    未指定のときフォールバックで reasoning が一切送られない。
+    フォールバックでは models.json の ``openrouter-free.reasoning_effort`` を
+    既定として使う。``--effort`` 指定が最優先、off 系は尊重される。
+    """
+    openrouter_info = model_config.get("openrouter-free") or {}
+    return _openrouter_reasoning(thinking_effort, openrouter_info)
+
+
+def _reasoning_payload(model_name: str, effort: str | None) -> dict | None:
+    """モデルごとに送る ``reasoning`` ペイロードを返す。
+
+    - ``reasoning.effort`` 非対応の明記モデル: ``{"enabled": True, "exclude": True}``
+      （effort は送らない）。
+    - それ以外（ultra / 動的ルーター / env 指定の未知モデルを含む）:
+      ``{"effort": effort, "exclude": True}``（既存互換の effort 経路）。
+    - 2 パス目（reasoning なし再試行）: None（パラメータ自体を送らない）。
+
+    ``exclude: true`` は Chat Completions で reasoning をレスポンスから除外しつつ
+    モデル内部では推論させる。動的ルーターは models API で reasoning メタデータを
+    省略するが、パラメータ自体は受け付けるため未知モデルにも effort 経路を使う。
+    """
+    if not effort:
+        return None
+    if model_name in OPENROUTER_NO_EFFORT_MODELS:
+        return {"enabled": True, "exclude": True}
+    return {"effort": effort, "exclude": True}
+
+
+def _reasoning_display_value(reasoning: dict | None) -> str | None:
+    """実際に送る reasoning ペイロードから実行情報の表示値を導出する。
+
+    ペイロード自体を単一の情報源とし、ループ変数の effort をそのまま表示して
+    実送信との乖離（effort 非対応モデルに ``high`` と表示する等）を防ぐ。
+    """
+    if not reasoning:
+        return None
+    if "effort" in reasoning:
+        return str(reasoning["effort"])
+    if reasoning.get("enabled"):
+        return OPENROUTER_REASONING_ENABLED_DISPLAY
+    return None
+
+
+def _openrouter_content_text(content) -> str:
+    """message.content を本文文字列に正規化する。
+
+    OpenAI 互換 API は content を文字列で返すほか、
+    ``[{"type": "text", "text": "..."}]`` のようなパーツ配列で返すことがある。
+    ``type == "text"`` のパートだけを連結し、reasoning 系パートは明示的に除外する。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "text":
+                # reasoning / reasoning.text 等は内部推論なので本文に含めない
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 def _run_openrouter_pass(
     fallback_models: list[str],
     prompt: str,
@@ -767,7 +866,10 @@ def _run_openrouter_pass(
     api_keys: list[str],
     reasoning_effort: str | None,
 ) -> tuple[OpenRouterResponse | None, str | None, str | None, Exception | None]:
-    """OpenRouter のモデル群を順に試行し (response, model, 使用された effort, last_exc) を返す。
+    """OpenRouter のモデル群を順に試行し (response, model, 表示値, last_exc) を返す。
+
+    表示値はループ変数の effort ではなく ``_reasoning_payload`` が実際に送る
+    ペイロードから導出する（effort 非対応モデルは専用表示になる）。
 
     effort 指定で全モデル失敗した場合は reasoning なしの 2 パス目を 1 回だけ
     再試行する。無料ルーターには ``reasoning`` パラメータを扱えないモデルが
@@ -780,6 +882,8 @@ def _run_openrouter_pass(
     for effort in passes:
         for fb_model in fallback_models:
             try:
+                sent_reasoning = _reasoning_payload(fb_model, effort)
+                display_value = _reasoning_display_value(sent_reasoning)
                 resp = _generate_with_openrouter(
                     fb_model,
                     prompt,
@@ -787,7 +891,7 @@ def _run_openrouter_pass(
                     api_keys,
                     reasoning_effort=effort,
                 )
-                return resp, fb_model, effort, None
+                return resp, fb_model, display_value, None
             except Exception as fe:  # noqa: BLE001
                 last_exc = fe
                 print(f"OpenRouter model {fb_model} failed: {fe}")
@@ -813,8 +917,9 @@ def _generate_with_openrouter(
         prompt: ユーザープロンプト。
         system_instruction: システムインストラクション。
         api_keys: OpenRouter API キーのリスト（先頭から順に試行）。
-        reasoning_effort: ``reasoning.effort`` に渡す値 (minimal/low/medium/high)。
-            None の場合はパラメータ自体を送らない。
+        reasoning_effort: 解決済みの effort (minimal/low/medium/high)。実際に送る
+            ``reasoning`` 辞書は ``_reasoning_payload`` がモデルごとに解決する。
+            None の場合はパラメータ自体を送らない（2 パス目の再試行）。
 
     Returns:
         ``OpenRouterResponse`` オブジェクト。
@@ -847,8 +952,9 @@ def _generate_with_openrouter(
                     ],
                     "max_tokens": OPENROUTER_DEFAULT_MAX_TOKENS,
                 }
-                if reasoning_effort:
-                    payload["reasoning"] = {"effort": reasoning_effort}
+                reasoning = _reasoning_payload(model_name, reasoning_effort)
+                if reasoning:
+                    payload["reasoning"] = reasoning
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -907,37 +1013,40 @@ def _generate_with_openrouter(
                         err.code = he.code  # type: ignore[attr-defined]
                         raise err from he
 
-                # レスポンス解析: choices[0].message.content / reasoning 対応
-                # OpenRouter free モデルは reasoning を返す場合がある (例: liquid/lfm-2.5:free)
+                # レスポンス解析: 本文は content（＋従来互換の choices[0].text）のみ。
+                # reasoning / reasoning_details は内部推論なので本文へ昇格させない。
+                # exclude: true により通常は届かないが、念のための防御として無視する。
                 text = ""
+                finish_reason = ""
                 try:
                     choices = data.get("choices") or []
                     if choices:
-                        msg = choices[0].get("message") or {}
-                        text = msg.get("content") or ""
+                        choice = choices[0] or {}
+                        msg = choice.get("message") or {}
+                        # content は文字列またはパーツ配列で返り得る（text のみ採用）
+                        text = _openrouter_content_text(msg.get("content"))
                         if not text:
-                            text = msg.get("reasoning") or ""
-                        if not text:
-                            # reasoning_details: [{"type":"reasoning.text","text":"..."}]
-                            rd = msg.get("reasoning_details")
-                            if isinstance(rd, list):
-                                for r in rd:
-                                    if isinstance(r, dict):
-                                        t = r.get("text") or r.get("reasoning") or ""
-                                        if t and isinstance(t, str) and t.strip():
-                                            text = t
-                                            break
-                        if not text:
-                            # 一部プロバイダは choices[0].text を返す場合
-                            text = choices[0].get("text") or ""
-                            if not text:
-                                # choices[0].reasoning 直下の場合
-                                text = choices[0].get("reasoning") or ""
-                    if not text:
-                        # フォールバック: 全体を文字列化
-                        text = json.dumps(data, ensure_ascii=False)[:8000]
+                            # 一部プロバイダは choices[0].text を返す場合（従来互換）
+                            legacy_text = choice.get("text")
+                            text = legacy_text if isinstance(legacy_text, str) else ""
+                        finish_reason = choice.get("finish_reason") or ""
                 except Exception as pe:
                     raise Exception(f"OpenRouter response parse error: {pe}: {data}") from pe
+
+                if not isinstance(text, str) or not text.strip():
+                    if finish_reason == "length":
+                        err = Exception(
+                            "OpenRouter returned empty content "
+                            "(finish_reason: length, 出力がトークン予算に達して途中終了)"
+                        )
+                    else:
+                        err = Exception(
+                            f"OpenRouter returned empty content (finish_reason: {finish_reason or 'none'})"
+                        )
+                    # 空本文は API キーを変えても改善しない。同一モデルの残りキーは
+                    # 回さず、呼び出し側のモデル間フォールバックへ委ねる。
+                    err.no_retry = True  # type: ignore[attr-defined]
+                    raise err
 
                 usage_raw = data.get("usage") or {}
                 prompt_tokens = usage_raw.get("prompt_tokens")
@@ -957,9 +1066,18 @@ def _generate_with_openrouter(
                             completion_tokens = 0
                     else:
                         completion_tokens = 0
+                # reasoning トークンは completion 予算に含まれるため、実行情報の
+                # 「うち思考」としても表示できるよう保持しておく。
+                completion_details = usage_raw.get("completion_tokens_details") or {}
+                reasoning_tokens = completion_details.get("reasoning_tokens")
+                try:
+                    thoughts = int(reasoning_tokens) if reasoning_tokens is not None else None
+                except (TypeError, ValueError):
+                    thoughts = None
                 usage = _OpenRouterUsage(
                     prompt_token_count=int(prompt_tokens or 0),
                     candidates_token_count=int(completion_tokens or 0),
+                    thoughts_token_count=thoughts,
                 )
                 model_version = data.get("model") or model_name
                 resp_obj = OpenRouterResponse(
@@ -967,6 +1085,7 @@ def _generate_with_openrouter(
                     usage_metadata=usage,
                     model_version=model_version,
                     retry_count=attempt,
+                    truncated=(finish_reason == "length"),
                 )
                 # 成功ログ
                 print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})")
@@ -975,6 +1094,11 @@ def _generate_with_openrouter(
             except Exception as e:
                 retryable, code = _is_retryable_api_error(e)
                 last_exc = e
+                if getattr(e, "no_retry", False):
+                    # 空本文 / length 途中終了はキー回転・再試行でも改善しないため、
+                    # 即座に呼び出し側へ戻し、次のフォールバックモデルへ進ませる。
+                    print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed ({e}); skipping remaining keys")
+                    raise
                 is_last_key = key_idx == len(api_keys) - 1
                 is_last_attempt = attempt >= MAX_ATTEMPTS - 1
                 if not retryable:
@@ -1043,6 +1167,7 @@ def build_execution_metadata(
     duration: float = 0.0,
     previous_exec_info: str = "",
     is_truncated: bool = False,
+    response_truncated: bool = False,
     repo: str = "",
     server_url: str = "https://github.com",
     run_id: str | None = None,
@@ -1136,6 +1261,11 @@ def build_execution_metadata(
     # 7. 切り詰め警告
     if is_truncated:
         metadata += "- **ステータス**: ⚠️ 差分が長すぎるため切り詰められました。\n"
+    if response_truncated:
+        metadata += (
+            "- **ステータス**: ⚠️ AI の出力が途中終了しました "
+            "(finish_reason: length)。本文が途中までで終わっている可能性があります。\n"
+        )
 
     metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
     return metadata
@@ -1686,6 +1816,11 @@ def main():
         # 成功後に model_info が OpenRouter 結果用の dict へ差し替わるため、
         # models.json の reasoning_effort を参照した解決は差し替え前に行う。
         initial_reasoning_effort = _openrouter_reasoning(thinking_effort, model_info)
+        # Gemini 全滅後の OpenRouter フォールバック用。プライマリの model_info は
+        # reasoning_effort を持たないことがあるため、openrouter-free の既定を使う。
+        fallback_reasoning_effort = _openrouter_fallback_reasoning(
+            thinking_effort, model_config
+        )
 
         if is_openrouter_primary:
             if not openrouter_keys:
@@ -1752,7 +1887,7 @@ def main():
                 prompt,
                 system_instruction,
                 openrouter_keys,
-                initial_reasoning_effort,
+                fallback_reasoning_effort,
             )
             if or_resp is not None:
                 response = or_resp
@@ -1765,7 +1900,7 @@ def main():
                     "output_cost_per_1m": None,
                     "max_diff_chars": model_info.get("max_diff_chars", 500000),
                 }
-                # 思考レベル表示は or_used_effort（実際に送った reasoning パラメータ）で行う
+                # 思考レベル表示は or_used_effort（実際に送った reasoning ペイロードから導出した表示値）で行う
                 thinking_config = None
                 used_openrouter = True
                 print(f"OpenRouter fallback succeeded with model {or_model}")
@@ -1834,6 +1969,7 @@ def main():
             duration=duration,
             previous_exec_info=previous_exec_info,
             is_truncated=is_truncated,
+            response_truncated=getattr(response, "truncated", False) is True,
             repo=repo,
             server_url=server_url,
             run_id=run_id,
