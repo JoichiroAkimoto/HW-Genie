@@ -9,7 +9,7 @@ description: HW-Genie のデータベース（Turso クラウド / ローカル�
 
 - 本プロジェクトのルートディレクトリにいること
 - `.env` に `TURSO_SYNC_URL` / `TURSO_AUTH_TOKEN` が設定されていること（通常は既に設定済み）
-- **worktree / 新規クローンで動かす場合**: `.env` は `.gitignore` 済みのため checkout に含まれない。main worktree の `.env` へのシンボリックリンクを貼るか、環境変数として注入する（下記「worktree での準備」）
+- **worktree / 新規クローンで動かす場合**: `.env` は `.gitignore` 済みのため checkout に含まれない。main worktree の `.env` へのシンボリックリンクを貼るか、環境変数として注入する（後者は `.env` が無い場合のみ。下記「worktree での準備」）
 
 ## DB 構成
 
@@ -37,6 +37,7 @@ ln -s /path/to/main-worktree/.env .env
 
 - シンボリックリンク方式は main の `.env` を共有するため、更新に自動で追従します。
   独立した設定にしたい場合は `cp` でコピーしてください（main の更新に追従しない）。
+- `core/database.py` は `.env` を読み込んで `os.environ` を上書きするため、symlink / コピーした `.env` が存在する限りシェルから `DATABASE_URL` / `TURSO_*` を上書きしても効きません。独立した設定を使う場合は `cp` でコピーした `.env` を直接編集してください。
 - `.env` は `.gitignore` 済みなので、リンク/コピーしても git の差分やコミットに
   含まれません。不要になったら worktree 側で `unlink .env`（symlink のみ削除）で
   解除できます。**`rm` は使わないこと**: カレントを間違えると main の `.env`
