@@ -46,10 +46,10 @@ STATE_PAYLOAD = {
 
 GROUP_PAYLOAD = {
     "users": {
-        "1": {"id": "1", "name": "Bob", "lastLoginTime": "1700000000"},
-        "2": {"id": "2", "name": "Alice", "lastLoginTime": "1700000100"},
-        "3": {"id": "3", "name": "Carol", "lastLoginTime": "1699990000"},
-        "4": {"id": "4", "name": "Dave", "lastLoginTime": "1699900000"},
+        "1": {"id": "1", "name": "Bob", "lastLoginTime": "1700000000", "titansPower": 1000},
+        "2": {"id": "2", "name": "Alice", "lastLoginTime": "1700000100", "titansPower": 2000},
+        "3": {"id": "3", "name": "Carol", "lastLoginTime": "1699990000", "titansPower": 3000},
+        "4": {"id": "4", "name": "Dave", "lastLoginTime": "1699900000", "titansPower": 4000},
     },
     "points": {"1": 500, "2": 900, "3": 900, "4": 100},
     "rewards": [{"place": 1, "reward": {"coin": {"3941001120": 200}}}],
@@ -81,6 +81,24 @@ def test_api_action_has_power_tournament():
     assert ApiAction.POWER_TOURNAMENT_GET_STATE == "powerTournament_getState"
     assert ApiAction.POWER_TOURNAMENT_GET_GROUP_INFO == "powerTournament_getGroupInfo"
     assert ApiAction.POWER_TOURNAMENT_DAILY_FARM == "powerTournament_dailyFarm"
+    assert ApiAction.CLAN_INVITES_SEARCH == "clanInvites_search"
+
+
+def test_power_field_matches_event_type():
+    from hw_genie.commands.power_tournament import _power_field
+
+    assert _power_field("titans") == "titansPower"
+    assert _power_field("titan") == "titansPower"
+    assert _power_field("heroes") == "heroesPower"
+    assert _power_field("hero") == "heroesPower"
+
+
+@pytest.mark.parametrize("tournament_type", ["", "  ", "unknown", "solo", "titanx"])
+def test_power_field_unknown_type_is_none(tournament_type):
+    from hw_genie.commands.power_tournament import _power_field
+
+    # Unknown types must not silently fall back to Titan power.
+    assert _power_field(tournament_type) is None
 
 
 def test_parse_state_titans_and_claimability():
@@ -227,19 +245,21 @@ def test_parse_group_info_rejects_unexpected_shape():
 
     for payload in ({"foo": 1}, "bad", {}, {"points": []}):
         with pytest.raises(PowerTournamentReadError):
-            parse_group_info(payload)
+            parse_group_info(payload, power_field="titansPower")
 
 
 def test_parse_group_info_empty_points_is_valid():
     from hw_genie.commands.power_tournament import parse_group_info
 
-    assert parse_group_info({"points": {}}) == []
+    assert parse_group_info({"points": {}}, power_field="titansPower") == []
 
 
 def test_parse_group_info_orders_and_marks_self():
     from hw_genie.commands.power_tournament import parse_group_info
 
-    entries = parse_group_info(GROUP_PAYLOAD, own_user_id="2")
+    entries = parse_group_info(
+        GROUP_PAYLOAD, power_field="titansPower", own_user_id="2"
+    )
     # Competition ranking: Alice/Carol tie at 900 -> 1, 1, then 500 -> 3.
     assert [entry.place for entry in entries] == [1, 1, 3, 4]
     assert [entry.user_id for entry in entries] == ["2", "3", "1", "4"]
@@ -428,7 +448,9 @@ def test_render_shows_top_and_claims(capsys):
         account="Alice",
         dry_run=False,
         state=state,
-        ranking=parse_group_info(GROUP_PAYLOAD, own_user_id="2")[:5],
+        ranking=parse_group_info(
+            GROUP_PAYLOAD, power_field="titansPower", own_user_id="2"
+        )[:5],
         claims=[
             TournamentClaimResult(5, ResponseStatus.SUCCESS),
             TournamentClaimResult(6, ResponseStatus.SKIPPED, "NotAvailable"),
@@ -461,7 +483,9 @@ def test_render_dry_run(capsys):
         account="Alice",
         dry_run=True,
         state=state,
-        ranking=parse_group_info(GROUP_PAYLOAD, own_user_id="2"),
+        ranking=parse_group_info(
+            GROUP_PAYLOAD, power_field="titansPower", own_user_id="2"
+        ),
         own_user_id="2",
         own_place=1,
     )
@@ -684,7 +708,7 @@ def test_parse_group_info_reads_server_power_and_member_stats():
                 "name": "Bob",
                 "serverId": "161",
                 "clanId": "42",
-                "power": "1234567",
+                "titansPower": "1234567",
                 "todayActivity": 100,
                 "activitySum": 2000,
                 "todayDungeonActivity": 10,
@@ -696,7 +720,7 @@ def test_parse_group_info_reads_server_power_and_member_stats():
         "points": {"1": 100},
         "rewards": [],
     }
-    entry = parse_group_info(response)[0]
+    entry = parse_group_info(response, power_field="titansPower")[0]
     assert entry.server_id == "161"
     assert entry.clan_id == "42"
     assert entry.power == 1_234_567
@@ -707,6 +731,330 @@ def test_parse_group_info_reads_server_power_and_member_stats():
     assert entry.stats.titanite_week == 300
     assert entry.stats.prestige_today == 5
     assert entry.stats.prestige_week == 500
+
+    hero = parse_group_info(
+        {
+            "users": {
+                "1": {
+                    "id": "1",
+                    "name": "Bob",
+                    "heroesPower": "100",
+                    "titansPower": "50",
+                }
+            },
+            "points": {"1": 1},
+        },
+        power_field="heroesPower",
+    )[0]
+    assert hero.power == 100
+
+
+def test_fetch_member_power_single(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_power,
+    )
+
+    client, mock_call = mock_client
+    mock_call.return_value = _res(
+        {
+            "items": [
+                {
+                    "user": {
+                        "id": "1",
+                        "heroesPower": "100",
+                        "titansPower": "50",
+                    }
+                }
+            ]
+        }
+    )
+    entries = [TournamentRankEntry(1, "1", "Bob", 100)]
+
+    powers, error = fetch_member_power(client, entries, "titansPower")
+
+    assert error is None
+    assert powers["1"] == 50
+    payload = mock_call.call_args.args[0]
+    assert payload["calls"][0]["name"] == "clanInvites_search"
+    assert payload["calls"][0]["args"]["id"] == "1"
+
+
+def test_fetch_member_power_batches(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_power,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "power_1": {
+            "result": {
+                "response": {
+                    "items": [
+                        {
+                            "user": {
+                                "id": "1",
+                                "heroesPower": "100",
+                                "titansPower": "50",
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        "power_2": {
+            "result": {
+                "response": {
+                    "items": [
+                        {
+                            "user": {
+                                "id": "2",
+                                "heroesPower": "200",
+                                "titansPower": "100",
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "1", "Bob", 100),
+        TournamentRankEntry(2, "2", "Carol", 90),
+    ]
+
+    powers, error = fetch_member_power(client, entries, "titansPower")
+
+    assert error is None
+    assert powers == {"1": 50, "2": 100}
+    assert mock_call.call_count == 1
+
+
+def test_run_fetches_power_from_clan_invites_search(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    group = {
+        "users": {"1": {"id": "1", "name": "Bob"}},
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _res(STATE_PAYLOAD),
+        _res(group),
+        _user_res("2"),
+        _res(
+            {
+                "items": [
+                    {
+                        "user": {
+                            "id": "1",
+                            "heroesPower": "100",
+                            "titansPower": "50",
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=1, dry_run=True
+    )
+
+    assert result.ranking[0].power == 50
+    assert result.enrichment_error is None
+
+
+def test_fetch_member_power_single_warns_on_unexpected_payload(
+    mock_client, mock_sleep
+):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_power,
+    )
+
+    client, mock_call = mock_client
+    mock_call.return_value = _res(["unexpected"])
+
+    powers, error = fetch_member_power(
+        client, [TournamentRankEntry(1, "1", "Bob", 100)], "titansPower"
+    )
+
+    assert powers == {}
+    assert error == "clanInvites_search returned an unexpected payload"
+
+
+def test_fetch_member_power_empty_items_is_not_a_warning(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_power,
+    )
+
+    client, mock_call = mock_client
+    mock_call.return_value = _res({"items": []})
+
+    powers, error = fetch_member_power(
+        client, [TournamentRankEntry(1, "9", "Bob", 100)], "titansPower"
+    )
+
+    # An empty result means "user not found", which is not a broken payload.
+    assert powers == {}
+    assert error is None
+
+
+def test_fetch_member_power_promotes_batched_auth_error(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_power,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "power_1": {"error": {"name": "auth"}},
+        "power_2": {
+            "result": {
+                "response": {
+                    "items": [{"user": {"id": "2", "titansPower": "50"}}]
+                }
+            }
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "1", "Bob", 100),
+        TournamentRankEntry(2, "2", "Carol", 90),
+    ]
+
+    with pytest.raises(HWAuthError):
+        fetch_member_power(client, entries, "titansPower")
+
+
+def test_run_hero_event_uses_type_specific_power(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    hero_state = dict(STATE_PAYLOAD, type="heroes")
+    group = {
+        "users": {"1": {"id": "1", "name": "Bob"}},
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _res(hero_state),
+        _res(group),
+        _user_res("2"),
+        _res(
+            {
+                "items": [
+                    {
+                        "user": {
+                            "id": "1",
+                            "heroesPower": "100",
+                            "titansPower": "50",
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    assert result.state is not None
+    assert result.state.type_label == "Hero"
+    # Hero events use heroesPower only: never the Titan value and never a sum.
+    assert result.ranking[0].power == 100
+    assert result.enrichment_error is None
+
+
+def test_run_unknown_type_skips_power_with_warning(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    unknown_state = dict(STATE_PAYLOAD, type="mystery")
+    group = {
+        "users": {
+            "1": {
+                "id": "1",
+                "name": "Bob",
+                "heroesPower": 9,
+                "titansPower": 7,
+            }
+        },
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [_res(unknown_state), _res(group), _user_res("2")]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    # No power field: profile power is ignored and no search call is made.
+    assert result.ranking[0].power is None
+    assert result.enrichment_error is not None
+    assert "unknown tournament type 'mystery'; power skipped" in result.enrichment_error
+    names = [call.args[0]["calls"][0]["name"] for call in mock_call.call_args_list]
+    assert ApiAction.CLAN_INVITES_SEARCH not in names
+
+
+def test_run_power_failure_warns_but_keeps_ranking(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+    from hw_genie.main import _run_log_account_failure
+
+    client, mock_call = mock_client
+    group = {
+        "users": {"1": {"id": "1", "name": "Bob"}},
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _state_res(),
+        _res(group),
+        _user_res("2"),
+        _res({}, status=ResponseStatus.ERROR, error_name="NotAvailable"),
+    ]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    # A power failure is a warning only: the ranking survives and the run is ok.
+    assert [entry.name for entry in result.ranking] == ["Bob"]
+    assert result.ranking[0].power is None
+    assert result.enrichment_error is not None
+    assert "clanInvites_search failed" in result.enrichment_error
+    assert _run_log_account_failure("power-tournament", result, None) is None
+
+
+def test_run_combines_power_and_clan_errors(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    group = {
+        "users": {"1": {"id": "1", "name": "Bob", "clanId": "42"}},
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _state_res(),
+        _res(group),
+        _user_res("2"),
+        _res({}, status=ResponseStatus.ERROR, error_name="NotAvailable"),
+        _res({}, status=ResponseStatus.ERROR, error_name="NotAvailable"),
+    ]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    assert [entry.name for entry in result.ranking] == ["Bob"]
+    assert result.enrichment_error is not None
+    assert "clanInvites_search failed" in result.enrichment_error
+    assert "clanGetInfo failed" in result.enrichment_error
 
 
 def test_fetch_member_stats_fills_from_clan(mock_client, mock_sleep):
@@ -905,6 +1253,7 @@ def test_run_merges_partial_profile_stats_with_clan(mock_client, mock_sleep):
                 "name": "Bob",
                 "serverId": "161",
                 "clanId": "42",
+                "titansPower": 1,
                 "todayActivity": 1,
             }
         },
@@ -973,6 +1322,118 @@ def test_fetch_member_stats_promotes_batched_auth_error(mock_client, mock_sleep)
         fetch_member_stats(client, entries)
 
 
+def _six_user_group():
+    users = {
+        str(i): {"id": str(i), "name": f"P{i}", "titansPower": 1}
+        for i in range(1, 7)
+    }
+    points = {str(i): (7 - i) * 100 for i in range(1, 7)}
+    return {"users": users, "points": points, "rewards": []}
+
+
+def test_run_appends_self_when_outside_top(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _state_res(),
+        _res(_six_user_group()),
+        _user_res("6"),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    assert [entry.user_id for entry in result.ranking] == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+    ]
+    assert result.ranking[-1].is_self is True
+    assert result.own_place == 6
+
+
+def test_run_does_not_duplicate_self_in_top(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _state_res(),
+        _res(_six_user_group()),
+        _user_res("2"),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    assert len(result.ranking) == 5
+    assert sum(1 for entry in result.ranking if entry.is_self) == 1
+    assert result.own_place == 2
+
+
+def test_appended_self_is_enriched(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    users = {
+        str(i): {"id": str(i), "name": f"P{i}", "titansPower": 1}
+        for i in range(1, 6)
+    }
+    users["6"] = {"id": "6", "name": "P6", "clanId": "42"}
+    points = {str(i): (7 - i) * 100 for i in range(1, 7)}
+    group = {"users": users, "points": points, "rewards": []}
+    mock_call.side_effect = [
+        _state_res(),
+        _res(group),
+        _user_res("6"),
+        _res(
+            {
+                "items": [
+                    {
+                        "user": {
+                            "id": "6",
+                            "heroesPower": "100",
+                            "titansPower": "50",
+                        }
+                    }
+                ]
+            }
+        ),
+        _res(
+            {
+                "membersStat": [
+                    {
+                        "userId": "6",
+                        "todayActivity": 10,
+                        "activitySum": 100,
+                        "todayDungeonActivity": 1,
+                        "dungeonActivitySum": 20,
+                        "todayPrestige": 3,
+                        "prestigeSum": 30,
+                    }
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    self_entry = result.ranking[-1]
+    assert self_entry.user_id == "6"
+    assert self_entry.is_self is True
+    assert self_entry.power == 50
+    assert self_entry.stats is not None
+    assert self_entry.stats.activity_today == 10
+    assert result.enrichment_error is None
+
+
 def test_run_enriches_stats_from_clan(mock_client, mock_sleep):
     from hw_genie.commands.power_tournament import run_power_tournament
 
@@ -984,6 +1445,7 @@ def test_run_enriches_stats_from_clan(mock_client, mock_sleep):
                 "name": "Bob",
                 "serverId": "161",
                 "clanId": "42",
+                "titansPower": 1,
             }
         },
         "points": {"1": 100},
@@ -1010,7 +1472,7 @@ def test_run_enriches_stats_from_clan(mock_client, mock_sleep):
     assert entry.server_id == "161"
     assert entry.stats is not None
     assert entry.stats.activity_today == 10
-    assert result.stats_error is None
+    assert result.enrichment_error is None
 
 
 def test_run_skips_clan_get_info_when_profiles_carry_stats(mock_client, mock_sleep):
@@ -1023,6 +1485,7 @@ def test_run_skips_clan_get_info_when_profiles_carry_stats(mock_client, mock_sle
                 "id": "1",
                 "name": "Bob",
                 "clanId": "42",
+                "titansPower": 1,
                 "todayActivity": 10,
                 "activitySum": 100,
                 "todayDungeonActivity": 1,
@@ -1042,10 +1505,10 @@ def test_run_skips_clan_get_info_when_profiles_carry_stats(mock_client, mock_sle
     assert ApiAction.CLAN_GET_INFO not in names
     assert result.ranking[0].stats is not None
     assert result.ranking[0].stats.activity_today == 10
-    assert result.stats_error is None
+    assert result.enrichment_error is None
 
 
-def test_run_stats_error_warns_but_keeps_ranking(mock_client, mock_sleep, capsys):
+def test_run_enrichment_error_warns_but_keeps_ranking(mock_client, mock_sleep, capsys):
     from hw_genie.commands.power_tournament import (
         render_power_tournament,
         run_power_tournament,
@@ -1054,7 +1517,7 @@ def test_run_stats_error_warns_but_keeps_ranking(mock_client, mock_sleep, capsys
 
     client, mock_call = mock_client
     group = {
-        "users": {"1": {"id": "1", "name": "Bob", "clanId": "42"}},
+        "users": {"1": {"id": "1", "name": "Bob", "clanId": "42", "titansPower": 1}},
         "points": {"1": 100},
         "rewards": [],
     }
@@ -1069,13 +1532,13 @@ def test_run_stats_error_warns_but_keeps_ranking(mock_client, mock_sleep, capsys
 
     # A stats failure is a warning only: the ranking survives and the run is ok.
     assert [entry.name for entry in result.ranking] == ["Bob"]
-    assert result.stats_error is not None
-    assert "clanGetInfo failed" in result.stats_error
+    assert result.enrichment_error is not None
+    assert "clanGetInfo failed" in result.enrichment_error
     assert _run_log_account_failure("power-tournament", result, None) is None
 
     render_power_tournament(result, now=1_700_050_000)
     out = capsys.readouterr().out
-    assert "Member stats unavailable: clanGetInfo failed" in out
+    assert "Member info unavailable: clanGetInfo failed" in out
 
 
 def test_render_shows_stats_power_and_server(capsys):
@@ -1125,7 +1588,48 @@ def test_render_shows_stats_power_and_server(capsys):
     assert "3/30" in out
 
 
-def test_render_shows_stats_error_as_warning(capsys):
+def test_render_colors_rank_and_self(monkeypatch, capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Bob", 100, 1_700_000_000),
+            TournamentRankEntry(
+                2, "2", "Alice", 90, 1_700_000_000, is_self=True
+            ),
+        ],
+    )
+
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+
+    assert "\x1b[1;33m" in out  # rank 1 (yellow, bold)
+    assert "\x1b[32m" in out  # rank 2 (green)
+    assert "\x1b[1;36mAlice" in out  # self name (cyan, bold)
+    assert "\x1b[1;36m ← you" in out  # own row marker (cyan, bold)
+
+    plain = [_plain(line) for line in out.splitlines()]
+    table = [
+        line
+        for line in plain
+        if line.startswith("  ") and line.lstrip()[:1] in "#0123456789"
+    ]
+    normalized = [line.split(" ← you")[0] for line in table]
+    assert len({display_width(line, ambiguous_wide=False) for line in normalized}) == 1
+
+
+def test_render_shows_enrichment_error_as_warning(capsys):
     from hw_genie.commands.power_tournament import (
         PowerTournamentResult,
         TournamentRankEntry,
@@ -1141,12 +1645,12 @@ def test_render_shows_stats_error_as_warning(capsys):
         ranking=[TournamentRankEntry(1, "1", "Bob", 100, 1_700_000_000)],
         own_user_id="1",
         own_place=1,
-        stats_error="clan 42: NotAvailable",
+        enrichment_error="clan 42: NotAvailable",
     )
     render_power_tournament(result, now=1_700_050_000)
     out = capsys.readouterr().out
 
-    assert "Member stats unavailable: clan 42: NotAvailable" in out
+    assert "Member info unavailable: clan 42: NotAvailable" in out
     assert "Ranking unavailable" not in out
     assert "Rewards:" in out
 
