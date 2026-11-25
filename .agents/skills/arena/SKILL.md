@@ -125,6 +125,7 @@ uv run hw-genie battle prune --days 90 --dry-run
 - 候補の有効性: 既定モードの攻撃が受理されるのは**直近の `arenaFindEnemies` に含まれる候補**です。`arenaGetAll` / `arenaCheckTargetRange` など他のRPCを挟んでも失効しません（実攻撃で確認済み）が、再度 `arenaFindEnemies` を呼ぶとリストが更新されるため、既定モードは同じポーリングの最新リストに対して即座に攻撃し、古いリストの候補は最新リストに再登場しない限り攻撃しません。`--from-snapshot` は `arenaFindEnemies` を更新しないため、保存候補をそのまま監視・攻撃します（対象はトップ50にいる必要あり）。
 - **防衛編成は読み取り専用**で、`arenaSetHeroes` は送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、変わった場合は警告します（自動復元なし）。`--from-snapshot` で保存済み候補を再利用できます。送信前エラーは最大3回まで再試行し、結果不明の通信エラーは即中断します。
 - `arena status` は防衛編成（`arenaGetAll.arenaHeroes`）と保存済み攻撃編成（`teamGetAll.arena`）を分けて表示します。
+- 攻撃可能な上位幅は順位帯依存です（15〜49位=最大13、50〜99位=最大33、100位以上=最大55。例: 50位は17〜23/37〜48位、100位は45〜55/65〜75/85〜95位）。`--min-gap` が現在の順位で不可能な場合は警告します。出典: [docs/api/ARENA_API.md](../../docs/api/ARENA_API.md#攻撃可能範囲外部攻略情報)。
 - `--game-version` で特定のサーバーバージョンの戦闘だけに絞り込めます（既定は全バージョン）。
 - 対象の現在編成は `topGet` を優先し、見つからなければ `arenaFindEnemies`（候補）にフォールバックして取得します（`--json` を汚さないよう候補更新の進捗表示は抑制）。どちらにも編成が無い場合のみエラーになります。
 - コーパスが空の場合は `battle import` を先に実行してください。

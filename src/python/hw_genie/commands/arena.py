@@ -1065,6 +1065,23 @@ def _format_team(team: ArenaTeam | None) -> str:
     return ", ".join(parts)
 
 
+def arena_max_attack_gap(rank: int) -> int:
+    """Maximum number of ranks above ``rank`` that Arena allows attacking.
+
+    Based on the community range table (1-5: own-1, 6-14: own-1, 15-49: 13,
+    50-99: 33, 100+: 55). The server response remains authoritative.
+    """
+    if rank <= 1:
+        return 0
+    if rank <= 14:
+        return rank - 1
+    if rank <= 49:
+        return 13
+    if rank <= 99:
+        return 33
+    return 55
+
+
 def _format_user_id(user_id: int, name: str | None) -> str:
     """Human-readable player label: name first, userId as context."""
     label = (name or "").strip() or "unknown"
@@ -2770,6 +2787,13 @@ def run_arena_target_watch(
         raise ArenaError(
             "Could not read your player id; refusing target-watch."
         )
+    max_gap = arena_max_attack_gap(initial_status.place)
+    if min_gap > max_gap:
+        print(
+            f"{Emojis.WARNING}Rank {initial_status.place} allows at most "
+            f"{max_gap} rank(s) above; --min-gap {min_gap} cannot be met until "
+            "your rank changes."
+        )
     team, missing = resolve_team(preset=preset, saved=initial_status.saved_team)
     excluded_ids = fetch_registered_account_ids()
     excluded_ids |= fetch_clan_member_ids(client)
@@ -3165,6 +3189,7 @@ __all__ = [
     "ARENA_SNAPSHOT_KEY",
     "ARENA_TEAM_PRESETS_KEY",
     "DEFAULT_CANDIDATE_RETRIES",
+    "arena_max_attack_gap",
     "build_attack_args",
     "capture_arena_snapshot",
     "check_target_range",

@@ -15,6 +15,7 @@ from hw_genie.commands.arena import (
     ArenaTopEntry,
     _format_target,
     _format_user_id,
+    arena_max_attack_gap,
     build_attack_args,
     deserialize_snapshot,
     deserialize_team,
@@ -502,6 +503,18 @@ def test_deserialize_snapshot_rejects_invalid_own_place():
     assert deserialize_snapshot({"own_place": "0", "candidates": []}) is None
     assert deserialize_snapshot({"candidates": []}) is None
     assert deserialize_snapshot("not-a-dict") is None
+
+
+def test_arena_max_attack_gap_matches_rank_bands():
+    assert arena_max_attack_gap(1) == 0
+    assert arena_max_attack_gap(2) == 1
+    assert arena_max_attack_gap(14) == 13
+    assert arena_max_attack_gap(15) == 13
+    assert arena_max_attack_gap(49) == 13
+    assert arena_max_attack_gap(50) == 33
+    assert arena_max_attack_gap(99) == 33
+    assert arena_max_attack_gap(100) == 55
+    assert arena_max_attack_gap(200) == 55
 
 
 def test_format_user_id_puts_name_first():
