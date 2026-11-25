@@ -2187,19 +2187,26 @@ def cmd_multi(args):
         # のため並列実行可。
         max_parallel = args.parallel
     elif mode == "battle":
-        from hw_genie.commands.battle import BattleLogError, parse_battle_types
+        from hw_genie.commands.battle import (
+            BattleLogError,
+            parse_battle_types,
+            validate_battle_limit,
+        )
 
         try:
             battle_types = parse_battle_types(
                 getattr(args, "battle_types", "arena,grand")
             )
-        except BattleLogError as exc:
+            battle_limit = validate_battle_limit(
+                int(getattr(args, "battle_limit", 20))
+            )
+        except (BattleLogError, TypeError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(2)
         routine = partial(
             battle_import_routine,
             types=battle_types,
-            limit=int(getattr(args, "battle_limit", 20)),
+            limit=battle_limit,
         )
         max_parallel = args.parallel
     else:

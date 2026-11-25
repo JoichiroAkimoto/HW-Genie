@@ -100,6 +100,7 @@ def _patch_auto(
         "fetch_clan_member_ids",
         lambda *a, **k: set(clan_member_ids or ()),
     )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
     monkeypatch.setattr(
         arena_mod, "fetch_arena_candidates", lambda *a, **k: list(candidates)
     )
@@ -244,6 +245,23 @@ def test_select_auto_targets_excludes_own_and_attempted_ids():
 # ---------------------------------------------------------------------------
 # run_arena_auto
 # ---------------------------------------------------------------------------
+
+
+def test_run_arena_auto_excludes_registered_own_accounts(monkeypatch, capsys):
+    _patch_auto(monkeypatch, candidates=[_entry(5, 222)])
+    monkeypatch.setattr(
+        arena_mod, "fetch_registered_account_ids", lambda: {222}
+    )
+    attacked = []
+    monkeypatch.setattr(
+        arena_mod, "run_arena_attack", lambda *a, **k: attacked.append((a, k))
+    )
+
+    history = run_arena_auto(MagicMock(), execute=True)
+
+    assert history == []
+    assert attacked == []
+    assert "No eligible target" in capsys.readouterr().out
 
 
 def test_run_arena_auto_dry_run_chooses_highest_non_guild(monkeypatch, capsys):
@@ -545,6 +563,7 @@ def test_run_arena_auto_refreshes_candidates_until_plan(monkeypatch, capsys):
         arena_mod, "fetch_arena_status", lambda *a, **k: _status(None)
     )
     monkeypatch.setattr(arena_mod, "fetch_clan_member_ids", lambda *a, **k: set())
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
 
     def fake_candidates(*_args, **_kwargs):
         calls["n"] += 1

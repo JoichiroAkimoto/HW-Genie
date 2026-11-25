@@ -33,7 +33,7 @@ uv run hw-genie db-check
 
 - アカウントは実名（プレイヤー名）。`-a` 省略時は登録1件なら自動、複数なら指定が必要。`multi` は未指定で全アカウント。
 - 破壊的・資源消費操作はまず `--dry-run`。`--debug` はサブコマンドの後ろに置く（例: `hw-genie daily --debug`）。
-- `multi --dry-run` の対応モードは README の multi 節を参照（`daily` / `full` / `asgard-shop` / `toe` は非対応）。
+- `multi --dry-run` の対応モードは README の multi 節を参照（`daily` / `full` / `asgard-shop` / `toe` / `battle` は非対応）。
 - コマンドの引数・挙動は README と各スキルに書く（このファイルには重複して書かない）。
 
 ## スキル

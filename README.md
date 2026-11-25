@@ -156,9 +156,9 @@ uv run hw-genie arena auto -a Alice --execute
 uv run hw-genie arena auto -a Alice --execute --max-attacks 5
 ```
 
-- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。
+- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・登録済み自アカウント/ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。
 - 既定では **`same_defender`（同一防衛者の実戦データ）プランのみ**を使います。同一防衛編成の他プレイヤー戦しかない場合は攻撃せず、`--allow-same-lineup` を付けたときだけフォールバックします（編成は同じでも実ステータスやfavorが異なるため、勝率が再現しないことがあります）。
-- ギルドメンバーは `clanGetInfo.members` で除外します。クラン情報の形式が不正・取得失敗の場合は攻撃せず停止します。
+- 登録済みの自アカウントは DB の `player_id` で除外し、ギルドメンバーは `clanGetInfo.members` で除外します。クラン情報や登録アカウントの取得が失敗した場合は攻撃せず停止します。
 - 最上位に gate を満たすプランがなければ、次の上位候補へフォールバックします。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、最初に編成が一致したプランを使います。攻撃した／gate を満たすプランがなかった／編成が一致しなかったターゲットは、同じ実行内で再選択・再クエリされません。
 - 攻撃編成はプラン（`attacker_lineup_key`）のヒーロー・ペット・バナーをそのまま使います。favor もプランが参照した最新の勝利編成（`favorPetId`）から取得し、解決後の編成がプランと一致しない場合は攻撃しません。ログに favor が無いヒーローは favor なしで送信します（保存済みチームの favor は流用しません）。勝率は `lineup_key` 単位の集計で、favor が異なる観測も含みます。favor は最新勝利編成による再現です。
 - 攻撃可能な上位幅は順位帯で変わります（外部攻略情報: 15〜49位は最大13、50〜99位は最大33、100位以上は最大55。例: 50位は17〜23位と37〜48位、100位は45〜55/65〜75/85〜95位）。`--min-gap` が現在の順位で原理的に不可能な場合は警告します。詳細・出典は [docs/api/ARENA_API.md](docs/api/ARENA_API.md#攻撃可能範囲外部攻略情報)。
@@ -434,7 +434,7 @@ bin/hwsa
 - `multi battle`: 全アカウントの arena/grand 戦闘ログを一括取り込みし、実行後に1回 prune（`--battle-types` / `--battle-limit` / `--keep-days` / `--no-prune` 対応）
 - `multi toe`: 全アカウントの Titan Arena Tier 自動攻略のみ（`--engine` / `--seeds`（既定 10） / `--threshold` / `--max-attempts` / `--end-on-loss` / `--no-end-on-loss` / `--no-bank-best-loss` 対応、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、Ctrl+C で中断した場合は実行中アカウントの部分サマリー（Won/Tier/Left）を保持して表示、2回目で強制終了）
 - `multi gift-up` / `multi gift-reset`: 全アカウントのエレメントギフト一括 MAX 化／低 power ヒーローのギフト drop（コイン全額回収）のみ（未 MAX は power 降順に 1 体ずつレベル 30 まで。`--limit` は両モード対応で既定は gift-up=コインが続く限り／gift-reset=閾値以下の全対象、`--max-power`（既定 100,000）は `gift-reset` のみ対応で `gift-up` に指定すると worker 起動前に exit 2、他モード同様 `--parallel`・`HW_MAX_PARALLEL` で同時実行数制御、`--dry-run` で予行確認可（アカウント別サマリ表 `Account | ✅ Done | 💰 Coins | 🪙 Left | ⏭️ Blocked | ❌ Failed | ℹ️ Note` に計画体数・計画コインが載り、`Failed` は計数専用・理由は `Note` 列）。書き込みは非対話で全アカウントに及ぶため **`--yes` 必須**（無いと worker を起動せず exit 2）、dry-run は読み取りのみなので `--yes` 不要で逐次実行に強制、実行中の失敗は失敗計上なので exit 1（3 分類の打ち切り契約は **`gift-up` のみ**: コイン枯れ `NotEnough` ＝打ち切り／既知のヒーロー個別業務エラー `NotAvailable` ＝その体だけ失敗で継続／未知エラー名・transport 失敗＝打ち切り＝安全側。`gift-reset` は drop が資源を消費しないため、非認証の失敗（`NotEnough` を含む）はその体を失敗計上して次へ継続し、失敗が残れば exit 1、認証切れだけは即中断））
-- `multi --dry-run`: 対応は `quests` / `consumable` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge` / `asgard-raid` のみ。`daily` / `full` / `asgard-shop` / `toe` では exit 2。
+- `multi --dry-run`: 対応は `quests` / `consumable` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge` / `asgard-raid` のみ。`daily` / `full` / `asgard-shop` / `toe` / `battle` では exit 2。
 - 同時実行数は環境変数 `HW_MAX_PARALLEL` で制限（0 / 未設定 = アカウント数 = 事実上無制限）
 
 ### libSQL (Turso) の利用

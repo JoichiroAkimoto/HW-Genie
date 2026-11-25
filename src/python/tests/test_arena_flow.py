@@ -1180,6 +1180,35 @@ def test_run_arena_attack_from_snapshot_rejects_gap_and_defense(
     assert _call_names(mock_call) == ["topGet"]
 
 
+def test_run_arena_attack_from_snapshot_out_of_band_uses_current_place(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # Stale snapshot place 3 is exactly 13 above rank16 (in-band), but topGet
+    # moved the target to rank2: 14 above (max+1, out-of-band).
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "2", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+        _ok(_attack_response(old=16, new=2)),
+    ]
+    target = ArenaTarget(user_id=111, place=3, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client,
+        _make_status(place=16),
+        target,
+        _team(),
+        force=True,
+        min_gap=14,
+        require_out_of_band=True,
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
+
+
 def test_run_arena_attack_from_snapshot_rejects_gap_equal_to_max(
     mock_client, mock_sleep
 ):

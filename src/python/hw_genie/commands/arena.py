@@ -2168,6 +2168,7 @@ def run_arena_auto(
     )
 
     clan_member_ids = fetch_clan_member_ids(client)
+    clan_member_ids |= fetch_registered_account_ids()
     history: list[dict[str, Any]] = []
     attacks = 0
     attempted_user_ids: set[int] = set()
@@ -2336,7 +2337,7 @@ def run_arena_auto(
             "win_rate": plan.win_rate,
             "wilson_low": plan.wilson_low,
             "tier": plan.tier,
-            "favor": favor,
+            "favor": dict(team.favor),
             "mode": "live",
             "attacked": False,
             "win": None,

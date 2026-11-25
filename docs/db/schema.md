@@ -101,7 +101,7 @@ Unique constraint: `(account_id, boss, slot)`
 | `id` | INTEGER | PK, AUTOINCREMENT | 内部ID |
 | `started_at` | DATETIME | NOT NULL | 実行開始時刻（UTC） |
 | `finished_at` | DATETIME | NOT NULL | 実行終了時刻（UTC） |
-| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `asgard-raid` / `consumable` / `toe` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge`） |
+| `mode` | VARCHAR | NOT NULL | ルーチン種別（`daily` / `full` / `quests` / `asgard-shop` / `asgard-raid` / `consumable` / `toe` / `seers-game` / `power-tournament` / `gift-up` / `gift-reset` / `challenge` / `battle`） |
 | `status` | VARCHAR | NOT NULL | `ok` / `failed`（スタミナ切れ等の正常終了は `ok`。クエスト失敗・consumable 失敗・購入エラー・ステータス取得不能・例外・割り込みは `failed`） |
 | `exit_code` | INTEGER | | プロセスの終了コード |
 | `accounts` | JSON | NOT NULL | アカウント別結果 `[{account, ok, error}]`（`error` は失敗理由） |
