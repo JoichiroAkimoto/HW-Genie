@@ -1,4 +1,5 @@
 import datetime
+import html
 import io
 import json
 import os
@@ -1387,18 +1388,31 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
     return "\n\n".join(contents)[:limit]
 
 
+def _comment_error_output(exc: Exception) -> str:
+    """CalledProcessError の stderr/stdout 本文を取り出し、改行を無害化して返す。
+
+    ``subprocess.run(..., capture_output=True, text=True)`` で拾った本文だけが
+    CalledProcessError に保持される。``::warning::`` は 1 行で出力する必要が
+    あるため、CR/LF は空白に置き換える。
+    """
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return ""
+    parts = []
+    for part in (exc.stderr, exc.stdout):
+        if not part:
+            continue
+        text = part.decode("utf-8", errors="replace") if isinstance(part, bytes) else str(part)
+        parts.append(text.replace("\r", " ").replace("\n", " "))
+    return " ".join(parts)
+
+
 def _is_transient_comment_error(exc: Exception) -> bool:
     """REST 投稿の一時エラー（5xx / 429 / GraphQL / 一時停止）を判定する。"""
     if isinstance(exc, subprocess.CalledProcessError):
         if exc.returncode in (408, 425, 429) or 500 <= exc.returncode < 600:
             return True
         # gh api の失敗詳細は stderr / stdout に出る（returncode は 1 が多い）
-        parts = [exc.stderr, exc.stdout]
-        text = " ".join(
-            part.decode("utf-8", errors="replace") if isinstance(part, bytes) else str(part)
-            for part in parts
-            if part
-        )
+        text = _comment_error_output(exc)
     else:
         text = str(exc)
     retryable, _ = _is_retryable_api_error(Exception(text))
@@ -1428,11 +1442,16 @@ def _post_review_comment(
 
     for attempt in range(COMMENT_POST_ATTEMPTS):
         try:
-            subprocess.run(cmd, check=True)
+            # capture_output を付けないと CalledProcessError に本文が入らず、
+            # 実 CI で 5xx / GraphQL の一時エラーを判定できない。
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
             return True
         except Exception as e:
             if not _is_transient_comment_error(e) or attempt == COMMENT_POST_ATTEMPTS - 1:
                 safe_error = str(e).replace("\r", " ").replace("\n", " ")
+                detail = _comment_error_output(e)
+                if detail:
+                    safe_error = f"{safe_error}: {detail}"
                 print(f"::warning::GitHub API Error ({method}): {safe_error}")
                 return False
             delay = COMMENT_POST_DELAYS[min(attempt, len(COMMENT_POST_DELAYS) - 1)]
@@ -1441,11 +1460,14 @@ def _post_review_comment(
     return False
 
 
-def _write_review_failure_summary(review_text: str, review_file: str = "review.md") -> None:
+def _write_review_failure_summary(
+    review_text: str, review_file: str = "review.md", *, saved_to_file: bool = True
+) -> None:
     """投稿失敗時に警告を出し、生成済みレビューを step summary に残す。"""
+    saved_location = f"{review_file} and step summary" if saved_to_file else "step summary"
     print(
         f"::warning::AI review generated but comment posting failed; "
-        f"review saved to {review_file} and step summary."
+        f"review saved to {saved_location}."
     )
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
@@ -1454,9 +1476,16 @@ def _write_review_failure_summary(review_text: str, review_file: str = "review.m
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write("## ⚠️ AI レビューコメントの投稿に失敗しました\n\n")
             f.write("レビュー生成は成功しましたが、GitHub API への投稿が失敗しました。")
-            f.write(f"`{review_file}` に保存済みです。手動で確認してください。\n\n")
+            if saved_to_file:
+                f.write(f"`{review_file}` に保存済みです。手動で確認してください。\n\n")
+            else:
+                f.write(
+                    f"`{review_file}` への保存にも失敗したため、step summary の本文を確認してください。\n\n"
+                )
             f.write("<details><summary>生成されたレビュー</summary>\n\n")
-            f.write(review_text)
+            # LLM 本文の </details> 等で summary の構造が壊れないようエスケープする。
+            # html.unescape すれば原文を完全に復元できる。
+            f.write(html.escape(review_text, quote=False))
             f.write("\n</details>\n")
     except Exception as e:
         print(f"::warning::Failed to write GITHUB_STEP_SUMMARY: {e}")
@@ -1470,8 +1499,14 @@ def _publish_review(
     review_file: str = "review.md",
 ) -> bool:
     """レビュー本文を保存して REST 投稿する。投稿失敗は警告に留め check を落とさない。"""
-    with open(review_file, "w", encoding="utf-8") as f:
-        f.write(review_text)
+    try:
+        with open(review_file, "w", encoding="utf-8") as f:
+            f.write(review_text)
+    except Exception as e:
+        # ファイルに残せない場合でも生成済みレビューを失わない（best-effort）。
+        print(f"::warning::Failed to write {review_file}: {e}")
+        _write_review_failure_summary(review_text, review_file, saved_to_file=False)
+        return False
 
     if _post_review_comment(repo, pr_number, existing_comment, review_file):
         return True

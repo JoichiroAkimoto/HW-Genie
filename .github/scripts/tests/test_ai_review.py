@@ -1,5 +1,6 @@
 """ai_review.py のヘルパー関数（リトライ・PR コメント取得・ファイル全文取得・メタデータ抽出・モデル解決）のテスト。"""
 
+import html
 import json
 import os
 import subprocess
@@ -1417,15 +1418,47 @@ def test_post_review_comment_uses_rest_post_for_new_comment(tmp_path, monkeypatc
     run.assert_called_once()
     assert run.call_args.args[0] == REST_POST_CMD
     assert run.call_args.kwargs["check"] is True
+    # capture_output が外されると CalledProcessError の本文が空になり、
+    # 実 CI で一時エラーのリトライが効かなくなるため、両方を固定する。
+    assert run.call_args.kwargs["capture_output"] is True
+    assert run.call_args.kwargs["text"] is True
+
+
+def test_post_review_comment_warning_includes_captured_error_body(
+    tmp_path, monkeypatch, capsys
+):
+    """capture_output で拾った gh api のエラー本文が警告に残る（実 CI と同じ挙動）。"""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs["capture_output"] is True and kwargs["text"] is True
+        raise subprocess.CalledProcessError(
+            1,
+            cmd,
+            output="stdout detail",
+            stderr="GraphQL error: Service Unavailable (HTTP 503)\nsecond line",
+        )
+
+    with mock.patch("ai_review.subprocess.run", side_effect=fake_run) as run, mock.patch(
+        "ai_review.time.sleep"
+    ) as sleep:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is False
+    assert run.call_count == ai_review.COMMENT_POST_ATTEMPTS
+    assert sleep.call_args_list == [mock.call(2), mock.call(4)]
+    out = capsys.readouterr().out
+    assert "::warning::GitHub API Error (POST):" in out
+    assert "GraphQL error: Service Unavailable (HTTP 503)" in out
+    assert "stdout detail" in out
+    assert "second line" in out
+    # ::warning:: は 1 行で出力する必要がある（改行でコマンドが壊れるのを防ぐ）
+    assert "\nsecond line" not in out
 
 
 def test_post_review_comment_retries_graphql_transient_error_via_rest(tmp_path, monkeypatch):
-    """PR #206/207 の GraphQL 一時エラーを REST 経路のリトライで吸収する。"""
+    """GraphQL 一時エラー文言が出ても REST 経路でリトライして回復する。"""
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        if cmd[:3] == ["gh", "pr", "comment"]:
-            raise AssertionError("GraphQL posting path (gh pr comment) must not be used")
         if len(calls) == 1:
             raise _transient_post_error(cmd)
         return mock.Mock(returncode=0)
@@ -1512,6 +1545,37 @@ def test_publish_review_keeps_review_on_final_post_failure(tmp_path, monkeypatch
     assert "::warning::" in capsys.readouterr().out
 
 
+def test_write_review_failure_summary_escapes_llm_html(tmp_path, monkeypatch):
+    """LLM 本文の HTML（特に </details>）をエスケープし、summary の構造を壊さない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    review_text = "本文</details>脆弱 <b>太字</b>"
+    ai_review._write_review_failure_summary(review_text)
+    saved = summary.read_text(encoding="utf-8")
+    # 生の summary の閉じタグはラッパーの 1 つだけ（LLM 本文由来は残らない）
+    assert saved.count("</details>") == 1
+    assert "&lt;/details&gt;" in saved
+    assert "&lt;b&gt;" in saved
+    # HTML エンティティを戻せば本文を完全に取り出せる
+    assert review_text in html.unescape(saved)
+
+
+def test_publish_review_keeps_review_in_summary_when_file_write_fails(
+    tmp_path, monkeypatch, capsys
+):
+    """review.md が書けない場合も step summary に本文を残し、check を落とさない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    (tmp_path / "review.md").mkdir()  # ファイルではなくディレクトリにして open() を失敗させる
+    with mock.patch("ai_review.subprocess.run") as run:
+        assert (
+            ai_review._publish_review("保存失敗時の本文", "owner/repo", "42", None) is False
+        )
+    run.assert_not_called()
+    assert "保存失敗時の本文" in summary.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "::warning::" in out
+    assert "step summary" in out
+
+
 def _patch_review_dependencies(generation_result):
     """main() の生成フェーズを差し替える共通モック（diff は 1 ファイルの最小差分）。"""
     diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
@@ -1570,4 +1634,29 @@ def test_main_does_not_fail_when_comment_posting_fails(tmp_path, monkeypatch):
     assert run.call_count == ai_review.COMMENT_POST_ATTEMPTS
     assert "生成本文" in (tmp_path / "review.md").read_text(encoding="utf-8")
     assert "生成本文" in summary.read_text(encoding="utf-8")
+
+
+def test_main_new_comment_uses_rest_post_not_gh_pr_comment(tmp_path, monkeypatch):
+    """main() の新規コメント経路では gh pr comment を呼ばず REST POST を使う。"""
+    _set_review_env(monkeypatch, tmp_path)
+    generation = (
+        _FakeResponse("生成本文"),
+        "gemini-test-flash",
+        {"name": "gemini-test-flash", "input_cost_per_1m": None, "output_cost_per_1m": None},
+        None,
+        None,
+    )
+    patches = _patch_review_dependencies(generation)
+    with mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        for patcher in patches:
+            patcher.start()
+        try:
+            ai_review.main()  # SystemExit を出さないこと
+        finally:
+            for patcher in reversed(patches):
+                patcher.stop()
+    commands = [call.args[0] for call in run.call_args_list]
+    assert commands == [REST_POST_CMD]
+    assert not any(cmd[:3] == ["gh", "pr", "comment"] for cmd in commands)
+    assert run.call_args.kwargs["capture_output"] is True
 
