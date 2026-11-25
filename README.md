@@ -69,221 +69,152 @@ uv run hw-genie --help
 uv run hw-genie auth --list --debug
 ```
 
-### Arena（上位プレイヤーへの指定攻撃）
-
-Arena の順位・攻撃回数・保存チームを確認し、名前付きチームプリセットで **自分より上位** のプレイヤーを攻撃します。同順位・下位・順位不明の相手は拒否されます。
+### Arena（確認・チーム・攻撃）
 
 ```bash
-# 状態・トップ50ランキング（読み取りのみ）
+# 状態・ランキング
 uv run hw-genie arena status -a Alice
 uv run hw-genie arena top -a Alice --limit 20
 
-# チームプリセット（ゲーム保存チームの取り込み / 直接指定 / 一覧 / 削除）
-uv run hw-genie arena team set atk1 -a Alice --from-saved
-uv run hw-genie arena team set atk1 -a Alice \
+# 攻撃チームのプリセット
+uv run hw-genie arena team set auto -a Alice --from-saved
+uv run hw-genie arena team set auto -a Alice \
   --heroes 29 13 73 71 35 --pet 6008 --banner 2 --favor 13=6003
-uv run hw-genie arena team list -a Alice
-uv run hw-genie arena team remove atk1 -a Alice
 
-# 攻撃（--dry-run は候補確認・範囲チェックまで。arenaAttack は送りません）
-uv run hw-genie arena attack -a Alice --rank 10 --team atk1 --dry-run
-uv run hw-genie arena attack -a Alice --rank 10 --team atk1
-uv run hw-genie arena attack -a Alice --user-id 11111111 --dry-run
-
-# 対象が候補に現れにくい場合は候補リストの更新回数を増やす（既定10）
-uv run hw-genie arena attack -a Alice --rank 10 --team atk1 --candidate-retries 20
+# 攻撃（まず --dry-run）
+uv run hw-genie arena attack -a Alice --rank 10 --team auto --dry-run
+uv run hw-genie arena attack -a Alice --rank 10 --team auto
 ```
 
-- `--heroes` はちょうど5体（重複なし・ID < 6000）、`--pet` は任意（>= 6000）、`--banner` は任意、`--favor HERO=PATRON` は繰り返し可。
-- 優先順位: 直接指定 > `--team` プリセット > ゲーム保存チーム（heroes / pet / banner はフィールド単位で補完）。favor は明示指定 > プリセット > 同モードの保存 favor（選択ヒーロー一致分のみ、欠落は警告、空なら省略）。`--banner 0` はバナーなしとして扱います。
-- `topGet` はトップ50のみ（ページングなし）。`--user-id` も、対象が `topGet` または現在の候補 `arenaFindEnemies` に存在して順位を解決できる場合のみ指定できます（順位不明は exit 1）。
-- 通常攻撃では、実攻撃は **最新の `arenaFindEnemies` 候補にいる相手だけ** が受理されます（候補外は `NotAvailable`）。さらに `arenaCheckTargetRange` が `true`（1リクエスト最大3件）である必要があります。範囲チェック `true` は必要条件ですが、それだけでは攻撃できません。
-- 範囲チェックのウィンドウは **順位/リーグ依存** です。22位/34位では ±21 でしたが、Grand Arena 51位では5〜50位まで `true`（46位上）でした。±21 を固定ルールにしないでください。
-- 候補はトップ帯では1〜13位上が中心ですが、GA 51位では18〜24位（27〜33位上）も候補に現れました（読み取り確認）。`--candidate-retries N`（既定10）で候補リストを更新しながら対象の登場を待てます（`0` で初回のみ）。
-- `NotEnough` / `Refillable` は攻撃せず警告して exit 0。
-- `arenaAttack` は1回だけ送信し、自動リトライしません。タイムアウト等で結果不明の場合は、攻撃回数の二重消費を避けるため exit 1 でゲーム側での確認を促します。
-- API 仕様: `docs/api/ARENA_API.md` / エージェント向け手順: `.agents/skills/arena/SKILL.md`
+- 攻撃できるのは**自分より上位**の相手だけです。実攻撃は**最新の `arenaFindEnemies` 候補にいること**と `arenaCheckTargetRange=true` の両方が必要です。`--dry-run` は候補確認・範囲チェックまでで、`arenaAttack` は送りません。
+- 攻撃可能な上位幅は順位帯で変わります（下の折りたたみ参照）。`topGet` はトップ50のみです。
+- 詳細: [.agents/skills/arena/SKILL.md](.agents/skills/arena/SKILL.md) / [docs/api/ARENA_API.md](docs/api/ARENA_API.md)
 
-#### 手動検証（実験用スナップショット）
+<details><summary>チーム・攻撃・スナップショットの詳細</summary>
 
-```bash
-# arenaFindEnemies を1回だけ呼び、候補を account_configs.arena_snapshot に保存
-uv run hw-genie arena find-enemies -a Alice
+- `--heroes` はちょうど5体（重複なし・ID < 6000）。`--pet` / `--banner` / `--favor HERO=PATRON` は任意です。
+- プリセットは `arena team list -a <account>` / `arena team remove <name> -a <account>` で確認・削除できます。
+- 優先順位は「直接指定 > `--team` プリセット > ゲーム保存チーム」。heroes / pet / banner はフィールド単位で補完します。`--banner 0` は「バナーなし」です。
+- 実攻撃は候補にいる相手だけ受理されます。`--candidate-retries N`（既定10）で `arenaFindEnemies` を追加取得できます。
+- `arena find-enemies` は候補を1回取得して保存します。`arena snapshot` は保存候補と現在順位を表示し、`arenaFindEnemies` は呼びません。`arena attack --from-snapshot` は保存候補へ攻撃します（`--rank N` は保存スナップショットの順位で解決。現在トップ50在籍と上位のみを再確認し、`arenaCheckTargetRange=false` は `--force` 指定時のみ送信）。
+- 範囲ウィンドウは順位/リーグ依存です。±21 を固定ルールにせず、`arenaCheckTargetRange` の結果を優先してください。
+- `NotEnough` / `Refillable` は攻撃せず警告して終了します。`arenaAttack` は1回だけ送信し、結果不明時は再攻撃せずゲーム側での確認を促します。
+- 防衛編成は `arena status` の「Defense team」で確認できます。攻撃で防衛を変更するAPI（`arenaSetHeroes`）はこのツールから送信しません。
 
-# 保存した候補と現在の自分/相手の順位、CheckTargetRange を表示
-# （arenaFindEnemies は呼ばない）
-uv run hw-genie arena snapshot -a Alice
+</details>
 
-# スナップショットの相手を、候補を更新せずに攻撃
-uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1 --dry-run
-uv run hw-genie arena attack -a Alice --from-snapshot --rank 10 --team atk1
-```
+<details><summary>順位帯ごとの攻撃可能範囲（外部攻略情報）</summary>
 
-`--from-snapshot --rank N` は**保存済みスナップショットの順位**に対して `N` を解決します（現在の `arena top` の順位ではないため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは常に現在の `topGet` で再チェックし、対象が現在のトップ50にいない場合は順位を検証できないため攻撃しません。`arenaCheckTargetRange` が false の場合は既定で停止します。検証で必要な時だけ `--force` を付けてください（`--from-snapshot` との併用時のみ有効。上位のみの制約は解除されません）。`--candidate-retries` は使いません。
+| 自分の順位 | 攻撃可能な上位範囲 | 最大の上位差 |
+|---|---|---|
+| 1〜5 | 1〜4位 | 順位-1 |
+| 6〜14 | 1〜(自分-5)位 | 順位-1 |
+| 15〜49 | (自分-13)〜(自分-1)位 | 13 |
+| 50〜99 | (自分-33)〜(自分-27)位、および (自分-13)〜(自分-2)位 | 33 |
+| 100以上 | (自分-55)〜(自分-45)位、(自分-35)〜(自分-25)位、(自分-15)〜(自分-5)位 | 55 |
+
+- 例: 50位は17〜23位 / 37〜48位、100位は45〜55位 / 65〜75位 / 85〜95位。
+- バンド間には攻撃できない穴もあります。実際の可否は `arenaCheckTargetRange` と候補レスポンスを優先してください。
+- 出典: [h-w.fun アリーナとグランドアリーナの攻撃可能範囲](https://h-w.fun/arena-challenge-range/)。詳細は [docs/api/ARENA_API.md](docs/api/ARENA_API.md#攻撃可能範囲外部攻略情報)。
+
+</details>
 
 ### 戦闘ログコーパス（battle）
 
-`battleGetByType` は Arena / Grand Arena / ToE の戦闘リプレイを返します。リプレイには攻撃側・防衛側の完全な構成（ヒーロー、アーティファクト、ルーン、スキン、ペット、バナー効果）、`seed`、`serverVersion`、勝敗が含まれるため、シミュレーションなしで「同じ編成で勝てたか」を集計できます。
-
 ```bash
-# 直近20件のアリーナ戦闘を取り込み（重複は自動スキップ）
 uv run hw-genie battle import -a Alice --type arena --limit 20
-
-# 取り込まずに解析だけ行う
-uv run hw-genie battle import -a Alice --limit 20 --dry-run
-
-# 防衛者ごとの勝率（デフォルト）。--by matchup で編成の組み合わせ単位に集計
-# -a は「関与」ベース（そのアカウントが攻撃側/防衛側にいる行）。--game-version で版を絞り込み
 uv run hw-genie battle stats -a Alice --min-samples 2
-uv run hw-genie battle stats -a Alice --by matchup --game-version 298 --json
-
-# 対象の防衛編成に対する攻撃編成ランキング（読み取り専用）
-uv run hw-genie arena plan -a Alice --rank 10 --min-samples 3 --min-win-rate 1.0
+uv run hw-genie battle simulate -a Alice --type arena --limit 5 --dry-run
+uv run hw-genie battle watch -a Alice --once
+uv run hw-genie multi battle --parallel 2 --keep-days 90
 ```
 
-`arena plan` は同一防衛者の履歴を優先し、サンプル不足なら同一編成の他防衛者・他アカウントの履歴にフォールバックします。順位付けは Wilson 下限で、`--min-samples` / `--min-win-rate` を満たす候補だけ `REC` になり、`arenaAttack` は送りません。
+- `battleGetByType` のリプレイ（攻撃/防衛の全編成・ステータス、seed、勝敗）を保存し、防衛編成ごとの勝率や攻撃編成ランキング（`arena plan`）に使います。
+- `battleGetByType` の `limit` は最大20です。重複は replay id で自動スキップします。
+- HWAの `*.json.gz` も `battle import-hwa` で取り込めます。通常運用は `battle watch` または `multi battle` でAPIから自動保存できます。
+
+<details><summary>battle の詳細</summary>
+
+- `battle stats -a Alice` の `-a` は「関与」ベースです（攻撃側/防衛側のどちらかにそのアカウントがいる行）。勝率は常に攻撃側視点です。
+- `battle import-hwa --source <path> [--days 90|--since YYYY-MM-DD] [--offset N] [--limit N] [--no-sync]` はストリーミング取り込みです。HWAのpartial行は、後からの完全なAPI取り込みで同一行をupgradeします。
+- `battle watch` は各パス後に `--keep-days`（既定90日）より古い行を自動削除します。`--keep-days 0` / `--no-prune` は保持です。
+- `multi battle` は全アカウント分を取り込んだ後に1回pruneします。`--battle-types` / `--battle-limit`（最大20）/ `--keep-days` / `--no-prune` に対応します。
+- `battle prune --days N` は指定日より古いbattle行とcomparisonを削除します（`team_configs` は残します）。`--days 0` は全削除なので注意してください。
+- `multi power-tournament` など他のモードは [README の multi 節](README.md#コンテナ内での全アカウント一括実行並列) を参照してください。
+
+</details>
 
 ### 自動攻略（arena auto）
 
 ```bash
-# ギルド除外＋最上位ターゲットの提案（既定 dry-run、攻撃しない）
+# ギルド・自アカウントを除外し、ログのゲートを満たす相手を提案（既定 dry-run）
 uv run hw-genie arena auto -a Alice --min-samples 3 --min-win-rate 1.0
-
-# ゲートを満たした候補に攻撃（1回だけ）
-uv run hw-genie arena auto -a Alice --execute
-
-# 攻撃回数の上限を上げて連続で順位を上げる
 uv run hw-genie arena auto -a Alice --execute --max-attacks 5
 ```
 
-- 最新の `arenaFindEnemies` 候補から、**自分より上位・5体編成・登録済み自アカウント/ギルドメンバー以外**を抽出し、最上位（最小順位）から試します。gate を満たすプランが見つからない場合は候補を再取得します（`--candidate-retries`、既定10回）。
-- 既定では **`same_defender`（同一防衛者の実戦データ）プランのみ**を使います。同一防衛編成の他プレイヤー戦しかない場合は攻撃せず、`--allow-same-lineup` を付けたときだけフォールバックします（編成は同じでも実ステータスやfavorが異なるため、勝率が再現しないことがあります）。
-- 登録済みの自アカウントは DB の `player_id` で除外し、ギルドメンバーは `clanGetInfo.members` で除外します。クラン情報や登録アカウントの取得が失敗した場合は攻撃せず停止します。
-- 最上位に gate を満たすプランがなければ、次の上位候補へフォールバックします。防衛者ごとに推奨（`recommended`）プランを順にすべて試し、最初に編成が一致したプランを使います。攻撃した／gate を満たすプランがなかった／編成が一致しなかったターゲットは、同じ実行内で再選択・再クエリされません。
-- 攻撃編成はプラン（`attacker_lineup_key`）のヒーロー・ペット・バナーをそのまま使います。favor もプランが参照した最新の勝利編成（`favorPetId`）から取得し、解決後の編成がプランと一致しない場合は攻撃しません。ログに favor が無いヒーローは favor なしで送信します（保存済みチームの favor は流用しません）。勝率は `lineup_key` 単位の集計で、favor が異なる観測も含みます。favor は最新勝利編成による再現です。
-- 攻撃可能な上位幅は順位帯で変わります（外部攻略情報: 15〜49位は最大13、50〜99位は最大33、100位以上は最大55。例: 50位は17〜23位と37〜48位、100位は45〜55/65〜75/85〜95位）。`--min-gap` が現在の順位で原理的に不可能な場合は警告します。詳細・出典は [docs/api/ARENA_API.md](docs/api/ARENA_API.md#攻撃可能範囲外部攻略情報)。
-- `--min-samples` / `--min-win-rate` / `--game-version` が gate です。負けは既定で停止（`--no-stop-on-loss` で継続）。
-- `NotEnough` / `Refillable` で攻撃が送られなかった場合は攻撃回数に数えず、そのまま停止します。結果が不明な通信エラーは、二重攻撃を避けるため即座に中断します。
-- `--execute` を付けない限り `arenaAttack` は送りません。
+- 最新候補から**自分より上位・5体編成・登録済み自アカウント/ギルドメンバー以外**を選び、上位順にゲートを満たす攻撃編成を探します。
+- 既定では `same_defender`（同一防衛者の実戦）プランのみ。`--allow-same-lineup` で同一防衛編成の他プレイヤー戦まで許可しますが、実ステータスやfavorが異なるため勝率は再現されないことがあります。
+- プランが見つからない場合は `--candidate-retries`（既定10）まで候補を再取得します。負けは既定で停止します。
+
+<details><summary>arena auto の詳細</summary>
+
+- 攻撃編成はプランのheroes / pet / banner / favorをそのまま使い、解決後の編成が `attacker_lineup_key` と一致しない場合は攻撃しません。favorは最新の勝利編成から取得し、保存チームのfavorは流用しません。
+- ゲートは `--min-samples` / `--min-win-rate` / `--game-version` です。`same_defender` プランがなくても、`--allow-same-lineup` がなければ攻撃しません。
+- 攻撃した／プランがない／編成不一致のターゲットは同じ実行内で再選択しません。`NotEnough` / `Refillable` は攻撃回数に数えず停止し、結果不明の通信エラーは中断します。
+- `--execute` を付けるまで攻撃しません。
+
+</details>
 
 ### ターゲット監視（arena target-watch）
 
 ```bash
-# 攻撃用プリセットを登録（例: auto）
-uv run hw-genie arena team set auto -a Alice \
-  --heroes 29 73 35 48 52 --pet 6008 --banner 2 \
-  --favor 29=6011 --favor 35=6006 --favor 48=6005 --favor 52=6001 --favor 73=6004
-
-# 事前に3人を取得して監視（既定 dry-run、30秒間隔）
-uv run hw-genie arena target-watch -a Alice --team auto \
-  --target-heroes 46 62 71 35 70 --min-gap 15
-
-# 条件一致時に1回だけ攻撃
+# 既定モード: 最新候補を更新しながら、防衛一致＋--min-gap以上で1回攻撃
 uv run hw-genie arena target-watch -a Alice --team auto \
   --target-heroes 46 62 71 35 70 --min-gap 15 --execute
+
+# snapshotモード: 事前取得した候補を保持し、現在の最大攻撃幅を超えたら1回攻撃
+uv run hw-genie arena find-enemies -a Alice
+uv run hw-genie arena target-watch -a Alice --team auto \
+  --target-heroes 46 62 71 35 70 --from-snapshot --interval 60 --max-polls 240 --execute
 ```
 
-- 開始時に `arenaFindEnemies` から、**その時点で防衛ヒーロー集合が `--target-heroes` と一致する候補だけ**を最大3人選びます（`--capture-retries`、既定10回まで再取得して3人を集めます。3人未満なら警告、0人なら停止）。選んだ3人は実行中だけ保持し、共有スナップショットは上書きしません。`--from-snapshot` は事前の `arena find-enemies` スナップショットから一致する候補を選びます。
-- **自分の登録アカウント（全アカウント）とギルドメンバー（`clanGetInfo.members`）は対象から除外**します。除外は開始時と各ポーリングで再確認し、対象が途中でギルドに入った場合も攻撃しません。ただし `clanGetInfo` と `arenaAttack` の間の数秒でギルド加入した場合は追従できません。全ターゲットが除外された場合は監視を停止します（自動再取得はしません）。
-- `--from-snapshot` は**開始時から `arenaFindEnemies` を再取得しません**。`arena find-enemies` で保存した候補を使い、以降は `findEnemies` 以外の読み取り（`topGet` / `arenaGetAll` / `clanGetInfo` など）だけで監視し、**現在の順位の最大攻撃幅を超えた（out-of-band）ときだけ**保存候補へ攻撃します（トップ50在籍・防衛一致・上位のみ・自アカウント/ギルド除外は維持）。このモードでは `--min-gap` などの数値指定は不要です。手動で範囲外送信を試す場合は `arena attack --from-snapshot --force` を使えます。実測の `arena attack --from-snapshot` 50位→19位は rank50 のバンド内（17〜23位）なので、**out-of-band受理の証明ではありません**。このモードは攻撃Attemptの節約を狙う用途向けです。
-- 4時間監視する例: `--interval 60 --max-polls 240`（約3時間59分＋初回取得/API時間）。既定モードで15位以上の差を待つ用途にも使えます。
-- 以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定60秒。アリーナ攻撃は約1分に1回なので1分間隔で十分です）。開始時に候補が下位でも、自分の順位が下がる／相手が上がることで差が付けば攻撃対象になります。
-- `--max-polls N` は**ポーリング回数**の上限で、厳密な時間指定ではありません。実時間はおよそ `(N-1) × --interval` に初回取得・API時間を加えたものです。`--interval 10 --max-polls 18` なら約3分（170秒＋API時間）です。厳密な時間上限が必要ならシェルの `timeout` を使えますが、`arenaAttack` 送信中に強制終了すると結果不明になるため注意してください。
-- Ctrl+C は次のポーリング前に停止します。`arenaAttack` は1回だけ送信し、**送信中のリクエストは取り消せません**（二重攻撃防止のためリトライもしません）。
-- **既定モード**の攻撃条件は「対象が**最新の** `arenaFindEnemies` レスポンスにいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。**snapshotモード**は「トップ50にいる」「防衛一致」「out-of-band（差 > 現在の最大攻撃幅）」で判定します。
-- 候補の有効性: 実攻撃が受理されるのは **直近の `arenaFindEnemies` に含まれる候補**です。`arenaGetAll` / `arenaCheckTargetRange` など他のRPCを挟んでも失効しません（実攻撃で確認済み）が、再度 `arenaFindEnemies` を呼ぶと候補リストが更新されるため、`target-watch` は**同じポーリングで取得した最新リスト**に対して即座に攻撃します。古いリストの候補は、最新リストに再登場しない限り攻撃しません。
-- 条件を満たすとプリセットの編成で `arenaAttack` を**1回だけ**送り、そのまま終了します。`--execute` なしでも range check まで実行し、攻撃は送りません。
-- **防衛編成は読み取り専用**です。`target-watch` は `arenaSetHeroes` を送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、サーバー側で防衛が変わった場合は警告します（自動復元はしません）。
-- `arena status` は「防衛編成」と「保存済み攻撃編成」を分けて表示します。
+- 登録済み自アカウントとギルドメンバーは開始時・各ポーリングで除外します。
+- `--execute` を付けるまで攻撃しません（既定 dry-run）。
+- 既定モードは最新の `arenaFindEnemies` 候補にいること、防衛ヒーロー集合の一致、`--min-gap` 以上を満たすと1回だけ攻撃します。
+- `--from-snapshot` は **`arenaFindEnemies` を再取得しません**。現在の順位の最大攻撃幅を超えた（out-of-band）ときだけ、保存候補へ1回攻撃します。`--min-gap` などの数値指定は不要です。対象は現在のトップ50にいる必要があります。
+- 4時間監視は `--interval 60 --max-polls 240`。`Ctrl+C` は次のポーリング前に停止し、送信中の `arenaAttack` は取り消せません。
+
+<details><summary>target-watch の詳細</summary>
+
+- 既定モードは `--capture-retries`（既定10）まで `arenaFindEnemies` を再取得して、防衛一致候補を最大3人集めます。3人未満は警告、0人は停止します。
+- snapshotモードは `arena find-enemies` の保存候補を使い、`topGet` / `arenaGetAll` などで順位・防衛を監視します。共有スナップショットは上書きしません。out-of-bandなら現在の `arenaCheckTargetRange` が false でも送信します（上位のみ・防衛一致・除外は維持）。`topGet` の防衛が変わっていれば攻撃しません。
+- 実測の `arena attack --from-snapshot` 50位→19位は rank50 のバンド内（17〜23位）であり、**out-of-band受理の証明ではありません**。
+- 対象がトップ50外になると順位を検証できないため攻撃しません。100位以上のワイドバンドでも、トップ50外の相手は現状扱えません。
+- `--max-polls N` はポーリング回数の上限で、実時間はおよそ `(N-1) × --interval` に初回取得/API時間を加えたものです。
+- 詳細: [.agents/skills/arena/SKILL.md](.agents/skills/arena/SKILL.md)
+
+</details>
 
 ### Oracle パリティ（Phase 2-A）
 
 ```bash
-# ToE（自動で get_titanPvpManual）
-uv run hw-genie battle simulate -a Alice --type titan_arena --limit 10
-
-# Arena / Grand Arena（自動で get_pvp）
 uv run hw-genie battle simulate -a Alice --type arena --limit 10 --dry-run
-
-# getter 名を明示的に上書き
-uv run hw-genie battle simulate -a Alice --type arena --limit 1 \
-  --config-getter get_pvp --dry-run
-```
-
-- 常駐ヘッドレスページを1つ使い回し、`--recycle-every`（既定100）ごとに再生成します。`0` を指定すると再生成しません。
-- 結果は `source='sim'` として保存され、`battle stats` / `arena plan` の集計には混ざりません。`battle_comparisons` に実結果との一致/不一致が記録されます。未取り込みのリプレイは比較の FK 用に `api_import` として自動取り込みされます。
-- 複数防衛チームを持つリプレイ（`completeness="partial"`）は先頭チームのみを比較対象にするため、Grand Arena の複数チーム戦では結果の解釈に注意してください。
-- 取得したリプレイがコーパスに未登録の場合、比較の FK を作るため `source='api_import'` として自動的に取り込みます（副作用）。
-- `BattleConfigStorage` の getter は battle type から自動解決します（**arena / grand → `get_pvp`**、titan_arena → `get_titanPvpManual`、pvp_manual / challenge → `get_pvpManual`）。出典は [HWHelper / PvP corrector](https://github.com/gomboalvapore/HW) の `getBattleType` スイッチです。`--config-getter` で上書きできます。`battle config-getters` はゲームページから一覧を取得しますが、WAF でブロックされる場合は `--headed` と `--timeout` を付けて通常ウィンドウで実行してください（`--headed` の timeout 既定は 120 秒、通常は 30 秒）。この環境では arena/grand の live parity は未検証のため、自動解決時に stderr へ警告を出します。
-- アリーナの seed はサーバーが選ぶため、将来の予測は「全 seed で勝つ」ではなく統計的保証になります。
-
-### Seed スイープ（統計的勝率）
-
-```bash
 uv run hw-genie battle simulate -a Alice --type arena --limit 5 --seeds 10 --dry-run
 ```
 
-- 観測 seed は実リプレイと比較し、追加 seed は決定的に生成して勝率を推定します。`--seeds N` は**観測分を含む合計 N 回**で、`sweep_*` も観測結果を含みます。
-- 追加 seed の結果は `source='sim'` の別行（`<battle_id>#seed=<seed>`）として保存され、`battle stats` / `arena plan` には混ざりません。
-- Arena は seed をクライアントが選べないため、`--seeds` の結果は統計的推定です。
+- 常駐ヘッドレスPlaywrightでリプレイを再シミュレーションし、実結果との一致/不一致を `battle_comparisons` に記録します。
+- getterは自動解決します（arena/grand → `get_pvp`、titan_arena → `get_titanPvpManual`、pvp_manual/challenge → `get_pvpManual`）。`--config-getter` で上書きできます。
+- この環境ではAWS WAFによりライブのbrowser parityが未検証です。`--headed` / `--timeout` が必要な場合があります。
 
-`lineup_key` は「ヒーロー（リプレイ順）＋ペット＋バナー」だけで作り、パワーやステータスの変化を無視します。`config_hash` はステータス込みの完全一致用です。ヒーローの並び順はリプレイの dict 順を採用しています（ゲームが明示的な位置フィールドを返さないため）。
+<details><summary>Oracle の詳細</summary>
 
-### HWA スナップショットの取り込み
+- `--seeds N` は観測seed＋N-1個の決定的seedで再シミュレーションし、`sweep_*` を返します。追加seedは `source='sim'` の別行として保存され、stats/planから除外されます。
+- sim行は `battle stats` / `arena plan` に混ざりません。未取り込みリプレイは比較用に `api_import` として自動取り込みされます。
+- `battle config-getters` はゲームページからgetter一覧を取得します。WAFでブロックされる場合は `--headed` と `--timeout` を付けてください。
+- アリーナのseedはサーバーが選ぶため、予測は「全seedで勝つ」ではなく統計的保証になります。
 
-HWAssistant（HWA）の「DBを保存」で出力した `*.json.gz` をストリーミングで取り込めます。
+</details>
 
-```bash
-uv run hw-genie battle import-hwa -a Alice \
-  --source /path/to/hwa-db-2026-10-30.json.gz \
-  --types arena,grand --days 90 --no-sync
-
-# 大きいスナップショットを分割（日付フィルタ後の件数で offset/limit）
-uv run hw-genie battle import-hwa -a Alice \
-  --source /path/to/hwa-db-2026-10-30.json.gz \
-  --days 90 --offset 0 --limit 1000 --no-sync
-```
-
-- `arena_replays` と `ga_replays`（Bo3 は各バトルに展開）を取り込みます。`other_replays` / war 系は対象外です。id を持たない GA サブバトルは `{series_key}-{index}-<startTime>-<seed>-<order>` 形式のコンテンツ依存フォールバック id で保存されます（リスト形式のセクションでは series key が `list-<position>` になります）。
-- 既定では**直近90日**のみ取り込みます（`--days 90`）。全期間は `--days 0`、期間指定は `--since YYYY-MM-DD`。古いバトルは `filtered` として集計されます。
-- `--offset` / `--limit` は日付フィルタ後の件数で分割します。再実行しても重複はスキップされます。
-- アカウントは `userId` / `typeId` が登録済み `player_id` と一致するものに自動で紐付き、一致しない場合は `-a` のアカウントに紐付きます。
-- HWA のヒーローは圧縮配列のため、`lineup_key` は API 取り込みと一致しますが、`battle_records.completeness` と `team_configs.completeness` はともに `partial` になり、`config_hash` も partial 構成のハッシュです。
-- 観測ソース（`api_import` / `hwa_import` / `attack`）は replay id で重複排除します。`source='hwa_import'` の partial 行が先にあり、後から同じ replay id の**完全な**（`completeness='full'`）API リプレイを取り込んだ場合のみ、行を `api_import` の完全な構成へ in-place で upgrade します（`upgraded` として集計）。`ids_only` の API リプレイは HWA のデータを置き換えず重複として扱います。upgrade しても取り込み元アカウント（`account_id` / `viewer_role`）は元の行のまま保持します（統計は関与ベースで、`battle_comparisons` の FK も変わらないため）。
-- 大規模取り込みでは `--no-sync` を推奨します（接続ごとの Turso 同期を止め、最後に1回同期）。終了後に `hw-genie sync` でも構いません。`--json --no-sync` では stdout は JSON のみに保たれ、同期に失敗しても元の例外を隠さず、`replica sync failed; run \`hw-genie sync\`` を stderr に出力します。
-
-### 古いデータの削除（prune）
-
-```bash
-# まず dry-run で件数確認
-uv run hw-genie battle prune --days 90 --dry-run
-
-# 90日より古い battle 行と comparison を削除
-uv run hw-genie battle prune --days 90
-```
-
-- 既定は90日より古い `battle_records` と、それに紐づく `battle_comparisons` を削除します。`--before YYYY-MM-DD` でも指定できます。
-- `--days 0` は**全件削除**です（実行時に警告を表示）。通常は `--dry-run` で件数を確認してください。
-- `team_configs` は新しい battle から参照され得るため残します。
-
-### 自動取り込み（watch）
-```bash
-# 5分ごとに arena/grand を巡回して新規分だけ取り込む（Ctrl+C で終了）
-uv run hw-genie battle watch -a Alice --types arena,grand --interval 300
-
-# 既定90日より古い行を各パス後に自動削除（--no-prune で無効）
-uv run hw-genie battle watch -a Alice --interval 300 --keep-days 90
-
-# 1回だけ（cron 用）
-uv run hw-genie battle watch -a Alice --once
-
-# 全アカウント一括（取り込み後に1回 prune）
-uv run hw-genie multi battle --parallel 2 --keep-days 90
-```
-
-HWA のブラウザ側監視の代わりに、`battleGetByType` を定期ポーリングして新規リプレイを自動でコーパスへ追加します。`--limit` / `--offset` は `battleGetByType` に渡します（`limit` はAPI上限の20まで。CLI既定も20）。`--once` で全 type が失敗した場合は exit 1、1つでも成功すれば 0 です。`battle watch` は各パス後に `--keep-days`（既定90日）より古い行を自動削除します。`multi battle` は全アカウント分を取り込んだ後に1回だけ prune します。
-
-勝率は常に**攻撃側視点**です（防衛側から取り込んだリプレイでも攻撃側の勝敗として記録されます）。そのため `-a Bob` は「Bob が関与した戦闘」を意味し、Bob 自身の勝率ではありません。
 ### Challenge（フレンドリーチャレンジ）
 
 個人チャットのフレンドリーチャレンジ（`chatSendChallenge` / `chatAcceptChallenge`）を自動化します。

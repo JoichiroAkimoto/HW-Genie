@@ -9,6 +9,7 @@ from functools import partial
 from hw_genie.core.client import (
     HWClient,
     AccountResolutionError,
+    Emojis,
     resolve_account,
 )
 from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl, extract_payload_from_curl
@@ -2344,7 +2345,7 @@ def cmd_multi(args):
                             )
                         else:
                             print(
-                                f"🧹 Pruned {pruned.deleted} battle(s), "
+                                f"{Emojis.INFO}Pruned {pruned.deleted} battle(s), "
                                 f"{pruned.comparisons} comparison(s) older than "
                                 f"{pruned.before.date().isoformat()}",
                                 flush=True,
