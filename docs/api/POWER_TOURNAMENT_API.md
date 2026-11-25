@@ -109,8 +109,8 @@ Content-Type: application/json; charset=UTF-8
     "result": {
       "response": {
         "users": {
-          "1": {"id": "1", "name": "Alice", "lastLoginTime": "1700000000", "level": "130"},
-          "2": {"id": "2", "name": "Bob", "lastLoginTime": "1700000100", "level": "130"}
+          "1": {"id": "1", "name": "Alice", "lastLoginTime": "1700000000", "level": "130", "serverId": "161", "clanId": "123"},
+          "2": {"id": "2", "name": "Bob", "lastLoginTime": "1700000100", "level": "130", "serverId": "9", "clanId": "456"}
         },
         "points": {"1": 500, "2": 900},
         "rewards": [
@@ -125,7 +125,7 @@ Content-Type: application/json; charset=UTF-8
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `users` | object | userId → プロフィール。`name` と `lastLoginTime`（Unix 秒）を含む |
+| `users` | object | userId → プロフィール。`name` / `lastLoginTime` / `serverId` / `clanId` を含む。`power`（または `sumPower`）や `todayActivity` / `activitySum` 等が含まれる場合はそれらも読む |
 | `points` | object | userId → イベントポイント |
 | `rewards` | array | 順位ごとの最終ランキング報酬表（`place` → `reward`） |
 
@@ -136,6 +136,29 @@ Content-Type: application/json; charset=UTF-8
 
 `points` が無い / object でない `getGroupInfo` の成功応答は、空ランキングではなく
 異常応答として扱い、エラー表示（失敗計上）にします（`points: {}` は正当な空ランキング）。
+
+### メンバー統計（Activity / Titanite / Prestige）
+
+実測した Titan 開催の `users` には `serverId` はありますが、power / activity /
+titanite / prestige は含まれていませんでした。`hw-genie` は `users` にこれらの
+フィールドがあれば優先し、無い場合は各プレイヤーの `clanId` で
+`clanGetInfo {"clanId": <id>}` を呼び、`membersStat` から補完します。
+
+```json
+{"calls":[{"name":"clanGetInfo","args":{"clanId":"123"},"context":{"actionTs":0},"ident":"clan_123"}]}
+```
+
+`membersStat[]` の対応:
+
+| 表示 | フィールド |
+|---|---|
+| Activity Today / Week | `todayActivity` / `activitySum` |
+| Titanite Today / Week | `todayDungeonActivity` / `dungeonActivitySum` |
+| Prestige Today / Week | `todayPrestige` / `prestigeSum` |
+
+総合パワーはこれらの API では取得できないため `-` 表示です（`users` に
+`power` / `sumPower` がある場合だけ表示されます）。clan 取得に失敗しても
+ランキング自体は成功し、取得できなかった列は `-`、警告行が表示されます。
 
 ---
 
