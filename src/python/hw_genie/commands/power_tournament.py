@@ -40,6 +40,7 @@ from hw_genie.core.utils import (
     display_width,
     format_number_with_suffix,
     pad,
+    rank_color,
     style,
 )
 
@@ -833,10 +834,15 @@ def run_power_tournament(
             own_user_id=result.own_user_id,
             power_field=power_field,
         )
-        result.ranking = entries[:top]
-        result.own_place = next(
-            (entry.place for entry in entries if entry.is_self), None
-        )
+        top_entries = entries[:top]
+        own_entry = next((entry for entry in entries if entry.is_self), None)
+        if own_entry is not None and all(
+            entry.user_id != own_entry.user_id for entry in top_entries
+        ):
+            result.ranking = [*top_entries, own_entry]
+        else:
+            result.ranking = top_entries
+        result.own_place = own_entry.place if own_entry is not None else None
     except HWAuthError:
         raise
     except Exception as exc:  # noqa: BLE001 - state/claims already done
@@ -1037,13 +1043,26 @@ def _render_rank_table(entries: list[TournamentRankEntry], *, now: int | None) -
             pad(cell, width, ambiguous_wide=False)
             for cell, width in zip(cells[:-1], widths[:-1])
         ]
+        # Rank color follows the shared arena convention (1 gold, 2-14 green);
+        # the own row is cyan/bold so it stands out even when it is appended
+        # below the top N.
+        padded[0] = style(
+            padded[0],
+            fg=rank_color(entry.place),
+            bold=entry.place == 1,
+        )
+        padded[1] = style(
+            padded[1],
+            fg="cyan" if entry.is_self else rank_color(entry.place),
+            bold=entry.is_self or entry.place == 1,
+        )
         # ``← you`` is appended after the padded Seen cell, so it never widens
         # the table (and is excluded from the measured column widths).
         seen = style(
             pad(cells[-1], widths[-1], ambiguous_wide=False),
             fg=_age_color(entry.last_login_ts, now=now),
         )
-        marker = style(" ← you", bold=True) if entry.is_self else ""
+        marker = style(" ← you", bold=True, fg="cyan") if entry.is_self else ""
         print("  " + " | ".join(padded) + " | " + seen + marker)
 
 

@@ -1,6 +1,6 @@
 ---
 name: power-tournament
-description: HW-Genie を使用して Power Tournament（Hero / Titan）の状態とグループ上位5名（ポイント・パワー・サーバー・最終ログイン・Activity/Titanite/Prestige）をアカウントごとに表示し、受取可能な報酬を受け取ります。
+description: HW-Genie を使用して Power Tournament（Hero / Titan）の状態とグループ上位 N 名（既定5、ポイント・パワー・サーバー・最終ログイン・Activity/Titanite/Prestige）をアカウントごとに表示し、受取可能な報酬を受け取ります。
 ---
 # Power Tournament Skill (HW-Genie 版)
 
@@ -31,6 +31,8 @@ description: HW-Genie を使用して Power Tournament（Hero / Titan）の状�
 - ランキング取得に失敗しても、状態表示と報酬受取は実行されます。そのアカウントは失敗として exit 1 になります。クラン統計の取得失敗は警告のみで、ランキングは表示されます。
 - イベント未開催（`NotAvailable`）は正常終了（exit 0）です。
 - 最終ランキング報酬は自動受取しません（`finalRewardFarmed` は表示のみ）。イベント終了後にゲーム内で受け取ってください。
+- ランキング表は上位 N 名（既定5）に自分を加えて表示します。自分が上位 N 名に入っている場合は重複させず N 行のまま、入っていない場合は実際の順位で末尾に 1 行追加します（既定6行）。
+- 色分け: 1位は黄色、2〜14位は緑、自分の行は名前と `← you` をシアン＋太字で強調します。
 - イベント終了間際の監視には `--dry-run` を繰り返し使えます。受取は冪等です。
 
 ## 出力例
@@ -52,7 +54,7 @@ description: HW-Genie を使用して Power Tournament（Hero / Titan）の状�
 
 ## 完了後の報告
 - 開催種別・自分の順位/ポイント
-- 上位5名のポイント・パワー・サーバー・最終ログイン、Activity/Titanite/Prestige（Today/Week）
+- 上位 N 名（既定5、自分を含む）のポイント・パワー・サーバー・最終ログイン、Activity/Titanite/Prestige（Today/Week）
 - 受取済み／未受取件数（received / unreceived）と失敗件数
 - `multi` の場合はアカウント別ブロックと失敗一覧
 

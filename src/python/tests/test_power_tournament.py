@@ -1322,6 +1322,118 @@ def test_fetch_member_stats_promotes_batched_auth_error(mock_client, mock_sleep)
         fetch_member_stats(client, entries)
 
 
+def _six_user_group():
+    users = {
+        str(i): {"id": str(i), "name": f"P{i}", "titansPower": 1}
+        for i in range(1, 7)
+    }
+    points = {str(i): (7 - i) * 100 for i in range(1, 7)}
+    return {"users": users, "points": points, "rewards": []}
+
+
+def test_run_appends_self_when_outside_top(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _state_res(),
+        _res(_six_user_group()),
+        _user_res("6"),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    assert [entry.user_id for entry in result.ranking] == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+    ]
+    assert result.ranking[-1].is_self is True
+    assert result.own_place == 6
+
+
+def test_run_does_not_duplicate_self_in_top(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _state_res(),
+        _res(_six_user_group()),
+        _user_res("2"),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    assert len(result.ranking) == 5
+    assert sum(1 for entry in result.ranking if entry.is_self) == 1
+    assert result.own_place == 2
+
+
+def test_appended_self_is_enriched(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    users = {
+        str(i): {"id": str(i), "name": f"P{i}", "titansPower": 1}
+        for i in range(1, 6)
+    }
+    users["6"] = {"id": "6", "name": "P6", "clanId": "42"}
+    points = {str(i): (7 - i) * 100 for i in range(1, 7)}
+    group = {"users": users, "points": points, "rewards": []}
+    mock_call.side_effect = [
+        _state_res(),
+        _res(group),
+        _user_res("6"),
+        _res(
+            {
+                "items": [
+                    {
+                        "user": {
+                            "id": "6",
+                            "heroesPower": "100",
+                            "titansPower": "50",
+                        }
+                    }
+                ]
+            }
+        ),
+        _res(
+            {
+                "membersStat": [
+                    {
+                        "userId": "6",
+                        "todayActivity": 10,
+                        "activitySum": 100,
+                        "todayDungeonActivity": 1,
+                        "dungeonActivitySum": 20,
+                        "todayPrestige": 3,
+                        "prestigeSum": 30,
+                    }
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=5, dry_run=True
+    )
+
+    self_entry = result.ranking[-1]
+    assert self_entry.user_id == "6"
+    assert self_entry.is_self is True
+    assert self_entry.power == 50
+    assert self_entry.stats is not None
+    assert self_entry.stats.activity_today == 10
+    assert result.enrichment_error is None
+
+
 def test_run_enriches_stats_from_clan(mock_client, mock_sleep):
     from hw_genie.commands.power_tournament import run_power_tournament
 
@@ -1474,6 +1586,47 @@ def test_render_shows_stats_power_and_server(capsys):
     assert "10/100" in out
     assert "1/20" in out
     assert "3/30" in out
+
+
+def test_render_colors_rank_and_self(monkeypatch, capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Bob", 100, 1_700_000_000),
+            TournamentRankEntry(
+                2, "2", "Alice", 90, 1_700_000_000, is_self=True
+            ),
+        ],
+    )
+
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+
+    assert "\x1b[1;33m" in out  # rank 1 (yellow, bold)
+    assert "\x1b[32m" in out  # rank 2 (green)
+    assert "\x1b[1;36mAlice" in out  # self name (cyan, bold)
+    assert "\x1b[1;36m ← you" in out  # own row marker (cyan, bold)
+
+    plain = [_plain(line) for line in out.splitlines()]
+    table = [
+        line
+        for line in plain
+        if line.startswith("  ") and line.lstrip()[:1] in "#0123456789"
+    ]
+    normalized = [line.split(" ← you")[0] for line in table]
+    assert len({display_width(line, ambiguous_wide=False) for line in normalized}) == 1
 
 
 def test_render_shows_enrichment_error_as_warning(capsys):
