@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import ExitStack
 from unittest import mock
 
 import pytest
@@ -1947,4 +1948,180 @@ def test_main_new_comment_uses_rest_post_not_gh_pr_comment(tmp_path, monkeypatch
     assert commands == [REST_POST_CMD]
     assert not any(cmd[:3] == ["gh", "pr", "comment"] for cmd in commands)
     assert run.call_args.kwargs["capture_output"] is True
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter フォールバックの reasoning / キー回転 / 途中終了通知
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_fallback_reasoning_uses_openrouter_free_default():
+    """Gemini プライマリに reasoning_effort が無くても openrouter-free の既定を使う。"""
+    config = {"openrouter-free": {"reasoning_effort": "high"}}
+    assert ai_review._openrouter_fallback_reasoning(None, config) == "high"
+    assert ai_review._openrouter_fallback_reasoning("auto", config) == "high"
+    # 明示 --effort が最優先、off 系は尊重
+    assert ai_review._openrouter_fallback_reasoning("low", config) == "low"
+    assert ai_review._openrouter_fallback_reasoning("off", config) is None
+    # 設定が無ければ None（従来どおり）
+    assert ai_review._openrouter_fallback_reasoning(None, {}) is None
+
+
+def _run_main_gemini_to_openrouter(
+    tmp_path, monkeypatch, additional_context=None, *, response=None
+):
+    """hydrogen プライマリ + Gemini 全滅 -> OpenRouter 成功を main() で再現する。"""
+    _set_review_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MODEL_KEY", "hydrogen")
+    if additional_context is None:
+        monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ADDITIONAL_CONTEXT", additional_context)
+
+    if response is None:
+        response = ai_review.OpenRouterResponse(text="OpenRouter 本文")
+    seen_efforts = []
+
+    def fake_generate(model, prompt, system_instruction, keys, reasoning_effort=None):
+        seen_efforts.append(reasoning_effort)
+        return response
+
+    diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(ai_review, "_collect_gemini_keys", return_value=["key"]))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_collect_openrouter_keys", return_value=["or-key"])
+        )
+        stack.enter_context(
+            mock.patch.object(ai_review.subprocess, "check_output", return_value=diff.encode())
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
+        stack.enter_context(
+            mock.patch.object(
+                ai_review,
+                "_generate_with_model_chain",
+                return_value=(None, None, None, None, Exception("Gemini 全滅")),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate)
+        )
+        run_pass = stack.enter_context(
+            mock.patch.object(
+                ai_review, "_run_openrouter_pass", wraps=ai_review._run_openrouter_pass
+            )
+        )
+        stack.enter_context(
+            mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0))
+        )
+        ai_review.main()  # SystemExit を出さないこと
+    return run_pass, seen_efforts, (tmp_path / "review.md").read_text(encoding="utf-8")
+
+
+def test_main_openrouter_fallback_sends_default_reasoning_without_effort(tmp_path, monkeypatch):
+    """--effort 未指定でも openrouter-free の high がフォールバックで送られる。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(tmp_path, monkeypatch)
+    assert run_pass.call_count == 1
+    # 第 5 引数が reasoning_effort（プライマリ hydrogen の None ではない）
+    assert run_pass.call_args.args[4] == "high"
+    assert seen == ["high"]
+    assert "reasoning: high （既定）" in review
+
+
+def test_main_openrouter_fallback_honors_explicit_effort(tmp_path, monkeypatch):
+    """明示 --effort はフォールバックでも最優先され、表示にも出所が出る。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(
+        tmp_path, monkeypatch, "@gemini-cli /quick-review --effort low"
+    )
+    assert run_pass.call_args.args[4] == "low"
+    assert seen == ["low"]
+    assert "reasoning: low （--effort 指定）" in review
+
+
+def test_main_openrouter_fallback_respects_effort_off(tmp_path, monkeypatch):
+    """--effort off はフォールバックでも reasoning を送らない。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(
+        tmp_path, monkeypatch, "@gemini-cli /quick-review --effort off"
+    )
+    assert run_pass.call_args.args[4] is None
+    assert seen == [None]
+    assert "reasoning なし" in review
+
+
+def test_generate_with_openrouter_empty_content_does_not_rotate_keys():
+    """空本文はキーを変えても改善しないため、残りキーを回さない。"""
+    data = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}], "usage": {}}
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        with pytest.raises(Exception, match="empty content"):
+            ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k1", "k2"], "high")
+    assert post.call_count == 1
+
+
+def test_run_openrouter_pass_empty_content_skips_keys_of_same_model():
+    """空本文/length なら同一モデルの残りキーを飛ばし、次のモデルへ移る。"""
+    data = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {}}
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        resp, model, used_effort, exc = ai_review._run_openrouter_pass(
+            ["model-a", "model-b"], "p", "s", ["k1", "k2", "k3"], None
+        )
+    assert resp is None and model is None and used_effort is None
+    assert exc is not None and "empty content" in str(exc)
+    assert post.call_count == 2  # モデルごとに 1 回だけ（キー回転なし）
+
+
+def test_generate_with_openrouter_length_finish_reason_marks_truncated():
+    """本文あり + finish_reason=length は本文を保持し truncated を立てる。"""
+    data = {
+        "choices": [{"message": {"content": "途中までの本文"}, "finish_reason": "length"}],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+    assert resp.text == "途中までの本文"
+    assert resp.truncated is True
+
+
+def test_generate_with_openrouter_normal_finish_reason_not_truncated():
+    """通常終了なら truncated は False。"""
+    data = {
+        "choices": [{"message": {"content": "完整な本文"}, "finish_reason": "stop"}],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+    assert resp.truncated is False
+
+
+def test_build_execution_metadata_openrouter_truncated_notice():
+    """途中終了レスポンスは実行情報に注記を出し、平常時は出さない。"""
+    mock_resp = mock.MagicMock()
+    mock_resp.model_version = None
+    mock_resp.usage_metadata = None
+    mock_resp._retry_count = 0
+
+    def build(truncated):
+        return ai_review.build_execution_metadata(
+            model_name="openrouter/free",
+            resolved_model_name="openrouter/free",
+            model_info={"name": "openrouter/free"},
+            response=mock_resp,
+            files_modified_count="N/A",
+            duration=1.0,
+            response_truncated=truncated,
+        )
+
+    assert "途中終了" in build(True)
+    assert "途中終了" not in build(False)
+
+
+def test_main_openrouter_fallback_reports_truncated_body(tmp_path, monkeypatch):
+    """フォールバックで途中終了した本文が投稿本文と実行情報の両方に残る。"""
+    response = ai_review.OpenRouterResponse(text="途中本文", truncated=True)
+    _, _, review = _run_main_gemini_to_openrouter(tmp_path, monkeypatch, response=response)
+    assert "途中本文" in review
+    assert "途中終了" in review
 

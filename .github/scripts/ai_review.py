@@ -756,11 +756,14 @@ class OpenRouterResponse:
         usage_metadata: _OpenRouterUsage | None = None,
         model_version: str | None = None,
         retry_count: int = 0,
+        truncated: bool = False,
     ) -> None:
         self.text = text
         self.usage_metadata = usage_metadata
         self.model_version = model_version
         self._retry_count = retry_count
+        # finish_reason=length で本文が途中終了した場合に True（実行情報に注記する）
+        self.truncated = truncated
         self.candidates: list = []
 
 
@@ -782,6 +785,19 @@ def _openrouter_reasoning(effort: str | None, model_info: dict) -> str | None:
         if value in ("minimal", "low", "medium", "high"):
             return value
     return None
+
+
+def _openrouter_fallback_reasoning(thinking_effort: str | None, model_config: dict) -> str | None:
+    """Gemini→OpenRouter フォールバックで送る ``reasoning.effort`` を解決する。
+
+    プライマリの ``model_info``（例: ``hydrogen``）は ``thinking_level`` のみで
+    ``reasoning_effort`` を持たないため、その値をそのまま使うと ``--effort``
+    未指定のときフォールバックで reasoning が一切送られない。
+    フォールバックでは models.json の ``openrouter-free.reasoning_effort`` を
+    既定として使う。``--effort`` 指定が最優先、off 系は尊重される。
+    """
+    openrouter_info = model_config.get("openrouter-free") or {}
+    return _openrouter_reasoning(thinking_effort, openrouter_info)
 
 
 def _reasoning_payload(model_name: str, effort: str | None) -> dict | None:
@@ -1019,13 +1035,18 @@ def _generate_with_openrouter(
 
                 if not isinstance(text, str) or not text.strip():
                     if finish_reason == "length":
-                        raise Exception(
+                        err = Exception(
                             "OpenRouter returned empty content "
                             "(finish_reason: length, 出力がトークン予算に達して途中終了)"
                         )
-                    raise Exception(
-                        f"OpenRouter returned empty content (finish_reason: {finish_reason or 'none'})"
-                    )
+                    else:
+                        err = Exception(
+                            f"OpenRouter returned empty content (finish_reason: {finish_reason or 'none'})"
+                        )
+                    # 空本文は API キーを変えても改善しない。同一モデルの残りキーは
+                    # 回さず、呼び出し側のモデル間フォールバックへ委ねる。
+                    err.no_retry = True  # type: ignore[attr-defined]
+                    raise err
 
                 usage_raw = data.get("usage") or {}
                 prompt_tokens = usage_raw.get("prompt_tokens")
@@ -1064,6 +1085,7 @@ def _generate_with_openrouter(
                     usage_metadata=usage,
                     model_version=model_version,
                     retry_count=attempt,
+                    truncated=(finish_reason == "length"),
                 )
                 # 成功ログ
                 print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} succeeded (model={model_name})")
@@ -1072,6 +1094,11 @@ def _generate_with_openrouter(
             except Exception as e:
                 retryable, code = _is_retryable_api_error(e)
                 last_exc = e
+                if getattr(e, "no_retry", False):
+                    # 空本文 / length 途中終了はキー回転・再試行でも改善しないため、
+                    # 即座に呼び出し側へ戻し、次のフォールバックモデルへ進ませる。
+                    print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed ({e}); skipping remaining keys")
+                    raise
                 is_last_key = key_idx == len(api_keys) - 1
                 is_last_attempt = attempt >= MAX_ATTEMPTS - 1
                 if not retryable:
@@ -1140,6 +1167,7 @@ def build_execution_metadata(
     duration: float = 0.0,
     previous_exec_info: str = "",
     is_truncated: bool = False,
+    response_truncated: bool = False,
     repo: str = "",
     server_url: str = "https://github.com",
     run_id: str | None = None,
@@ -1233,6 +1261,11 @@ def build_execution_metadata(
     # 7. 切り詰め警告
     if is_truncated:
         metadata += "- **ステータス**: ⚠️ 差分が長すぎるため切り詰められました。\n"
+    if response_truncated:
+        metadata += (
+            "- **ステータス**: ⚠️ AI の出力が途中終了しました "
+            "(finish_reason: length)。本文が途中までで終わっている可能性があります。\n"
+        )
 
     metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
     return metadata
@@ -1783,6 +1816,11 @@ def main():
         # 成功後に model_info が OpenRouter 結果用の dict へ差し替わるため、
         # models.json の reasoning_effort を参照した解決は差し替え前に行う。
         initial_reasoning_effort = _openrouter_reasoning(thinking_effort, model_info)
+        # Gemini 全滅後の OpenRouter フォールバック用。プライマリの model_info は
+        # reasoning_effort を持たないことがあるため、openrouter-free の既定を使う。
+        fallback_reasoning_effort = _openrouter_fallback_reasoning(
+            thinking_effort, model_config
+        )
 
         if is_openrouter_primary:
             if not openrouter_keys:
@@ -1849,7 +1887,7 @@ def main():
                 prompt,
                 system_instruction,
                 openrouter_keys,
-                initial_reasoning_effort,
+                fallback_reasoning_effort,
             )
             if or_resp is not None:
                 response = or_resp
@@ -1931,6 +1969,7 @@ def main():
             duration=duration,
             previous_exec_info=previous_exec_info,
             is_truncated=is_truncated,
+            response_truncated=getattr(response, "truncated", False) is True,
             repo=repo,
             server_url=server_url,
             run_id=run_id,
