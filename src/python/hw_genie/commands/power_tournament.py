@@ -34,7 +34,12 @@ from hw_genie.core.client import (
     ResponseStatus,
     _safe_int,
 )
-from hw_genie.core.utils import display_width, format_number_with_suffix, pad, style
+from hw_genie.core.utils import (
+    display_width,
+    format_number_with_suffix,
+    pad,
+    style,
+)
 
 DEFAULT_TOP = 5
 MAX_TOP = 50
@@ -492,7 +497,7 @@ def _clip(text: str, width: int) -> str:
     out: list[str] = []
     used = 0
     for ch in text:
-        w = display_width(ch)
+        w = display_width(ch, ambiguous_wide=False)
         if used + w > width:
             break
         out.append(ch)
@@ -510,18 +515,36 @@ _RANK_COLUMNS = (
 
 
 def _render_rank_table(entries: list[TournamentRankEntry], *, now: int | None) -> None:
-    header = "  " + " | ".join(pad(title, width) for title, width in _RANK_COLUMNS)
+    # Player names are commonly Cyrillic/Greek, which terminals render one
+    # column wide; the layout therefore counts East Asian Ambiguous chars as 1
+    # (the reverse trade-off of the default CJK policy in core.utils).
+    header = "  " + " | ".join(
+        pad(title, width, ambiguous_wide=False) for title, width in _RANK_COLUMNS
+    )
     print(style(header, bold=True, fg="cyan"))
-    print(style("  " + "-" * (len(header) - 2), dim=True))
+    rule = "  " + "-" * (display_width(header, ambiguous_wide=False) - 2)
+    print(style(rule, dim=True))
     for entry in entries:
         name = _clip(entry.name, _RANK_COLUMNS[1][1])
         cells = [
-            pad(str(entry.place), _RANK_COLUMNS[0][1]),
-            pad(name, _RANK_COLUMNS[1][1]),
-            pad(format_number_with_suffix(entry.points), _RANK_COLUMNS[2][1]),
-            pad(_format_epoch(entry.last_login_ts), _RANK_COLUMNS[3][1]),
+            pad(str(entry.place), _RANK_COLUMNS[0][1], ambiguous_wide=False),
+            pad(name, _RANK_COLUMNS[1][1], ambiguous_wide=False),
+            pad(
+                format_number_with_suffix(entry.points),
+                _RANK_COLUMNS[2][1],
+                ambiguous_wide=False,
+            ),
+            pad(
+                _format_epoch(entry.last_login_ts),
+                _RANK_COLUMNS[3][1],
+                ambiguous_wide=False,
+            ),
         ]
-        seen = pad(_age(entry.last_login_ts, now=now), _RANK_COLUMNS[4][1])
+        seen = pad(
+            _age(entry.last_login_ts, now=now),
+            _RANK_COLUMNS[4][1],
+            ambiguous_wide=False,
+        )
         seen = style(seen, fg=_age_color(entry.last_login_ts, now=now))
         marker = style(" ← you", bold=True) if entry.is_self else ""
         print("  " + " | ".join(cells) + " | " + seen + marker)

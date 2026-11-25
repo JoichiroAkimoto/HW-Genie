@@ -1,8 +1,10 @@
+import re
 from unittest.mock import MagicMock
 
 import pytest
 
 from hw_genie.core.client import ApiAction, HWAuthError, ResponseStatus
+from hw_genie.core.utils import display_width, pad
 
 STATE_PAYLOAD = {
     "id": 1000,
@@ -467,6 +469,111 @@ def test_render_dry_run(capsys):
     out = capsys.readouterr().out
     assert "Rewards: received 1 / unreceived 3 (claimable 2)" in out
     assert "Dry-run: rewards were not claimed." in out
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(line: str) -> str:
+    return _ANSI_RE.sub("", line)
+
+
+def test_clip_stops_at_column_boundary():
+    from hw_genie.commands.power_tournament import _clip
+
+    assert _clip("日本語", 3) == "日"
+    clipped = _clip("日本語", 3)
+    assert display_width(clipped, ambiguous_wide=False) == 2
+    # Only one 1-column space is needed to fill a 3-column narrow cell.
+    padded = pad(clipped, 3, ambiguous_wide=False)
+    assert padded == "日 "
+    assert len(padded) - len(clipped) == 1
+
+
+def test_render_rank_table_aligns_names_across_scripts(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Тест", 100, 1_700_000_000),
+            TournamentRankEntry(2, "2", "Bob", 90, 1_700_000_000),
+            TournamentRankEntry(3, "3", "日本語", 80, 1_700_000_000),
+            TournamentRankEntry(4, "4", "ДлинноеИмя", 70, 1_700_000_000),
+            TournamentRankEntry(5, "5", "⚡Storm", 60, 1_700_000_000),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+
+    header = next(line for line in lines if line.lstrip().startswith("#"))
+    rule = next(line for line in lines if line.lstrip().startswith("---"))
+    rows = [
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    ]
+    assert len(rows) == 5
+
+    # The Name column is 22 cells wide under the narrow-ambiguous policy, for
+    # Cyrillic, ASCII, CJK and emoji names alike.
+    name_cells = [row.split(" | ")[1] for row in rows]
+    assert all(display_width(cell, ambiguous_wide=False) == 22 for cell in name_cells)
+    # Cyrillic rows: raw len equals the visual width, proving A counted as 1.
+    for cell in name_cells[:1] + name_cells[3:4]:
+        assert len(cell) == 22
+        # The old default (A=2) under-pads these cells, so this width differs.
+        assert display_width(cell) != 22
+
+    # Header, rule and data rows share one visual width.
+    assert len({display_width(line, ambiguous_wide=False) for line in [header, rule, *rows]}) == 1
+
+
+def test_render_rank_table_marks_self_row_without_breaking_alignment(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Тест", 100, 1_700_000_000),
+            TournamentRankEntry(2, "2", "Пример", 90, 1_700_000_000, is_self=True),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+    rows = [
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    ]
+    assert len(rows) == 2
+
+    self_rows = [row for row in rows if "← you" in row]
+    assert len(self_rows) == 1
+    marked = self_rows[0]
+    assert marked.rstrip().endswith("← you")
+    # Excluding the marker, the self row matches the other row's width.
+    widths = {display_width(row.split(" ← you")[0], ambiguous_wide=False) for row in rows}
+    assert len(widths) == 1
+    assert all(
+        display_width(row.split(" | ")[1], ambiguous_wide=False) == 22 for row in rows
+    )
 
 
 def test_reward_counts_do_not_treat_limit_reached_as_received():
