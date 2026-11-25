@@ -13,6 +13,7 @@ from hw_genie.commands.arena import (
     ArenaSnapshot,
     ArenaStatus,
     ArenaTeam,
+    ArenaTop,
     ArenaTopEntry,
     run_arena_target_watch,
 )
@@ -66,6 +67,10 @@ def _entry(
 
 def _snapshot(*entries: ArenaTopEntry) -> ArenaSnapshot:
     return ArenaSnapshot(own_place=100, candidates=list(entries), saved_at="now")
+
+
+def _top(*entries: ArenaTopEntry, own_place: int = 100) -> ArenaTop:
+    return ArenaTop(entries=list(entries), own_place=own_place)
 
 
 def _patch_watch(
@@ -439,17 +444,27 @@ def test_target_watch_from_snapshot_excludes_own_and_guild(monkeypatch):
         arena_mod, "fetch_arena_status", lambda *_a, **_k: _status(user_id=999)
     )
     monkeypatch.setattr(
+        arena_mod, "fetch_arena_top", lambda *_a, **_k: _top(_entry(12, 444))
+    )
+    monkeypatch.setattr(
         arena_mod, "fetch_registered_account_ids", lambda: {222, 999}
     )
     monkeypatch.setattr(
         arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: {333}
     )
     monkeypatch.setattr(
-        arena_mod, "fetch_arena_candidates", lambda *_a, **_k: [_entry(12, 444)]
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
     )
-    attacked = []
+    calls = []
+
+    def fake_snapshot_attack(client, status, target, team, **kwargs):
+        calls.append((target, kwargs))
+        return ArenaAttackResult(dry_run=True, accepted=False)
+
     monkeypatch.setattr(
-        arena_mod, "run_arena_attack", lambda *a, **k: attacked.append((a, k))
+        arena_mod, "run_arena_attack_from_snapshot", fake_snapshot_attack
     )
 
     history = run_arena_target_watch(
@@ -462,7 +477,239 @@ def test_target_watch_from_snapshot_excludes_own_and_guild(monkeypatch):
     )
 
     assert [record["target_user_id"] for record in history] == [444]
-    assert attacked[0][1]["dry_run"] is True
+    assert len(calls) == 1
+    assert calls[0][1]["dry_run"] is True
+    assert calls[0][1]["required_heroes"] == frozenset(TARGET_HEROES)
+    assert calls[0][1]["excluded_user_ids"] >= {222, 333, 999}
+
+
+def test_snapshot_watch_waits_when_defense_changed(monkeypatch, capsys):
+    snapshot = _snapshot(_entry(80, 222))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_top",
+        lambda *_a, **_k: _top(_entry(80, 222, heroes=[1, 2, 3, 4, 5])),
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack_from_snapshot",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        once=True,
+    )
+
+    assert history == []
+    assert calls == []
+    assert "does not match" in capsys.readouterr().out
+
+
+def test_snapshot_watch_executes_once(monkeypatch, capsys):
+    snapshot = _snapshot(_entry(80, 222))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    statuses = iter([_status(), _status(), _status()])
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: next(statuses)
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_top", lambda *_a, **_k: _top(_entry(80, 222))
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+    calls = []
+
+    def fake_snapshot_attack(client, status, target, team, **kwargs):
+        calls.append((target, kwargs))
+        return ArenaAttackResult(
+            dry_run=False, accepted=True, win=True, old_place=100, new_place=80
+        )
+
+    monkeypatch.setattr(
+        arena_mod, "run_arena_attack_from_snapshot", fake_snapshot_attack
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        execute=True,
+        once=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["dry_run"] is False
+    assert history[0]["attacked"] is True
+    assert history[0]["win"] is True
+    assert "Attack result: win=True" in capsys.readouterr().out
+
+
+def test_snapshot_watch_waits_for_gap(monkeypatch, capsys):
+    snapshot = _snapshot(_entry(80, 222))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_top",
+        lambda *_a, **_k: _top(_entry(90, 222), own_place=100),
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack_from_snapshot",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        once=True,
+    )
+
+    assert history == []
+    assert calls == []
+    assert "10 rank(s) above you < 15" in capsys.readouterr().out
+
+
+def test_snapshot_watch_honors_max_polls(monkeypatch, capsys):
+    snapshot = _snapshot(_entry(80, 222))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_top",
+        lambda *_a, **_k: _top(_entry(90, 222), own_place=100),
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+    monkeypatch.setattr(arena_mod.time, "sleep", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(
+        arena_mod,
+        "run_arena_attack_from_snapshot",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        max_polls=2,
+    )
+
+    assert history == []
+    assert calls == []
+    assert "Reached --max-polls 2" in capsys.readouterr().out
+
+
+def test_snapshot_watch_skips_target_outside_top50(monkeypatch, capsys):
+    snapshot = _snapshot(_entry(80, 222))
+    monkeypatch.setattr(
+        arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        arena_mod, "load_arena_presets", lambda *_a, **_k: {"auto": ATTACK_TEAM}
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_top", lambda *_a, **_k: _top()
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+
+    history = run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        from_snapshot=True,
+        once=True,
+    )
+
+    assert history == []
+    assert "not in the current top 50" in capsys.readouterr().out
 
 
 def test_target_watch_removes_target_that_becomes_guild(monkeypatch, capsys):
@@ -641,12 +888,6 @@ def test_target_watch_requires_preset(monkeypatch):
 
 def test_target_watch_reuses_saved_snapshot(monkeypatch):
     snapshot = _snapshot(_entry(80, 222))
-    _patch_watch(
-        monkeypatch,
-        statuses=[_status(), _status()],
-        candidates=[_entry(80, 222)],
-        snapshot=snapshot,
-    )
     monkeypatch.setattr(
         arena_mod,
         "load_arena_snapshot",
@@ -654,12 +895,39 @@ def test_target_watch_reuses_saved_snapshot(monkeypatch):
     )
     monkeypatch.setattr(
         arena_mod,
+        "load_arena_presets",
+        lambda *_a, **_k: {"auto": ATTACK_TEAM},
+    )
+    monkeypatch.setattr(
+        arena_mod, "fetch_arena_status", lambda *_a, **_k: _status()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_top",
+        lambda *_a, **_k: _top(_entry(80, 222)),
+    )
+    monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
+    monkeypatch.setattr(
+        arena_mod, "fetch_clan_member_ids", lambda *_a, **_k: set()
+    )
+    monkeypatch.setattr(
+        arena_mod,
+        "fetch_arena_candidates",
+        lambda *_a, **_k: pytest.fail("snapshot watch must not call findEnemies"),
+    )
+    monkeypatch.setattr(
+        arena_mod,
         "_capture_matching_targets",
         lambda *_a, **_k: pytest.fail("should not capture new targets"),
     )
-    attacked = []
+    calls = []
+
+    def fake_snapshot_attack(client, status, target, team, **kwargs):
+        calls.append((target, kwargs))
+        return ArenaAttackResult(dry_run=True, accepted=False)
+
     monkeypatch.setattr(
-        arena_mod, "run_arena_attack", lambda *a, **k: attacked.append((a, k))
+        arena_mod, "run_arena_attack_from_snapshot", fake_snapshot_attack
     )
 
     history = run_arena_target_watch(
@@ -672,8 +940,10 @@ def test_target_watch_reuses_saved_snapshot(monkeypatch):
     )
 
     assert history[0]["target_user_id"] == 222
-    assert len(attacked) == 1
-    assert attacked[0][1]["dry_run"] is True
+    assert len(calls) == 1
+    assert calls[0][1]["dry_run"] is True
+    assert calls[0][1]["min_gap"] == 15
+    assert calls[0][1]["required_heroes"] == frozenset(TARGET_HEROES)
 
 
 def test_target_watch_warns_when_defense_changed(monkeypatch, capsys):

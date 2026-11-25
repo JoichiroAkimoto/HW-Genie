@@ -451,6 +451,9 @@ def test_snapshot_save_load_roundtrip():
         "place": 4,
         "name": "Bob",
         "power": 5000,
+        "heroes": [],
+        "pet": None,
+        "banner": None,
     }
 
 
@@ -502,6 +505,25 @@ def test_serialize_snapshot_handles_empty_candidates():
     data = serialize_snapshot(ArenaSnapshot(own_place=16))
     assert data["own_place"] == 16
     assert data["candidates"] == []
+
+
+def test_snapshot_roundtrip_preserves_defense_and_pet():
+    entry = ArenaTopEntry(
+        place=19,
+        user_id=222,
+        name="Bob",
+        power=1000,
+        heroes=[46, 62, 71, 35, 70],
+        pet=6008,
+        banner=2,
+    )
+    loaded = deserialize_snapshot(
+        serialize_snapshot(
+            ArenaSnapshot(own_place=50, candidates=[entry], saved_at="now")
+        )
+    )
+    assert loaded is not None
+    assert loaded.candidates == [entry]
 
 
 @pytest.mark.parametrize("name", ["", "   ", "atk 1", "atk/1", "../x", "a" * 41])

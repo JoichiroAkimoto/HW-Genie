@@ -1122,6 +1122,66 @@ def test_run_arena_attack_from_snapshot_skips_find_enemies(
     assert "arenaFindEnemies" not in _call_names(mock_call)
 
 
+def test_run_arena_attack_from_snapshot_rejects_gap_and_defense(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="--min-gap 15"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            min_gap=15,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+    mock_call.reset_mock()
+    mock_call.side_effect = [
+        _ok(
+            _top_response(
+                [
+                    {
+                        "place": "14",
+                        "userId": "111",
+                        "heroes": [{"id": 1 + i} for i in range(5)],
+                    }
+                ],
+                own_place=16,
+            )
+        ),
+    ]
+    with pytest.raises(ArenaError, match="required defense lineup"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            required_heroes=frozenset({6, 7, 8, 9, 10}),
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_rejects_excluded_target(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="own/guild"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            excluded_user_ids={111},
+        )
+    assert mock_call.call_count == 0
+
+
 def test_run_arena_attack_from_snapshot_range_false_stops_without_force(
     mock_client, mock_sleep
 ):

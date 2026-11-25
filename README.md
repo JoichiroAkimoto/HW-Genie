@@ -184,6 +184,7 @@ uv run hw-genie arena target-watch -a Alice --team auto \
 
 - 開始時に `arenaFindEnemies` から、**その時点で防衛ヒーロー集合が `--target-heroes` と一致する候補だけ**を最大3人選びます（`--capture-retries`、既定10回まで再取得して3人を集めます。3人未満なら警告、0人なら停止）。選んだ3人は実行中だけ保持し、共有スナップショットは上書きしません。`--from-snapshot` は事前の `arena find-enemies` スナップショットから一致する候補を選びます。
 - **自分の登録アカウント（全アカウント）とギルドメンバー（`clanGetInfo.members`）は対象から除外**します。除外は開始時と各ポーリングで再確認し、対象が途中でギルドに入った場合も攻撃しません。ただし `clanGetInfo` と `arenaAttack` の間の数秒でギルド加入した場合は追従できません。全ターゲットが除外された場合は監視を停止します（自動再取得はしません）。
+- `--from-snapshot` は**開始時から `arenaFindEnemies` を再取得しません**。`arena find-enemies` で保存した候補を使い、以降は `findEnemies` 以外の読み取り（`topGet` / `arenaGetAll` / `clanGetInfo` など）だけで監視し、条件成立時に保存候補へ攻撃します。対象が現在のトップ50にいる必要があります。通常の findEnemies の幅を超えて上位に移動した相手でも、事前に候補へ入っていれば攻撃できます（実測: `arena attack --from-snapshot` で50位→19位、31位上の候補へ findEnemies 再取得なしで勝利。`target-watch --from-snapshot` は同じ攻撃経路を使います）。このモードは攻撃Attemptの節約を狙う用途向けです。
 - 4時間監視する例: `--interval 60 --max-polls 240`（約3時間59分＋初回取得/API時間）。順位変動で15位以上の差が付くまで待つ用途を想定しています。
 - 以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定60秒。アリーナ攻撃は約1分に1回なので1分間隔で十分です）。開始時に候補が下位でも、自分の順位が下がる／相手が上がることで差が付けば攻撃対象になります。
 - `--max-polls N` は**ポーリング回数**の上限で、厳密な時間指定ではありません。実時間はおよそ `(N-1) × --interval` に初回取得・API時間を加えたものです。`--interval 10 --max-polls 18` なら約3分（170秒＋API時間）です。厳密な時間上限が必要ならシェルの `timeout` を使えますが、`arenaAttack` 送信中に強制終了すると結果不明になるため注意してください。

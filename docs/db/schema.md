@@ -62,7 +62,7 @@ Unique constraint: `(account_id, config_key)`
 | `"status"` | `str` | `"success"` / `"error"` |
 | `"last_updated"` | `str` | ISO-8601 タイムスタンプ |
 | `"arena_team_presets"` | `dict[str, dict[str, dict]]` | Arena チームプリセット。`{"arena": {"atk1": {"heroes": [...], "pet": 6008, "favor": {"13": 6003}, "banners": [2]}}}` の形（`pet` / `banners` は任意、Grand Arena 用の `grand` キーは将来拡張） |
-| `"arena_snapshot"` | `dict[str, dict]` | 手動検証用の直近 `arenaFindEnemies` スナップショット。`{"arena": {"saved_at": "2026-10-29T16:10:15+09:00", "own_place": 16, "candidates": [{"user_id": 111, "place": 4, "name": "Bob", "power": 5000}]}}` |
+| `"arena_snapshot"` | `dict[str, dict]` | 手動検証用の直近 `arenaFindEnemies` スナップショット。`{"arena": {"saved_at": "2026-10-29T16:10:15+09:00", "own_place": 16, "candidates": [{"user_id": 111, "place": 4, "name": "Bob", "power": 5000, "heroes": [46, 62, 71, 35, 70], "pet": 6008, "banner": 2}]}}`。旧バージョンのスナップショットは `heroes` を持たないため、`target-watch --from-snapshot` を使う前に `arena find-enemies` で再取得する |
 | `"challenge_defaults"` | `dict[str, str]` | フレンドリーチャレンジの既定値。`{"user_id": "12345678", "type": "titan"}`。`hw-genie challenge config` で設定し、`send` / `accept` / `list` / `battle` / `multi challenge` が `--user-id` 省略時に使う（`type` は `titan` / `hero`） |
 | `"player_{key}"` | 任意 | **レガシー**: 旧バージョンの保存ロジックが書き込んだ Player 情報（新規書き込みは行われず、`SessionManager.load` の読み取り互換のためにのみ使用） |
 

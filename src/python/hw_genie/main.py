@@ -3138,7 +3138,11 @@ def main():
     p_arena_target_watch.add_argument(
         "--from-snapshot",
         action="store_true",
-        help="Reuse the saved find-enemies snapshot instead of capturing new targets",
+        help=(
+            "Watch saved find-enemies candidates WITHOUT refreshing "
+            "findEnemies (topGet only; target must stay in the top 50) and "
+            "attack when defense and rank gap match."
+        ),
     )
     p_arena_target_watch.add_argument(
         "--execute",
