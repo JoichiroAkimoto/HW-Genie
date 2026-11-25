@@ -570,6 +570,7 @@ def test_snapshot_watch_executes_once(monkeypatch, capsys):
         "Alice",
         team_name="auto",
         target_heroes=TARGET_HEROES,
+        min_gap=99,
         from_snapshot=True,
         execute=True,
         once=True,
@@ -742,6 +743,30 @@ def test_target_watch_removes_target_that_becomes_guild(monkeypatch, capsys):
 
     assert dry_calls == [333]
     assert "now own/guild: [222]" in capsys.readouterr().out
+
+
+def test_target_watch_warns_when_min_gap_exceeds_rank_band(monkeypatch, capsys):
+    _patch_watch(
+        monkeypatch,
+        statuses=[_status(place=19), _status(place=19)],
+        candidates=[_entry(5, 222)],
+    )
+    monkeypatch.setattr(
+        arena_mod, "run_arena_attack", lambda *_a, **_k: None
+    )
+
+    run_arena_target_watch(
+        MagicMock(),
+        "Alice",
+        team_name="auto",
+        target_heroes=TARGET_HEROES,
+        min_gap=15,
+        once=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "allows at most 13 rank(s) above" in out
+    assert "--min-gap 15 cannot be met" in out
 
 
 def test_target_watch_dry_run_matches_and_does_not_attack(monkeypatch, capsys):

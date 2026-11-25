@@ -185,12 +185,12 @@ uv run hw-genie arena target-watch -a Alice --team auto \
 
 - 開始時に `arenaFindEnemies` から、**その時点で防衛ヒーロー集合が `--target-heroes` と一致する候補だけ**を最大3人選びます（`--capture-retries`、既定10回まで再取得して3人を集めます。3人未満なら警告、0人なら停止）。選んだ3人は実行中だけ保持し、共有スナップショットは上書きしません。`--from-snapshot` は事前の `arena find-enemies` スナップショットから一致する候補を選びます。
 - **自分の登録アカウント（全アカウント）とギルドメンバー（`clanGetInfo.members`）は対象から除外**します。除外は開始時と各ポーリングで再確認し、対象が途中でギルドに入った場合も攻撃しません。ただし `clanGetInfo` と `arenaAttack` の間の数秒でギルド加入した場合は追従できません。全ターゲットが除外された場合は監視を停止します（自動再取得はしません）。
-- `--from-snapshot` は**開始時から `arenaFindEnemies` を再取得しません**。`arena find-enemies` で保存した候補を使い、以降は `findEnemies` 以外の読み取り（`topGet` / `arenaGetAll` / `clanGetInfo` など）だけで監視し、**現在の順位の最大攻撃幅を超えた（out-of-band）ときだけ**保存候補へ攻撃します（トップ50在籍・防衛一致・上位のみ・自アカウント/ギルド除外は維持）。`--min-gap` と `--force-range` はこのモードでは不要です。通常の findEnemies の幅を超えた上位相手でも、事前に候補へ入っていれば攻撃できます（実測: `arena attack --from-snapshot` で50位→19位、31位上の候補へ findEnemies 再取得なしで勝利。`target-watch --from-snapshot` は同じ攻撃経路）。このモードは攻撃Attemptの節約を狙う用途向けです。
-- 4時間監視する例: `--interval 60 --max-polls 240`（約3時間59分＋初回取得/API時間）。順位変動で15位以上の差が付くまで待つ用途を想定しています。
+- `--from-snapshot` は**開始時から `arenaFindEnemies` を再取得しません**。`arena find-enemies` で保存した候補を使い、以降は `findEnemies` 以外の読み取り（`topGet` / `arenaGetAll` / `clanGetInfo` など）だけで監視し、**現在の順位の最大攻撃幅を超えた（out-of-band）ときだけ**保存候補へ攻撃します（トップ50在籍・防衛一致・上位のみ・自アカウント/ギルド除外は維持）。このモードでは `--min-gap` などの数値指定は不要です。手動で範囲外送信を試す場合は `arena attack --from-snapshot --force` を使えます。実測の `arena attack --from-snapshot` 50位→19位は rank50 のバンド内（17〜23位）なので、**out-of-band受理の証明ではありません**。このモードは攻撃Attemptの節約を狙う用途向けです。
+- 4時間監視する例: `--interval 60 --max-polls 240`（約3時間59分＋初回取得/API時間）。既定モードで15位以上の差を待つ用途にも使えます。
 - 以降は候補の再取得・自分の順位・対象の防衛編成をポーリングします（`--interval`、既定60秒。アリーナ攻撃は約1分に1回なので1分間隔で十分です）。開始時に候補が下位でも、自分の順位が下がる／相手が上がることで差が付けば攻撃対象になります。
 - `--max-polls N` は**ポーリング回数**の上限で、厳密な時間指定ではありません。実時間はおよそ `(N-1) × --interval` に初回取得・API時間を加えたものです。`--interval 10 --max-polls 18` なら約3分（170秒＋API時間）です。厳密な時間上限が必要ならシェルの `timeout` を使えますが、`arenaAttack` 送信中に強制終了すると結果不明になるため注意してください。
 - Ctrl+C は次のポーリング前に停止します。`arenaAttack` は1回だけ送信し、**送信中のリクエストは取り消せません**（二重攻撃防止のためリトライもしません）。
-- 攻撃条件は「対象が**最新の** `arenaFindEnemies` レスポンスにいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。
+- **既定モード**の攻撃条件は「対象が**最新の** `arenaFindEnemies` レスポンスにいる」「防衛ヒーロー5体の集合が `--target-heroes` と一致（ペット・旗・並び順は無視）」「自分との順位差が `--min-gap` 以上」の3つです。送信直前にも最新順位で `--min-gap` と range check を再確認します。**snapshotモード**は「トップ50にいる」「防衛一致」「out-of-band（差 > 現在の最大攻撃幅）」で判定します。
 - 候補の有効性: 実攻撃が受理されるのは **直近の `arenaFindEnemies` に含まれる候補**です。`arenaGetAll` / `arenaCheckTargetRange` など他のRPCを挟んでも失効しません（実攻撃で確認済み）が、再度 `arenaFindEnemies` を呼ぶと候補リストが更新されるため、`target-watch` は**同じポーリングで取得した最新リスト**に対して即座に攻撃します。古いリストの候補は、最新リストに再登場しない限り攻撃しません。
 - 条件を満たすとプリセットの編成で `arenaAttack` を**1回だけ**送り、そのまま終了します。`--execute` なしでも range check まで実行し、攻撃は送りません。
 - **防衛編成は読み取り専用**です。`target-watch` は `arenaSetHeroes` を送りません。攻撃前後の `arenaGetAll.arenaHeroes` をヒーロー集合＋ペットで比較し、サーバー側で防衛が変わった場合は警告します（自動復元はしません）。

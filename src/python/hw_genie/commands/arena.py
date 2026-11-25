@@ -1031,8 +1031,9 @@ def resolve_target(
         )
     if entry.place >= own_place:
         raise ArenaError(
-            f"userId {target_id} is ranked {entry.place}, which is not above your "
-            f"current rank {own_place}; only players ranked above you can be attacked."
+            f"{_format_user_id(entry.user_id, entry.name)} is ranked "
+            f"{entry.place}, which is not above your current rank {own_place}; "
+            "only players ranked above you can be attacked."
         )
     return ArenaTarget(
         user_id=entry.user_id,
@@ -1632,9 +1633,10 @@ def run_arena_snapshot(
         print(f"  {Emojis.INFO}No candidates in the snapshot.")
         return snapshot
 
+    max_gap = arena_max_attack_gap(current_own)
     header = (
         f"{'Name':<16} {'UserID':>12} "
-        f"{'Snapshot':>8} {'Current':>7} {'Delta':>6} {'>13':>4} {'Range':>5}"
+        f"{'Snapshot':>8} {'Current':>7} {'Delta':>6} {'OOB':>4} {'Range':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -1642,13 +1644,13 @@ def run_arena_snapshot(
         current = current_by_uid.get(entry.user_id)
         current_place = current.place if current is not None else None
         delta = current_place - current_own if current_place is not None else None
-        over13 = "-" if delta is None else ("yes" if delta < -13 else "no")
+        oob = "-" if delta is None else ("yes" if -delta > max_gap else "no")
         range_value = checks.get(entry.user_id)
         range_text = "?" if range_value is None else ("true" if range_value else "false")
         print(
             f"{(entry.name or '?')[:16]:<16} {entry.user_id:>12} "
             f"{entry.place:>8} {_human_int(current_place):>7} "
-            f"{_human_int(delta):>6} {over13:>4} {range_text:>5}"
+            f"{_human_int(delta):>6} {oob:>4} {range_text:>5}"
         )
     print(
         f"{Emojis.INFO}topGet covers the top 50 only; the snapshot itself is not refreshed."
@@ -1678,6 +1680,8 @@ def run_arena_attack_from_snapshot(
     always enforced from that fresh rank, and a false ``*CheckTargetRange``
     stops unless ``force`` is set. ``required_heroes`` and ``min_gap`` are
     re-checked against the fresh topGet entry before sending.
+    ``require_out_of_band`` rejects targets that are still within the current
+    max attack width; the snapshot watcher pairs it with ``force=True``.
     """
     _require_arena_mode(mode)
     validate_team(team)
@@ -2810,6 +2814,11 @@ def run_arena_target_watch(
             f"{Emojis.WARNING}Rank {initial_status.place} allows at most "
             f"{max_gap} rank(s) above; --min-gap {min_gap} cannot be met until "
             "your rank changes."
+        )
+    if from_snapshot and initial_status.place <= 14:
+        print(
+            f"{Emojis.WARNING}Rank {initial_status.place} can never be "
+            "out-of-band (max gap = rank-1); wait for the rank to change."
         )
     team, missing = resolve_team(preset=preset, saved=initial_status.saved_team)
     excluded_ids = fetch_registered_account_ids()

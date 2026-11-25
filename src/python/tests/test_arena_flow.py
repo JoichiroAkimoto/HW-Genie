@@ -1082,7 +1082,7 @@ def test_run_arena_snapshot_shows_current_ranks_without_find_enemies(
     assert "arenaFindEnemies" not in _call_names(mock_call)
     out = capsys.readouterr().out
     assert "Own rank: 16 -> 16" in out
-    assert ">13" in out
+    assert "OOB" in out
     assert "yes" in out
     assert "false" in out
     assert "topGet covers the top 50 only" in out
@@ -1178,6 +1178,54 @@ def test_run_arena_attack_from_snapshot_rejects_gap_and_defense(
             require_out_of_band=True,
         )
     assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_rejects_gap_equal_to_max(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # rank 16 max is 13; rank 3 is exactly 13 above -> not out-of-band.
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "3", "userId": "111"}], own_place=16)),
+    ]
+    target = ArenaTarget(user_id=111, place=3, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="not out-of-band"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            force=True,
+            require_out_of_band=True,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_sends_out_of_band_at_edge(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # rank 16 allows at most 13 above; rank 2 is 14 above (max+1).
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "2", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+        _ok(_attack_response(old=16, new=2)),
+    ]
+    target = ArenaTarget(user_id=111, place=2, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client,
+        _make_status(place=16),
+        target,
+        _team(),
+        force=True,
+        require_out_of_band=True,
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
 
 
 def test_run_arena_attack_from_snapshot_rejects_excluded_target(
