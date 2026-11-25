@@ -1,4 +1,5 @@
 import datetime
+import html
 import io
 import json
 import os
@@ -33,6 +34,12 @@ RETRY_DELAY_429 = 30
 RETRY_MAX_DELAY_429 = 120
 # 変更ファイル全文の合計バッファ上限（文字数）。モデル別のコンテキスト予算とも連動する。
 FILE_CONTENTS_BUDGET = 200000
+
+# コメント投稿（新規 REST POST / 既存 REST PATCH 共通）のリトライ設定。
+# GraphQL (gh pr comment) の一時エラーで check が落ちる問題への対策として、
+# 5xx / GraphQL 一時エラーは短いバックオフで再試行する。
+COMMENT_POST_ATTEMPTS = 3
+COMMENT_POST_DELAYS = (2, 4)
 
 # OpenRouter フォールバック用（環境変数で上書き可能）
 # 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
@@ -1381,6 +1388,132 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
     return "\n\n".join(contents)[:limit]
 
 
+def _comment_error_output(exc: Exception) -> str:
+    """CalledProcessError の stderr/stdout 本文を取り出し、改行を無害化して返す。
+
+    ``subprocess.run(..., capture_output=True, text=True)`` で拾った本文だけが
+    CalledProcessError に保持される。``::warning::`` は 1 行で出力する必要が
+    あるため、CR/LF は空白に置き換える。
+    """
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return ""
+    parts = []
+    for part in (exc.stderr, exc.stdout):
+        if not part:
+            continue
+        text = part.decode("utf-8", errors="replace") if isinstance(part, bytes) else str(part)
+        parts.append(text.replace("\r", " ").replace("\n", " "))
+    return " ".join(parts)
+
+
+def _is_transient_comment_error(exc: Exception) -> bool:
+    """REST 投稿の一時エラー（5xx / 429 / GraphQL / 一時停止）を判定する。"""
+    if isinstance(exc, subprocess.CalledProcessError):
+        if exc.returncode in (408, 425, 429) or 500 <= exc.returncode < 600:
+            return True
+        # gh api の失敗詳細は stderr / stdout に出る（returncode は 1 が多い）
+        text = _comment_error_output(exc)
+    else:
+        text = str(exc)
+    retryable, _ = _is_retryable_api_error(Exception(text))
+    lowered = text.lower()
+    return retryable or "graphql" in lowered or "temporarily" in lowered
+
+
+def _post_review_comment(
+    repo: str,
+    pr_number: str,
+    existing_comment: dict | None,
+    review_file: str = "review.md",
+) -> bool:
+    """REST API でレビューコメントを投稿／更新する。
+
+    新規投稿は GraphQL を使う ``gh pr comment`` ではなく REST POST を使用する。
+    既存コメントの更新は従来どおり REST PATCH を使用する。
+    一時エラーは短いバックオフで再試行し、最終失敗時は False を返す（呼び出し側は警告のみ）。
+    """
+    if existing_comment:
+        endpoint = f"repos/{repo}/issues/comments/{existing_comment['id']}"
+        method = "PATCH"
+    else:
+        endpoint = f"repos/{repo}/issues/{pr_number}/comments"
+        method = "POST"
+    cmd = ["gh", "api", "-X", method, endpoint, "-F", f"body=@{review_file}"]
+
+    for attempt in range(COMMENT_POST_ATTEMPTS):
+        try:
+            # capture_output を付けないと CalledProcessError に本文が入らず、
+            # 実 CI で 5xx / GraphQL の一時エラーを判定できない。
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return True
+        except Exception as e:
+            if not _is_transient_comment_error(e) or attempt == COMMENT_POST_ATTEMPTS - 1:
+                safe_error = str(e).replace("\r", " ").replace("\n", " ")
+                detail = _comment_error_output(e)
+                if detail:
+                    safe_error = f"{safe_error}: {detail}"
+                print(f"::warning::GitHub API Error ({method}): {safe_error}")
+                return False
+            delay = COMMENT_POST_DELAYS[min(attempt, len(COMMENT_POST_DELAYS) - 1)]
+            print(f"GitHub API Error ({method}): retrying in {delay}s ...")
+            time.sleep(delay)
+    return False
+
+
+def _write_review_failure_summary(
+    review_text: str, review_file: str = "review.md", *, saved_to_file: bool = True
+) -> None:
+    """投稿失敗時に警告を出し、生成済みレビューを step summary に残す。"""
+    saved_location = f"{review_file} and step summary" if saved_to_file else "step summary"
+    print(
+        f"::warning::AI review generated but comment posting failed; "
+        f"review saved to {saved_location}."
+    )
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write("## ⚠️ AI レビューコメントの投稿に失敗しました\n\n")
+            f.write("レビュー生成は成功しましたが、GitHub API への投稿が失敗しました。")
+            if saved_to_file:
+                f.write(f"`{review_file}` に保存済みです。手動で確認してください。\n\n")
+            else:
+                f.write(
+                    f"`{review_file}` への保存にも失敗したため、step summary の本文を確認してください。\n\n"
+                )
+            f.write("<details><summary>生成されたレビュー</summary>\n\n")
+            # LLM 本文の </details> 等で summary の構造が壊れないようエスケープする。
+            # html.unescape すれば原文を完全に復元できる。
+            f.write(html.escape(review_text, quote=False))
+            f.write("\n</details>\n")
+    except Exception as e:
+        print(f"::warning::Failed to write GITHUB_STEP_SUMMARY: {e}")
+
+
+def _publish_review(
+    review_text: str,
+    repo: str,
+    pr_number: str,
+    existing_comment: dict | None,
+    review_file: str = "review.md",
+) -> bool:
+    """レビュー本文を保存して REST 投稿する。投稿失敗は警告に留め check を落とさない。"""
+    try:
+        with open(review_file, "w", encoding="utf-8") as f:
+            f.write(review_text)
+    except Exception as e:
+        # ファイルに残せない場合でも生成済みレビューを失わない（best-effort）。
+        print(f"::warning::Failed to write {review_file}: {e}")
+        _write_review_failure_summary(review_text, review_file, saved_to_file=False)
+        return False
+
+    if _post_review_comment(repo, pr_number, existing_comment, review_file):
+        return True
+    _write_review_failure_summary(review_text, review_file)
+    return False
+
+
 def main():
     gemini_keys = _collect_gemini_keys()
     openrouter_keys = _collect_openrouter_keys()
@@ -1709,32 +1842,12 @@ def main():
 
         review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"
 
-        with open("review.md", "w") as f:
-            f.write(review_text)
-
+        # 投稿失敗はレビュー生成の失敗ではないため check を落とさない。
+        # _publish_review が review.md / GITHUB_STEP_SUMMARY に本文を残して警告する。
         try:
-            if existing_comment:
-                subprocess.run(
-                    [
-                        "gh",
-                        "api",
-                        "-X",
-                        "PATCH",
-                        f"repos/{repo}/issues/comments/{existing_comment['id']}",
-                        "-F",
-                        "body=@review.md",
-                    ],
-                    check=True,
-                )
-            else:
-                subprocess.run(
-                    ["gh", "pr", "comment", pr_number, "--body-file", "review.md"],
-                    check=True,
-                )
-
-        except Exception as api_e:
-            print(f"GitHub API Error: {api_e}")
-            sys.exit(1)
+            _publish_review(review_text, repo, pr_number, existing_comment)
+        except Exception as e:
+            print(f"::warning::Failed to publish AI review: {e}")
 
     except Exception as e:
         print(f"Gemini Review Error: {e}")
