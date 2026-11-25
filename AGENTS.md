@@ -48,7 +48,7 @@ uv run hw-genie db-check
 - **認証切れ**: ユーザーに新しい `curl` の提供を依頼するか、`auth-server` を案内する（[hero-wars-auth](.agents/skills/hero-wars-auth/SKILL.md)）。
 - **レートリミット**: `HWClient.sleep()` に従う。大量の並列実行を避ける。
 - **結果表示**: `core/client.py` の `ResponseStatus` / `Emojis` を使う。
-- **DB**: クラウド Turso が正、`data/hw_genie.db` はローカルレプリカ。`.env` は未追跡。worktree では main worktree の `.env` にシンボリックリンクを張る（`ln -s /path/to/main/.env .env`。解除は `unlink .env`、`rm` は main の `.env` を誤削除し得るので禁止）。確認は [db-inspect](.agents/skills/db-inspect/SKILL.md)、スキーマは [docs/db/schema.md](docs/db/schema.md)。
+- **DB / worktree**: クラウド Turso が正、`data/hw_genie.db` はローカルレプリカ。`.env` は未追跡。worktree では main worktree の `.env` にシンボリックリンクを張る（`ln -s /path/to/main/.env .env`。解除は `unlink .env`、`rm` は main の `.env` を誤削除し得るので禁止）。独立した設定が必要なら symlink ではなく `cp` を使う（`core/database.py` が `.env` 記載キーで `os.environ` を上書きするため、記載キーのシェル上書きは効かない）。確認は [db-inspect](.agents/skills/db-inspect/SKILL.md)、スキーマは [docs/db/schema.md](docs/db/schema.md)。
 - **ブランド資産**: マークは `docs/assets/hw-genie-icon.grid.txt`、文字は `docs/assets/hw-genie-wordmark.png` が正。配布 PNG は `.github/scripts/render_brand_assets.py` で生成し、画素を手編集しない（`--check` が drift を検出）。詳細は [src/userscripts/README.md](src/userscripts/README.md)。
 - **実名禁止**: コード・コメント・ドキュメント・テスト・コミットメッセージに実在のプレイヤー名／アカウント名を書かない。例は `Alice` / `Bob` / `Carol` / `Dave`。
 
@@ -58,6 +58,7 @@ uv run hw-genie db-check
 - 複数アカウントはアカウント単位でサブエージェントを並列起動する。
 - 長時間コマンドは Bash の `timeout` を明示する（例: 600 秒 = `600000`）。
 - 同一アカウントの逐次タスクを 1 つの `bash` に `&&` で詰めない（個別呼び出しにする）。
+- worktree と main を並行確認する場合、実行先は `session_move` または `workdir` 明示で分ける。pytest / ruff は worktree ごとに同時実行してよい（テストは一時 DB とモックで本番 DB・ネットワークに触れない）。auth-server はポート 8765 を 1 つだけ起動する（Userscript が固定）。同じアカウントへの CLI 実行（`--dry-run` 含む）は 1 箇所で逐次にし、書き込みを伴う操作と Turso 同期も 1 箇所だけで実行する。
 
 ## 開発ルール
 

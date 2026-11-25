@@ -68,6 +68,25 @@ def test_pad_is_display_width_aware():
     assert pad("abc", 2) == "abc"   # 幅超過時は詰めない
 
 
+def test_display_width_ambiguous_wide_policy():
+    """既定は CJK 端末方針（A=2）。ambiguous_wide=False で A=1 になる。"""
+    # キリル文字は East Asian Width = Ambiguous。
+    assert display_width("Тест") == 8
+    assert display_width("Тест", ambiguous_wide=False) == 4
+
+
+def test_display_width_narrow_policy_keeps_wide_and_combining():
+    # W（全角）は 2 のまま、結合文字（Mn）は 0 のまま。
+    assert display_width("日本語", ambiguous_wide=False) == 6
+    assert display_width("e\u0301", ambiguous_wide=False) == 1
+    assert display_width("e\u0301") == 1
+
+
+def test_pad_supports_narrow_ambiguous_policy():
+    assert pad("Тест", 6, ambiguous_wide=False) == "Тест  "
+    assert pad("Тест", 6) == "Тест"  # 既定（A=2）では幅 8 なので詰めない
+
+
 def test_wrap_display_keeps_short_lines():
     assert wrap_display("abc def", 20) == ["abc def"]
 
