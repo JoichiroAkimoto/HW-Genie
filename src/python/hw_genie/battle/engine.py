@@ -528,6 +528,10 @@ def config_getter_for(battle_type: str | None) -> str:
         return "get_pvpManual"
     if value in ("arena", "grand", "pvp", "clan_domination"):
         return "get_pvp"
+    # The ToE bridge is the only caller that can legitimately omit/unknown the
+    # type, and get_default_engine pins get_titanPvpManual for it. CLI choices
+    # restrict user input, so this fallback only affects malformed replays;
+    # --config-getter overrides it explicitly.
     logger.warning(
         "unknown battle type %r; defaulting to get_titanPvpManual",
         battle_type,
@@ -767,13 +771,15 @@ class PersistentPlaywrightBattleEngine:
             if obj is not None:
                 try:
                     obj.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "failed to close %s: %s", type(obj).__name__, exc
+                    )
         if self._playwright is not None:
             try:
                 self._playwright.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("failed to stop Playwright: %s", exc)
         self._page = None
         self._context = None
         self._browser = None

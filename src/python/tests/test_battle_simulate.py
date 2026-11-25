@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from types import SimpleNamespace
 
@@ -390,6 +391,30 @@ def test_persistent_engine_closes_and_raises_on_null(monkeypatch):
     with pytest.raises(BridgeError, match="returned null"):
         engine.calc({"id": 1})
     assert closed == [1]
+
+
+def test_persistent_engine_close_logs_failures(caplog):
+    class Bad:
+        def close(self):
+            raise RuntimeError("close boom")
+
+        def stop(self):
+            raise RuntimeError("stop boom")
+
+    engine = PersistentPlaywrightBattleEngine()
+    bad = Bad()
+    engine._context = bad
+    engine._browser = bad
+    engine._playwright = bad
+
+    with caplog.at_level(logging.WARNING):
+        engine.close()
+
+    assert "failed to close Bad" in caplog.text
+    assert "failed to stop Playwright" in caplog.text
+    assert engine._context is None
+    assert engine._browser is None
+    assert engine._playwright is None
 
 
 def test_persistent_engine_list_config_getters_parses_and_wraps(monkeypatch):
