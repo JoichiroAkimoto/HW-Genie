@@ -91,3 +91,12 @@ jobs:
           MODEL_KEY: ${{ inputs.model || 'hydrogen' }}
         run: |
           python .github/scripts/ai_review.py
+
+      # コメント投稿が失敗しても生成済みレビューを回収できるようにする
+      - name: Upload AI review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review
+          path: review.md
+          if-no-files-found: ignore

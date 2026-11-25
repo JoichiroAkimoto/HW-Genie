@@ -34,6 +34,12 @@ RETRY_MAX_DELAY_429 = 120
 # 変更ファイル全文の合計バッファ上限（文字数）。モデル別のコンテキスト予算とも連動する。
 FILE_CONTENTS_BUDGET = 200000
 
+# コメント投稿（新規 REST POST / 既存 REST PATCH 共通）のリトライ設定。
+# GraphQL (gh pr comment) の一時エラーで check が落ちる問題への対策として、
+# 5xx / GraphQL 一時エラーは短いバックオフで再試行する。
+COMMENT_POST_ATTEMPTS = 3
+COMMENT_POST_DELAYS = (2, 4)
+
 # OpenRouter フォールバック用（環境変数で上書き可能）
 # 個別 :free モデルは頻繁に無効化されるため、OpenRouter推奨の auto-router
 # `openrouter/free` のみを使用。環境変数 OPENROUTER_FALLBACK_MODELS で上書き可能。
@@ -1381,6 +1387,98 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
     return "\n\n".join(contents)[:limit]
 
 
+def _is_transient_comment_error(exc: Exception) -> bool:
+    """REST 投稿の一時エラー（5xx / 429 / GraphQL / 一時停止）を判定する。"""
+    if isinstance(exc, subprocess.CalledProcessError):
+        if exc.returncode in (408, 425, 429) or 500 <= exc.returncode < 600:
+            return True
+        # gh api の失敗詳細は stderr / stdout に出る（returncode は 1 が多い）
+        parts = [exc.stderr, exc.stdout]
+        text = " ".join(
+            part.decode("utf-8", errors="replace") if isinstance(part, bytes) else str(part)
+            for part in parts
+            if part
+        )
+    else:
+        text = str(exc)
+    retryable, _ = _is_retryable_api_error(Exception(text))
+    lowered = text.lower()
+    return retryable or "graphql" in lowered or "temporarily" in lowered
+
+
+def _post_review_comment(
+    repo: str,
+    pr_number: str,
+    existing_comment: dict | None,
+    review_file: str = "review.md",
+) -> bool:
+    """REST API でレビューコメントを投稿／更新する。
+
+    新規投稿は GraphQL を使う ``gh pr comment`` ではなく REST POST を使用する。
+    既存コメントの更新は従来どおり REST PATCH を使用する。
+    一時エラーは短いバックオフで再試行し、最終失敗時は False を返す（呼び出し側は警告のみ）。
+    """
+    if existing_comment:
+        endpoint = f"repos/{repo}/issues/comments/{existing_comment['id']}"
+        method = "PATCH"
+    else:
+        endpoint = f"repos/{repo}/issues/{pr_number}/comments"
+        method = "POST"
+    cmd = ["gh", "api", "-X", method, endpoint, "-F", f"body=@{review_file}"]
+
+    for attempt in range(COMMENT_POST_ATTEMPTS):
+        try:
+            subprocess.run(cmd, check=True)
+            return True
+        except Exception as e:
+            if not _is_transient_comment_error(e) or attempt == COMMENT_POST_ATTEMPTS - 1:
+                safe_error = str(e).replace("\r", " ").replace("\n", " ")
+                print(f"::warning::GitHub API Error ({method}): {safe_error}")
+                return False
+            delay = COMMENT_POST_DELAYS[min(attempt, len(COMMENT_POST_DELAYS) - 1)]
+            print(f"GitHub API Error ({method}): retrying in {delay}s ...")
+            time.sleep(delay)
+    return False
+
+
+def _write_review_failure_summary(review_text: str, review_file: str = "review.md") -> None:
+    """投稿失敗時に警告を出し、生成済みレビューを step summary に残す。"""
+    print(
+        f"::warning::AI review generated but comment posting failed; "
+        f"review saved to {review_file} and step summary."
+    )
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    try:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write("## ⚠️ AI レビューコメントの投稿に失敗しました\n\n")
+            f.write("レビュー生成は成功しましたが、GitHub API への投稿が失敗しました。")
+            f.write(f"`{review_file}` に保存済みです。手動で確認してください。\n\n")
+            f.write("<details><summary>生成されたレビュー</summary>\n\n")
+            f.write(review_text)
+            f.write("\n</details>\n")
+    except Exception as e:
+        print(f"::warning::Failed to write GITHUB_STEP_SUMMARY: {e}")
+
+
+def _publish_review(
+    review_text: str,
+    repo: str,
+    pr_number: str,
+    existing_comment: dict | None,
+    review_file: str = "review.md",
+) -> bool:
+    """レビュー本文を保存して REST 投稿する。投稿失敗は警告に留め check を落とさない。"""
+    with open(review_file, "w", encoding="utf-8") as f:
+        f.write(review_text)
+
+    if _post_review_comment(repo, pr_number, existing_comment, review_file):
+        return True
+    _write_review_failure_summary(review_text, review_file)
+    return False
+
+
 def main():
     gemini_keys = _collect_gemini_keys()
     openrouter_keys = _collect_openrouter_keys()
@@ -1709,32 +1807,12 @@ def main():
 
         review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"
 
-        with open("review.md", "w") as f:
-            f.write(review_text)
-
+        # 投稿失敗はレビュー生成の失敗ではないため check を落とさない。
+        # _publish_review が review.md / GITHUB_STEP_SUMMARY に本文を残して警告する。
         try:
-            if existing_comment:
-                subprocess.run(
-                    [
-                        "gh",
-                        "api",
-                        "-X",
-                        "PATCH",
-                        f"repos/{repo}/issues/comments/{existing_comment['id']}",
-                        "-F",
-                        "body=@review.md",
-                    ],
-                    check=True,
-                )
-            else:
-                subprocess.run(
-                    ["gh", "pr", "comment", pr_number, "--body-file", "review.md"],
-                    check=True,
-                )
-
-        except Exception as api_e:
-            print(f"GitHub API Error: {api_e}")
-            sys.exit(1)
+            _publish_review(review_text, repo, pr_number, existing_comment)
+        except Exception as e:
+            print(f"::warning::Failed to publish AI review: {e}")
 
     except Exception as e:
         print(f"Gemini Review Error: {e}")
