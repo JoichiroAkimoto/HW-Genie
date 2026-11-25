@@ -10,8 +10,11 @@ from hw_genie.commands.arena import (
     ARENA_SNAPSHOT_KEY,
     ArenaError,
     ArenaSnapshot,
+    ArenaTarget,
     ArenaTeam,
     ArenaTopEntry,
+    _format_target,
+    _format_user_id,
     build_attack_args,
     deserialize_snapshot,
     deserialize_team,
@@ -499,6 +502,14 @@ def test_deserialize_snapshot_rejects_invalid_own_place():
     assert deserialize_snapshot({"own_place": "0", "candidates": []}) is None
     assert deserialize_snapshot({"candidates": []}) is None
     assert deserialize_snapshot("not-a-dict") is None
+
+
+def test_format_user_id_puts_name_first():
+    assert _format_user_id(111, "Bob") == "Bob (userId 111)"
+    assert _format_user_id(111, None) == "unknown (userId 111)"
+    assert _format_target(ArenaTarget(user_id=111, place=10, name="Bob")) == (
+        "rank 10 - Bob (userId 111)"
+    )
 
 
 def test_serialize_snapshot_handles_empty_candidates():

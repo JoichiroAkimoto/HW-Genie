@@ -1065,9 +1065,14 @@ def _format_team(team: ArenaTeam | None) -> str:
     return ", ".join(parts)
 
 
+def _format_user_id(user_id: int, name: str | None) -> str:
+    """Human-readable player label: name first, userId as context."""
+    label = (name or "").strip() or "unknown"
+    return f"{label} (userId {user_id})"
+
+
 def _format_target(target: ArenaTarget) -> str:
-    name = f", {target.name}" if target.name else ""
-    return f"rank {target.place} (userId {target.user_id}{name})"
+    return f"rank {target.place} - {_format_user_id(target.user_id, target.name)}"
 
 
 def _error_text(res: HWResponse) -> str:
@@ -1577,10 +1582,10 @@ def run_arena_find_enemies(
     if not snapshot.candidates:
         print(f"  {Emojis.INFO}No candidates returned by {mode.find_enemies.value}.")
     for entry in snapshot.candidates:
-        name = f" {entry.name}" if entry.name else ""
         print(
-            f"  {Emojis.INFO}rank {entry.place} "
-            f"(userId {entry.user_id}{name}, delta {entry.place - snapshot.own_place:+d})"
+            f"  {Emojis.INFO}rank {entry.place} - "
+            f"{_format_user_id(entry.user_id, entry.name)}, "
+            f"delta {entry.place - snapshot.own_place:+d}"
         )
     return snapshot
 
@@ -1611,7 +1616,7 @@ def run_arena_snapshot(
         return snapshot
 
     header = (
-        f"{'UserID':>12} {'Name':<16} "
+        f"{'Name':<16} {'UserID':>12} "
         f"{'Snapshot':>8} {'Current':>7} {'Delta':>6} {'>13':>4} {'Range':>5}"
     )
     print(header)
@@ -1624,7 +1629,7 @@ def run_arena_snapshot(
         range_value = checks.get(entry.user_id)
         range_text = "?" if range_value is None else ("true" if range_value else "false")
         print(
-            f"{entry.user_id:>12} {(entry.name or '?')[:16]:<16} "
+            f"{(entry.name or '?')[:16]:<16} {entry.user_id:>12} "
             f"{entry.place:>8} {_human_int(current_place):>7} "
             f"{_human_int(delta):>6} {over13:>4} {range_text:>5}"
         )
@@ -1665,7 +1670,7 @@ def run_arena_attack_from_snapshot(
         raise ArenaError("Refusing to attack yourself.")
     if excluded_user_ids and target.user_id in excluded_user_ids:
         raise ArenaError(
-            f"Target userId {target.user_id} is an own/guild account; no attack "
+            f"Target {_format_user_id(target.user_id, target.name)} is an own/guild account; no attack "
             "was sent."
         )
 
@@ -1910,8 +1915,10 @@ def run_arena_plan(
         )
         return plans
 
-    name = f" ({target.name})" if target.name else ""
-    print(f"{Emojis.INFO}Target: rank {entry.place} userId {target.user_id}{name}")
+    print(
+        f"{Emojis.INFO}Target: rank {entry.place} - "
+        f"{_format_user_id(target.user_id, target.name)}"
+    )
     pet_text = entry.pet if entry.pet is not None else "-"
     banner_text = entry.banner if entry.banner is not None else "-"
     print(
@@ -2183,8 +2190,9 @@ def run_arena_auto(
                         else " (same-lineup history ignored; use --allow-same-lineup)"
                     )
                     print(
-                        f"{Emojis.INFO}skip rank {entry.place} "
-                        f"(userId {entry.user_id}): no plan meets the gate{suffix}"
+                        f"{Emojis.INFO}skip rank {entry.place} - "
+                        f"{_format_user_id(entry.user_id, entry.name)}: "
+                        f"no plan meets the gate{suffix}"
                     )
                     attempted_user_ids.add(entry.user_id)
                     continue
@@ -2197,9 +2205,10 @@ def run_arena_auto(
                     ]
                     if len(heroes) != 5 or len(set(heroes)) != 5:
                         print(
-                            f"{Emojis.WARNING}Plan for userId {entry.user_id} has "
-                            f"an invalid lineup ({best.heroes_summary}); trying the "
-                            "next recommended plan."
+                            f"{Emojis.WARNING}Plan for "
+                            f"{_format_user_id(entry.user_id, entry.name)} has "
+                            f"an invalid lineup ({best.heroes_summary}); trying "
+                            "the next recommended plan."
                         )
                         continue
 
@@ -2223,9 +2232,10 @@ def run_arena_auto(
                         )
                     except ArenaError as exc:
                         print(
-                            f"{Emojis.WARNING}skip plan for rank {entry.place} "
-                            f"(userId {entry.user_id}): could not build the plan "
-                            f"team ({exc}); trying the next recommended plan."
+                            f"{Emojis.WARNING}skip plan for rank {entry.place} - "
+                            f"{_format_user_id(entry.user_id, entry.name)}: "
+                            f"could not build the plan team ({exc}); trying the "
+                            "next recommended plan."
                         )
                         continue
 
@@ -2235,11 +2245,11 @@ def run_arena_auto(
                         != best.attacker_lineup_key
                     ):
                         print(
-                            f"{Emojis.WARNING}skip plan for rank {entry.place} "
-                            f"(userId {entry.user_id}): resolved team "
-                            f"({_format_team(team)}) does not match the plan "
-                            f"lineup ({best.attacker_lineup_key}); trying the "
-                            "next recommended plan."
+                            f"{Emojis.WARNING}skip plan for rank {entry.place} - "
+                            f"{_format_user_id(entry.user_id, entry.name)}: "
+                            f"resolved team ({_format_team(team)}) does not match "
+                            f"the plan lineup ({best.attacker_lineup_key}); "
+                            "trying the next recommended plan."
                         )
                         continue
 
@@ -2303,8 +2313,8 @@ def run_arena_auto(
         }
 
         print(
-            f"{Emojis.STEP}Target: rank {target.place} userId {target.user_id}"
-            + (f" ({target.name})" if target.name else "")
+            f"{Emojis.STEP}Target: rank {target.place} - "
+            f"{_format_user_id(target.user_id, target.name)}"
         )
         print(
             f"{Emojis.INFO}Plan: {plan.heroes_summary} pet {team.pet or '-'} "
@@ -2345,8 +2355,8 @@ def run_arena_auto(
             raise
         except ArenaError as exc:
             print(
-                f"{Emojis.WARNING}skip rank {entry.place} "
-                f"(userId {entry.user_id}): {exc}"
+                f"{Emojis.WARNING}skip rank {entry.place} - "
+                f"{_format_user_id(entry.user_id, entry.name)}: {exc}"
             )
             record["error"] = str(exc)
             history.append(record)
@@ -2459,8 +2469,8 @@ def _run_snapshot_target_watch(
     for entry in targets:
         heroes = ",".join(str(hero) for hero in entry.heroes) or "?"
         print(
-            f"  {Emojis.INFO}snapshot rank {entry.place} userId "
-            f"{entry.user_id} defense {heroes}"
+            f"  {Emojis.INFO}snapshot rank {entry.place} - "
+            f"{_format_user_id(entry.user_id, entry.name)}, defense {heroes}"
         )
 
     history: list[dict[str, Any]] = []
@@ -2521,38 +2531,38 @@ def _run_snapshot_target_watch(
             live = current.get(entry.user_id)
             if live is None:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: not in the current "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: not in the current "
                     "top 50 (rank cannot be verified)"
                 )
                 continue
             heroes = ",".join(str(hero) for hero in live.heroes) or "?"
             if live.place >= own_place:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place} "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place} "
                     f"is not above your rank {own_place}"
                 )
                 continue
             if len(live.heroes) != 5:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: topGet did not "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: topGet did not "
                     "return a 5-hero defense"
                 )
                 continue
             if frozenset(live.heroes) != target_set:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                     f"defense {heroes} (does not match)"
                 )
                 continue
             gap = own_place - live.place
             if gap < min_gap:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                     f"{gap} rank(s) above you < {min_gap}; waiting"
                 )
                 continue
             print(
-                f"  {Emojis.SUCCESS}userId {entry.user_id}: rank {live.place}, "
+                f"  {Emojis.SUCCESS}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                 f"{gap} rank(s) above you >= {min_gap}, defense matches"
             )
             matches.append((live.place, live, gap))
@@ -2602,8 +2612,9 @@ def _run_snapshot_target_watch(
                     raise
                 except ArenaError as exc:
                     print(
-                        f"{Emojis.WARNING}Dry-run check for userId "
-                        f"{target.user_id} failed: {exc}"
+                        f"{Emojis.WARNING}Dry-run check for "
+                        f"{_format_user_id(target.user_id, target.name)} failed: "
+                        f"{exc}"
                     )
                     record["error"] = str(exc)
                 else:
@@ -2635,8 +2646,9 @@ def _run_snapshot_target_watch(
                 record["error"] = str(exc)
                 history.append(record)
                 print(
-                    f"{Emojis.WARNING}Snapshot attack for userId "
-                    f"{target.user_id} was not accepted ({exc})."
+                    f"{Emojis.WARNING}Snapshot attack for "
+                    f"{_format_user_id(target.user_id, target.name)} was not "
+                    f"accepted ({exc})."
                 )
                 if count >= 3:
                     print(
@@ -2843,8 +2855,8 @@ def run_arena_target_watch(
     for entry in targets:
         heroes = ",".join(str(hero) for hero in entry.heroes) or "?"
         print(
-            f"  {Emojis.INFO}rank {entry.place} userId {entry.user_id} "
-            f"defense {heroes}"
+            f"  {Emojis.INFO}rank {entry.place} - "
+            f"{_format_user_id(entry.user_id, entry.name)}, defense {heroes}"
         )
 
     history: list[dict[str, Any]] = []
@@ -2908,14 +2920,14 @@ def run_arena_target_watch(
             live = current.get(entry.user_id)
             if live is None:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: not in the current "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: not in the current "
                     "candidate list"
                 )
                 continue
             heroes = ",".join(str(hero) for hero in live.heroes) or "?"
             if live.place >= status.place:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place} "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place} "
                     f"is not above your rank {status.place}; only higher ranks "
                     "are eligible"
                 )
@@ -2923,18 +2935,18 @@ def run_arena_target_watch(
             gap = status.place - live.place
             if frozenset(live.heroes) != target_set:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                     f"defense {heroes} (does not match)"
                 )
                 continue
             if gap < min_gap:
                 print(
-                    f"  {Emojis.INFO}userId {entry.user_id}: rank {live.place}, "
+                    f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                     f"{gap} rank(s) above you < {min_gap}; waiting"
                 )
                 continue
             print(
-                f"  {Emojis.SUCCESS}userId {entry.user_id}: rank {live.place}, "
+                f"  {Emojis.SUCCESS}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
                 f"{gap} rank(s) above you >= {min_gap}, defense matches"
             )
             matches.append((live.place, live, gap))
@@ -2983,8 +2995,9 @@ def run_arena_target_watch(
                     raise
                 except ArenaError as exc:
                     print(
-                        f"{Emojis.WARNING}Dry-run check for userId "
-                        f"{target.user_id} failed: {exc}"
+                        f"{Emojis.WARNING}Dry-run check for "
+                        f"{_format_user_id(target.user_id, target.name)} failed: "
+                        f"{exc}"
                     )
                     record["error"] = str(exc)
                 else:
@@ -3015,7 +3028,7 @@ def run_arena_target_watch(
                 record["error"] = str(exc)
                 history.append(record)
                 print(
-                    f"{Emojis.WARNING}Attack for userId {target.user_id} "
+                    f"{Emojis.WARNING}Attack for {_format_user_id(target.user_id, target.name)} "
                     f"was not accepted ({exc})."
                 )
                 if count >= 3:
