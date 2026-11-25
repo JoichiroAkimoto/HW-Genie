@@ -46,6 +46,15 @@ from hw_genie.core.utils import (
 DEFAULT_TOP = 5
 MAX_TOP = 50
 CLAN_STATS_BATCH = 10
+POWER_BATCH = 10
+CLAN_INVITES_ARGS = {
+    "minTeamLevel": 35,
+    "minHeroesPower": 0,
+    "minTitansPower": 0,
+    "languageId": 2,
+    "clanStatus": 0,
+    "page": 0,
+}
 
 TYPE_LABELS = {
     "titans": "Titan",
@@ -53,6 +62,23 @@ TYPE_LABELS = {
     "heroes": "Hero",
     "hero": "Hero",
 }
+
+POWER_FIELDS = {
+    "titans": "titansPower",
+    "titan": "titansPower",
+    "heroes": "heroesPower",
+    "hero": "heroesPower",
+}
+
+
+def _power_field(tournament_type: str) -> str | None:
+    """Return the event-type power field, or ``None`` for an unknown type.
+
+    An unknown / empty type must not silently fall back to Titan power, so the
+    lookup is explicit instead of a substring test.
+    """
+    return POWER_FIELDS.get(str(tournament_type or "").strip().lower())
+
 
 #: Claim failures that mean "nothing to do" rather than a broken run.
 CLAIM_SKIP_ERRORS = frozenset(
@@ -189,7 +215,7 @@ class PowerTournamentResult:
     own_user_id: str | None = None
     own_place: int | None = None
     ranking_error: str | None = None
-    stats_error: str | None = None
+    enrichment_error: str | None = None
     error: str | None = None
 
     @property
@@ -347,7 +373,10 @@ def _optional_id(value: Any) -> str | None:
 
 
 def parse_group_info(
-    response: Any, *, own_user_id: str | None = None
+    response: Any,
+    *,
+    power_field: str | None,
+    own_user_id: str | None = None,
 ) -> list[TournamentRankEntry]:
     """Build the full group ranking (points desc) from ``getGroupInfo``.
 
@@ -355,10 +384,11 @@ def parse_group_info(
     ranking, so the CLI cannot exit 0 on a broken response. An empty
     ``points: {}`` object is still a legitimate empty ranking.
 
-    ``power`` and member stats are read from the user profile when the API
-    includes them. The current Titan response only carries basic profile data
-    plus ``serverId``; ``run_power_tournament`` fills activity/titanite/prestige
-    from ``clanGetInfo.membersStat`` afterwards.
+    ``power`` is read from ``power_field`` (``titansPower`` for Titan events,
+    ``heroesPower`` for Hero events); ``None`` means the event type is unknown
+    and no power is read. Member stats are read from the user profile when
+    present; ``run_power_tournament`` fills the rest from
+    ``clanInvites_search`` / ``clanGetInfo``.
     """
     points = response.get("points") if isinstance(response, dict) else None
     if not isinstance(points, dict):
@@ -400,7 +430,8 @@ def parse_group_info(
             last_login = _safe_int(profile.get("lastLoginTime"), None)
             server_id = _optional_id(profile.get("serverId"))
             clan_id = _optional_id(profile.get("clanId"))
-            power = _first_int(profile, "power", "sumPower", "totalPower")
+            if power_field is not None:
+                power = _first_int(profile, power_field)
             stats = _stats_from_profile(profile)
         rows.append(
             (
@@ -476,6 +507,109 @@ def _members_stat_map(response: Any) -> dict[str, TournamentMemberStats]:
         if stats is not None:
             stats_by_user[user_id] = stats
     return stats_by_user
+
+
+def _member_power(response: Any, power_field: str) -> dict[str, int]:
+    """Map userId -> the type-specific power from a search response."""
+    if not isinstance(response, dict):
+        return {}
+    items = response.get("items")
+    if not isinstance(items, list):
+        return {}
+    powers: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        user = item.get("user")
+        if not isinstance(user, dict):
+            continue
+        user_id = _optional_id(user.get("id"))
+        if user_id is None:
+            continue
+        power = _first_int(user, power_field)
+        if power is not None:
+            powers[user_id] = power
+    return powers
+
+
+def _parse_power_response(
+    response: Any, power_field: str
+) -> tuple[dict[str, int], str | None]:
+    """Parse one ``clanInvites_search`` body.
+
+    An empty ``items`` list is legitimate (the user was not found); any other
+    shape is reported as a warning instead of being silently dropped.
+    """
+    if not isinstance(response, dict) or not isinstance(response.get("items"), list):
+        return {}, "clanInvites_search returned an unexpected payload"
+    return _member_power(response, power_field), None
+
+
+def fetch_member_power(
+    client: HWClient, entries: list[TournamentRankEntry], power_field: str
+) -> tuple[dict[str, int], str | None]:
+    """Fill the event-type power (``titansPower`` or ``heroesPower``).
+
+    The RPC name is misleading: ``args.id`` is a **userId** and the response
+    carries ``heroesPower`` / ``titansPower``. The game's Power Tournament group
+    view uses the same batched calls. Failures are returned as a warning.
+    """
+    user_ids = sorted({entry.user_id for entry in entries if entry.power is None})
+    if not user_ids:
+        return {}, None
+
+    powers: dict[str, int] = {}
+    errors: list[str] = []
+    for start in range(0, len(user_ids), POWER_BATCH):
+        chunk = user_ids[start : start + POWER_BATCH]
+        calls = [
+            {
+                "name": ApiAction.CLAN_INVITES_SEARCH,
+                "args": {"id": user_id, **CLAN_INVITES_ARGS},
+                "context": {"actionTs": 0},
+                "ident": f"power_{user_id}",
+            }
+            for user_id in chunk
+        ]
+        res = client.call({"calls": calls})
+        client.sleep()
+        if not res.is_success:
+            errors.append(
+                f"clanInvites_search failed ({res.error_name or res.status.value})"
+            )
+            continue
+        if len(chunk) == 1:
+            chunk_powers, chunk_error = _parse_power_response(
+                _unwrap_item(res.detail), power_field
+            )
+            powers.update(chunk_powers)
+            if chunk_error:
+                errors.append(chunk_error)
+            continue
+        if not isinstance(res.detail, dict):
+            errors.append("clanInvites_search returned an unexpected payload")
+            continue
+        for index, user_id in enumerate(chunk):
+            item = res.detail.get(f"power_{user_id}")
+            if not isinstance(item, dict):
+                item = res.detail.get(str(index))
+            if not isinstance(item, dict):
+                errors.append(f"power {user_id}: no result")
+                continue
+            if "error" in item:
+                error = item.get("error")
+                name = error.get("name") if isinstance(error, dict) else str(error)
+                if name in AUTH_ERROR_NAMES:
+                    raise HWAuthError(Messages.AUTH_ERROR)
+                errors.append(f"power {user_id}: {name}")
+                continue
+            chunk_powers, chunk_error = _parse_power_response(
+                _unwrap_item(item), power_field
+            )
+            powers.update(chunk_powers)
+            if chunk_error:
+                errors.append(f"power {user_id}: {chunk_error}")
+    return powers, ("; ".join(errors) if errors else None)
 
 
 def fetch_member_stats(
@@ -685,6 +819,8 @@ def run_power_tournament(
     if result.state is None:
         return result
 
+    power_field = _power_field(result.state.tournament_type)
+
     # Claims first: the end-of-event window is time sensitive.
     if not dry_run:
         result.claims = claim_rewards(client, result.state.rewards)
@@ -692,7 +828,11 @@ def run_power_tournament(
     try:
         group_response = fetch_group(client)
         result.own_user_id = fetch_own_user_id(client)
-        entries = parse_group_info(group_response, own_user_id=result.own_user_id)
+        entries = parse_group_info(
+            group_response,
+            own_user_id=result.own_user_id,
+            power_field=power_field,
+        )
         result.ranking = entries[:top]
         result.own_place = next(
             (entry.place for entry in entries if entry.is_self), None
@@ -703,6 +843,34 @@ def run_power_tournament(
         result.ranking_error = str(exc)
 
     if result.ranking:
+        enrichment_errors: list[str] = []
+        if power_field is None:
+            enrichment_errors.append(
+                f"unknown tournament type '{result.state.tournament_type}'; "
+                "power skipped"
+            )
+        else:
+            try:
+                power_by_user, power_error = fetch_member_power(
+                    client, result.ranking, power_field
+                )
+                if power_by_user:
+                    result.ranking = [
+                        replace(
+                            entry,
+                            power=entry.power
+                            if entry.power is not None
+                            else power_by_user.get(entry.user_id),
+                        )
+                        for entry in result.ranking
+                    ]
+                if power_error:
+                    enrichment_errors.append(power_error)
+            except HWAuthError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - optional enrichment only
+                enrichment_errors.append(str(exc))
+
         try:
             stats_by_user, stats_error = fetch_member_stats(client, result.ranking)
             if stats_by_user:
@@ -715,11 +883,16 @@ def run_power_tournament(
                     )
                     for entry in result.ranking
                 ]
-            result.stats_error = stats_error
+            if stats_error:
+                enrichment_errors.append(stats_error)
         except HWAuthError:
             raise
         except Exception as exc:  # noqa: BLE001 - optional enrichment only
-            result.stats_error = str(exc)
+            enrichment_errors.append(str(exc))
+
+        result.enrichment_error = (
+            "; ".join(enrichment_errors) if enrichment_errors else None
+        )
     return result
 
 
@@ -941,8 +1114,11 @@ def render_power_tournament(
     else:
         print(f"  {Emojis.INFO}No group ranking entries returned.")
 
-    if result.stats_error:
-        print(f"  {Emojis.WARNING}Member stats unavailable: {result.stats_error}")
+    if result.enrichment_error:
+        print(
+            f"  {Emojis.WARNING}Member info unavailable: "
+            f"{result.enrichment_error}"
+        )
 
     received, unreceived, claimable = _reward_counts(result)
     reward_line = (

@@ -106,7 +106,45 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 
 `membersStat` は `clan.members` と同じユーザー集合を返す。`clanGetInfo` は
 他クランに対しても読めるが、取得できるのはクランに公開されている統計のみ。
-総合パワーはこのレスポンスには含まれない。
+パワー（`heroesPower` / `titansPower`）はこのレスポンスには含まれない。
+
+### clanInvites_search - ユーザーIDでパワー取得
+
+メソッド名は clan invite 検索だが、**`args.id` は userId**（クランIDではない）。
+`items[].user` に `heroesPower` / `titansPower` が入る。Power Tournament では
+イベント種別に合わせて Hero は `heroesPower`、Titan は `titansPower` の片方を使う
+（合計しない）。
+
+```json
+{"calls":[{"name":"clanInvites_search","args":{"id":"12345678","minTeamLevel":35,"minHeroesPower":0,"minTitansPower":0,"languageId":2,"clanStatus":0,"page":0},"context":{"actionTs":0},"ident":"power_12345678"}]}
+```
+
+```json
+{
+  "results": [{
+    "ident": "power_12345678",
+    "result": {
+      "response": {
+        "items": [{
+          "id": 12345678,
+          "blockReason": null,
+          "user": {
+            "id": "12345678",
+            "name": "Alice",
+            "serverId": "161",
+            "heroesPower": "4718297",
+            "titansPower": "2834302"
+          }
+        }],
+        "hasMore": false
+      }
+    }
+  }]
+}
+```
+
+読み取り専用。レスポンスは `items[]`（`user` に `heroesPower` / `titansPower`）と
+`hasMore`。ユーザーが見つからない場合は `items` が空になる。
 
 ---
 
