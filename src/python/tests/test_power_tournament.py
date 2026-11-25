@@ -1,8 +1,10 @@
+import re
 from unittest.mock import MagicMock
 
 import pytest
 
 from hw_genie.core.client import ApiAction, HWAuthError, ResponseStatus
+from hw_genie.core.utils import display_width, pad
 
 STATE_PAYLOAD = {
     "id": 1000,
@@ -467,6 +469,686 @@ def test_render_dry_run(capsys):
     out = capsys.readouterr().out
     assert "Rewards: received 1 / unreceived 3 (claimable 2)" in out
     assert "Dry-run: rewards were not claimed." in out
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(line: str) -> str:
+    return _ANSI_RE.sub("", line)
+
+
+def test_clip_stops_at_column_boundary():
+    from hw_genie.commands.power_tournament import _clip
+
+    assert _clip("日本語", 3) == "日"
+    clipped = _clip("日本語", 3)
+    assert display_width(clipped, ambiguous_wide=False) == 2
+    # Only one 1-column space is needed to fill a 3-column narrow cell.
+    padded = pad(clipped, 3, ambiguous_wide=False)
+    assert padded == "日 "
+    assert len(padded) - len(clipped) == 1
+
+
+def test_render_rank_table_aligns_names_across_scripts(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    names = ["Тест", "Bob", "日本語", "ДлинноеИмя", "⚡Storm"]
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Тест", 100, 1_700_000_000),
+            TournamentRankEntry(2, "2", "Bob", 90, 1_700_000_000),
+            TournamentRankEntry(3, "3", "日本語", 80, 1_700_000_000),
+            TournamentRankEntry(4, "4", "ДлинноеИмя", 70, 1_700_000_000),
+            TournamentRankEntry(5, "5", "⚡Storm", 60, 1_700_000_000),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+
+    header = next(line for line in lines if line.lstrip().startswith("#"))
+    rule = next(line for line in lines if line.lstrip().startswith("---"))
+    rows = [
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    ]
+    assert len(rows) == 5
+
+    # The Name column is data-driven (longest name, at least the header) under
+    # the narrow-ambiguous policy, for Cyrillic, ASCII, CJK and emoji names.
+    expected_name_width = max(
+        display_width("Name", ambiguous_wide=False),
+        *(display_width(name, ambiguous_wide=False) for name in names),
+    )
+    name_cells = [row.split(" | ")[1] for row in rows]
+    assert all(
+        display_width(cell, ambiguous_wide=False) == expected_name_width
+        for cell in name_cells
+    )
+    # Cyrillic rows: raw len equals the visual width, proving A counted as 1.
+    for cell in name_cells[:1] + name_cells[3:4]:
+        assert len(cell) == expected_name_width
+        # The old default (A=2) under-pads these cells, so this width differs.
+        assert display_width(cell) != expected_name_width
+
+    # Header, rule and data rows share one visual width.
+    assert len({display_width(line, ambiguous_wide=False) for line in [header, rule, *rows]}) == 1
+
+
+def test_render_rank_table_marks_self_row_without_breaking_alignment(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(1, "1", "Тест", 100, 1_700_000_000),
+            TournamentRankEntry(2, "2", "Пример", 90, 1_700_000_000, is_self=True),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+    rows = [
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    ]
+    assert len(rows) == 2
+
+    self_rows = [row for row in rows if "← you" in row]
+    assert len(self_rows) == 1
+    marked = self_rows[0]
+    assert marked.rstrip().endswith("← you")
+    # Excluding the marker, the self row matches the other row's width.
+    widths = {display_width(row.split(" ← you")[0], ambiguous_wide=False) for row in rows}
+    assert len(widths) == 1
+    # Dynamic Name width: the longest of "Name", "Тест" (4) and "Пример" (6).
+    assert all(display_width(row.split(" | ")[1], ambiguous_wide=False) == 6 for row in rows)
+
+
+def test_render_rank_table_widths_follow_widest_values(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentMemberStats,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(
+                1,
+                "1",
+                "Bob",
+                104_500,
+                1_700_000_000,
+                server_id="161",
+                power=999_999,
+                stats=TournamentMemberStats(
+                    activity_today=25_000,
+                    activity_week=123_500,
+                    titanite_today=1,
+                    titanite_week=20,
+                    prestige_today=3,
+                    prestige_week=30,
+                ),
+            ),
+            TournamentRankEntry(2, "2", "Carol", 90, 1_700_000_000, server_id="9"),
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+
+    header = next(line for line in lines if line.lstrip().startswith("#"))
+    rule = next(line for line in lines if line.lstrip().startswith("---"))
+    rows = [
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    ]
+    assert len(rows) == 2
+    row = rows[0]
+    # 999_999 formats to 1000.0K (7 chars, wider than the old fixed 6).
+    assert "1000.0K" in row
+    # 25_000/123_500 formats to 25.0K/123.5K (12 chars, wider than the old 11).
+    assert "25.0K/123.5K" in row
+
+    cells = row.split(" | ")
+    assert display_width(cells[3], ambiguous_wide=False) == 7
+    assert display_width(cells[5], ambiguous_wide=False) == 12
+
+    # Shorter values in the second row are padded to the same widths, and the
+    # header, rule and every data row share one visual width.
+    widths = {
+        display_width(line, ambiguous_wide=False) for line in [header, rule, *rows]
+    }
+    assert len(widths) == 1
+
+
+def test_render_rank_table_clips_long_names_to_18(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[TournamentRankEntry(1, "1", "X" * 40, 100, 1_700_000_000)],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    lines = [_plain(line) for line in capsys.readouterr().out.splitlines()]
+    row = next(
+        line
+        for line in lines
+        if line.startswith("  ") and line.lstrip()[:1].isdigit()
+    )
+    name_cell = row.split(" | ")[1]
+    assert display_width(name_cell, ambiguous_wide=False) == 18
+    assert name_cell.strip() == "X" * 18
+
+
+def test_parse_group_info_reads_server_power_and_member_stats():
+    from hw_genie.commands.power_tournament import parse_group_info
+
+    response = {
+        "users": {
+            "1": {
+                "id": "1",
+                "name": "Bob",
+                "serverId": "161",
+                "clanId": "42",
+                "power": "1234567",
+                "todayActivity": 100,
+                "activitySum": 2000,
+                "todayDungeonActivity": 10,
+                "dungeonActivitySum": 300,
+                "todayPrestige": 5,
+                "prestigeSum": 500,
+            }
+        },
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    entry = parse_group_info(response)[0]
+    assert entry.server_id == "161"
+    assert entry.clan_id == "42"
+    assert entry.power == 1_234_567
+    assert entry.stats is not None
+    assert entry.stats.activity_today == 100
+    assert entry.stats.activity_week == 2000
+    assert entry.stats.titanite_today == 10
+    assert entry.stats.titanite_week == 300
+    assert entry.stats.prestige_today == 5
+    assert entry.stats.prestige_week == 500
+
+
+def test_fetch_member_stats_fills_from_clan(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    mock_call.return_value = _res(
+        {
+            "membersStat": [
+                {
+                    "userId": "2",
+                    "todayActivity": 10,
+                    "activitySum": 100,
+                    "todayDungeonActivity": 1,
+                    "dungeonActivitySum": 20,
+                    "todayPrestige": 3,
+                    "prestigeSum": 30,
+                }
+            ]
+        }
+    )
+    entries = [TournamentRankEntry(1, "2", "Bob", 100, clan_id="42")]
+
+    stats, error = fetch_member_stats(client, entries)
+
+    assert error is None
+    assert stats["2"].activity_today == 10
+    payload = mock_call.call_args.args[0]
+    assert payload["calls"][0]["name"] == "clanGetInfo"
+    assert payload["calls"][0]["args"] == {"clanId": "42"}
+
+
+def test_fetch_member_stats_batches_multiple_clans(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "clan_42": {
+            "result": {
+                "response": {
+                    "membersStat": [{"userId": "2", "todayActivity": 10}]
+                }
+            }
+        },
+        "clan_43": {
+            "result": {
+                "response": {
+                    "membersStat": [{"userId": "3", "todayActivity": 20}]
+                }
+            }
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "2", "Bob", 100, clan_id="42"),
+        TournamentRankEntry(2, "3", "Carol", 90, clan_id="43"),
+    ]
+
+    stats, error = fetch_member_stats(client, entries)
+
+    assert error is None
+    assert stats["2"].activity_today == 10
+    assert stats["3"].activity_today == 20
+    assert mock_call.call_count == 1
+
+
+def test_fetch_member_stats_uses_object_key_when_user_id_missing(
+    mock_client, mock_sleep
+):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    # Object form keyed by userId where the value omits userId entirely.
+    mock_call.return_value = _res(
+        {"membersStat": {"2": {"todayActivity": 10, "activitySum": 100}}}
+    )
+    entries = [TournamentRankEntry(1, "2", "Bob", 100, clan_id="42")]
+
+    stats, error = fetch_member_stats(client, entries)
+
+    assert error is None
+    assert stats["2"].activity_today == 10
+    assert stats["2"].activity_week == 100
+
+
+def test_fetch_member_stats_reports_per_clan_error(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "clan_42": {"error": {"name": "NotAvailable"}},
+        "clan_43": {
+            "result": {
+                "response": {
+                    "membersStat": [{"userId": "3", "todayActivity": 20}]
+                }
+            }
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "2", "Bob", 100, clan_id="42"),
+        TournamentRankEntry(2, "3", "Carol", 90, clan_id="43"),
+    ]
+
+    stats, error = fetch_member_stats(client, entries)
+
+    assert error is not None
+    assert "clan 42" in error
+    assert "NotAvailable" in error
+    assert "clan 43" not in error
+    assert stats["3"].activity_today == 20
+    assert "2" not in stats
+
+
+def test_fetch_member_stats_accepts_positional_idents(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "0": {
+            "result": {
+                "response": {
+                    "membersStat": [{"userId": "2", "todayActivity": 10}]
+                }
+            }
+        },
+        "1": {
+            "result": {
+                "response": {
+                    "membersStat": [{"userId": "3", "todayActivity": 20}]
+                }
+            }
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "2", "Bob", 100, clan_id="42"),
+        TournamentRankEntry(2, "3", "Carol", 90, clan_id="43"),
+    ]
+
+    stats, error = fetch_member_stats(client, entries)
+
+    assert error is None
+    assert stats["2"].activity_today == 10
+    assert stats["3"].activity_today == 20
+
+
+def test_fetch_member_stats_propagates_auth_error(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    mock_call.side_effect = HWAuthError("expired")
+
+    with pytest.raises(HWAuthError):
+        fetch_member_stats(
+            client, [TournamentRankEntry(1, "2", "Bob", 100, clan_id="42")]
+        )
+
+
+def test_run_merges_partial_profile_stats_with_clan(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    group = {
+        "users": {
+            "1": {
+                "id": "1",
+                "name": "Bob",
+                "serverId": "161",
+                "clanId": "42",
+                "todayActivity": 1,
+            }
+        },
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _res(STATE_PAYLOAD),
+        _res(group),
+        _user_res("2"),
+        _res(
+            {
+                "membersStat": [
+                    {
+                        "userId": "1",
+                        "todayActivity": 10,
+                        "activitySum": 100,
+                        "todayDungeonActivity": 2,
+                        "dungeonActivitySum": 20,
+                        "todayPrestige": 3,
+                        "prestigeSum": 30,
+                    }
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=1, dry_run=True
+    )
+
+    stats = result.ranking[0].stats
+    assert stats is not None
+    # The profile value wins; the clan fills the fields the profile omitted.
+    assert stats.activity_today == 1
+    assert stats.activity_week == 100
+    assert stats.titanite_today == 2
+    assert stats.titanite_week == 20
+    assert stats.prestige_today == 3
+    assert stats.prestige_week == 30
+
+
+def test_fetch_member_stats_promotes_batched_auth_error(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import (
+        TournamentRankEntry,
+        fetch_member_stats,
+    )
+
+    client, mock_call = mock_client
+    res = MagicMock()
+    res.is_success = True
+    res.error_name = None
+    res.detail = {
+        "clan_42": {"error": {"name": "auth"}},
+        "clan_43": {
+            "result": {"response": {"membersStat": []}}
+        },
+    }
+    mock_call.return_value = res
+    entries = [
+        TournamentRankEntry(1, "2", "Bob", 100, clan_id="42"),
+        TournamentRankEntry(2, "3", "Carol", 90, clan_id="43"),
+    ]
+
+    with pytest.raises(HWAuthError):
+        fetch_member_stats(client, entries)
+
+
+def test_run_enriches_stats_from_clan(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    group = {
+        "users": {
+            "1": {
+                "id": "1",
+                "name": "Bob",
+                "serverId": "161",
+                "clanId": "42",
+            }
+        },
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _res(STATE_PAYLOAD),
+        _res(group),
+        _user_res("2"),
+        _res(
+            {
+                "membersStat": [
+                    {"userId": "1", "todayActivity": 10, "activitySum": 100}
+                ]
+            }
+        ),
+    ]
+
+    result = run_power_tournament(
+        client, account_alias="Alice", top=1, dry_run=True
+    )
+
+    entry = result.ranking[0]
+    assert entry.server_id == "161"
+    assert entry.stats is not None
+    assert entry.stats.activity_today == 10
+    assert result.stats_error is None
+
+
+def test_run_skips_clan_get_info_when_profiles_carry_stats(mock_client, mock_sleep):
+    from hw_genie.commands.power_tournament import run_power_tournament
+
+    client, mock_call = mock_client
+    group = {
+        "users": {
+            "1": {
+                "id": "1",
+                "name": "Bob",
+                "clanId": "42",
+                "todayActivity": 10,
+                "activitySum": 100,
+                "todayDungeonActivity": 1,
+                "dungeonActivitySum": 20,
+                "todayPrestige": 3,
+                "prestigeSum": 30,
+            }
+        },
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [_state_res(), _res(group), _user_res("2")]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    names = [call.args[0]["calls"][0]["name"] for call in mock_call.call_args_list]
+    assert ApiAction.CLAN_GET_INFO not in names
+    assert result.ranking[0].stats is not None
+    assert result.ranking[0].stats.activity_today == 10
+    assert result.stats_error is None
+
+
+def test_run_stats_error_warns_but_keeps_ranking(mock_client, mock_sleep, capsys):
+    from hw_genie.commands.power_tournament import (
+        render_power_tournament,
+        run_power_tournament,
+    )
+    from hw_genie.main import _run_log_account_failure
+
+    client, mock_call = mock_client
+    group = {
+        "users": {"1": {"id": "1", "name": "Bob", "clanId": "42"}},
+        "points": {"1": 100},
+        "rewards": [],
+    }
+    mock_call.side_effect = [
+        _state_res(),
+        _res(group),
+        _user_res("2"),
+        _res({}, status=ResponseStatus.ERROR, error_name="NotAvailable"),
+    ]
+
+    result = run_power_tournament(client, account_alias="Alice", top=1, dry_run=True)
+
+    # A stats failure is a warning only: the ranking survives and the run is ok.
+    assert [entry.name for entry in result.ranking] == ["Bob"]
+    assert result.stats_error is not None
+    assert "clanGetInfo failed" in result.stats_error
+    assert _run_log_account_failure("power-tournament", result, None) is None
+
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+    assert "Member stats unavailable: clanGetInfo failed" in out
+
+
+def test_render_shows_stats_power_and_server(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentMemberStats,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[
+            TournamentRankEntry(
+                1,
+                "1",
+                "Bob",
+                100,
+                1_700_000_000,
+                server_id="161",
+                power=1_234_567,
+                stats=TournamentMemberStats(
+                    activity_today=10,
+                    activity_week=100,
+                    titanite_today=1,
+                    titanite_week=20,
+                    prestige_today=3,
+                    prestige_week=30,
+                ),
+            )
+        ],
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+
+    assert "Act T/W" in out
+    assert "Tit T/W" in out
+    assert "Pre T/W" in out
+    assert "161" in out
+    assert "1.2M" in out
+    assert "10/100" in out
+    assert "1/20" in out
+    assert "3/30" in out
+
+
+def test_render_shows_stats_error_as_warning(capsys):
+    from hw_genie.commands.power_tournament import (
+        PowerTournamentResult,
+        TournamentRankEntry,
+        parse_state,
+        render_power_tournament,
+    )
+
+    state = parse_state(STATE_PAYLOAD, now=1_700_050_000)
+    result = PowerTournamentResult(
+        account="Alice",
+        dry_run=True,
+        state=state,
+        ranking=[TournamentRankEntry(1, "1", "Bob", 100, 1_700_000_000)],
+        own_user_id="1",
+        own_place=1,
+        stats_error="clan 42: NotAvailable",
+    )
+    render_power_tournament(result, now=1_700_050_000)
+    out = capsys.readouterr().out
+
+    assert "Member stats unavailable: clan 42: NotAvailable" in out
+    assert "Ranking unavailable" not in out
+    assert "Rewards:" in out
 
 
 def test_reward_counts_do_not_treat_limit_reached_as_received():

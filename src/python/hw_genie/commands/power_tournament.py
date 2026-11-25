@@ -20,24 +20,32 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hw_genie.core.client import (
+    AUTH_ERROR_NAMES,
     ApiAction,
     Emojis,
     ErrorName,
     HWAuthError,
     HWClient,
+    Messages,
     ResponseStatus,
     _safe_int,
 )
-from hw_genie.core.utils import display_width, format_number_with_suffix, pad, style
+from hw_genie.core.utils import (
+    display_width,
+    format_number_with_suffix,
+    pad,
+    style,
+)
 
 DEFAULT_TOP = 5
 MAX_TOP = 50
+CLAN_STATS_BATCH = 10
 
 TYPE_LABELS = {
     "titans": "Titan",
@@ -81,6 +89,64 @@ class TournamentReward:
 
 
 @dataclass(frozen=True)
+class TournamentMemberStats:
+    """Guild-member stats from ``clanGetInfo.membersStat`` (today / week)."""
+
+    activity_today: int | None = None
+    activity_week: int | None = None
+    titanite_today: int | None = None
+    titanite_week: int | None = None
+    prestige_today: int | None = None
+    prestige_week: int | None = None
+
+    def _values(self) -> tuple[int | None, ...]:
+        return (
+            self.activity_today,
+            self.activity_week,
+            self.titanite_today,
+            self.titanite_week,
+            self.prestige_today,
+            self.prestige_week,
+        )
+
+    def is_empty(self) -> bool:
+        return all(value is None for value in self._values())
+
+    def is_complete(self) -> bool:
+        return all(value is not None for value in self._values())
+
+
+def _merge_stats(
+    primary: TournamentMemberStats | None,
+    fallback: TournamentMemberStats | None,
+) -> TournamentMemberStats | None:
+    if primary is None:
+        return fallback
+    if fallback is None:
+        return primary
+    return TournamentMemberStats(
+        activity_today=primary.activity_today
+        if primary.activity_today is not None
+        else fallback.activity_today,
+        activity_week=primary.activity_week
+        if primary.activity_week is not None
+        else fallback.activity_week,
+        titanite_today=primary.titanite_today
+        if primary.titanite_today is not None
+        else fallback.titanite_today,
+        titanite_week=primary.titanite_week
+        if primary.titanite_week is not None
+        else fallback.titanite_week,
+        prestige_today=primary.prestige_today
+        if primary.prestige_today is not None
+        else fallback.prestige_today,
+        prestige_week=primary.prestige_week
+        if primary.prestige_week is not None
+        else fallback.prestige_week,
+    )
+
+
+@dataclass(frozen=True)
 class TournamentRankEntry:
     place: int
     user_id: str
@@ -88,6 +154,10 @@ class TournamentRankEntry:
     points: int
     last_login_ts: int | None = None
     is_self: bool = False
+    server_id: str | None = None
+    clan_id: str | None = None
+    power: int | None = None
+    stats: TournamentMemberStats | None = None
 
 
 @dataclass
@@ -119,6 +189,7 @@ class PowerTournamentResult:
     own_user_id: str | None = None
     own_place: int | None = None
     ranking_error: str | None = None
+    stats_error: str | None = None
     error: str | None = None
 
     @property
@@ -226,6 +297,55 @@ def _user_sort_key(user_id: str) -> tuple[int, int, str]:
     return (1, 0, user_id)
 
 
+def _first_int(mapping: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key in mapping:
+            value = _safe_int(mapping.get(key), None)
+            if value is not None:
+                return value
+    return None
+
+
+def _parse_stats(mapping: Any) -> TournamentMemberStats | None:
+    if not isinstance(mapping, dict):
+        return None
+    stats = TournamentMemberStats(
+        activity_today=_first_int(mapping, "todayActivity", "activityToday"),
+        activity_week=_first_int(mapping, "activitySum", "activityWeek"),
+        titanite_today=_first_int(
+            mapping, "todayDungeonActivity", "todayTitanite", "titaniteToday"
+        ),
+        titanite_week=_first_int(
+            mapping,
+            "dungeonActivitySum",
+            "titaniteSum",
+            "weekTitanite",
+            "titaniteWeek",
+        ),
+        prestige_today=_first_int(mapping, "todayPrestige", "prestigeToday"),
+        prestige_week=_first_int(
+            mapping, "prestigeSum", "weekPrestige", "prestigeWeek"
+        ),
+    )
+    return None if stats.is_empty() else stats
+
+
+def _stats_from_profile(profile: dict[str, Any]) -> TournamentMemberStats | None:
+    for key in ("stat", "stats", "memberStat", "membersStat"):
+        nested = profile.get(key)
+        if isinstance(nested, dict):
+            stats = _parse_stats(nested)
+            if stats is not None:
+                return stats
+    return _parse_stats(profile)
+
+
+def _optional_id(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
 def parse_group_info(
     response: Any, *, own_user_id: str | None = None
 ) -> list[TournamentRankEntry]:
@@ -234,6 +354,11 @@ def parse_group_info(
     A malformed success payload raises instead of being read as an empty
     ranking, so the CLI cannot exit 0 on a broken response. An empty
     ``points: {}`` object is still a legitimate empty ranking.
+
+    ``power`` and member stats are read from the user profile when the API
+    includes them. The current Titan response only carries basic profile data
+    plus ``serverId``; ``run_power_tournament`` fills activity/titanite/prestige
+    from ``clanGetInfo.membersStat`` afterwards.
     """
     points = response.get("points") if isinstance(response, dict) else None
     if not isinstance(points, dict):
@@ -249,22 +374,61 @@ def parse_group_info(
     if not isinstance(users, dict):
         users = {}
 
-    rows: list[tuple[str, str, int, int | None]] = []
+    rows: list[
+        tuple[
+            str,
+            str,
+            int,
+            int | None,
+            str | None,
+            str | None,
+            int | None,
+            TournamentMemberStats | None,
+        ]
+    ] = []
     for user_id, raw_points in points.items():
         uid = str(user_id)
         profile = users.get(uid)
         name = ""
         last_login = None
+        server_id = None
+        clan_id = None
+        power = None
+        stats = None
         if isinstance(profile, dict):
             name = str(profile.get("name") or "").strip()
             last_login = _safe_int(profile.get("lastLoginTime"), None)
-        rows.append((uid, name or f"User {uid}", _safe_int(raw_points, 0), last_login))
+            server_id = _optional_id(profile.get("serverId"))
+            clan_id = _optional_id(profile.get("clanId"))
+            power = _first_int(profile, "power", "sumPower", "totalPower")
+            stats = _stats_from_profile(profile)
+        rows.append(
+            (
+                uid,
+                name or f"User {uid}",
+                _safe_int(raw_points, 0),
+                last_login,
+                server_id,
+                clan_id,
+                power,
+                stats,
+            )
+        )
 
     rows.sort(key=lambda row: (-row[2], _user_sort_key(row[0])))
     entries: list[TournamentRankEntry] = []
     previous_points: int | None = None
     previous_place = 0
-    for index, (uid, name, pts, last_login) in enumerate(rows, start=1):
+    for index, (
+        uid,
+        name,
+        pts,
+        last_login,
+        server_id,
+        clan_id,
+        power,
+        stats,
+    ) in enumerate(rows, start=1):
         # Competition ranking: ties share the earlier place (900, 900, 500 -> 1, 1, 3).
         place = previous_place if pts == previous_points else index
         entries.append(
@@ -275,11 +439,106 @@ def parse_group_info(
                 points=pts,
                 last_login_ts=last_login,
                 is_self=own_user_id is not None and uid == str(own_user_id),
+                server_id=server_id,
+                clan_id=clan_id,
+                power=power,
+                stats=stats,
             )
         )
         previous_points = pts
         previous_place = place
     return entries
+
+
+def _members_stat_map(response: Any) -> dict[str, TournamentMemberStats]:
+    if not isinstance(response, dict):
+        return {}
+    raw = response.get("membersStat")
+    if isinstance(raw, dict):
+        # Object form: keyed by userId, values may omit ``userId`` entirely.
+        items: list[tuple[Any, Any]] = list(raw.items())
+    elif isinstance(raw, list):
+        items = [(None, item) for item in raw]
+    else:
+        return {}
+    stats_by_user: dict[str, TournamentMemberStats] = {}
+    for key, item in items:
+        if not isinstance(item, dict):
+            continue
+        user_id = None
+        for candidate in (item.get("userId"), item.get("id"), key):
+            user_id = _optional_id(candidate)
+            if user_id is not None:
+                break
+        if user_id is None:
+            continue
+        stats = _parse_stats(item)
+        if stats is not None:
+            stats_by_user[user_id] = stats
+    return stats_by_user
+
+
+def fetch_member_stats(
+    client: HWClient, entries: list[TournamentRankEntry]
+) -> tuple[dict[str, TournamentMemberStats], str | None]:
+    """Fill activity/titanite/prestige from each player's clan.
+
+    ``clanGetInfo`` accepts ``{"clanId": ...}`` for other clans. Requests are
+    batched (up to ``CLAN_STATS_BATCH`` clans per RPC); failures are returned as
+    a warning string so the ranking itself still succeeds.
+    """
+    missing = [
+        entry
+        for entry in entries
+        if entry.clan_id and (entry.stats is None or not entry.stats.is_complete())
+    ]
+    clan_ids = sorted({entry.clan_id for entry in missing})
+    if not clan_ids:
+        return {}, None
+
+    stats_by_user: dict[str, TournamentMemberStats] = {}
+    errors: list[str] = []
+    for start in range(0, len(clan_ids), CLAN_STATS_BATCH):
+        chunk = clan_ids[start : start + CLAN_STATS_BATCH]
+        calls = [
+            {
+                "name": ApiAction.CLAN_GET_INFO,
+                "args": {"clanId": clan_id},
+                "context": {"actionTs": 0},
+                "ident": f"clan_{clan_id}",
+            }
+            for clan_id in chunk
+        ]
+        res = client.call({"calls": calls})
+        client.sleep()
+        if not res.is_success:
+            errors.append(
+                f"clanGetInfo failed ({res.error_name or res.status.value})"
+            )
+            continue
+        if len(chunk) == 1:
+            stats_by_user.update(_members_stat_map(_unwrap_item(res.detail)))
+            continue
+        if not isinstance(res.detail, dict):
+            errors.append("clanGetInfo returned an unexpected payload")
+            continue
+        for index, clan_id in enumerate(chunk):
+            item = res.detail.get(f"clan_{clan_id}")
+            if not isinstance(item, dict):
+                # HWClient falls back to string indices when idents are absent.
+                item = res.detail.get(str(index))
+            if not isinstance(item, dict):
+                errors.append(f"clan {clan_id}: no result")
+                continue
+            if "error" in item:
+                error = item.get("error")
+                name = error.get("name") if isinstance(error, dict) else str(error)
+                if name in AUTH_ERROR_NAMES:
+                    raise HWAuthError(Messages.AUTH_ERROR)
+                errors.append(f"clan {clan_id}: {name}")
+                continue
+            stats_by_user.update(_members_stat_map(_unwrap_item(item)))
+    return stats_by_user, ("; ".join(errors) if errors else None)
 
 
 def _single_call(client: HWClient, name: str, args: dict[str, Any] | None = None) -> Any:
@@ -442,6 +701,25 @@ def run_power_tournament(
         raise
     except Exception as exc:  # noqa: BLE001 - state/claims already done
         result.ranking_error = str(exc)
+
+    if result.ranking:
+        try:
+            stats_by_user, stats_error = fetch_member_stats(client, result.ranking)
+            if stats_by_user:
+                result.ranking = [
+                    replace(
+                        entry,
+                        stats=_merge_stats(
+                            entry.stats, stats_by_user.get(entry.user_id)
+                        ),
+                    )
+                    for entry in result.ranking
+                ]
+            result.stats_error = stats_error
+        except HWAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - optional enrichment only
+            result.stats_error = str(exc)
     return result
 
 
@@ -492,7 +770,7 @@ def _clip(text: str, width: int) -> str:
     out: list[str] = []
     used = 0
     for ch in text:
-        w = display_width(ch)
+        w = display_width(ch, ambiguous_wide=False)
         if used + w > width:
             break
         out.append(ch)
@@ -500,31 +778,100 @@ def _clip(text: str, width: int) -> str:
     return "".join(out)
 
 
-_RANK_COLUMNS = (
-    ("#", 4),
-    ("Name", 22),
-    ("Points", 11),
-    ("Last login", 16),
-    ("Seen", 6),
+_RANK_HEADERS = (
+    "#",
+    "Name",
+    "Points",
+    "Power",
+    "Srv",
+    "Act T/W",
+    "Tit T/W",
+    "Pre T/W",
+    "Last login",
+    "Seen",
 )
+
+#: Hard cap for the Name column; wider names are clipped before measuring.
+_RANK_NAME_WIDTH = 18
+
+
+def _number(value: int | None) -> str:
+    return format_number_with_suffix(value) if value is not None else "-"
+
+
+def _pair(today: int | None, week: int | None) -> str:
+    return f"{_number(today)}/{_number(week)}"
+
+
+def _stats_values(entry: TournamentRankEntry) -> tuple[str, str, str]:
+    stats = entry.stats
+    if stats is None:
+        return "-/-", "-/-", "-/-"
+    return (
+        _pair(stats.activity_today, stats.activity_week),
+        _pair(stats.titanite_today, stats.titanite_week),
+        _pair(stats.prestige_today, stats.prestige_week),
+    )
+
+
+def _rank_cells(entry: TournamentRankEntry, *, now: int | None) -> tuple[str, ...]:
+    """Unpadded cell strings for one ranking row (narrow-ambiguous policy)."""
+    activity, titanite, prestige = _stats_values(entry)
+    return (
+        str(entry.place),
+        _clip(entry.name, _RANK_NAME_WIDTH),
+        _number(entry.points),
+        _number(entry.power),
+        entry.server_id or "-",
+        activity,
+        titanite,
+        prestige,
+        _format_epoch(entry.last_login_ts),
+        _age(entry.last_login_ts, now=now),
+    )
+
+
+def _rank_widths(rows: list[tuple[str, ...]]) -> tuple[int, ...]:
+    """Column widths: the header plus the widest cell, measured narrow.
+
+    Data-driven widths keep the table compact while never overflowing: a
+    ``25.0K/123.5K`` pair needs 12 columns, ``1000.0K`` needs 7, and so on.
+    """
+    widths: list[int] = []
+    for index, header in enumerate(_RANK_HEADERS):
+        width = display_width(header, ambiguous_wide=False)
+        for row in rows:
+            width = max(width, display_width(row[index], ambiguous_wide=False))
+        widths.append(width)
+    return tuple(widths)
 
 
 def _render_rank_table(entries: list[TournamentRankEntry], *, now: int | None) -> None:
-    header = "  " + " | ".join(pad(title, width) for title, width in _RANK_COLUMNS)
+    # Player names are commonly Cyrillic/Greek, which terminals render one
+    # column wide; the layout therefore counts East Asian Ambiguous chars as 1
+    # (the reverse trade-off of the default CJK policy in core.utils).
+    rows = [_rank_cells(entry, now=now) for entry in entries]
+    widths = _rank_widths(rows)
+    header = "  " + " | ".join(
+        pad(title, width, ambiguous_wide=False)
+        for title, width in zip(_RANK_HEADERS, widths)
+    )
     print(style(header, bold=True, fg="cyan"))
-    print(style("  " + "-" * (len(header) - 2), dim=True))
-    for entry in entries:
-        name = _clip(entry.name, _RANK_COLUMNS[1][1])
-        cells = [
-            pad(str(entry.place), _RANK_COLUMNS[0][1]),
-            pad(name, _RANK_COLUMNS[1][1]),
-            pad(format_number_with_suffix(entry.points), _RANK_COLUMNS[2][1]),
-            pad(_format_epoch(entry.last_login_ts), _RANK_COLUMNS[3][1]),
+    rule = "  " + "-" * (display_width(header, ambiguous_wide=False) - 2)
+    print(style(rule, dim=True))
+    for entry, cells in zip(entries, rows):
+        padded = [
+            pad(cell, width, ambiguous_wide=False)
+            for cell, width in zip(cells[:-1], widths[:-1])
         ]
-        seen = pad(_age(entry.last_login_ts, now=now), _RANK_COLUMNS[4][1])
-        seen = style(seen, fg=_age_color(entry.last_login_ts, now=now))
+        # ``← you`` is appended after the padded Seen cell, so it never widens
+        # the table (and is excluded from the measured column widths).
+        seen = style(
+            pad(cells[-1], widths[-1], ambiguous_wide=False),
+            fg=_age_color(entry.last_login_ts, now=now),
+        )
         marker = style(" ← you", bold=True) if entry.is_self else ""
-        print("  " + " | ".join(cells) + " | " + seen + marker)
+        print("  " + " | ".join(padded) + " | " + seen + marker)
 
 
 def _reward_counts(
@@ -593,6 +940,9 @@ def render_power_tournament(
         print(f"  {Emojis.WARNING}Ranking unavailable: {result.ranking_error}")
     else:
         print(f"  {Emojis.INFO}No group ranking entries returned.")
+
+    if result.stats_error:
+        print(f"  {Emojis.WARNING}Member stats unavailable: {result.stats_error}")
 
     received, unreceived, claimable = _reward_counts(result)
     reward_line = (

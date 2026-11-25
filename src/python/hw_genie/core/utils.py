@@ -154,32 +154,52 @@ def format_timestamp_for_display(iso: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _char_width(ch: str) -> int:
+def _char_width(ch: str, *, ambiguous_wide: bool = True) -> int:
     """Terminal display width of a single character.
 
     - Wide/full-width East Asian (W/F: Japanese, most emoji) -> 2 columns.
     - Combining marks (Mn/Me) and format chars (Cf: ZWJ U+200D, LRM, BOM) -> 0.
-    - Ambiguous (A) characters (``±``, ``→`` ...) -> 2, matching CJK terminals
-      where they render full-width (the user-facing default
-      ``HWGENIE_TZ=Asia/Tokyo`` context). ``wcwidth`` counts them as 1, so on
-      Western terminals long runs of A chars wrap one column early; this is a
-      deliberate, documented trade-off.
+    - Ambiguous (A) characters (``±``, ``→``, Cyrillic-adjacent symbols) -> 2
+      when ``ambiguous_wide`` is True, 1 when False.
+
+    ``ambiguous_wide=True`` (the default) is the CJK-terminal policy: A chars
+    render full-width in the user-facing ``HWGENIE_TZ=Asia/Tokyo`` context and
+    ``wcwidth`` counts them as 1, so on Western terminals long runs of A chars
+    wrap one column early; this is a deliberate, documented trade-off.
+    Player-name tables whose data is mostly narrow (Cyrillic, Greek, etc.) can
+    pass ``ambiguous_wide=False`` so columns stay aligned on the common narrow
+    rendering; a terminal explicitly configured with ambiguous-width=double
+    will then misalign in the opposite direction (one column short per A char).
     """
     if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
         return 0
-    if unicodedata.east_asian_width(ch) in ("W", "F", "A"):
+    east_asian = unicodedata.east_asian_width(ch)
+    if east_asian in ("W", "F"):
         return 2
+    if east_asian == "A":
+        return 2 if ambiguous_wide else 1
     return 1
 
 
-def display_width(text: str) -> int:
-    """Terminal display width of ``text`` (double-width chars count as 2)."""
-    return sum(_char_width(ch) for ch in text)
+def display_width(text: str, *, ambiguous_wide: bool = True) -> int:
+    """Terminal display width of ``text`` (double-width chars count as 2).
+
+    ``ambiguous_wide`` follows ``_char_width``: True (default) is the CJK
+    terminal policy where East Asian Ambiguous chars count as 2; pass False for
+    tables of mostly narrow text (player names) that should count A chars as 1.
+    """
+    return sum(_char_width(ch, ambiguous_wide=ambiguous_wide) for ch in text)
 
 
-def pad(text: str, width: int) -> str:
-    """Left-justify ``text`` to ``width`` display columns (width-aware)."""
-    return text + " " * max(0, width - display_width(text))
+def pad(text: str, width: int, *, ambiguous_wide: bool = True) -> str:
+    """Left-justify ``text`` to ``width`` display columns (width-aware).
+
+    ``ambiguous_wide`` is forwarded to ``display_width``; pass False to keep
+    player-name columns aligned on terminals that render ambiguous-width chars
+    (Cyrillic, Greek, ...) as single width.
+    """
+    current = display_width(text, ambiguous_wide=ambiguous_wide)
+    return text + " " * max(0, width - current)
 
 
 def wrap_display(text: str, width: int) -> list[str]:

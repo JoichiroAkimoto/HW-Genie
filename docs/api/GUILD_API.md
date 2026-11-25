@@ -86,6 +86,28 @@ curl -s 'https://heroes-wb.nextersglobal.com/api/' \
 （Earn 1750 Guild Activity points）はエナジー消費でも進むため、グリフ実施の
 判定には使わない。
 
+### clanId 引数と membersStat（他クラン参照）
+
+`args` に `{"clanId": "<id>"}` を渡すと、指定クランの情報を返す（実測）。
+引数なしは自分のクラン。`response.membersStat[]` にはメンバーごとの
+今日 / 累計の活動・ダンジョン・威信が入る。
+
+```json
+{"calls":[{"name":"clanGetInfo","args":{"clanId":"123456"},"context":{"actionTs":0},"ident":"body"}]}
+```
+
+| フィールド | 説明 |
+|---|---|
+| `userId` | メンバーのプレイヤーID |
+| `todayActivity` / `activitySum` | 今日 / 累計のギルド活動ポイント（累計は UI の Week 列に対応） |
+| `todayDungeonActivity` / `dungeonActivitySum` | 今日 / 累計のダンジョン活動（Titanite） |
+| `todayPrestige` / `prestigeSum` | 今日 / 累計の威信（Prestige） |
+| `raidSum` / `wasChampion` | レイド累計 / チャンピオン履歴（表示には未使用） |
+
+`membersStat` は `clan.members` と同じユーザー集合を返す。`clanGetInfo` は
+他クランに対しても読めるが、取得できるのはクランに公開されている統計のみ。
+総合パワーはこのレスポンスには含まれない。
+
 ---
 
 ### clanWarGetBriefInfo - ギルド戦 (GW) の概要
