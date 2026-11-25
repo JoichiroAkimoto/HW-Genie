@@ -2457,6 +2457,7 @@ def _run_snapshot_target_watch(
     once: bool,
     max_polls: int | None,
     execute: bool,
+    force_range: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
     """Watch saved candidates without ever calling ``*FindEnemies``.
@@ -2623,6 +2624,7 @@ def _run_snapshot_target_watch(
                         min_gap=min_gap,
                         required_heroes=target_set,
                         excluded_user_ids=current_excluded,
+                        force=force_range,
                         mode=mode,
                     )
                 except ArenaAttackUncertain:
@@ -2653,6 +2655,7 @@ def _run_snapshot_target_watch(
                     min_gap=min_gap,
                     required_heroes=target_set,
                     excluded_user_ids=current_excluded,
+                    force=force_range,
                     mode=mode,
                 )
             except ArenaAttackUncertain:
@@ -2744,6 +2747,7 @@ def run_arena_target_watch(
     max_polls: int | None = None,
     capture_retries: int = DEFAULT_CANDIDATE_RETRIES,
     from_snapshot: bool = False,
+    force_range: bool = False,
     execute: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
@@ -2758,7 +2762,9 @@ def run_arena_target_watch(
       never call ``arenaFindEnemies`` again. Ranks/defenses come from
       ``topGet`` and the saved candidate is attacked via the snapshot path;
       this preserves the pre-fetched candidate set so rank drift can be
-      exploited. The target must remain in the current top 50.
+      exploited. The target must remain in the current top 50. Pass
+      ``force_range`` to send even when the current ``CheckTargetRange`` is
+      false (upper-only/defense/min-gap are still enforced).
 
     Exactly one attack is sent, then the command stops. The defense is only
     read (``arenaGetAll.arenaHeroes``); this function never calls
@@ -2838,6 +2844,7 @@ def run_arena_target_watch(
             once=once,
             max_polls=max_polls,
             execute=execute,
+            force_range=force_range,
             mode=mode,
         )
     else:

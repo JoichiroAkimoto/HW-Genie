@@ -1284,6 +1284,7 @@ def cmd_arena_target_watch(args):
             max_polls=args.max_polls,
             capture_retries=args.capture_retries,
             from_snapshot=bool(args.from_snapshot),
+            force_range=bool(getattr(args, "force_range", False)),
             execute=bool(args.execute),
         )
     except ArenaError as e:
@@ -3142,6 +3143,14 @@ def main():
             "Watch saved find-enemies candidates WITHOUT refreshing "
             "findEnemies (topGet only; target must stay in the top 50) and "
             "attack when defense and rank gap match."
+        ),
+    )
+    p_arena_target_watch.add_argument(
+        "--force-range",
+        action="store_true",
+        help=(
+            "With --from-snapshot, send even when arenaCheckTargetRange is "
+            "false (upper-only/defense/min-gap are still enforced)"
         ),
     )
     p_arena_target_watch.add_argument(

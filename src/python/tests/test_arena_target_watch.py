@@ -571,12 +571,14 @@ def test_snapshot_watch_executes_once(monkeypatch, capsys):
         team_name="auto",
         target_heroes=TARGET_HEROES,
         from_snapshot=True,
+        force_range=True,
         execute=True,
         once=True,
     )
 
     assert len(calls) == 1
     assert calls[0][1]["dry_run"] is False
+    assert calls[0][1]["force"] is True
     assert history[0]["attacked"] is True
     assert history[0]["win"] is True
     assert "Attack result: win=True" in capsys.readouterr().out
