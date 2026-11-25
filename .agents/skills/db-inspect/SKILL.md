@@ -9,7 +9,7 @@ description: HW-Genie のデータベース（Turso クラウド / ローカル�
 
 - 本プロジェクトのルートディレクトリにいること
 - `.env` に `TURSO_SYNC_URL` / `TURSO_AUTH_TOKEN` が設定されていること（通常は既に設定済み）
-- **worktree / 新規クローンで動かす場合**: `.env` は `.gitignore` 済みのため checkout に含まれない。main worktree の `.env` へのシンボリックリンクを貼るか、環境変数として注入する（下記「worktree での準備」）
+- **worktree / 新規クローンで動かす場合**: `.env` は `.gitignore` 済みのため checkout に含まれない。main worktree の `.env` へのシンボリックリンクを貼るか、環境変数として注入する（`.env` が存在すると `.env` に記載された `TURSO_SYNC_URL` / `TURSO_AUTH_TOKEN` が優先されるため、これらを注入で上書きするのは `.env` が無い場合のみ。`.env` に無いキーは注入可能。下記「worktree での準備」）
 
 ## DB 構成
 
@@ -37,6 +37,7 @@ ln -s /path/to/main-worktree/.env .env
 
 - シンボリックリンク方式は main の `.env` を共有するため、更新に自動で追従します。
   独立した設定にしたい場合は `cp` でコピーしてください（main の更新に追従しない）。
+- `core/database.py` は `.env` に記載されたキーのみを `os.environ` に上書きします（`database.py:569-577`）。そのため symlink / コピーした `.env` が存在する場合、`.env` 記載のキー（`DATABASE_URL` / `TURSO_SYNC_URL` / `TURSO_AUTH_TOKEN` 等）はシェルから上書きしても効きません。独立した設定を使う場合は `cp` でコピーした `.env` を直接編集してください。一方、`.env` に載っていないキー（例: `TURSO_READ_REMOTE` / `TURSO_WRITE_REMOTE` / `TURSO_SYNC_INTERVAL`）は `.env` が存在してもシェルから注入できます。
 - `.env` は `.gitignore` 済みなので、リンク/コピーしても git の差分やコミットに
   含まれません。不要になったら worktree 側で `unlink .env`（symlink のみ削除）で
   解除できます。**`rm` は使わないこと**: カレントを間違えると main の `.env`

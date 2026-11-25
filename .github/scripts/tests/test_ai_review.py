@@ -1,9 +1,11 @@
 """ai_review.py のヘルパー関数（リトライ・PR コメント取得・ファイル全文取得・メタデータ抽出・モデル解決）のテスト。"""
 
+import html
 import json
 import os
 import subprocess
 import sys
+from contextlib import ExitStack
 from unittest import mock
 
 import pytest
@@ -1282,6 +1284,294 @@ def test_run_openrouter_pass_reports_used_effort():
     assert exc is None
 
 
+def _openrouter_post_mock(data: dict) -> mock.MagicMock:
+    """_generate_with_openrouter 用の httpx.post 戻り値モック。"""
+    resp = mock.MagicMock()
+    resp.status_code = 200
+    resp.text = json.dumps(data, ensure_ascii=False)
+    resp.json.return_value = data
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def test_openrouter_fallback_models_default_order():
+    """既定 chain は個別 :free 2 モデル → 動的ルーターの順（ルーターは最後の安全網）。"""
+    expected = [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "openrouter/free",
+    ]
+    assert ai_review.OPENROUTER_FALLBACK_MODELS == expected
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert ai_review._get_openrouter_fallback_models() == expected
+    assert expected[-1] == "openrouter/free"
+
+
+def test_openrouter_fallback_models_env_override_and_gemma_filter():
+    """env 上書きと gemma 除外フィルタは維持される。"""
+    with mock.patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_FALLBACK_MODELS": (
+                "some/gemma:free, custom/model:free , openrouter/free"
+            )
+        },
+        clear=True,
+    ):
+        assert ai_review._get_openrouter_fallback_models() == [
+            "custom/model:free",
+            "openrouter/free",
+        ]
+
+
+def test_reasoning_payload_per_model():
+    """effort 対応モデルと非対応モデルで reasoning ペイロードを切り替える。"""
+    # 明記モデル＋未知モデル（env 指定を含む）は既存互換の effort 経路
+    assert ai_review._reasoning_payload(
+        "nvidia/nemotron-3-ultra-550b-a55b:free", "high"
+    ) == {"effort": "high", "exclude": True}
+    assert ai_review._reasoning_payload("custom/unknown-model:free", "medium") == {
+        "effort": "medium",
+        "exclude": True,
+    }
+    # effort 非対応の明記モデルは enabled + exclude（effort を送らない）
+    assert ai_review._reasoning_payload(
+        "nvidia/nemotron-3.5-lightning:free", "high"
+    ) == {"enabled": True, "exclude": True}
+    assert ai_review._reasoning_payload(
+        "nvidia/nemotron-3.5-super-vl:free", "high"
+    ) == {"enabled": True, "exclude": True}
+    # 2 パス目（reasoning なし再試行）ではどのモデルにも送らない
+    assert (
+        ai_review._reasoning_payload("nvidia/nemotron-3-ultra-550b-a55b:free", None) is None
+    )
+    assert ai_review._reasoning_payload("nvidia/nemotron-3.5-lightning:free", None) is None
+
+
+def test_generate_with_openrouter_payload_reasoning_and_max_tokens():
+    """リクエスト payload に reasoning（exclude 付き）と max_tokens=16000 が入る。"""
+    data = {
+        "choices": [{"message": {"content": "レビュー本文"}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "completion_tokens_details": {"reasoning_tokens": 20},
+        },
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        resp = ai_review._generate_with_openrouter(
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "prompt",
+            "system",
+            ["key"],
+            reasoning_effort="high",
+        )
+    payload = post.call_args.kwargs["json"]
+    assert ai_review.OPENROUTER_DEFAULT_MAX_TOKENS == 16000
+    assert payload["max_tokens"] == 16000
+    assert payload["reasoning"] == {"effort": "high", "exclude": True}
+    assert payload["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    # reasoning トークン数が実行メタデータ用に保持される
+    assert resp.usage_metadata.thoughts_token_count == 20
+    assert resp.text == "レビュー本文"
+
+
+def test_generate_with_openrouter_non_effort_model_payload():
+    """effort 非対応モデルには effort を送らず enabled + exclude を送る。"""
+    data = {
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {},
+        "model": "nvidia/nemotron-3.5-lightning:free",
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        ai_review._generate_with_openrouter(
+            "nvidia/nemotron-3.5-lightning:free", "p", "s", ["k"], reasoning_effort="high"
+        )
+    reasoning = post.call_args.kwargs["json"]["reasoning"]
+    assert reasoning == {"enabled": True, "exclude": True}
+    assert "effort" not in reasoning
+
+
+def test_reasoning_display_value_from_payload():
+    """表示値は実際に送る reasoning ペイロードから導出する（単一情報源）。"""
+    assert (
+        ai_review._reasoning_display_value({"effort": "high", "exclude": True}) == "high"
+    )
+    assert (
+        ai_review._reasoning_display_value({"enabled": True, "exclude": True})
+        == ai_review.OPENROUTER_REASONING_ENABLED_DISPLAY
+    )
+    assert ai_review._reasoning_display_value(None) is None
+
+
+def test_run_openrouter_pass_non_effort_model_display_integration():
+    """lightning が勝った場合、実行情報に high も「reasoning なし」も出ない。"""
+    lightning = "nvidia/nemotron-3.5-lightning:free"
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        return ai_review.OpenRouterResponse(text="ok")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
+            [lightning, "openrouter/free"], "p", "s", ["k"], "high"
+        )
+    assert resp is not None and used_model == lightning and exc is None
+    display = ai_review._resolve_effort_display(
+        used_openrouter=True,
+        or_used_effort=used_effort,
+        initial_reasoning_effort="high",
+        thinking_effort="HIGH",
+        model_info={"name": lightning},
+    )
+    assert "有効" in display
+    assert "high" not in display.lower()
+    assert "reasoning なし" not in display
+    # effort 経路は従来どおり表示される（回帰防止）
+    assert ai_review._resolve_effort_display(
+        used_openrouter=True,
+        or_used_effort="high",
+        initial_reasoning_effort="high",
+        thinking_effort="HIGH",
+        model_info={"reasoning_effort": "high"},
+    ) == "reasoning: high （--effort 指定）"
+
+
+def test_generate_with_openrouter_choices_text_body():
+    """choices[0].text のみのレスポンスも本文として採用する（従来互換）。"""
+    data = {"choices": [{"text": "本文です", "finish_reason": "stop"}], "usage": {}}
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], None)
+    assert resp.text == "本文です"
+
+
+def test_generate_with_openrouter_list_content_text_parts_only():
+    """list 型 content は text パートのみ連結し、reasoning パートは無視する。"""
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "指摘1。\n"},
+                        {"type": "reasoning", "text": "Let me think..."},
+                        {"type": "text", "text": "指摘2。"},
+                    ]
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], None)
+    assert resp.text == "指摘1。\n指摘2。"
+    assert "Let me think" not in resp.text
+
+
+def test_generate_with_openrouter_router_payload():
+    """安全網の openrouter/free にも effort + exclude の reasoning を送る。"""
+    data = {
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {},
+        "model": "openrouter/free",
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+    assert post.call_args.kwargs["json"]["reasoning"] == {
+        "effort": "high",
+        "exclude": True,
+    }
+
+
+def test_generate_with_openrouter_ignores_reasoning_only_body():
+    """content が空で reasoning 系フィールドだけある場合は本文に使わず例外にする。"""
+    data = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "reasoning": "Let me carefully review the diff...",
+                    "reasoning_details": [
+                        {"type": "reasoning.text", "text": "内部の調査メモ"}
+                    ],
+                },
+                "reasoning": "choices 直下の reasoning",
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        with pytest.raises(Exception, match="empty content"):
+            ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+
+
+def test_generate_with_openrouter_length_finish_reason_message():
+    """本文が空で finish_reason=length なら例外メッセージにその旨を含める。"""
+    data = {
+        "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        with pytest.raises(Exception, match="length"):
+            ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+
+
+def test_run_openrouter_pass_empty_content_falls_back_to_next_model():
+    """空本文の例外は次のモデルへフォールバックし、ルーターまで試す。"""
+    calls = []
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        calls.append(model)
+        if model == "nvidia/nemotron-3-ultra-550b-a55b:free":
+            raise Exception("OpenRouter returned empty content")
+        return ai_review.OpenRouterResponse(text="ok")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
+            [
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "nvidia/nemotron-3.5-lightning:free",
+                "openrouter/free",
+            ],
+            "p",
+            "s",
+            ["k"],
+            "high",
+        )
+    assert resp is not None and resp.text == "ok"
+    assert used_model == "nvidia/nemotron-3.5-lightning:free"
+    assert exc is None
+    assert calls == [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia/nemotron-3.5-lightning:free",
+    ]
+
+
+def test_run_openrouter_pass_all_empty_content_fails():
+    """ルーターまで本文が空ならフォールバック全体を失敗させる。"""
+
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+        raise Exception("OpenRouter returned empty content")
+
+    with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
+        resp, used_model, used_effort, exc = ai_review._run_openrouter_pass(
+            ["openrouter/free"], "p", "s", ["k"], "high"
+        )
+    assert resp is None and used_model is None and used_effort is None
+    assert exc is not None and "empty content" in str(exc)
+
+
+def test_build_system_instruction_output_contract():
+    """思考の露出禁止・最大 8 件・2 文以内・前置き不要の出力契約が含まれる。"""
+    instruction = build_system_instruction()
+    assert "出力契約" in instruction
+    assert "内省モノローグ" in instruction
+    assert "最大 8 件" in instruction
+    assert "2 文以内" in instruction
+    assert "前置き" in instruction
+
+
 def test_build_execution_metadata_comprehensive():
     """実行メタデータにモデル、実バージョン、思考レベル、変更規模、コミットリンク、Actions ログが含まれる。"""
     mock_usage = mock.MagicMock()
@@ -1375,4 +1665,463 @@ def test_build_execution_metadata_unknown_cost_and_no_thinking():
     assert "`custom-model`" in metadata
     assert "思考: `未設定（API 既定）`" in metadata
     assert "(取得できませんでした)" in metadata
+
+
+# ---------------------------------------------------------------------------
+# Review comment posting tests
+# ---------------------------------------------------------------------------
+
+
+REST_POST_CMD = [
+    "gh",
+    "api",
+    "-X",
+    "POST",
+    "repos/owner/repo/issues/42/comments",
+    "-F",
+    "body=@review.md",
+]
+
+
+def _transient_post_error(cmd, message="GraphQL error: Service Unavailable (HTTP 503)"):
+    return subprocess.CalledProcessError(1, cmd, stderr=message)
+
+
+def _set_review_env(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PR_NUMBER", "42")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("MODEL_KEY", "flash-lite")
+    monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
+    summary = tmp_path / "summary.md"
+    summary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    return summary
+
+
+def test_post_review_comment_uses_rest_post_for_new_comment(tmp_path, monkeypatch):
+    """新規コメントは GraphQL (gh pr comment) ではなく REST POST で投稿する。"""
+    monkeypatch.chdir(tmp_path)
+    with mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is True
+    run.assert_called_once()
+    assert run.call_args.args[0] == REST_POST_CMD
+    assert run.call_args.kwargs["check"] is True
+    # capture_output が外されると CalledProcessError の本文が空になり、
+    # 実 CI で一時エラーのリトライが効かなくなるため、両方を固定する。
+    assert run.call_args.kwargs["capture_output"] is True
+    assert run.call_args.kwargs["text"] is True
+
+
+def test_post_review_comment_warning_includes_captured_error_body(
+    tmp_path, monkeypatch, capsys
+):
+    """capture_output で拾った gh api のエラー本文が警告に残る（実 CI と同じ挙動）。"""
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs["capture_output"] is True and kwargs["text"] is True
+        raise subprocess.CalledProcessError(
+            1,
+            cmd,
+            output="stdout detail",
+            stderr="GraphQL error: Service Unavailable (HTTP 503)\nsecond line",
+        )
+
+    with mock.patch("ai_review.subprocess.run", side_effect=fake_run) as run, mock.patch(
+        "ai_review.time.sleep"
+    ) as sleep:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is False
+    assert run.call_count == ai_review.COMMENT_POST_ATTEMPTS
+    assert sleep.call_args_list == [mock.call(2), mock.call(4)]
+    out = capsys.readouterr().out
+    assert "::warning::GitHub API Error (POST):" in out
+    assert "GraphQL error: Service Unavailable (HTTP 503)" in out
+    assert "stdout detail" in out
+    assert "second line" in out
+    # ::warning:: は 1 行で出力する必要がある（改行でコマンドが壊れるのを防ぐ）
+    assert "\nsecond line" not in out
+
+
+def test_post_review_comment_retries_graphql_transient_error_via_rest(tmp_path, monkeypatch):
+    """GraphQL 一時エラー文言が出ても REST 経路でリトライして回復する。"""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise _transient_post_error(cmd)
+        return mock.Mock(returncode=0)
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    with mock.patch("ai_review.subprocess.run", side_effect=fake_run) as run, mock.patch(
+        "ai_review.time.sleep"
+    ) as sleep:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is True
+    assert [call.args[0] for call in run.call_args_list] == [REST_POST_CMD, REST_POST_CMD]
+    sleep.assert_called_once_with(ai_review.COMMENT_POST_DELAYS[0])
+
+
+def test_post_review_comment_retries_503_with_short_backoff(tmp_path, monkeypatch):
+    """5xx は 2s/4s の短いバックオフで最大 3 回まで再試行する。"""
+    monkeypatch.chdir(tmp_path)
+    attempts = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _transient_post_error(cmd, "HTTP 503 Service Unavailable")
+        return mock.Mock(returncode=0)
+
+    with mock.patch("ai_review.subprocess.run", side_effect=fake_run) as run, mock.patch(
+        "ai_review.time.sleep"
+    ) as sleep:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is True
+    assert run.call_count == 3
+    assert sleep.call_args_list == [mock.call(2), mock.call(4)]
+
+
+def test_post_review_comment_does_not_retry_non_transient_error(tmp_path, monkeypatch):
+    """404 等の恒久エラーは即座に諦め、リトライ待機しない。"""
+    monkeypatch.chdir(tmp_path)
+    with mock.patch(
+        "ai_review.subprocess.run",
+        side_effect=lambda cmd, **kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, cmd, stderr="HTTP 404 Not Found")
+        ),
+    ) as run, mock.patch("ai_review.time.sleep") as sleep:
+        assert ai_review._post_review_comment("owner/repo", "42", None) is False
+    assert run.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_post_review_comment_updates_existing_comment_via_rest_patch(tmp_path, monkeypatch):
+    """既存コメントの更新は REST PATCH 経路を維持する。"""
+    monkeypatch.chdir(tmp_path)
+    with mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        assert ai_review._post_review_comment("owner/repo", "42", {"id": 987}) is True
+    assert run.call_args.args[0] == [
+        "gh",
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/issues/comments/987",
+        "-F",
+        "body=@review.md",
+    ]
+
+
+def test_publish_review_keeps_review_on_final_post_failure(tmp_path, monkeypatch, capsys):
+    """投稿が最終失敗しても review.md と step summary を残し、例外を投げない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    with mock.patch(
+        "ai_review.subprocess.run",
+        side_effect=lambda cmd, **kwargs: (_ for _ in ()).throw(_transient_post_error(cmd)),
+    ) as run, mock.patch("ai_review.time.sleep") as sleep:
+        assert (
+            ai_review._publish_review(
+                "### 🤖 AI コードレビュー\n\n生成本文", "owner/repo", "42", None
+            )
+            is False
+        )
+    assert run.call_count == ai_review.COMMENT_POST_ATTEMPTS
+    assert sleep.call_args_list == [mock.call(2), mock.call(4)]
+    assert "生成本文" in (tmp_path / "review.md").read_text(encoding="utf-8")
+    saved_summary = summary.read_text(encoding="utf-8")
+    assert "生成本文" in saved_summary
+    assert "投稿" in saved_summary
+    assert "::warning::" in capsys.readouterr().out
+
+
+def test_write_review_failure_summary_escapes_llm_html(tmp_path, monkeypatch):
+    """LLM 本文の HTML（特に </details>）をエスケープし、summary の構造を壊さない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    review_text = "本文</details>脆弱 <b>太字</b>"
+    ai_review._write_review_failure_summary(review_text)
+    saved = summary.read_text(encoding="utf-8")
+    # 生の summary の閉じタグはラッパーの 1 つだけ（LLM 本文由来は残らない）
+    assert saved.count("</details>") == 1
+    assert "&lt;/details&gt;" in saved
+    assert "&lt;b&gt;" in saved
+    # HTML エンティティを戻せば本文を完全に取り出せる
+    assert review_text in html.unescape(saved)
+
+
+def test_publish_review_keeps_review_in_summary_when_file_write_fails(
+    tmp_path, monkeypatch, capsys
+):
+    """review.md が書けない場合も step summary に本文を残し、check を落とさない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    (tmp_path / "review.md").mkdir()  # ファイルではなくディレクトリにして open() を失敗させる
+    with mock.patch("ai_review.subprocess.run") as run:
+        assert (
+            ai_review._publish_review("保存失敗時の本文", "owner/repo", "42", None) is False
+        )
+    run.assert_not_called()
+    assert "保存失敗時の本文" in summary.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert "::warning::" in out
+    assert "step summary" in out
+
+
+def _patch_review_dependencies(generation_result):
+    """main() の生成フェーズを差し替える共通モック（diff は 1 ファイルの最小差分）。"""
+    diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    return (
+        mock.patch.object(ai_review, "_collect_gemini_keys", return_value=["key"]),
+        mock.patch.object(ai_review, "_collect_openrouter_keys", return_value=[]),
+        mock.patch.object(ai_review.subprocess, "check_output", return_value=diff.encode()),
+        mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""),
+        mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None)),
+        mock.patch.object(ai_review, "_fetch_file_contents", return_value=""),
+        mock.patch.object(ai_review, "_generate_with_model_chain", return_value=generation_result),
+    )
+
+
+def test_main_exits_when_review_generation_fails(tmp_path, monkeypatch, capsys):
+    """レビュー生成の失敗は従来どおり exit 1（コメント投稿は試みない）。"""
+    _set_review_env(monkeypatch, tmp_path)
+    patches = _patch_review_dependencies((None, None, None, None, Exception("503 Service Unavailable")))
+    with mock.patch("ai_review.subprocess.run") as run:
+        for patcher in patches:
+            patcher.start()
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                ai_review.main()
+        finally:
+            for patcher in reversed(patches):
+                patcher.stop()
+    assert excinfo.value.code == 1
+    run.assert_not_called()
+    assert "Gemini Review Error" in capsys.readouterr().out
+
+
+def test_main_does_not_fail_when_comment_posting_fails(tmp_path, monkeypatch):
+    """生成成功後の投稿失敗は警告のみで check を落とさない。"""
+    summary = _set_review_env(monkeypatch, tmp_path)
+    response = _FakeResponse("生成本文")
+    generation = (
+        response,
+        "gemini-test-flash",
+        {"name": "gemini-test-flash", "input_cost_per_1m": None, "output_cost_per_1m": None},
+        None,
+        None,
+    )
+    patches = _patch_review_dependencies(generation)
+    with mock.patch(
+        "ai_review.subprocess.run",
+        side_effect=lambda cmd, **kwargs: (_ for _ in ()).throw(_transient_post_error(cmd)),
+    ) as run, mock.patch("ai_review.time.sleep"):
+        for patcher in patches:
+            patcher.start()
+        try:
+            ai_review.main()  # SystemExit を出さないこと
+        finally:
+            for patcher in reversed(patches):
+                patcher.stop()
+    assert run.call_count == ai_review.COMMENT_POST_ATTEMPTS
+    assert "生成本文" in (tmp_path / "review.md").read_text(encoding="utf-8")
+    assert "生成本文" in summary.read_text(encoding="utf-8")
+
+
+def test_main_new_comment_uses_rest_post_not_gh_pr_comment(tmp_path, monkeypatch):
+    """main() の新規コメント経路では gh pr comment を呼ばず REST POST を使う。"""
+    _set_review_env(monkeypatch, tmp_path)
+    generation = (
+        _FakeResponse("生成本文"),
+        "gemini-test-flash",
+        {"name": "gemini-test-flash", "input_cost_per_1m": None, "output_cost_per_1m": None},
+        None,
+        None,
+    )
+    patches = _patch_review_dependencies(generation)
+    with mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+        for patcher in patches:
+            patcher.start()
+        try:
+            ai_review.main()  # SystemExit を出さないこと
+        finally:
+            for patcher in reversed(patches):
+                patcher.stop()
+    commands = [call.args[0] for call in run.call_args_list]
+    assert commands == [REST_POST_CMD]
+    assert not any(cmd[:3] == ["gh", "pr", "comment"] for cmd in commands)
+    assert run.call_args.kwargs["capture_output"] is True
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter フォールバックの reasoning / キー回転 / 途中終了通知
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_fallback_reasoning_uses_openrouter_free_default():
+    """Gemini プライマリに reasoning_effort が無くても openrouter-free の既定を使う。"""
+    config = {"openrouter-free": {"reasoning_effort": "high"}}
+    assert ai_review._openrouter_fallback_reasoning(None, config) == "high"
+    assert ai_review._openrouter_fallback_reasoning("auto", config) == "high"
+    # 明示 --effort が最優先、off 系は尊重
+    assert ai_review._openrouter_fallback_reasoning("low", config) == "low"
+    assert ai_review._openrouter_fallback_reasoning("off", config) is None
+    # 設定が無ければ None（従来どおり）
+    assert ai_review._openrouter_fallback_reasoning(None, {}) is None
+
+
+def _run_main_gemini_to_openrouter(
+    tmp_path, monkeypatch, additional_context=None, *, response=None
+):
+    """hydrogen プライマリ + Gemini 全滅 -> OpenRouter 成功を main() で再現する。"""
+    _set_review_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MODEL_KEY", "hydrogen")
+    if additional_context is None:
+        monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ADDITIONAL_CONTEXT", additional_context)
+
+    if response is None:
+        response = ai_review.OpenRouterResponse(text="OpenRouter 本文")
+    seen_efforts = []
+
+    def fake_generate(model, prompt, system_instruction, keys, reasoning_effort=None):
+        seen_efforts.append(reasoning_effort)
+        return response
+
+    diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(ai_review, "_collect_gemini_keys", return_value=["key"]))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_collect_openrouter_keys", return_value=["or-key"])
+        )
+        stack.enter_context(
+            mock.patch.object(ai_review.subprocess, "check_output", return_value=diff.encode())
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
+        stack.enter_context(
+            mock.patch.object(
+                ai_review,
+                "_generate_with_model_chain",
+                return_value=(None, None, None, None, Exception("Gemini 全滅")),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate)
+        )
+        run_pass = stack.enter_context(
+            mock.patch.object(
+                ai_review, "_run_openrouter_pass", wraps=ai_review._run_openrouter_pass
+            )
+        )
+        stack.enter_context(
+            mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0))
+        )
+        ai_review.main()  # SystemExit を出さないこと
+    return run_pass, seen_efforts, (tmp_path / "review.md").read_text(encoding="utf-8")
+
+
+def test_main_openrouter_fallback_sends_default_reasoning_without_effort(tmp_path, monkeypatch):
+    """--effort 未指定でも openrouter-free の high がフォールバックで送られる。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(tmp_path, monkeypatch)
+    assert run_pass.call_count == 1
+    # 第 5 引数が reasoning_effort（プライマリ hydrogen の None ではない）
+    assert run_pass.call_args.args[4] == "high"
+    assert seen == ["high"]
+    assert "reasoning: high （既定）" in review
+
+
+def test_main_openrouter_fallback_honors_explicit_effort(tmp_path, monkeypatch):
+    """明示 --effort はフォールバックでも最優先され、表示にも出所が出る。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(
+        tmp_path, monkeypatch, "@gemini-cli /quick-review --effort low"
+    )
+    assert run_pass.call_args.args[4] == "low"
+    assert seen == ["low"]
+    assert "reasoning: low （--effort 指定）" in review
+
+
+def test_main_openrouter_fallback_respects_effort_off(tmp_path, monkeypatch):
+    """--effort off はフォールバックでも reasoning を送らない。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(
+        tmp_path, monkeypatch, "@gemini-cli /quick-review --effort off"
+    )
+    assert run_pass.call_args.args[4] is None
+    assert seen == [None]
+    assert "reasoning なし" in review
+
+
+def test_generate_with_openrouter_empty_content_does_not_rotate_keys():
+    """空本文はキーを変えても改善しないため、残りキーを回さない。"""
+    data = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}], "usage": {}}
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        with pytest.raises(Exception, match="empty content"):
+            ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k1", "k2"], "high")
+    assert post.call_count == 1
+
+
+def test_run_openrouter_pass_empty_content_skips_keys_of_same_model():
+    """空本文/length なら同一モデルの残りキーを飛ばし、次のモデルへ移る。"""
+    data = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {}}
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)) as post:
+        resp, model, used_effort, exc = ai_review._run_openrouter_pass(
+            ["model-a", "model-b"], "p", "s", ["k1", "k2", "k3"], None
+        )
+    assert resp is None and model is None and used_effort is None
+    assert exc is not None and "empty content" in str(exc)
+    assert post.call_count == 2  # モデルごとに 1 回だけ（キー回転なし）
+
+
+def test_generate_with_openrouter_length_finish_reason_marks_truncated():
+    """本文あり + finish_reason=length は本文を保持し truncated を立てる。"""
+    data = {
+        "choices": [{"message": {"content": "途中までの本文"}, "finish_reason": "length"}],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+    assert resp.text == "途中までの本文"
+    assert resp.truncated is True
+
+
+def test_generate_with_openrouter_normal_finish_reason_not_truncated():
+    """通常終了なら truncated は False。"""
+    data = {
+        "choices": [{"message": {"content": "完整な本文"}, "finish_reason": "stop"}],
+        "usage": {},
+    }
+    with mock.patch("httpx.post", return_value=_openrouter_post_mock(data)):
+        resp = ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["k"], "high")
+    assert resp.truncated is False
+
+
+def test_build_execution_metadata_openrouter_truncated_notice():
+    """途中終了レスポンスは実行情報に注記を出し、平常時は出さない。"""
+    mock_resp = mock.MagicMock()
+    mock_resp.model_version = None
+    mock_resp.usage_metadata = None
+    mock_resp._retry_count = 0
+
+    def build(truncated):
+        return ai_review.build_execution_metadata(
+            model_name="openrouter/free",
+            resolved_model_name="openrouter/free",
+            model_info={"name": "openrouter/free"},
+            response=mock_resp,
+            files_modified_count="N/A",
+            duration=1.0,
+            response_truncated=truncated,
+        )
+
+    assert "途中終了" in build(True)
+    assert "途中終了" not in build(False)
+
+
+def test_main_openrouter_fallback_reports_truncated_body(tmp_path, monkeypatch):
+    """フォールバックで途中終了した本文が投稿本文と実行情報の両方に残る。"""
+    response = ai_review.OpenRouterResponse(text="途中本文", truncated=True)
+    _, _, review = _run_main_gemini_to_openrouter(tmp_path, monkeypatch, response=response)
+    assert "途中本文" in review
+    assert "途中終了" in review
 

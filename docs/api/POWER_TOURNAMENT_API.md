@@ -109,8 +109,8 @@ Content-Type: application/json; charset=UTF-8
     "result": {
       "response": {
         "users": {
-          "1": {"id": "1", "name": "Alice", "lastLoginTime": "1700000000", "level": "130"},
-          "2": {"id": "2", "name": "Bob", "lastLoginTime": "1700000100", "level": "130"}
+          "1": {"id": "1", "name": "Alice", "lastLoginTime": "1700000000", "level": "130", "serverId": "161", "clanId": "123"},
+          "2": {"id": "2", "name": "Bob", "lastLoginTime": "1700000100", "level": "130", "serverId": "9", "clanId": "456"}
         },
         "points": {"1": 500, "2": 900},
         "rewards": [
@@ -125,7 +125,7 @@ Content-Type: application/json; charset=UTF-8
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `users` | object | userId → プロフィール。`name` と `lastLoginTime`（Unix 秒）を含む |
+| `users` | object | userId → プロフィール。`name` / `lastLoginTime` / `serverId` / `clanId` を含む。イベント種別のパワー（Hero は `heroesPower`、Titan は `titansPower`）や `todayActivity` / `activitySum` 等が含まれる場合はそれらも読む |
 | `points` | object | userId → イベントポイント |
 | `rewards` | array | 順位ごとの最終ランキング報酬表（`place` → `reward`） |
 
@@ -136,6 +136,43 @@ Content-Type: application/json; charset=UTF-8
 
 `points` が無い / object でない `getGroupInfo` の成功応答は、空ランキングではなく
 異常応答として扱い、エラー表示（失敗計上）にします（`points: {}` は正当な空ランキング）。
+
+### メンバー情報（Power / Activity / Titanite / Prestige）
+
+実測した Titan 開催の `users` には基本情報と `serverId` のみが入ります。`hw-genie`
+は `users` にイベント種別のパワー / 活動系フィールドがあれば優先し、無い場合は
+以下の2つの読み取り RPC で補完します。
+
+#### パワー（イベント種別）: `clanInvites_search`
+
+メソッド名は clan invite 検索ですが、**`args.id` は userId** です。レスポンスの
+`items[].user` に `heroesPower` / `titansPower` が入ります。Power Tournament では
+イベント種別に合わせて **Hero は `heroesPower`、Titan は `titansPower`** の片方を表示します
+（両者を合計した値は使いません。種別が判定できない場合はパワーを表示しません）。
+
+```json
+{"calls":[{"name":"clanInvites_search","args":{"id":"<userId>","minTeamLevel":35,"minHeroesPower":0,"minTitansPower":0,"languageId":2,"clanStatus":0,"page":0},"context":{"actionTs":0},"ident":"power_<userId>"}]}
+```
+
+#### Activity / Titanite / Prestige: `clanGetInfo`
+
+各プレイヤーの `clanId` で `clanGetInfo {"clanId": <id>}` を呼び、
+`membersStat` から補完します。
+
+```json
+{"calls":[{"name":"clanGetInfo","args":{"clanId":"123"},"context":{"actionTs":0},"ident":"clan_123"}]}
+```
+
+| 表示 | フィールド |
+|---|---|
+| Activity Today / Week | `todayActivity` / `activitySum` |
+| Titanite Today / Week | `todayDungeonActivity` / `dungeonActivitySum` |
+| Prestige Today / Week | `todayPrestige` / `prestigeSum` |
+
+`clanInvites_search` / `clanGetInfo` は最大10件ずつ同一リクエストにバッチします。
+取得に失敗してもランキング自体は成功し、取得できなかった列は `-`、警告行が表示されます。
+イベント種別（`getState` の `type`）が `titans` / `heroes` のどちらでもない場合は、
+誤った種別のパワーを出さないよう取得をスキップして警告を表示します。
 
 ---
 
