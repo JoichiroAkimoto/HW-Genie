@@ -530,7 +530,7 @@ def test_snapshot_watch_waits_when_defense_changed(monkeypatch, capsys):
 
 
 def test_snapshot_watch_executes_once(monkeypatch, capsys):
-    snapshot = _snapshot(_entry(80, 222))
+    snapshot = _snapshot(_entry(40, 222))
     monkeypatch.setattr(
         arena_mod, "load_arena_snapshot", lambda *_a, **_k: snapshot
     )
@@ -542,7 +542,7 @@ def test_snapshot_watch_executes_once(monkeypatch, capsys):
         arena_mod, "fetch_arena_status", lambda *_a, **_k: next(statuses)
     )
     monkeypatch.setattr(
-        arena_mod, "fetch_arena_top", lambda *_a, **_k: _top(_entry(80, 222))
+        arena_mod, "fetch_arena_top", lambda *_a, **_k: _top(_entry(40, 222))
     )
     monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
     monkeypatch.setattr(
@@ -571,7 +571,6 @@ def test_snapshot_watch_executes_once(monkeypatch, capsys):
         team_name="auto",
         target_heroes=TARGET_HEROES,
         from_snapshot=True,
-        force_range=True,
         execute=True,
         once=True,
     )
@@ -627,7 +626,7 @@ def test_snapshot_watch_waits_for_gap(monkeypatch, capsys):
 
     assert history == []
     assert calls == []
-    assert "10 rank(s) above you < 15" in capsys.readouterr().out
+    assert "10 rank(s) above you <= current max 55; waiting for out-of-band" in capsys.readouterr().out
 
 
 def test_snapshot_watch_honors_max_polls(monkeypatch, capsys):
@@ -889,7 +888,7 @@ def test_target_watch_requires_preset(monkeypatch):
 
 
 def test_target_watch_reuses_saved_snapshot(monkeypatch):
-    snapshot = _snapshot(_entry(80, 222))
+    snapshot = _snapshot(_entry(40, 222))
     monkeypatch.setattr(
         arena_mod,
         "load_arena_snapshot",
@@ -906,7 +905,7 @@ def test_target_watch_reuses_saved_snapshot(monkeypatch):
     monkeypatch.setattr(
         arena_mod,
         "fetch_arena_top",
-        lambda *_a, **_k: _top(_entry(80, 222)),
+        lambda *_a, **_k: _top(_entry(40, 222)),
     )
     monkeypatch.setattr(arena_mod, "fetch_registered_account_ids", lambda: set())
     monkeypatch.setattr(
@@ -944,7 +943,8 @@ def test_target_watch_reuses_saved_snapshot(monkeypatch):
     assert history[0]["target_user_id"] == 222
     assert len(calls) == 1
     assert calls[0][1]["dry_run"] is True
-    assert calls[0][1]["min_gap"] == 15
+    assert calls[0][1]["require_out_of_band"] is True
+    assert calls[0][1]["force"] is True
     assert calls[0][1]["required_heroes"] == frozenset(TARGET_HEROES)
 
 

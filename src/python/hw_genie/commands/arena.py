@@ -1667,6 +1667,7 @@ def run_arena_attack_from_snapshot(
     min_gap: int | None = None,
     required_heroes: frozenset[int] | None = None,
     excluded_user_ids: set[int] | None = None,
+    require_out_of_band: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> ArenaAttackResult:
     """Attack a saved-snapshot target without calling ``*FindEnemies``.
@@ -1723,6 +1724,14 @@ def run_arena_attack_from_snapshot(
             f"rank(s) above your current rank {fresh_place}; --min-gap {min_gap} "
             "is not met. No attack was sent."
         )
+    if require_out_of_band:
+        max_gap = arena_max_attack_gap(fresh_place)
+        if fresh_place - target.place <= max_gap:
+            raise ArenaError(
+                f"Target {_format_target(target)} is {fresh_place - target.place} "
+                f"rank(s) above you, within the current max {max_gap}; not "
+                "out-of-band. No attack was sent."
+            )
     if required_heroes is not None:
         if len(current.heroes) != 5 or frozenset(current.heroes) != required_heroes:
             raise ArenaError(
@@ -2452,19 +2461,17 @@ def _run_snapshot_target_watch(
     team: ArenaTeam,
     missing: list[int],
     excluded_ids: set[int],
-    min_gap: int,
     interval: int,
     once: bool,
     max_polls: int | None,
     execute: bool,
-    force_range: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
     """Watch saved candidates without ever calling ``*FindEnemies``.
 
-    Ranks and current defenses come from ``topGet`` (top 50) and status from
-    ``arenaGetAll``. A saved candidate is attacked via
-    :func:`run_arena_attack_from_snapshot`, which also re-checks topGet.
+    Attacks only when the saved target has moved **beyond** the current
+    rank's maximum attackable width (out-of-band). Ranks and defenses come
+    from ``topGet`` (top 50) and status from ``arenaGetAll``.
     """
     print(f"\n{Emojis.STEP}--- Arena snapshot target watch ({account}) ---")
     targets = [
@@ -2481,8 +2488,8 @@ def _run_snapshot_target_watch(
     )
     print(
         f"  {Emojis.INFO}Watching {len(targets)} saved target(s); findEnemies "
-        f"is NOT refreshed. Target must be in the current top 50, at least "
-        f"{min_gap} rank(s) above you, and keep defense {sorted(target_set)}."
+        "is NOT refreshed. Attack fires only when the target is beyond the "
+        "current rank's max attackable width (out-of-band)."
     )
     for entry in targets:
         heroes = ",".join(str(hero) for hero in entry.heroes) or "?"
@@ -2543,6 +2550,7 @@ def _run_snapshot_target_watch(
             break
 
         own_place = top.own_place if top.own_place and top.own_place > 0 else status.place
+        max_gap = arena_max_attack_gap(own_place)
         current = {entry.user_id: entry for entry in top.entries}
         matches: list[tuple[int, ArenaTopEntry, int]] = []
         for entry in targets:
@@ -2573,15 +2581,17 @@ def _run_snapshot_target_watch(
                 )
                 continue
             gap = own_place - live.place
-            if gap < min_gap:
+            if gap <= max_gap:
                 print(
                     f"  {Emojis.INFO}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
-                    f"{gap} rank(s) above you < {min_gap}; waiting"
+                    f"{gap} rank(s) above you <= current max {max_gap}; waiting "
+                    "for out-of-band"
                 )
                 continue
             print(
                 f"  {Emojis.SUCCESS}{_format_user_id(entry.user_id, entry.name)}: rank {live.place}, "
-                f"{gap} rank(s) above you >= {min_gap}, defense matches"
+                f"{gap} rank(s) above you > current max {max_gap} (out-of-band), "
+                "defense matches"
             )
             matches.append((live.place, live, gap))
 
@@ -2599,6 +2609,8 @@ def _run_snapshot_target_watch(
                 "target_place": target.place,
                 "own_place": own_place,
                 "gap": gap,
+                "max_gap": max_gap,
+                "out_of_band": True,
                 "target_name": target.name,
                 "attacker_heroes": list(team.heroes),
                 "pet": team.pet,
@@ -2611,7 +2623,7 @@ def _run_snapshot_target_watch(
             print(
                 f"{Emojis.INFO}Rank check: you are rank {own_place}; target is "
                 f"rank {target.place}, i.e. {gap} rank(s) above you "
-                f"(required >= {min_gap})."
+                f"(current max {max_gap}; out-of-band)."
             )
             if not execute:
                 try:
@@ -2621,10 +2633,10 @@ def _run_snapshot_target_watch(
                         target,
                         team,
                         dry_run=True,
-                        min_gap=min_gap,
                         required_heroes=target_set,
                         excluded_user_ids=current_excluded,
-                        force=force_range,
+                        require_out_of_band=True,
+                        force=True,
                         mode=mode,
                     )
                 except ArenaAttackUncertain:
@@ -2652,10 +2664,10 @@ def _run_snapshot_target_watch(
                     target,
                     team,
                     dry_run=False,
-                    min_gap=min_gap,
                     required_heroes=target_set,
                     excluded_user_ids=current_excluded,
-                    force=force_range,
+                    require_out_of_band=True,
+                    force=True,
                     mode=mode,
                 )
             except ArenaAttackUncertain:
@@ -2747,7 +2759,6 @@ def run_arena_target_watch(
     max_polls: int | None = None,
     capture_retries: int = DEFAULT_CANDIDATE_RETRIES,
     from_snapshot: bool = False,
-    force_range: bool = False,
     execute: bool = False,
     mode: ArenaMode = ARENA_MODE,
 ) -> list[dict[str, Any]]:
@@ -2760,11 +2771,11 @@ def run_arena_target_watch(
       target must be in the **latest** candidate list.
     * ``from_snapshot``: load a saved ``arena find-enemies`` snapshot, then
       never call ``arenaFindEnemies`` again. Ranks/defenses come from
-      ``topGet`` and the saved candidate is attacked via the snapshot path;
-      this preserves the pre-fetched candidate set so rank drift can be
-      exploited. The target must remain in the current top 50. Pass
-      ``force_range`` to send even when the current ``CheckTargetRange`` is
-      false (upper-only/defense/min-gap are still enforced).
+      ``topGet``; the saved candidate is attacked when it moves **beyond the
+      current rank's max attackable width** (out-of-band), via the snapshot
+      path. This preserves the pre-fetched candidate set so rank drift can be
+      exploited. The target must remain in the current top 50; ``--min-gap``
+      is not used in this mode.
 
     Exactly one attack is sent, then the command stops. The defense is only
     read (``arenaGetAll.arenaHeroes``); this function never calls
@@ -2794,7 +2805,7 @@ def run_arena_target_watch(
             "Could not read your player id; refusing target-watch."
         )
     max_gap = arena_max_attack_gap(initial_status.place)
-    if min_gap > max_gap:
+    if not from_snapshot and min_gap > max_gap:
         print(
             f"{Emojis.WARNING}Rank {initial_status.place} allows at most "
             f"{max_gap} rank(s) above; --min-gap {min_gap} cannot be met until "
@@ -2839,12 +2850,10 @@ def run_arena_target_watch(
             team=team,
             missing=missing,
             excluded_ids=excluded_ids,
-            min_gap=min_gap,
             interval=interval,
             once=once,
             max_polls=max_polls,
             execute=execute,
-            force_range=force_range,
             mode=mode,
         )
     else:

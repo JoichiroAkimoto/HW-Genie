@@ -484,7 +484,7 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 | 認証エラー | 既存の `HWAuthError` 共通ハンドラ |
 
 ## TODO / 未解明事項
-- **候補スナップショット + 順位ドリフト（一部検証済み）**: 2026-11-26、Arena 50位で `arenaFindEnemies` を1回だけ呼び、保存候補の19位（31位上）へ、以降 `arenaFindEnemies` を再取得せず `topGet` / `arenaGetAll` / `arenaCheckTargetRange` → `arenaAttack` を実行して **WIN (50 → 19)** を確認。50位の上位バンドは17〜23位なので、**この攻撃は現在の範囲内**であり、「現在の攻撃可能バンド外への攻撃」を証明したものではない。`target-watch --from-snapshot --force-range` は現在の `CheckTargetRange` が false でも保存候補へ送信する実装だが、**バンド外の保存候補がサーバーに受理されるかは未検証**。また `--from-snapshot` は上位のみ検証のため対象がトップ50にいる必要があり、100位以上のワイドバンド（例: 150位の95〜145位）のうちトップ50外は現状扱えない。
+- **候補スナップショット + 順位ドリフト（一部検証済み）**: 2026-11-26、Arena 50位で `arenaFindEnemies` を1回だけ呼び、保存候補の19位（31位上）へ、以降 `arenaFindEnemies` を再取得せず `topGet` / `arenaGetAll` / `arenaCheckTargetRange` → `arenaAttack` を実行して **WIN (50 → 19)** を確認。50位の上位バンドは17〜23位なので、**この攻撃は現在の範囲内**であり、「現在の攻撃可能バンド外への攻撃」を証明したものではない。`target-watch --from-snapshot` は**現在の最大攻撃幅を超えた out-of-band 候補だけ**を送信する実装（`CheckTargetRange` false でも送信、上位のみ・防衛一致・除外は維持）だが、**バンド外の保存候補がサーバーに受理されるかは未検証**。また `--from-snapshot` は上位のみ検証のため対象がトップ50にいる必要があり、100位以上のワイドバンド（例: 150位の95〜145位）のうちトップ50外は現状扱えない。
 - **範囲チェックの動的ウィンドウ**: `arenaCheckTargetRange` の ±21 は22位/34位での実測。Grand Arena 51位では5〜50位まで `true`（46位上）で、候補も27〜33位上に現れた（読み取り確認済み）。順位/リーグ境界の正確な規則は未解明。Arena の21位以下では未計測のため、各順位帯でのマッピングを継続する。
 - **`arenaAttack` の範囲再チェック**: `arenaAttack` が候補 membership に加えて現在の順位ウィンドウも再チェックするかは未検証。「候補内だが `arenaCheckTargetRange` が `false`」の相手を1回攻撃して確認する。
 - **候補ウィンドウの条件**: `arenaFindEnemies` が 13 位より上を含む条件は未解明。自分の順位変動・サーバー側の候補生成タイミング・防衛編成などが候補か。`--candidate-retries` を増やしても見つからない場合があるため、候補生成の規則を追加調査する。

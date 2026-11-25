@@ -1165,6 +1165,20 @@ def test_run_arena_attack_from_snapshot_rejects_gap_and_defense(
         )
     assert _call_names(mock_call) == ["topGet"]
 
+    mock_call.reset_mock()
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+    ]
+    with pytest.raises(ArenaError, match="not out-of-band"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            require_out_of_band=True,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
 
 def test_run_arena_attack_from_snapshot_rejects_excluded_target(
     mock_client, mock_sleep
