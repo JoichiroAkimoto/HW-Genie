@@ -318,6 +318,69 @@ CLI は `response.battles[0].result` の `win` / `oldPlace` / `newPlace` を表�
 
 ---
 
+## battleGetByType - 戦闘リプレイ履歴
+
+Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack` のレスポンスには勝敗と順位しか含まれませんが、この RPC では攻撃側・防衛側の**完全な構成**と `seed` が取得できます（`hw-genie battle import` の取得元）。
+
+### Request
+```json
+{"calls":[{"name":"battleGetByType","args":{"type":"arena","limit":20,"offset":0},"ident":"body"}]}
+```
+
+| 引数 | 説明 |
+|------|------|
+| `type` | `arena` / `grand` / `titan_arena`（すべて実測済み。CLI の `toe` は `titan_arena` のエイリアス） |
+| `limit` / `offset` | ページング |
+
+### Response Structure
+```json
+{
+  "response": {
+    "replays": [
+      {
+        "id": "1793075321662646997",
+        "type": "arena",
+        "userId": "11111111",
+        "typeId": "22222222",
+        "seed": "2681028028",
+        "startTime": "1793075321",
+        "endTime": "1793075321",
+        "attackers": {
+          "48": {"id": 48, "type": "hero", "level": 130, "star": 6, "power": 203138, "hp": 480977, "artifacts": [], "petId": 6000},
+          "6006": {"id": 6006, "type": "pet", "level": 130, "star": 6, "power": 181943}
+        },
+        "defenders": [
+          {"61": {"id": 61, "type": "hero", "level": 130, "star": 6}, "6001": {"id": 6001, "type": "pet", "level": 130}}
+        ],
+        "effects": {
+          "attackersBanner": {"id": 3, "slots": [35, 69, 45]},
+          "defendersBanner": {"id": 1, "slots": [34, 10, 45]}
+        },
+        "result": {"win": true, "stars": 3, "serverVersion": 298},
+        "progress": []
+      }
+    ],
+    "users": {
+      "11111111": {"id": "11111111", "name": "...", "level": "130", "serverId": "161"}
+    }
+  }
+}
+```
+
+| フィールド | 説明 |
+|-----------|------|
+| `replays[]` | 戦闘リプレイ。`attackers` は `{heroId: hero}`、`defenders` はチームの配列（通常 1 要素） |
+| `replays[].seed` / `startTime` / `endTime` | 文字列で返る（replay の再シリアライズ。live の battle payload は数値） |
+| `replays[].result` | `win` / `stars` / `serverVersion`。`serverVersion` はパッチ判定に使える |
+| `replays[].effects` | `attackersBanner` / `defendersBanner`（バナー ID とスロット） |
+| `users` | replay に登場する `userId` のプロフィール（名前・レベル・クラン等） |
+
+- `progress` は空配列です。`attackers` / `defenders` の dict 順が編成順として使えます（明示的な位置フィールドはありません）。
+- ペットは `type: "pet"`（ID 6000 以上）で、5 体のヒーローとは別エントリです。
+- 取り込み時の `lineup_key` / `config_hash` / `matchup_key` の定義は `docs/db/schema.md` と `core/battle_log.py` を参照してください。
+
+---
+
 ## チーム取得
 
 ### teamGetAll

@@ -45,6 +45,7 @@ from hw_genie.core.client import (
     HWResponse,
     ResponseStatus,
 )
+from hw_genie.core.battle_log import PlanCandidate, lineup_key_from_ids, query_plans
 
 # Arena attack attempts / cooldown live in ``userGetInfo.refillable``.
 ARENA_ATTACK_REFILLABLE_ID = 6
@@ -147,6 +148,10 @@ class ArenaTarget:
     # Candidate entry captured while resolving the target, so the attack step
     # does not have to re-run the rotating-list retry loop.
     candidate: ArenaTopEntry | None = field(default=None, compare=False, repr=False)
+    # topGet entry captured while resolving the target. Kept separate from
+    # ``candidate`` so the attack path's semantics (candidate == live
+    # *FindEnemies hit) stay unchanged.
+    top_entry: ArenaTopEntry | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -157,6 +162,7 @@ class ArenaTopEntry:
     power: int | None = None
     heroes: list[int] = field(default_factory=list)
     pet: int | None = None
+    banner: int | None = None
 
 
 @dataclass
@@ -267,6 +273,16 @@ def _parse_top_entry(item: Any, users: dict[str, Any]) -> ArenaTopEntry | None:
             else:
                 heroes.append(hero_id)
 
+    banner: int | None = None
+    raw_banners = item.get("banners")
+    if isinstance(raw_banners, list):
+        for entry in raw_banners:
+            banner = _normalize_banner(entry.get("id") if isinstance(entry, dict) else entry)
+            if banner is not None:
+                break
+    elif isinstance(raw_banners, dict):
+        banner = _normalize_banner(raw_banners.get("id"))
+
     return ArenaTopEntry(
         place=place,
         user_id=user_id,
@@ -274,6 +290,7 @@ def _parse_top_entry(item: Any, users: dict[str, Any]) -> ArenaTopEntry | None:
         power=_safe_int(item.get("power"), None),
         heroes=heroes,
         pet=pet,
+        banner=banner,
     )
 
 
@@ -798,6 +815,7 @@ def fetch_candidate(
     place: int | None = None,
     retries: int = DEFAULT_CANDIDATE_RETRIES,
     mode: ArenaMode = ARENA_MODE,
+    quiet: bool = False,
 ) -> ArenaTopEntry | None:
     """Return the target's current ``*FindEnemies`` entry.
 
@@ -805,6 +823,8 @@ def fetch_candidate(
     and the list rotates between calls. ``retries`` counts refreshes *after*
     the first call, so up to ``retries + 1`` requests are made. Identify the
     target by ``user_id`` (stable) or ``place`` (for ``--rank`` resolution).
+    ``quiet`` suppresses the per-refresh status line (used by ``arena plan``
+    JSON output so stdout stays machine-parseable).
 
     There is deliberately no fixed "N ranks above" limit here: the candidate
     window observed so far is roughly 1-13 ranks above, but a higher-ranked
@@ -822,7 +842,7 @@ def fetch_candidate(
                 return entry
             if place is not None and entry.place == place:
                 return entry
-        if attempt < retries:
+        if attempt < retries and not quiet:
             label = f"userId {user_id}" if user_id is not None else f"rank {place}"
             print(
                 f"{Emojis.INFO}Target ({label}) is not in the current candidates; "
@@ -892,6 +912,7 @@ def resolve_target(
     user_id: int | None = None,
     candidate_retries: int = DEFAULT_CANDIDATE_RETRIES,
     mode: ArenaMode = ARENA_MODE,
+    quiet: bool = False,
 ) -> ArenaTarget:
     """Resolve ``--rank`` / ``--user-id`` to a target ranked above the player.
 
@@ -901,7 +922,10 @@ def resolve_target(
     yields a positive rank, resolution stops with a clear error. Targets outside
     the top 50 are resolved from the rotating candidate list, retrying up to
     ``candidate_retries`` extra times. A candidate-resolved target keeps its
-    entry in ``ArenaTarget.candidate`` so the attack step reuses it.
+    entry in ``ArenaTarget.candidate`` so the attack step reuses it; a topGet
+    hit keeps its entry in ``ArenaTarget.top_entry`` instead. ``quiet``
+    suppresses candidate-refresh status lines (used by ``arena plan`` so stdout
+    stays machine-parseable).
     """
     _require_arena_mode(mode)
     if (rank is None) == (user_id is None):
@@ -926,6 +950,7 @@ def resolve_target(
                 place=rank,
                 retries=candidate_retries,
                 mode=mode,
+                quiet=quiet,
             )
             entry = candidate
         if entry is None:
@@ -941,6 +966,7 @@ def resolve_target(
             name=entry.name,
             power=entry.power,
             candidate=candidate,
+            top_entry=entry if candidate is None else None,
         )
 
     target_id = int(user_id)  # type: ignore[arg-type]
@@ -957,6 +983,7 @@ def resolve_target(
             user_id=target_id,
             retries=candidate_retries,
             mode=mode,
+            quiet=quiet,
         )
         entry = candidate
     if entry is None:
@@ -976,6 +1003,7 @@ def resolve_target(
         name=entry.name,
         power=entry.power,
         candidate=candidate,
+        top_entry=entry if candidate is None else None,
     )
 
 
@@ -1680,6 +1708,174 @@ def run_arena_top(
     )
     print(f"{Emojis.INFO}Your rank: {_human_int(own_place)}; topGet returns at most 50 entries{suffix}")
     return top
+
+
+def run_arena_plan(
+    client: HWClient,
+    *,
+    rank: int | None = None,
+    user_id: int | None = None,
+    min_samples: int = 3,
+    min_win_rate: float = 1.0,
+    limit: int = 10,
+    candidate_retries: int | None = None,
+    game_version: str | None = None,
+    as_json: bool = False,
+    mode: ArenaMode = ARENA_MODE,
+) -> list[PlanCandidate]:
+    """Recommend attacker lineups against the target's current defense.
+
+    Read-only: this never calls ``*Attack``. Recommendations come from the
+    battle corpus (``hw-genie battle import``), aggregated across all accounts.
+    Same-defender history is preferred when it has enough samples; otherwise
+    same-lineup history from other defenders/accounts is used.
+    ``game_version`` (None = all versions) restricts the corpus to one version.
+    """
+    _require_arena_mode(mode)
+    if not 0.0 <= min_win_rate <= 1.0:
+        raise ArenaError("--min-win-rate must be between 0.0 and 1.0.")
+    retries = (
+        DEFAULT_CANDIDATE_RETRIES
+        if candidate_retries is None
+        else _validate_candidate_retries(candidate_retries)
+    )
+
+    status = fetch_arena_status(client, mode)
+    target = resolve_target(
+        client,
+        status,
+        rank=rank,
+        user_id=user_id,
+        candidate_retries=retries,
+        mode=mode,
+        quiet=True,
+    )
+    # ``resolve_target`` keeps the topGet hit in ``top_entry`` and a rotating
+    # *FindEnemies hit in ``candidate``. Planning needs only the current lineup
+    # and must not re-fetch topGet (that would duplicate the call and could
+    # disagree with the rank we just resolved).
+    entry = target.top_entry or target.candidate
+    if entry is None:
+        # Outside both sources: fall back to the rotating candidate list. Keep
+        # it quiet so `--json` output is not polluted by refresh status lines.
+        entry = fetch_candidate(
+            client, user_id=target.user_id, retries=retries, mode=mode, quiet=True
+        )
+    if entry is None or len(entry.heroes) != 5:
+        raise ArenaError(
+            "Could not read the target's current lineup from "
+            f"{mode.find_enemies.value} or topGet; cannot plan."
+        )
+
+    defender_key = lineup_key_from_ids(entry.heroes, entry.pet, entry.banner)
+    plans = query_plans(
+        defender_lineup_key=defender_key,
+        defender_id=str(target.user_id),
+        battle_type=mode.key,
+        game_version=game_version,
+        min_samples=min_samples,
+        min_win_rate=min_win_rate,
+        limit=limit,
+    )
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "target": {
+                        "user_id": target.user_id,
+                        "place": entry.place,
+                        "name": target.name,
+                        "heroes": entry.heroes,
+                        "pet": entry.pet,
+                        "banner": entry.banner,
+                    },
+                    "min_samples": min_samples,
+                    "min_win_rate": min_win_rate,
+                    "plans": [
+                        {
+                            "heroes": plan.heroes_summary,
+                            "pet": plan.pet_id,
+                            "banner": plan.banner_id,
+                            "battles": plan.battles,
+                            "wins": plan.wins,
+                            "win_rate": round(plan.win_rate, 4),
+                            "wilson_low": round(plan.wilson_low, 4),
+                            "tier": plan.tier,
+                            "recommended": plan.recommended,
+                            "last_seen": plan.last_seen.isoformat()
+                            if plan.last_seen
+                            else None,
+                        }
+                        for plan in plans
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return plans
+
+    name = f" ({target.name})" if target.name else ""
+    print(f"{Emojis.INFO}Target: rank {entry.place} userId {target.user_id}{name}")
+    pet_text = entry.pet if entry.pet is not None else "-"
+    banner_text = entry.banner if entry.banner is not None else "-"
+    print(
+        f"{Emojis.INFO}Defender lineup: {','.join(str(h) for h in entry.heroes)} "
+        f"pet {pet_text} banner {banner_text}"
+    )
+    if entry.banner is None:
+        print(
+            f"{Emojis.WARNING}The live candidate did not return a banner; the corpus "
+            "stores defender banners, so exact lineup matching may miss."
+        )
+    print(f"{Emojis.INFO}Gate: n >= {min_samples} and win rate >= {min_win_rate:.0%}")
+
+    if not plans:
+        print(
+            f"{Emojis.WARNING}No matching battles in the corpus for this defender lineup."
+        )
+        print(
+            "  Import more logs with `hw-genie battle import -a <account>`, "
+            "or wait for the oracle (Phase 2)."
+        )
+        return plans
+
+    header = (
+        f"  {'#':>2}  {'heroes':<24} {'pet':>5} {'bnr':>4} "
+        f"{'n':>3} {'w':>3} {'rate':>5} {'wilson':>6}  {'tier':<14} last seen"
+    )
+    print(header)
+    for index, plan in enumerate(plans, 1):
+        mark = "REC" if plan.recommended else "   "
+        last_seen = plan.last_seen.strftime("%Y-%m-%d") if plan.last_seen else "-"
+        pet = str(plan.pet_id) if plan.pet_id is not None else "-"
+        banner = str(plan.banner_id) if plan.banner_id is not None else "-"
+        print(
+            f"{mark} {index:>2}  {plan.heroes_summary:<24} {pet:>5} {banner:>4} "
+            f"{plan.battles:>3} {plan.wins:>3} {plan.win_rate * 100:>4.0f}% "
+            f"{plan.wilson_low * 100:>5.0f}%  {plan.tier:<14} {last_seen}"
+        )
+
+    best = next((plan for plan in plans if plan.recommended), None)
+    if best is None:
+        print(
+            f"{Emojis.WARNING}No plan meets the gate. Lower --min-win-rate / "
+            "--min-samples, or collect more logs."
+        )
+        return plans
+
+    heroes = " ".join(best.heroes_summary.split(","))
+    parts = [
+        f"uv run hw-genie arena attack -a <account> --user-id {target.user_id}",
+        f"--heroes {heroes}",
+    ]
+    if best.pet_id is not None:
+        parts.append(f"--pet {best.pet_id}")
+    if best.banner_id is not None:
+        parts.append(f"--banner {best.banner_id}")
+    print(f"{Emojis.SUCCESS}Recommended: {' '.join(parts)}")
+    return plans
 
 
 def run_arena_team_set(
