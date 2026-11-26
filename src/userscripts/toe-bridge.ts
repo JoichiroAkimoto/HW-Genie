@@ -605,10 +605,18 @@ export function resolveSignalKey(
   return null;
 }
 
-/** Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE. */
+/**
+ * Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE.
+ *
+ * The game's own ``TitanArenaBattleThread`` builds its presets with
+ * ``get_titanClanPvp`` (``BattleThreadFactory`` maps ``titan_arena`` to
+ * ``I.qj.f7a()``). The 2026-11-26 update (serverVersion 302) started
+ * rejecting ``get_titanPvpManual`` progress as ``Invalid battle``, so the
+ * offline sim must use the same config as the client.
+ */
 export function battleConfigFor(battleType: unknown): string {
   if (typeof battleType === "string" && battleType.includes("titan_arena")) {
-    return "get_titanPvpManual";
+    return "get_titanClanPvp";
   }
   return "get_titanPvpManual";
 }
@@ -704,10 +712,11 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
   try {
     // Ported from HerowarsHelper's working BattleCalc (ordinals pinned, see
-    // getF/getFn/getProtoFn docs): presets take the battle's own progress
-    // plus the titan PvP config from BattleConfigStorage, the instant play
-    // reports via a Haxe signal (NOT DOM addEventListener), and results come
-    // from MultiBattleResult getters.
+    // getF/getFn/getProtoFn docs): presets take the ToE battle config
+    // (get_titanClanPvp, matching the game's TitanArenaBattleThread) and the
+    // client's isReplay flag; the instant play reports via a Haxe signal
+    // (NOT DOM addEventListener), and results come from MultiBattleResult
+    // getters.
     const b = battle as { progress?: unknown; type?: unknown };
     const dataStorage = game["DataStorage"] as Record<string, unknown>;
     log("computeBattle: resolving config");
@@ -734,15 +743,23 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
       return null;
     }
     log("computeBattle: presets next");
+    // BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
+    // The client's TitanArenaBattleThread passes isReplay=true; that also makes
+    // BattleInstantPlay build the BattleReseedSession from effects.ultReseed
+    // (added with the 2026-11-26 update), mirroring the client's reseed-aware
+    // simulation for StartBattle battles.
+    // showBothTeams=false matches the instant/skip path used here; the
+    // rendering flag does not affect the sim, so the false vs the battle
+    // thread's true is intentional.
     const presets = new (
       game["BattlePresets"] as new (
-        progress: unknown,
         isReplay: boolean,
+        autoToggleable: boolean,
         autoOnStart: boolean,
         config: unknown,
         showBothTeams: boolean,
       ) => unknown
-    )(b.progress ?? [], false, true, config, false);
+    )(true, false, true, config, false);
     log("computeBattle: presets ok, instant next");
     const BattleInstantPlay = game["BattleInstantPlay"] as new (
       data: unknown,

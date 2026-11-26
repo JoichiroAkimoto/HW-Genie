@@ -256,6 +256,23 @@ def test_playwright_battle_js_resolves_signal_with_drift_fallback():
     assert "signal not found" in PLAYWRIGHT_BATTLE_JS
 
 
+def test_playwright_battle_js_uses_titan_clan_pvp_and_replay_presets():
+    """ToE must simulate with the client's battle config.
+
+    Regression: the 2026-11-26 update (serverVersion 302) rejects
+    ``get_titanPvpManual`` progress as ``Invalid battle``. The game's own
+    TitanArenaBattleThread builds presets with ``get_titanClanPvp`` and
+    ``isReplay=true`` (which also enables the ``ultReseed`` session).
+    """
+    from hw_genie.battle.engine import PLAYWRIGHT_BATTLE_JS
+
+    # Scope the getter check to the config lookup so unrelated mentions of
+    # ``get_titanPvpManual`` elsewhere in the script cannot make it brittle.
+    assert "game.BattleConfigStorage, 'get_titanClanPvp'" in PLAYWRIGHT_BATTLE_JS
+    assert "game.BattleConfigStorage, 'get_titanPvpManual'" not in PLAYWRIGHT_BATTLE_JS
+    assert "new game.BattlePresets(true, false, true, config, false)" in PLAYWRIGHT_BATTLE_JS
+
+
 def test_playwright_browser_headers_keep_only_auth_headers():
     """``new_context(extra_http_headers=...)`` must not leak non-auth headers.
 

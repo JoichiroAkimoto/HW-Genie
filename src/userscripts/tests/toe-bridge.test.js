@@ -190,9 +190,12 @@ test("resolveSignalKey finds a signal that is an own instance field", () => {
   });
 });
 
-test("battleConfigFor maps titan_arena to manual PvP", () => {
-  assert.strictEqual(battleConfigFor("titan_arena"), "get_titanPvpManual");
-  assert.strictEqual(battleConfigFor("titan_arena_wall"), "get_titanPvpManual");
+test("battleConfigFor maps titan_arena to clan PvP (client TitanArenaBattleThread)", () => {
+  // 2026-11-26 (serverVersion 302): get_titanPvpManual progress is rejected
+  // as Invalid battle; the game's own thread uses get_titanClanPvp.
+  assert.strictEqual(battleConfigFor("titan_arena"), "get_titanClanPvp");
+  assert.strictEqual(battleConfigFor("titan_arena_wall"), "get_titanClanPvp");
+  assert.strictEqual(battleConfigFor("mission"), "get_titanPvpManual");
 });
 
 test("safeGameOf swallows cross-origin access throws", () => {
@@ -453,6 +456,138 @@ test("tick retries submit once on 404 (injected failing fetch)", async () => {
     else globalThis.window = prevWindow;
     __resetBridgeForTests();
   }
+});
+
+test("tick computes a titan_arena battle with get_titanClanPvp and replay presets", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const origFetch = globalThis.fetch;
+  const origSetTimeout = globalThis.setTimeout;
+  // Capture (and clear) real timers so the 10s compute safety timeout does not
+  // keep the test process alive after the promise resolved.
+  const timers = [];
+
+  // --- Fake Haxe engine (the exact client shapes the bridge resolves) ---
+  // BattleConfigStorage: minified -> original getter name map.
+  function BattleConfigStorage() {}
+  BattleConfigStorage.prototype.__properties__ = {
+    X: "get_titanClanPvp",
+    Y: "get_titanPvpManual",
+  };
+
+  // DataStorage: ordinal 25 (``Object.keys(ds)[25]``) resolves to the store.
+  const resolvedGetters = [];
+  const config = { configId: "titan_clan_pvp" };
+  const store = {
+    X: () => {
+      resolvedGetters.push("get_titanClanPvp");
+      return config;
+    },
+    Y: () => {
+      resolvedGetters.push("get_titanPvpManual");
+      return config;
+    },
+  };
+  const dataStorage = {};
+  for (let i = 0; i < 25; i += 1) dataStorage[`k${i}`] = {};
+  dataStorage.store = store;
+
+  // BattlePresets: ordinary function capturing the constructor arguments.
+  const presetsArgs = [];
+  function BattlePresets(...args) {
+    presetsArgs.push(args);
+  }
+
+  // BattleInstantPlay: completion signal as an own instance field (the scan
+  // path, so the pinned ordinal 10 stays absent), ``get_result`` via
+  // __properties__.
+  function BattleInstantPlay() {
+    this.sigCallbacks = [];
+    this.sig = {
+      add: (cb) => {
+        this.sigCallbacks.push(cb);
+      },
+      dispatch: () => {},
+    };
+  }
+  BattleInstantPlay.prototype.__properties__ = { a: "get_result" };
+  BattleInstantPlay.prototype.start = function () {
+    const progress = [
+      { attackers: { heroes: { "1": { hp: 100 } } }, defenders: { heroes: {} } },
+    ];
+    const result = { win: true, stars: 3 };
+    const battleInstant = {
+      a: () => ({
+        p: () => progress,
+        r: () => result,
+      }),
+    };
+    for (const cb of this.sigCallbacks) cb(battleInstant);
+  };
+
+  function MultiBattleResult() {}
+  MultiBattleResult.prototype.__properties__ = {
+    p: "get_progress",
+    r: "get_result",
+  };
+
+  globalThis.window = {
+    Game: {
+      BattlePresets,
+      BattleInstantPlay,
+      DataStorage: dataStorage,
+      BattleConfigStorage,
+      MultiBattleResult,
+    },
+  };
+
+  let submittedBody = null;
+  const submittedUrls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "job1", account: "", battle: { type: "titan_arena" } }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedUrls.push(u);
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    const id = origSetTimeout(fn, ms, ...rest);
+    timers.push(id);
+    return id;
+  };
+  try {
+    await tick("", "http://127.0.0.1:1");
+  } finally {
+    for (const id of timers) clearTimeout(id);
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+
+  // The config getter resolved to the clan-PvP getter, never PvP-manual.
+  assert.deepStrictEqual(resolvedGetters, ["get_titanClanPvp"]);
+  // Exact BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
+  assert.strictEqual(presetsArgs.length, 1);
+  assert.deepStrictEqual(presetsArgs[0], [true, false, true, config, false]);
+  // The computed {progress, result} reached /toe/job/<id>/result.
+  assert.strictEqual(submittedUrls.length, 1);
+  assert.ok(submittedUrls[0].endsWith("/toe/job/job1/result"));
+  assert.deepStrictEqual(submittedBody.result.progress, [
+    { attackers: { heroes: { "1": { hp: 100 } } }, defenders: { heroes: {} } },
+  ]);
+  assert.deepStrictEqual(submittedBody.result.result, { win: true, stars: 3 });
 });
 
 test("storeCapturedClass upgrades stale refs", () => {

@@ -1350,6 +1350,37 @@ def test_end_battle_notfound_is_warning_and_sets_end_error(
     assert "⚠️" in out
 
 
+def test_end_battle_invalid_battle_hint_is_engine_aware(
+    capsys, mock_client, mock_sleep
+):
+    """The Invalid battle hint names the engine that produced the progress."""
+    from hw_genie.battle.engine import (
+        BattleEstimate,
+        JsBridgeBattleEngine,
+        PlaywrightBattleEngine,
+    )
+    from hw_genie.commands.titan_arena import _end_battle
+
+    client, mock_call = mock_client
+    est = BattleEstimate(win=True, stars=1, progress=[])
+    invalid = _err(
+        "Invalid battle",
+        {"response": {"error": "Invalid battle", "serverVersion": 302}},
+    )
+
+    cases = (
+        (MagicMock(spec=JsBridgeBattleEngine), "reload the game tab"),
+        (MagicMock(spec=PlaywrightBattleEngine), "Update HW-Genie"),
+        (None, "--engine playwright"),
+    )
+    for engine, expected in cases:
+        mock_call.side_effect = [invalid]
+        _end_battle(client, "-1", est, engine=engine)
+        out = capsys.readouterr().out
+        assert "serverVersion 302" in out
+        assert expected in out
+
+
 def test_summarize_end_battle_none_safe():
     """None score/earned/stars fall back instead of printing None."""
     from hw_genie.battle.engine import BattleEstimate

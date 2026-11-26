@@ -358,9 +358,17 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 
 `progress` と `result`（win / stars）が必要。**これらはクライアント側で
 バトルをシミュレーションした正確な値**でないとサーバーが `Invalid battle`
-（`serverVersion: 292`）で弾く。HW-Genie 単体では簡易な power ベース見積
-のみ可能なため、**完全勝利には userscript 側の `Game.BattlePresets` /
-`BattleInstantPlay`（`get_titanPvpManual`）を使うハイブリッドフローが必要**。
+（`serverVersion: 302`, 2026-11-26 実測）で弾く。HW-Genie 単体では簡易な
+power ベース見積のみ可能なため、**完全勝利には userscript 側の
+`Game.BattlePresets` / `BattleInstantPlay` を使うハイブリッドフローが必要**。
+
+> **2026-11-26 の変更**: 回帰の原因は battle config getter で、`get_titanPvpManual`
+> から `get_titanClanPvp` に変わった（ゲーム本体の `TitanArenaBattleThread` /
+> `BattleThreadFactory` が `titan_arena` を `I.qj.f7a()` に割り当てる）。以前の
+> `get_titanPvpManual` でシミュレーションした `progress` は serverVersion 302 で
+> `Invalid battle` になる。live の StartBattle battle には `effects.ultReseed`
+> が入る（2026-11-26 実測）。`BattlePresets(isReplay=true, ...)` はクライアント準拠で、
+> この effects から reseed セッションを作る。
 
 `hw-genie toe attack --engine estimate` は power ベースの `progress` を
 送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定
@@ -405,6 +413,13 @@ live の battle payload は数値である:
 一致する（GetStatus 側にロスターが無い場合は 5 体である）必要がある。
 食い違い・切り詰められたロスターは推測せずにスキップし、個別バトルで
 再試行する。
+
+> **レイドの battle は意図的に `effects: []`**: クライアントの
+> `TitanArenaRaid` も rival ごとのレイド戦を同じ形状（`effects: []`）で
+> 組み立てるため、レイドには `ultReseed` の reseed データを載せない
+> （個別 StartBattle の `effects.ultReseed` セッションとは別経路なので、
+> レイドに reseed データが無くても正常）。userscript（ブリッジ）はレイド戦でも
+> `isReplay=true` を渡す（302 修正前と同じ）。
 
 `seed: 0` や推測形状の defenders を渡すとページ内エンジンの計算が失敗し、
 userscript は全滅（dummy loss）を返す。`seed` が欠落・無効、または
