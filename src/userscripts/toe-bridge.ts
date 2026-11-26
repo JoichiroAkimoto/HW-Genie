@@ -911,12 +911,36 @@ export async function submitWithRetry(
   return ok;
 }
 
+/**
+ * DEV-only in-page debug handle for `eval`-driven development.
+ *
+ * Normal builds never install it. It exposes only refs the page already owns
+ * (captured game classes, the local engine gate, the offline sim) so an agent
+ * operating the real game tab can inspect the engine without guessing at
+ * minified globals. Do not put credentials or auth headers here.
+ */
+function exposeDebugHandle(): void {
+  if (!TOE_ENABLED) return;
+  try {
+    const w = window as unknown as Record<string, unknown>;
+    w.__hwGenieToe = {
+      captured: () => capturedClasses,
+      capturedNames: () => capturedClassNames(),
+      hasEngine: () => hasLocalEngine(),
+      engine: () => capturedEngine(),
+      diag: () => realmDiag(),
+      compute: (battle: unknown) => computeBattle(battle),
+    };
+  } catch {}
+}
+
 export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number; jobsPerTick?: number } = {}): () => void {
   // Normal builds never poll (Goodwin separation). Return the stop handle
   // shape so callers need no variant branching.
   if (!TOE_ENABLED) {
     return () => {};
   }
+  exposeDebugHandle();
   const baseUrl = (opts.authServerUrl ?? AUTH_SERVER_URL).replace(/\/+$/, "");
   const interval = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
   const jobsPerTick = opts.jobsPerTick ?? JOBS_PER_TICK;

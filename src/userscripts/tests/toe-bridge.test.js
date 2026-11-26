@@ -612,6 +612,37 @@ test("tick computes a titan_arena battle with get_titanClanPvp and replay preset
   assert.deepStrictEqual(submittedBody.result.result, { win: true, stars: 3 });
 });
 
+test("installToeBridge exposes the DEV debug handle only in dev builds", () => {
+  const prevWindow = globalThis.window;
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => 1;
+  try {
+    __resetBridgeForTests();
+    globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+    // Normal build: TOE_ENABLED is false, so no handle is installed.
+    __setToeEnabledForTests(false);
+    let stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    assert.strictEqual(globalThis.window.__hwGenieToe, undefined);
+    stop();
+
+    // Dev build: the eval-driven debug handle is installed.
+    __setToeEnabledForTests(true);
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    const handle = globalThis.window.__hwGenieToe;
+    assert.ok(handle);
+    assert.strictEqual(typeof handle.captured, "function");
+    assert.strictEqual(typeof handle.capturedNames, "function");
+    assert.strictEqual(typeof handle.compute, "function");
+    assert.deepStrictEqual(handle.captured(), {});
+    stop();
+  } finally {
+    globalThis.setInterval = origSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
 test("storeCapturedClass upgrades stale refs", () => {
   __resetBridgeForTests();
   function F1() {}
