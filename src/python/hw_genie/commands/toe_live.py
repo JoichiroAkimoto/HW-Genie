@@ -142,6 +142,7 @@ def run_live_tier(
         "raid_errors": [],
         "completed_tier": False,
         "tier": None,
+        "final_tier": None,
         "remaining_rivals": None,
         "daily_reward": None,
         "live": True,
@@ -208,10 +209,21 @@ def run_live_tier(
                         }
                     )
                     if not ok:
-                        summary["errors"].append({"stage": "live_battle", "rival": str(rival_id), "error": error})
-                        emit(f"{Emojis.WARNING}  - rival {rival_id}: live job failed ({error})")
-                        wall = True
-                        break
+                        err_text = str(error or "")
+                        fatal = any(
+                            marker in err_text.lower()
+                            for marker in ("account mismatch", "rival not found", "live battle timeout", "no engine", "toe model unavailable")
+                        )
+                        if fatal:
+                            summary["errors"].append({"stage": "live_battle", "rival": str(rival_id), "error": error})
+                            emit(f"{Emojis.WARNING}  - rival {rival_id}: live job failed ({error})")
+                            wall = True
+                            break
+                        # StartBattle errors (unowned/invalid team, transient server
+                        # rejection) are per-team: keep rotating instead of
+                        # treating the rival as a wall.
+                        emit(f"{Emojis.INFO}  - rival {rival_id}: team skipped ({err_text or 'no error text'})")
+                        continue
                     after = _status(client)
                     score = _score_for(after, str(rival_id))
                     emit(
@@ -242,6 +254,7 @@ def run_live_tier(
         try:
             final = _status(client)
             summary["tier"] = final.get("tier")
+            summary["final_tier"] = final.get("tier")
             summary["remaining_rivals"] = _remaining(final, threshold)
         except Exception:
             pass

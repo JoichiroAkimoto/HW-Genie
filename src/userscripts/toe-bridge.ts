@@ -853,6 +853,49 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 type AnyRecord = Record<string, any>;
 type LiveJobResult = Record<string, unknown>;
 let liveJobRunner: ((job: ToeJob, account: string) => Promise<LiveJobResult>) | null = null;
+// Set while a live battle is being driven so the BattleController patch only
+// forces Auto for those battles, never for the user's manual fights.
+let liveAutoForced = false;
+// Set by the BattleController patch when it could actually toggle Auto; lets
+// the caller fall back to the coordinate click if the shape drifted.
+let liveAutoApplied = false;
+
+/**
+ * Force the game's Auto toggle on when a live battle controller starts.
+ *
+ * The client's Auto state is the ``BattleController`` settings model
+ * ``Rr.Qya`` BooleanProperty (the same one its Auto button toggles). The
+ * minified names are pinned to the current bundle; when they drift the patch
+ * is skipped and the coordinate click fallback is used instead.
+ */
+function installLiveAutoPatch(): boolean {
+  try {
+    const cls = capturedClasses["BattleController"] as unknown as { prototype?: AnyRecord } | undefined;
+    const proto = cls?.prototype;
+    if (!proto) return false;
+    if (proto["__hwAutoPatch"]) return true;
+    const originalStart = proto["start"];
+    if (typeof originalStart !== "function") return false;
+    proto["start"] = function (this: AnyRecord, ...args: unknown[]) {
+      const result = originalStart.apply(this, args);
+      if (liveAutoForced) {
+        try {
+          const settings = this["Rr"] as AnyRecord | undefined;
+          const auto = settings?.["Qya"] as { ba?: (value: boolean) => void } | undefined;
+          if (auto && typeof auto.ba === "function") {
+            auto.ba(true);
+            liveAutoApplied = true;
+          }
+        } catch {}
+      }
+      return result;
+    };
+    proto["__hwAutoPatch"] = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Click the in-battle Auto toggle (bottom-right of the game canvas). */
 function clickAuto(): void {
@@ -889,6 +932,8 @@ async function runLiveJob(job: ToeJob, jobAccount: string, resolveAccount: () =>
   if (!myAccount || String(job.account) !== String(myAccount)) {
     return { ok: false, error: `account mismatch (job=${job.account} tab=${myAccount})` };
   }
+  liveAutoForced = false;
+  liveAutoApplied = false;
   const gameModelClass = capturedClasses["GameModel"] as unknown as { F?: () => AnyRecord } | undefined;
   const model = gameModelClass?.F?.();
   const player = model?.["player"] as AnyRecord | undefined;
@@ -970,6 +1015,8 @@ async function runLiveJob(job: ToeJob, jobAccount: string, resolveAccount: () =>
     const finish = (value: LiveJobResult) => {
       if (settled) return;
       settled = true;
+      liveAutoForced = false;
+      liveAutoApplied = false;
       if (timer) clearTimeout(timer);
       if (autoTimer) clearInterval(autoTimer);
       try { x7["kBo"] = prevKbo; } catch {}
@@ -1004,9 +1051,20 @@ async function runLiveJob(job: ToeJob, jobAccount: string, resolveAccount: () =>
       finish({ ok: false, error: "wrap failed: " + String(e) });
       return;
     }
+    liveAutoForced = true;
+    liveAutoApplied = false;
+    const autoPatched = installLiveAutoPatch();
     timer = setTimeout(() => finish({ ok: false, error: "live battle timeout" }), 180000);
-    setTimeout(() => clickAuto(), 1200);
-    autoTimer = setInterval(() => clickAuto(), 5000);
+    if (autoPatched) {
+      // The patch normally toggles Auto itself; click once as a fallback only
+      // when the controller never observed the patch (minified shape drift).
+      setTimeout(() => {
+        if (!liveAutoApplied) clickAuto();
+      }, 2500);
+    } else {
+      setTimeout(() => clickAuto(), 1200);
+      autoTimer = setInterval(() => clickAuto(), 5000);
+    }
     try {
       toe["bmc"](rival, { f3b: () => titans });
     } catch (e) {
