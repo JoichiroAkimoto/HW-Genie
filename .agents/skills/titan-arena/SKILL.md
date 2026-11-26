@@ -30,6 +30,7 @@ description: HW-Genie を使用して Titan Arena (ToE) の状態確認・個別
 - 負けは既定で毎回バンクします（`attackScore` はバトルスコアの max 保持なので劣る負けは無害）。`--no-end-on-loss` でベスト更新時のみバンク、`--no-bank-best-loss` で改善バンクを無効化できます。
 - userscript ブリッジの自動フォールバックは完了シグナルの Haxe ordinal ずれだけを吸収します。battle config / DataStorage getter のずれ（`get_titanPvpManual` → `get_titanClanPvp` 等）は自動吸収されないため、ゲーム更新時は Dev 版 userscript の更新が必要です。それでも戦闘計算が連続 3 回ダミー（空 progress）なら原因を表示して停止します。
 - `EndBattle: Invalid battle` が続く場合、ブリッジ未接続（auth-server / ゲームタブ）に加えて **ゲーム更新によるブリッジの設定ずれ**（battle config / ordinal）が原因です。`bash src/userscripts/build.sh --dev` で Dev 版 userscript を最新ビルドへ更新し、**`src/userscripts/dist/hw-genie-auth-capture-dev.user.js` を userscript マネージャへ再登録（上書きインストール）**してから、**ゲームタブをリロード**して再実行してください（Dev 版 userscript はローカルビルドの `@updateURL` が未解決プレースホルダ（`__UPDATE_URL__`）のため自動更新されず、上書きインストールが必要です。またクラスをバンドル起動時にしか捕捉しないため、インストール後のリロードが必須）。2026-11-26 の serverVersion 302 では ToE の config が `get_titanClanPvp` に変わっています。
+- **2026-11-26 以降の既知の制限**: 個別 ToE 戦は `effects.ultReseed` の reseed proof（`battleSeed_next` の seeds / `progress[0].proof`）をサーバーが要求するため、userscript を最新にしてもオフライン計算の `Invalid battle` は解消しません（レイド戦は `effects: []` のため対象外）。現状はゲームクライアントでの実戦、または HWH 等の対応待ちです。
 - `multi toe` は `--dry-run` 非対応です。単発の `toe attack --dry-run` を使います。
 - 実在のプレイヤー名・アカウント名は書かないでください（AGENTS.md の「不変条件」）。例は `Alice` / `Bob` を使います。
 

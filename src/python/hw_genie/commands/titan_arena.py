@@ -943,6 +943,8 @@ def _invalid_battle_hint(engine: Any | None) -> str:
             "The Dev userscript may be stale (game-update battle config / ordinal drift). "
             "Rebuild it (`bash src/userscripts/build.sh --dev`), overwrite-install the Dev "
             "userscript, then reload the game tab. "
+            "If it persists with an up-to-date userscript, the game's v302 ultReseed proof "
+            "requirement blocks offline simulation (see docs/api/GUILD_API.md). "
             "(`--engine estimate` is always rejected; use `--engine hybrid` with an up-to-date Dev userscript)."
         )
     if isinstance(engine, PlaywrightBattleEngine):
