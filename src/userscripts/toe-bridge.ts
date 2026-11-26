@@ -45,6 +45,12 @@ interface ToeJob {
   id: string;
   account: string;
   battle: unknown;
+  /** ``"sim"`` (offline instant calc, default) or ``"live"`` (drive the real game battle). */
+  kind?: string;
+  /** Live action: ``"battle"`` or ``"complete_tier"``. */
+  action?: string;
+  rivalId?: string;
+  titans?: number[];
 }
 
 interface BattleProgressHero {
@@ -675,7 +681,7 @@ async function pollNextJob(account: string, baseUrl: string): Promise<ToeJob | n
 export async function submitResult(
   jobId: string,
   account: string,
-  result: BattleResultPayload,
+  result: unknown,
   baseUrl: string,
 ): Promise<boolean> {
   const res = await fetchWithTimeout(
@@ -842,6 +848,173 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
 }
 
+// --- live ToE jobs ---------------------------------------------------------
+
+type AnyRecord = Record<string, any>;
+type LiveJobResult = Record<string, unknown>;
+let liveJobRunner: ((job: ToeJob, account: string) => Promise<LiveJobResult>) | null = null;
+
+/** Click the in-battle Auto toggle (bottom-right of the game canvas). */
+function clickAuto(): void {
+  try {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = rect.left + rect.width * 0.93;
+    const y = rect.top + rect.height * 0.93;
+    const base = { clientX: x, clientY: y, bubbles: true, cancelable: true, view: window };
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      canvas.dispatchEvent(new MouseEvent(type, base));
+    }
+    try {
+      for (const type of ["pointerdown", "pointerup"]) {
+        canvas.dispatchEvent(new PointerEvent(type, { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      }
+    } catch {}
+  } catch {}
+}
+
+/**
+ * Drive a real ToE battle (or CompleteTier) through the game's own client.
+ *
+ * The live path is required after the 2026-11-26 update: offline instant
+ * simulations cannot produce the ``battleSeed_next`` proof the server now
+ * validates. ``PlayerTitanArenaData.bmc`` runs the real battle thread and the
+ * client submits ``titanArenaEndBattle`` with a valid proof by itself.
+ */
+async function runLiveJob(job: ToeJob, jobAccount: string, resolveAccount: () => string): Promise<LiveJobResult> {
+  if (!hasLocalEngine()) return { ok: false, error: "no engine" };
+  const myAccount = resolveAccount() || jobAccount;
+  if (!myAccount || String(job.account) !== String(myAccount)) {
+    return { ok: false, error: `account mismatch (job=${job.account} tab=${myAccount})` };
+  }
+  const gameModelClass = capturedClasses["GameModel"] as unknown as { F?: () => AnyRecord } | undefined;
+  const model = gameModelClass?.F?.();
+  const player = model?.["player"] as AnyRecord | undefined;
+  const toe = player?.["cl"] as AnyRecord | undefined;
+  const x7 = (model?.["Ka"] as AnyRecord | undefined)?.["x7"] as AnyRecord | undefined;
+  if (!toe || !x7) return { ok: false, error: "ToE model unavailable" };
+
+  if (job.action === "complete_tier") {
+    return await new Promise<LiveJobResult>((resolve) => {
+      let settled = false;
+      const prev = x7["sel"];
+      const finish = (value: LiveJobResult) => {
+        if (settled) return;
+        settled = true;
+        try { x7["sel"] = prev; } catch {}
+        resolve(value);
+      };
+      try {
+        x7["sel"] = function (this: unknown, ...args: unknown[]) {
+          const cmd = prev.apply(this, args) as AnyRecord;
+          try {
+            const originalCc = cmd["cc"];
+            cmd["cc"] = function (this: unknown, cb: (r: unknown) => unknown) {
+              return originalCc.call(this, (res: AnyRecord) => {
+                try {
+                  const err = typeof res?.["c7a"] === "function" ? res["c7a"]() : null;
+                  const ok = typeof res?.["MI"] === "function" ? !!res["MI"]() : !err;
+                  finish({ ok: !!ok && !err, error: err || undefined, action: "complete_tier" });
+                } catch (e) {
+                  finish({ ok: false, error: String(e) });
+                }
+                return cb(res);
+              });
+            };
+          } catch {}
+          return cmd;
+        };
+      } catch (e) {
+        finish({ ok: false, error: String(e) });
+        return;
+      }
+      try {
+        x7["sel"]();
+      } catch (e) {
+        finish({ ok: false, error: String(e) });
+      }
+      setTimeout(() => finish({ ok: false, error: "complete_tier timeout" }), 15000);
+    });
+  }
+
+  if (job.action !== "battle") return { ok: false, error: "unknown live action" };
+  const titans = Array.isArray(job.titans) ? job.titans.map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
+  if (titans.length !== 5) return { ok: false, error: "bad titans" };
+
+  // Python may have advanced the tier with CompleteTier between jobs; refresh
+  // the in-page ToE model before looking up the rival.
+  try { if (typeof toe["WJl"] === "function") toe["WJl"](); } catch {}
+  await sleep(900);
+  const findRival = (): AnyRecord | undefined => {
+    try {
+      const rivals = (toe["V5b"]?.() as AnyRecord[] | undefined) || [];
+      return rivals.find((r) => String(r?.["G"]?.()) === String(job.rivalId));
+    } catch {
+      return undefined;
+    }
+  };
+  let rival = findRival();
+  if (!rival) {
+    await sleep(1200);
+    rival = findRival();
+  }
+  if (!rival) return { ok: false, error: "rival not found in ToE model" };
+
+  return await new Promise<LiveJobResult>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let autoTimer: ReturnType<typeof setInterval> | null = null;
+    const prevKbo = x7["kBo"];
+    const finish = (value: LiveJobResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (autoTimer) clearInterval(autoTimer);
+      try { x7["kBo"] = prevKbo; } catch {}
+      resolve(value);
+    };
+    try {
+      x7["kBo"] = function (this: unknown, ...args: unknown[]) {
+        const cmd = prevKbo.apply(this, args) as AnyRecord;
+        try {
+          const originalCc = cmd["cc"];
+          cmd["cc"] = function (this: unknown, cb: (r: unknown) => unknown) {
+            return originalCc.call(this, (res: AnyRecord) => {
+              try {
+                const err = typeof res?.["c7a"] === "function" ? res["c7a"]() : null;
+                const ok = typeof res?.["MI"] === "function" ? !!res["MI"]() : !err;
+                let result: unknown = undefined;
+                try {
+                  const zk = typeof res?.["zk"] === "function" ? res["zk"]() : null;
+                  if (zk && typeof zk["ag"] === "function") result = zk["ag"]();
+                } catch {}
+                finish({ ok: !!ok && !err, error: err || undefined, result, rivalId: String(job.rivalId), action: "battle" });
+              } catch (e) {
+                finish({ ok: false, error: String(e) });
+              }
+              return cb(res);
+            });
+          };
+        } catch {}
+        return cmd;
+      };
+    } catch (e) {
+      finish({ ok: false, error: "wrap failed: " + String(e) });
+      return;
+    }
+    timer = setTimeout(() => finish({ ok: false, error: "live battle timeout" }), 180000);
+    setTimeout(() => clickAuto(), 1200);
+    autoTimer = setInterval(() => clickAuto(), 5000);
+    try {
+      toe["bmc"](rival, { f3b: () => titans });
+    } catch (e) {
+      finish({ ok: false, error: "start failed: " + String(e) });
+    }
+  });
+}
+
 export async function tick(
   account: string,
   baseUrl: string,
@@ -867,7 +1040,24 @@ export async function tick(
     if (!job) {
       return;
     }
-    log(`claimed job ${job.id} (type=${(job.battle as { type?: unknown })?.type ?? "?"})`);
+    log(`claimed job ${job.id} (kind=${job.kind ?? "sim"}${job.action ? ` action=${job.action}` : ""})`);
+    if (job.kind === "live") {
+      const live = liveJobRunner
+        ? await liveJobRunner(job, account)
+        : { ok: false, error: "live engine not installed" };
+      await submitWithRetry(job.id, account, live, baseUrl);
+      if (job.action === "battle") {
+        // A completed live battle opens the game's result popup, whose OK
+        // button does not accept synthetic clicks reliably. Reload once the
+        // result is submitted so the next live job starts from a clean page.
+        setTimeout(() => {
+          try {
+            location.reload();
+          } catch {}
+        }, 1500);
+      }
+      continue;
+    }
     const computed = await computeBattle(job.battle);
     if (!computed) {
       // The engine exists but this battle failed to compute (calc error or
@@ -894,7 +1084,7 @@ function sleep(ms: number): Promise<void> {
 export async function submitWithRetry(
   jobId: string,
   account: string,
-  result: BattleResultPayload,
+  result: unknown,
   baseUrl: string,
 ): Promise<boolean> {
   let ok = await submitResult(jobId, account, result, baseUrl);
@@ -957,6 +1147,13 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   // The script needs to know which account to claim jobs for. We pull it
   // from the game's user object so the user doesn't have to configure it.
   function readAccount(): string {
+    // Live jobs are keyed by the auth x-auth-user-id (what the Python CLI
+    // sends), not by the in-game player id. The auth capture side records it
+    // on every API request; prefer it so live jobs match the right tab.
+    try {
+      const authId = localStorage.getItem("hwgenie-x-auth-user-id");
+      if (authId) return String(authId);
+    } catch {}
     // Try multiple Game locations and multiple player paths. The web version
     // may have moved from window.Game to iframe or wrappedJSObject.
     const tryGame = (g: unknown): string => {
@@ -991,6 +1188,19 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
       const r = tryGame(g);
       if (r) return r;
     }
+    // Captured Haxe GameModel (works without HWH's window.Game).
+    try {
+      const gm = capturedClasses["GameModel"] as unknown as { F?: () => unknown } | undefined;
+      const model = gm?.F?.() as Record<string, unknown> | undefined;
+      const player = model?.["player"] as Record<string, unknown> | undefined;
+      if (player) {
+        const cls = (player as { __class__?: { prototype?: { __properties__?: Record<string, string> } } }).__class__;
+        const props = cls?.prototype?.__properties__ || {};
+        const key = Object.entries(props).find(([, v]) => v === "get_id")?.[0];
+        const raw = key && typeof player[key] === "function" ? (player[key] as () => unknown)() : player["id"];
+        if (raw !== undefined && raw !== null && String(raw)) return String(raw);
+      }
+    } catch {}
     // Last fallback: try to read x-auth-user-id from any captured headers in localStorage / cookie
     try {
       const ls = localStorage.getItem("x-auth-user-id") || localStorage.getItem("auth_user_id");
@@ -998,6 +1208,8 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
     } catch {}
     return "";
   }
+
+  liveJobRunner = (job, jobAccount) => runLiveJob(job, jobAccount, readAccount);
 
   let account = readAccount();
   if (!account) {

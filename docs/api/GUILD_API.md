@@ -369,9 +369,11 @@ power ベース見積のみ可能なため、**完全勝利には userscript 側
 > `Invalid battle` になる。live の StartBattle battle には `effects.ultReseed`
 > が入る（2026-11-26 実測）。オフライン計算ではクライアント実戦の
 > `battleSeed_next`（reseed の seeds / `progress[0].proof`）を生成できないため、
-> クライアントの instant/skip 経路と同じ `BattlePresets(isReplay=false, ...)`
-> で計算し、reseed セッションを無効化する（`isReplay=true` だと proof 欠落で
-> 拒否される）。
+> 個別戦・壁は **`--engine live`** でゲームタブ内の実戦を駆動する
+> （`PlayerTitanArenaData.bmc(rival, team)` → `TitanArenaBattleThread` →
+> `battleSeed_next` → `titanArenaEndBattle`。userscript の live ジョブが
+> 結果を CLI に返し、Tier 完了は `titanArenaCompleteTier`）。
+> レイドは `effects: []` のため従来のオフライン計算（`--engine hybrid`）でよい。
 
 `hw-genie toe attack --engine estimate` は power ベースの `progress` を
 送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定

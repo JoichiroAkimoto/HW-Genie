@@ -1153,6 +1153,32 @@ def cmd_toe_run(args):
     from hw_genie.commands.titan_arena import report_bridge_timing, run_titan_arena_tier
 
     mode = getattr(args, "engine", "estimate")
+    if mode == "live":
+        from hw_genie.commands.toe_live import run_live_tier
+        from hw_genie.runner import summarize_toe
+
+        titans = list(args.titans) if getattr(args, "titans", None) else None
+        try:
+            account_label = resolve_account(args.account)
+        except Exception:
+            account_label = None
+        user_id = headers.get("x-auth-user-id", "")
+        try:
+            summary = run_live_tier(
+                client,
+                auth_server_url=getattr(args, "auth_server_url", "http://127.0.0.1:8765"),
+                user_id=user_id,
+                titans=titans,
+                threshold=args.threshold,
+                max_team_attempts=getattr(args, "max_attempts", None),
+                progress=_resolve_toe_progress(args),
+            )
+        except (KeyboardInterrupt, InterruptedError):
+            return
+        failed = summarize_toe([(account_label or "account", (summary, None))])
+        if failed or summary.get("errors"):
+            sys.exit(1)
+        return
     if mode == "playwright":
         engine = get_default_engine(mode=mode, headers=headers)
     elif mode != "estimate":
@@ -1881,7 +1907,7 @@ def cmd_multi(args):
             _toe_engine = getattr(args, "engine", "hybrid") or "hybrid"
         except Exception:
             _toe_engine = "hybrid"
-        if _toe_engine == "hybrid" and ready_accounts:
+        if _toe_engine in ("hybrid", "live") and ready_accounts:
             try:
                 _toe_url = getattr(args, "auth_server_url", "http://127.0.0.1:8765") or "http://127.0.0.1:8765"
             except Exception:
@@ -1892,6 +1918,14 @@ def cmd_multi(args):
                 _probe_bridge = None
             if _probe_bridge is not None:
                 _probe_bridge(_toe_url)
+        if _toe_engine == "live":
+            from hw_genie.core.client import Emojis
+
+            print(
+                f"{Emojis.WARNING}Live ToE: each account's game tab must stay visible/rendering. "
+                "Use --parallel 1 (or keep all game windows visible) and enable Auto in the game.",
+                flush=True,
+            )
 
     # 実行ログ（run_logs）記録: 実行中の出力をキャプチャし、終了時に 1 レコード
     # 書き込む（best-effort: DB 失敗でも実行自体は落とさない）。
@@ -2939,9 +2973,9 @@ def main():
     )
     p_toe_run.add_argument(
         "--engine",
-        choices=["estimate", "hybrid", "playwright"],
+        choices=["estimate", "hybrid", "playwright", "live"],
         default="estimate",
-        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (full automation via userscript), or 'playwright' (headless Chromium, no manual screen required)",
+        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (offline instant sim via userscript; RAID tiers), 'live' (real battles in the game tab for v302 solo/wall proof), or 'playwright' (headless Chromium)",
     )
     p_toe_run.add_argument(
         "--auth-server-url",
@@ -3098,9 +3132,9 @@ def main():
     )
     p_multi.add_argument(
         "--engine",
-        choices=["estimate", "hybrid", "playwright"],
+        choices=["estimate", "hybrid", "playwright", "live"],
         default="hybrid",
-        help="Battle engine for the 'toe' mode (default: hybrid)",
+        help="Battle engine for the 'toe' mode (default: hybrid; use 'live' for v302 solo/wall real battles in each game tab)",
     )
     p_multi.add_argument(
         "--seeds",

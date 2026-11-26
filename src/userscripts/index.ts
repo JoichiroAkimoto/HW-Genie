@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.21
+// @version      1.0.22
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -106,6 +106,9 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
   // Bounded timeout for the (local) auth server calls so a stalled fetch can
   // never wedge `sending` and block re-captures after a re-login.
   const FETCH_TIMEOUT_MS = 5000;
+  // ToE live ジョブの account 照合に使う認証ユーザー ID。ゲーム内 player id とは
+  // 別物（Python 側は x-auth-user-id でジョブを作る）。秘密値ではない。
+  const AUTH_USER_ID_STORAGE_KEY = "hwgenie-x-auth-user-id";
 
   // セッション状態は単一の SessionState オブジェクトで管理する。
   // pollAndMaybeSend / markSendSuccess / markSendFailure はこのオブジェクトを
@@ -138,6 +141,11 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     state.headersCaptured[lowerName] = value;
     state.lastSeenAt[lowerName] = Date.now();
     state.lastCaptureAt = Date.now();
+    if (lowerName === "x-auth-user-id") {
+      try {
+        localStorage.setItem(AUTH_USER_ID_STORAGE_KEY, value);
+      } catch {}
+    }
   }
 
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {

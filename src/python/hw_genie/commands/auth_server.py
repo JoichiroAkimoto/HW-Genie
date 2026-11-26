@@ -94,19 +94,26 @@ class ToeJobStore:
         self._ttl = ttl_seconds
         self._in_flight_timeout = in_flight_timeout_seconds
 
-    def add(self, account: str, battle: dict[str, Any]) -> str:
+    def add(self, account: str, payload: dict[str, Any]) -> str:
         job_id = uuid.uuid4().hex
+        kind = str(payload.get("kind") or "sim")
         with self._lock:
-            self._jobs[job_id] = {
+            job = {
                 "id": job_id,
                 "account": account,
-                "battle": battle,
+                "kind": kind,
                 "status": "pending",
                 "result": None,
                 "created_at": time.time(),
                 "claimed_at": None,
                 "claimed_by": None,
             }
+            # Flatten the request payload so the userscript receives the same
+            # top-level fields it always did (``battle`` for sim jobs) plus the
+            # live fields (``action`` / ``rivalId`` / ``titans``).
+            job.update({k: v for k, v in payload.items() if k != "account"})
+            job["kind"] = kind
+            self._jobs[job_id] = job
         return job_id
 
     def get(self, job_id: str, account: str) -> Optional[dict[str, Any]]:
@@ -123,8 +130,12 @@ class ToeJobStore:
         claimed_at = job.get("claimed_at")
         if claimed_at is None:
             return True
+        # A live job drives a real in-page battle (with reseed proofs) and can
+        # legitimately take a couple of minutes, so it gets a much longer
+        # in-flight window than an offline simulation job.
+        timeout = 300.0 if job.get("kind") == "live" else self._in_flight_timeout
         try:
-            return (now - float(claimed_at)) >= self._in_flight_timeout
+            return (now - float(claimed_at)) >= timeout
         except (TypeError, ValueError):
             return True
 
@@ -140,8 +151,10 @@ class ToeJobStore:
             if account:
                 candidates = [j for j in self._jobs.values() if j.get("account") == account]
             else:
-                # Fallback: no account known (userscript couldn't read Game yet) → oldest pending for any account
-                candidates = list(self._jobs.values())
+                # Fallback: no account known (userscript couldn't read Game yet) → oldest pending for any account.
+                # Live jobs are excluded: they act on the page's logged-in account and must only run in that
+                # account's own tab.
+                candidates = [j for j in self._jobs.values() if j.get("kind") != "live"]
             pending = sorted(
                 (
                     j
@@ -154,6 +167,8 @@ class ToeJobStore:
             if not pending:
                 return None
             job = pending[0]
+            if job.get("kind") == "live" and job.get("account") != account:
+                return None
             job["status"] = "in_flight"
             job["claimed_at"] = now
             job["claimed_by"] = account
@@ -173,10 +188,13 @@ class ToeJobStore:
             # Strict account check: exact match always accepted. A mismatch is
             # accepted only when the job was claimed via the account-less
             # fallback (claimed_by == "" — userscript couldn't read Game yet,
-            # or alias vs numeric-id mismatch forced the fallback path).
-            # Every other mismatch is rejected (route maps to 404) so a
-            # cross-account claim can never compute+submit foreign battles.
-            if job.get("account") != account and job.get("claimed_by") != "":
+            # or alias vs numeric-id mismatch forced the fallback path). Live
+            # jobs always require the exact account: they act on the page's
+            # logged-in game state and must never be computed by a foreign tab.
+            if job.get("kind") == "live":
+                if job.get("account") != account:
+                    return False
+            elif job.get("account") != account and job.get("claimed_by") != "":
                 return False
             job["status"] = "done"
             job["result"] = result
@@ -291,10 +309,25 @@ def create_app() -> FastAPI:
     def post_toe_job(job_request: dict[str, Any] = Body(...)):
         _toe_jobs.cleanup()
         account = str(job_request.get("account", ""))
-        battle = job_request.get("battle") or {}
-        if not account or not isinstance(battle, dict):
-            raise HTTPException(status_code=400, detail="account and battle are required")
-        job_id = _toe_jobs.add(account, battle)
+        kind = str(job_request.get("kind") or "sim")
+        if not account:
+            raise HTTPException(status_code=400, detail="account is required")
+        if kind == "sim":
+            battle = job_request.get("battle") or {}
+            if not isinstance(battle, dict) or not battle:
+                raise HTTPException(status_code=400, detail="battle is required for sim jobs")
+        elif kind == "live":
+            action = str(job_request.get("action") or "")
+            if action not in ("battle", "complete_tier"):
+                raise HTTPException(status_code=400, detail="live action must be battle or complete_tier")
+            if action == "battle":
+                rival_id = job_request.get("rivalId")
+                titans = job_request.get("titans")
+                if rival_id is None or not isinstance(titans, list) or len(titans) != 5:
+                    raise HTTPException(status_code=400, detail="rivalId and 5 titans are required for a live battle")
+        else:
+            raise HTTPException(status_code=400, detail="unknown job kind")
+        job_id = _toe_jobs.add(account, job_request)
         return {"id": job_id, "status": "pending"}
 
     @app.get("/toe/next")

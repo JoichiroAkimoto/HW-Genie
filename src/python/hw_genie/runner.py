@@ -772,11 +772,23 @@ def toe_routine(
 
     _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
     _dashboard = ToeProgressDashboard() if _mode == "line" else None
-    if engine == "hybrid" and probe_bridge:
+    if engine in ("hybrid", "live") and probe_bridge:
         _warn_if_bridge_unreachable(auth_server_url)
 
     def run(client: HWClient, account: str) -> object:
         headers = getattr(client, "headers", {}) or {}
+        if engine == "live":
+            from hw_genie.commands.toe_live import run_live_tier
+
+            user_id = str(headers.get("x-auth-user-id", ""))
+            return run_live_tier(
+                client,
+                auth_server_url=auth_server_url,
+                user_id=user_id,
+                threshold=threshold,
+                max_team_attempts=max_total_attempts,
+                progress=_mode,
+            )
         if engine == "playwright":
             eng = get_default_engine(mode=engine, headers=dict(headers))
         elif engine != "estimate":
