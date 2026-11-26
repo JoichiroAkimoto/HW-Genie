@@ -466,7 +466,7 @@ PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
                         const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanClanPvp')]();
                         const presets = new game.BattlePresets(true, false, true, config, false);
                         const instant = new game.BattleInstantPlay(battle, presets);
-                        const isSignal = (v) => !!v && typeof v.add === 'function' && typeof v.dispatch === 'function';
+                        const isSignal = (v) => !!v && typeof v.add === 'function' && (typeof v.dispatch === 'function' || typeof v.subscribe === 'function');
                         return new Promise((resolve, reject) => {
                             let done = null;
                             // Haxe prototype ordinals drift between game builds; the

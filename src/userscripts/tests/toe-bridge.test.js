@@ -139,6 +139,10 @@ test("getFn/getProtoFn resolve by ordinal", () => {
 });
 
 const signalLike = () => ({ add: () => {}, dispatch: () => {} });
+// Real game shape (signals.Signal1): ``add`` inherited from signals.Base and a
+// ``subscribe`` method; its dispatch method is minified per build (no literal
+// ``dispatch``), which used to make every job a dummy.
+const haxeSignalLike = () => ({ add: () => {}, subscribe: () => {}, S: () => {} });
 
 test("resolveSignalKey prefers the pinned ordinal", () => {
   const keys = Array.from({ length: 11 }, (_, i) => `k${i}`);
@@ -146,6 +150,22 @@ test("resolveSignalKey prefers the pinned ordinal", () => {
   const instance = Object.fromEntries(keys.map((k) => [k, signalLike()]));
   const spec = resolveSignalKey(instance, { prototype: proto }, 10);
   assert.deepStrictEqual(spec, { key: "k10", index: 10 });
+});
+
+test("resolveSignalKey accepts the Haxe signals.Signal1 shape", () => {
+  const keys = Array.from({ length: 11 }, (_, i) => `k${i}`);
+  const proto = Object.fromEntries(keys.map((k) => [k, k]));
+  const instance = Object.fromEntries(keys.map((k) => [k, haxeSignalLike()]));
+  assert.deepStrictEqual(resolveSignalKey(instance, { prototype: proto }, 10), {
+    key: "k10",
+    index: 10,
+  });
+  // Drift fallback must also recognize the shape (no literal ``dispatch``).
+  const drifted = { a: 0, sig: haxeSignalLike() };
+  assert.deepStrictEqual(resolveSignalKey(drifted, { prototype: { a: 1, sig: 2 } }, 10), {
+    key: "sig",
+    index: 1,
+  });
 });
 
 test("resolveSignalKey falls back when the ordinal drifted", () => {

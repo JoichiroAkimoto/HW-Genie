@@ -569,9 +569,11 @@ export function getProtoFn(classF: unknown, nF: number): string {
  * Haxe prototype key order (ordinals) shifts with game builds, so the pinned
  * ordinal is only a hint: try it first (the value HerowarsHelper currently
  * uses), then fall back to any field (prototype or own) whose instance value
- * exposes the Haxe signal shape (``add`` + ``dispatch``; a plain List also has
- * ``add``). A drifted build self-heals instead of failing every job. Exported
- * for unit tests.
+ * exposes the Haxe signal shape. A plain List also has ``add``, so the shape
+ * also needs ``dispatch`` (DOM-like) or ``subscribe`` (Haxe ``signals.Signal1``
+ * inherits ``add`` + ``subscribe``; its dispatch method is minified per build).
+ * A drifted build self-heals instead of failing every job. Exported for unit
+ * tests.
  */
 export function resolveSignalKey(
   instant: unknown,
@@ -583,7 +585,8 @@ export function resolveSignalKey(
   const isSignal = (v: unknown) =>
     !!v &&
     typeof (v as { add?: unknown }).add === "function" &&
-    typeof (v as { dispatch?: unknown }).dispatch === "function";
+    (typeof (v as { dispatch?: unknown }).dispatch === "function" ||
+      typeof (v as { subscribe?: unknown }).subscribe === "function");
   const preferred = getProtoFn(classF, preferredIndex);
   if (preferred && isSignal(instance[preferred])) {
     return { key: preferred, index: preferredIndex };

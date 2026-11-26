@@ -254,6 +254,9 @@ def test_playwright_battle_js_resolves_signal_with_drift_fallback():
     assert "getProtoFn(game.BattleInstantPlay, 10)" in PLAYWRIGHT_BATTLE_JS
     assert "getProtoFn(game.BattleInstantPlay, 9)" not in PLAYWRIGHT_BATTLE_JS
     assert "signal not found" in PLAYWRIGHT_BATTLE_JS
+    # Real game signals (signals.Signal1) expose add+subscribe; ``dispatch``
+    # is minified per build, so the shape check must accept either.
+    assert "typeof v.subscribe === 'function'" in PLAYWRIGHT_BATTLE_JS
 
 
 def test_playwright_battle_js_uses_titan_clan_pvp_and_replay_presets():
