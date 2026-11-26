@@ -10,12 +10,26 @@ Arena / Grand Arena の順位・防衛チーム・攻撃候補を取得し、指
 
 - 通常 Arena の CLI 実装は `src/python/hw_genie/commands/arena.py` です。
 - 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。`topGet` の `place`（自分の順位）が取得できた場合は、古い `arenaGetAll` の値より優先します。通常攻撃の直前にも `arenaGetAll` を再取得して上位のみを再確認します（`--from-snapshot` は `topGet` 優先）。
-- **実攻撃で確認できた条件**: 対象が **最新の `arenaFindEnemies` レスポンスに含まれる** こと。範囲チェック `true` だけでは不十分です（22位から 2 / 4 / 6 / 8 位は `true` でも候補外のため `NotAvailable`。11位は候補に現れた回に `WIN (22 -> 11)`）。
-- **`arenaAttack` が現在の順位ウィンドウを再チェックするかは未検証** です。候補リストはスナップショットとして扱われ、生成後に自分/相手の順位が動くと、現在の順位差と一致しなくなる可能性があります（下記 TODO）。
+- **実攻撃で確認できた条件**: 対象が **直近の `arenaFindEnemies` レスポンスに含まれる** こと。範囲チェック `true` だけでは不十分です（22位から 2 / 4 / 6 / 8 位は `true` でも候補外のため `NotAvailable`。11位は候補に現れた回に `WIN (22 -> 11)`）。2026-11-26 には、50位で取得した候補（当時19位、31位上）へ、**`arenaFindEnemies` を再取得せず** `topGet` / `arenaGetAll` / `arenaCheckTargetRange` を挟んで `arenaAttack` し、`WIN (50 -> 19)` を確認しました。さらに rank29 から保存候補 rank10（19位上、現在の最大13を超える out-of-band）へ攻撃し、`CheckTargetRange=true` で `WIN (29 -> 10)` も確認しています。最後の `findEnemies` 候補は、他の読み取りRPCでは失効しません。
+- **`arenaAttack` が現在の順位ウィンドウを再チェックするかは未検証** です。候補リストはスナップショットとして扱われ、生成後に自分/相手の順位が動くと、現在の順位差と一致しなくなる可能性があります（下記 TODO）。2026-11-26 の29→10は `CheckTargetRange=true` での受理であり、false時の挙動は未検証です。
 - `arenaCheckTargetRange` は **1リクエスト最大3件** です。4件以上は `ERROR TooMany`（`"Too many ids to process!"`）になります。
 - `arenaCheckTargetRange` のウィンドウは **順位/リーグに依存** します。22位/34位では ±21（22位 → 1〜43位、34位 → 13〜50位）でしたが、**Grand Arena 51位では 5〜50位まで `true`**（46位上まで）でした。±21 を固定ルールとして扱わず、実際の判定は `arenaCheckTargetRange` の結果を優先してください。
 - **候補の範囲に固定上限はありません**。トップ帯（Arena 16〜19位）では候補は1〜13位上が中心でしたが、**Grand Arena 51位では候補が18〜24位（27〜33位上）** に現れました（読み取り確認）。候補は `arenaCheckTargetRange` の `true` 範囲内に収まっていました。CLI は「-13位まで」のような固定制限を設けず、候補への登場と範囲チェックで判定します。候補リストを `arenaFindEnemies` で再取得すれば対象が現れる場合があるため、CLI は `--candidate-retries`（既定 10）回まで追加取得します。
 - `topGet` はトップ50のみ返し、ページングはありません。50位より下（およびトップ50外のターゲット）は `arenaFindEnemies` の候補に依存します。
+
+### 攻撃可能範囲（外部攻略情報）
+
+外部攻略サイトの順位別テーブル（2025-01、非公式）では、攻撃可能な上位範囲は単純な「-13」ではなく、順位帯で次のように広がります。
+
+| 自分の順位 | 攻撃可能な上位範囲 | 最大の上位差 |
+|---|---|---|
+| 1〜5 | 1位〜4位 | 順位-1 |
+| 6〜14 | 1位〜(自分-5)位 | 順位-1 |
+| 15〜49 | (自分-13)位〜(自分-1)位 | 13 |
+| 50〜99 | (自分-33)〜(自分-27)位、および (自分-13)〜(自分-2)位 | 33 |
+| 100以上 | (自分-55)〜(自分-45)位、(自分-35)〜(自分-25)位、(自分-15)〜(自分-5)位 | 55 |
+
+例: 15位は2〜14位、50位は17〜23位と37〜48位、100位は45〜55位・65〜75位・85〜95位。したがって「50位なら-13を超える」「100位なら-50以上」という理解は概ね正しく、最大差は50〜99位で33、100位以上で55です。バンド間には攻撃できない穴（例: 50〜99位の差14〜26、100位以上の差16〜24・36〜44）もあり、`target-watch --from-snapshot` の out-of-band 判定は「最大幅を超えたか」だけを見ます。1〜14位は最大幅=順位-1なので out-of-band は発生しません。実際の可否は `arenaCheckTargetRange` と候補レスポンスを優先してください（ゲーム更新で変わる可能性があります）。出典: [h-w.fun アリーナとグランドアリーナの攻撃可能範囲](https://h-w.fun/arena-challenge-range/)。
 
 ### Endpoint
 ```
@@ -330,7 +344,7 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 | 引数 | 説明 |
 |------|------|
 | `type` | `arena` / `grand` / `titan_arena`（すべて実測済み。CLI の `toe` は `titan_arena` のエイリアス） |
-| `limit` / `offset` | ページング |
+| `limit` / `offset` | ページング。`limit` は **最大20**（21以上は `ArgumentError: value overflow/underflow`） |
 
 ### Response Structure
 ```json
@@ -425,7 +439,7 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 - `arena snapshot -a <account>`: 保存済みスナップショットと現在の順位を比較します。`topGet`（自分の順位と候補の現在順位）と `arenaCheckTargetRange`（読み取り）を呼び、**`arenaFindEnemies` は呼びません**。`topGet` に自分の `place` がない（または 0 以下の）場合のみ `arenaGetAll` にフォールバックします。`topGet` はトップ50のみ対応です。
 - `arena attack -a <account> --from-snapshot (--rank N | --user-id ID)`: 保存済み候補に `arenaAttack` を送ります。**`arenaFindEnemies` は呼びません**。`--rank N` / `--user-id ID` は**保存済みスナップショットの順位・候補**に対して解決されます（現在の `arena top` の順位とは異なる場合があるため、攻撃前に `arena snapshot` で対象を確認してください）。上位のみは `topGet` の現在順位で再チェックし（`place` がない、または 0 以下の場合のみ `arenaGetAll` にフォールバック）、対象が**現在のトップ50に存在しない場合は順位を検証できないため攻撃しません**。`arenaCheckTargetRange` が false の場合は既定で停止し、`--force` を付けた時だけ送信します（上位のみの制約は `--force` でも解除されません）。
 
-`arena snapshot` の `>13` 列は、現在の順位差が 13 位より上かどうかを示す**診断用**の表示です（固定ルールではなく、攻撃可否は `arenaCheckTargetRange` の結果が正）。
+`arena snapshot` の `OOB` 列は、現在の順位差が現在順位の最大攻撃幅（1〜14位は順位-1、15〜49位は13、50〜99位は33、100位以上は55）を超えているか（out-of-band）を示す**診断用**の表示です（攻撃可否は `arenaCheckTargetRange` とサーバー応答が正）。
 
 保存形状:
 
@@ -441,7 +455,7 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 }
 ```
 
-> **注意**: `topGet` が候補リストを更新するかは未検証です。スナップショット検証では、`arena snapshot` / `--from-snapshot` が `arenaFindEnemies` を呼ばないことを前提にしています。`--from-snapshot` は実験用で、通常の `arena attack` は候補プリフライト付きの安全側デフォルトのままです。
+> **注意**: `topGet` / `arenaGetAll` / `arenaCheckTargetRange` は候補リストを更新しません（2026-11-26 実測: 50→19）。ただし新しい `arenaFindEnemies` を呼ぶと候補リストは置き換わります。
 
 ---
 
@@ -470,9 +484,9 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 | 認証エラー | 既存の `HWAuthError` 共通ハンドラ |
 
 ## TODO / 未解明事項
-- **候補スナップショット + 順位ドリフト**: `arenaFindEnemies` が返した候補リストを保持したまま、自分または相手の順位が外部要因で変動すると、現在の順位差では13位より上（あるいは ±21 の外）なのに候補としては残り、`arenaAttack` が通る可能性がある。検証手順: `arenaFindEnemies` を1回だけ呼んでスナップショットを取り、以降は `arenaFindEnemies` を呼ばずに `arenaGetAll` / `topGet` で順位変動を待ち、候補が14位以上上になった時点で `arenaCheckTargetRange` → その `userId` を1回だけ攻撃する。
+- **候補スナップショット + 順位ドリフト（out-of-band検証済み）**: 2026-11-26、Arena 50位で `arenaFindEnemies` を1回だけ呼び、保存候補の19位（31位上）へ `findEnemies` 非更新で攻撃して **WIN (50 → 19)** を確認（50位のバンド17〜23内）。さらに同日、検証アカウントが rank29 から保存候補 rank10（19位上、rank29のバンド最大13を超える out-of-band）へ `target-watch --from-snapshot` で攻撃し、`CheckTargetRange=true` で **WIN (29 → 10)** を確認。findEnemiesの候補バンド外でも、`CheckTargetRange=true` なら受理されます。`CheckTargetRange=false` で送る場合（`--force`相当）の受理は未検証です。`target-watch --from-snapshot` は out-of-band候補のみを送信（上位のみ・防衛一致・除外は維持）。ただし上位のみ検証のため対象がトップ50にいる必要があり、100位以上のワイドバンド（例: 150位の95〜145位）のうちトップ50外は現状扱えません。
 - **範囲チェックの動的ウィンドウ**: `arenaCheckTargetRange` の ±21 は22位/34位での実測。Grand Arena 51位では5〜50位まで `true`（46位上）で、候補も27〜33位上に現れた（読み取り確認済み）。順位/リーグ境界の正確な規則は未解明。Arena の21位以下では未計測のため、各順位帯でのマッピングを継続する。
-- **`arenaAttack` の範囲再チェック**: `arenaAttack` が候補 membership に加えて現在の順位ウィンドウも再チェックするかは未検証。「候補内だが `arenaCheckTargetRange` が `false`」の相手を1回攻撃して確認する。
+- **`arenaAttack` の範囲再チェック（未検証部分）**: 29→10 は `CheckTargetRange=true` で受理済み。「候補内だが `arenaCheckTargetRange` が `false`」の相手を1回攻撃して、false時も受理されるか確認する。
 - **候補ウィンドウの条件**: `arenaFindEnemies` が 13 位より上を含む条件は未解明。自分の順位変動・サーバー側の候補生成タイミング・防衛編成などが候補か。`--candidate-retries` を増やしても見つからない場合があるため、候補生成の規則を追加調査する。
 - **Grand Arena CLI**: `grandAttack` のペイロード/レスポンスは実機確認済み（上記）。CLI 対応時は3チーム・3ペット・3バナー、refillable id=20/21、最後の `battles[].result` からの順位読み取りが必要。
 

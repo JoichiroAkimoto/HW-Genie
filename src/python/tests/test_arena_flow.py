@@ -72,7 +72,17 @@ def _status_detail(
     name: str = "Alice",
     attempts: int = 5,
     cooldown: int = 0,
+    defense: list[int] | None = None,
+    defense_pet: int | None = 6008,
 ) -> dict:
+    arena_response: dict = {
+        "arenaPlace": str(place),
+        "grandPlace": str(grand),
+    }
+    if defense is not None:
+        arena_response["arenaHeroes"] = [{"id": hero} for hero in defense]
+        if defense_pet is not None:
+            arena_response["arenaHeroes"].append({"id": defense_pet})
     return {
         "user": {
             "result": {
@@ -86,11 +96,7 @@ def _status_detail(
                 }
             }
         },
-        "arena": {
-            "result": {
-                "response": {"arenaPlace": str(place), "grandPlace": str(grand)}
-            }
-        },
+        "arena": {"result": {"response": arena_response}},
     }
 
 
@@ -163,7 +169,14 @@ def test_fetch_arena_status_parses_rank_attempts_and_saved_team(
 ):
     client, mock_call = mock_client
     mock_call.side_effect = [
-        _ok(_status_detail(place=22, attempts=4, cooldown=120)),
+        _ok(
+            _status_detail(
+                place=22,
+                attempts=4,
+                cooldown=120,
+                defense=[46, 62, 71, 35, 70],
+            )
+        ),
         _ok(
             _saved_team_detail(
                 heroes=[29, 13, 73, 71, 35],
@@ -185,6 +198,9 @@ def test_fetch_arena_status_parses_rank_attempts_and_saved_team(
         pet=6008,
         favor={13: 6002, 29: 6011},
         banners=[2],
+    )
+    assert status.defense_team == ArenaTeam(
+        heroes=[46, 62, 71, 35, 70], pet=6008, banners=[]
     )
 
 
@@ -502,6 +518,29 @@ def test_run_arena_attack_dry_run_does_not_call_attack(mock_client, mock_sleep):
         "arenaFindEnemies",
         "arenaGetAll",
         "arenaCheckTargetRange",
+    ]
+
+
+def test_run_arena_attack_min_gap_uses_fresh_own_place(mock_client, mock_sleep):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_own_place_response(22)),
+        _ok(_candidates_response([_candidate()])),
+        _ok(_own_place_response(22)),
+    ]
+    with pytest.raises(ArenaError, match="--min-gap 15"):
+        run_arena_attack(
+            client,
+            _make_status(place=5),
+            _target(),
+            _team(),
+            dry_run=True,
+            min_gap=15,
+        )
+    assert _call_names(mock_call) == [
+        "arenaGetAll",
+        "arenaFindEnemies",
+        "arenaGetAll",
     ]
 
 
@@ -1043,7 +1082,7 @@ def test_run_arena_snapshot_shows_current_ranks_without_find_enemies(
     assert "arenaFindEnemies" not in _call_names(mock_call)
     out = capsys.readouterr().out
     assert "Own rank: 16 -> 16" in out
-    assert ">13" in out
+    assert "OOB" in out
     assert "yes" in out
     assert "false" in out
     assert "topGet covers the top 50 only" in out
@@ -1081,6 +1120,157 @@ def test_run_arena_attack_from_snapshot_skips_find_enemies(
         "arenaAttack",
     ]
     assert "arenaFindEnemies" not in _call_names(mock_call)
+
+
+def test_run_arena_attack_from_snapshot_rejects_gap_and_defense(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+    ]
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="--min-gap 15"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            min_gap=15,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+    mock_call.reset_mock()
+    mock_call.side_effect = [
+        _ok(
+            _top_response(
+                [
+                    {
+                        "place": "14",
+                        "userId": "111",
+                        "heroes": [{"id": 1 + i} for i in range(5)],
+                    }
+                ],
+                own_place=16,
+            )
+        ),
+    ]
+    with pytest.raises(ArenaError, match="required defense lineup"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            required_heroes=frozenset({6, 7, 8, 9, 10}),
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+    mock_call.reset_mock()
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "14", "userId": "111"}], own_place=16)),
+    ]
+    with pytest.raises(ArenaError, match="not out-of-band"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            require_out_of_band=True,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_out_of_band_uses_current_place(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # Stale snapshot place 3 is exactly 13 above rank16 (in-band), but topGet
+    # moved the target to rank2: 14 above (max+1, out-of-band).
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "2", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+        _ok(_attack_response(old=16, new=2)),
+    ]
+    target = ArenaTarget(user_id=111, place=3, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client,
+        _make_status(place=16),
+        target,
+        _team(),
+        force=True,
+        min_gap=14,
+        require_out_of_band=True,
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
+
+
+def test_run_arena_attack_from_snapshot_rejects_gap_equal_to_max(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # rank 16 max is 13; rank 3 is exactly 13 above -> not out-of-band.
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "3", "userId": "111"}], own_place=16)),
+    ]
+    target = ArenaTarget(user_id=111, place=3, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="not out-of-band"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            force=True,
+            require_out_of_band=True,
+        )
+    assert _call_names(mock_call) == ["topGet"]
+
+
+def test_run_arena_attack_from_snapshot_sends_out_of_band_at_edge(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    # rank 16 allows at most 13 above; rank 2 is 14 above (max+1).
+    mock_call.side_effect = [
+        _ok(_top_response([{"place": "2", "userId": "111"}], own_place=16)),
+        _ok(_range_response(111, False)),
+        _ok(_attack_response(old=16, new=2)),
+    ]
+    target = ArenaTarget(user_id=111, place=2, name="Bob", power=5000)
+    result = run_arena_attack_from_snapshot(
+        client,
+        _make_status(place=16),
+        target,
+        _team(),
+        force=True,
+        require_out_of_band=True,
+    )
+    assert result.accepted is True
+    assert _call_names(mock_call) == [
+        "topGet",
+        "arenaCheckTargetRange",
+        "arenaAttack",
+    ]
+
+
+def test_run_arena_attack_from_snapshot_rejects_excluded_target(
+    mock_client, mock_sleep
+):
+    client, mock_call = mock_client
+    target = ArenaTarget(user_id=111, place=14, name="Bob", power=5000)
+    with pytest.raises(ArenaError, match="own/guild"):
+        run_arena_attack_from_snapshot(
+            client,
+            _make_status(place=16),
+            target,
+            _team(),
+            excluded_user_ids={111},
+        )
+    assert mock_call.call_count == 0
 
 
 def test_run_arena_attack_from_snapshot_range_false_stops_without_force(

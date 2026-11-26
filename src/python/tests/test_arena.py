@@ -10,8 +10,12 @@ from hw_genie.commands.arena import (
     ARENA_SNAPSHOT_KEY,
     ArenaError,
     ArenaSnapshot,
+    ArenaTarget,
     ArenaTeam,
     ArenaTopEntry,
+    _format_target,
+    _format_user_id,
+    arena_max_attack_gap,
     build_attack_args,
     deserialize_snapshot,
     deserialize_team,
@@ -451,6 +455,9 @@ def test_snapshot_save_load_roundtrip():
         "place": 4,
         "name": "Bob",
         "power": 5000,
+        "heroes": [],
+        "pet": None,
+        "banner": None,
     }
 
 
@@ -498,10 +505,49 @@ def test_deserialize_snapshot_rejects_invalid_own_place():
     assert deserialize_snapshot("not-a-dict") is None
 
 
+def test_arena_max_attack_gap_matches_rank_bands():
+    assert arena_max_attack_gap(1) == 0
+    assert arena_max_attack_gap(2) == 1
+    assert arena_max_attack_gap(14) == 13
+    assert arena_max_attack_gap(15) == 13
+    assert arena_max_attack_gap(49) == 13
+    assert arena_max_attack_gap(50) == 33
+    assert arena_max_attack_gap(99) == 33
+    assert arena_max_attack_gap(100) == 55
+    assert arena_max_attack_gap(200) == 55
+
+
+def test_format_user_id_puts_name_first():
+    assert _format_user_id(111, "Bob") == "Bob (userId 111)"
+    assert _format_user_id(111, None) == "unknown (userId 111)"
+    assert _format_target(ArenaTarget(user_id=111, place=10, name="Bob")) == (
+        "rank 10 - Bob (userId 111)"
+    )
+
+
 def test_serialize_snapshot_handles_empty_candidates():
     data = serialize_snapshot(ArenaSnapshot(own_place=16))
     assert data["own_place"] == 16
     assert data["candidates"] == []
+
+
+def test_snapshot_roundtrip_preserves_defense_and_pet():
+    entry = ArenaTopEntry(
+        place=19,
+        user_id=222,
+        name="Bob",
+        power=1000,
+        heroes=[46, 62, 71, 35, 70],
+        pet=6008,
+        banner=2,
+    )
+    loaded = deserialize_snapshot(
+        serialize_snapshot(
+            ArenaSnapshot(own_place=50, candidates=[entry], saved_at="now")
+        )
+    )
+    assert loaded is not None
+    assert loaded.candidates == [entry]
 
 
 @pytest.mark.parametrize("name", ["", "   ", "atk 1", "atk/1", "../x", "a" * 41])
