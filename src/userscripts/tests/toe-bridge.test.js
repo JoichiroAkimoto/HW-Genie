@@ -599,8 +599,10 @@ test("tick computes a titan_arena battle with get_titanClanPvp and replay preset
   // The config getter resolved to the clan-PvP getter, never PvP-manual.
   assert.deepStrictEqual(resolvedGetters, ["get_titanClanPvp"]);
   // Exact BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
+  // isReplay=false: offline sims cannot produce the effects.ultReseed
+  // battleSeed_next proof, so the instant/skip path (no reseed session) is used.
   assert.strictEqual(presetsArgs.length, 1);
-  assert.deepStrictEqual(presetsArgs[0], [true, false, true, config, false]);
+  assert.deepStrictEqual(presetsArgs[0], [false, false, true, config, false]);
   // The computed {progress, result} reached /toe/job/<id>/result.
   assert.strictEqual(submittedUrls.length, 1);
   assert.ok(submittedUrls[0].endsWith("/toe/job/job1/result"));

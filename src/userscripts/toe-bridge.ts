@@ -747,13 +747,13 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
     }
     log("computeBattle: presets next");
     // BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
-    // The client's TitanArenaBattleThread passes isReplay=true; that also makes
-    // BattleInstantPlay build the BattleReseedSession from effects.ultReseed
-    // (added with the 2026-11-26 update), mirroring the client's reseed-aware
-    // simulation for StartBattle battles.
-    // showBothTeams=false matches the instant/skip path used here; the
-    // rendering flag does not affect the sim, so the false vs the battle
-    // thread's true is intentional.
+    // isReplay=false matches the client's instant/skip paths (dungeon skip,
+    // TitanArenaRaid). isReplay=true would make BattleInstantPlay build the
+    // BattleReseedSession from effects.ultReseed; an offline sim has no
+    // battleSeed_next seeds/proof, so the server rejects that progress as
+    // ``Invalid battle`` (2026-11-26, serverVersion 302).
+    // showBothTeams only affects rendering, so the battle thread's true is
+    // irrelevant here; the instant path uses false.
     const presets = new (
       game["BattlePresets"] as new (
         isReplay: boolean,
@@ -762,7 +762,7 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
         config: unknown,
         showBothTeams: boolean,
       ) => unknown
-    )(true, false, true, config, false);
+    )(false, false, true, config, false);
     log("computeBattle: presets ok, instant next");
     const BattleInstantPlay = game["BattleInstantPlay"] as new (
       data: unknown,

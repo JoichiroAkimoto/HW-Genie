@@ -367,8 +367,11 @@ power ベース見積のみ可能なため、**完全勝利には userscript 側
 > `BattleThreadFactory` が `titan_arena` を `I.qj.f7a()` に割り当てる）。以前の
 > `get_titanPvpManual` でシミュレーションした `progress` は serverVersion 302 で
 > `Invalid battle` になる。live の StartBattle battle には `effects.ultReseed`
-> が入る（2026-11-26 実測）。`BattlePresets(isReplay=true, ...)` はクライアント準拠で、
-> この effects から reseed セッションを作る。
+> が入る（2026-11-26 実測）。オフライン計算ではクライアント実戦の
+> `battleSeed_next`（reseed の seeds / `progress[0].proof`）を生成できないため、
+> クライアントの instant/skip 経路と同じ `BattlePresets(isReplay=false, ...)`
+> で計算し、reseed セッションを無効化する（`isReplay=true` だと proof 欠落で
+> 拒否される）。
 
 `hw-genie toe attack --engine estimate` は power ベースの `progress` を
 送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定
@@ -417,9 +420,9 @@ live の battle payload は数値である:
 > **レイドの battle は意図的に `effects: []`**: クライアントの
 > `TitanArenaRaid` も rival ごとのレイド戦を同じ形状（`effects: []`）で
 > 組み立てるため、レイドには `ultReseed` の reseed データを載せない
-> （個別 StartBattle の `effects.ultReseed` セッションとは別経路なので、
-> レイドに reseed データが無くても正常）。userscript（ブリッジ）はレイド戦でも
-> `isReplay=true` を渡す（302 修正前と同じ）。
+> （個別 StartBattle の `effects.ultReseed` とは別経路なので、レイドに
+> reseed データが無くても正常）。ブリッジは個別・レイドとも
+> `BattlePresets(isReplay=false, ...)`（instant/skip 経路）で計算する。
 
 `seed: 0` や推測形状の defenders を渡すとページ内エンジンの計算が失敗し、
 userscript は全滅（dummy loss）を返す。`seed` が欠落・無効、または
