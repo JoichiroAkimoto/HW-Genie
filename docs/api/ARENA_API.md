@@ -10,8 +10,8 @@ Arena / Grand Arena の順位・防衛チーム・攻撃候補を取得し、指
 
 - 通常 Arena の CLI 実装は `src/python/hw_genie/commands/arena.py` です。
 - 攻撃先は **自分より上位のプレイヤーのみ** を許可します（同順位・下位は拒否）。`topGet` の `place`（自分の順位）が取得できた場合は、古い `arenaGetAll` の値より優先します。通常攻撃の直前にも `arenaGetAll` を再取得して上位のみを再確認します（`--from-snapshot` は `topGet` 優先）。
-- **実攻撃で確認できた条件**: 対象が **直近の `arenaFindEnemies` レスポンスに含まれる** こと。範囲チェック `true` だけでは不十分です（22位から 2 / 4 / 6 / 8 位は `true` でも候補外のため `NotAvailable`。11位は候補に現れた回に `WIN (22 -> 11)`）。2026-11-26 には、50位で取得した候補（当時19位、31位上）へ、**`arenaFindEnemies` を再取得せず** `topGet` / `arenaGetAll` / `arenaCheckTargetRange` を挟んで `arenaAttack` し、`WIN (50 -> 19)` を確認しました。最後の `findEnemies` 候補は、他の読み取りRPCでは失効しません。
-- **`arenaAttack` が現在の順位ウィンドウを再チェックするかは未検証** です。候補リストはスナップショットとして扱われ、生成後に自分/相手の順位が動くと、現在の順位差と一致しなくなる可能性があります（下記 TODO）。
+- **実攻撃で確認できた条件**: 対象が **直近の `arenaFindEnemies` レスポンスに含まれる** こと。範囲チェック `true` だけでは不十分です（22位から 2 / 4 / 6 / 8 位は `true` でも候補外のため `NotAvailable`。11位は候補に現れた回に `WIN (22 -> 11)`）。2026-11-26 には、50位で取得した候補（当時19位、31位上）へ、**`arenaFindEnemies` を再取得せず** `topGet` / `arenaGetAll` / `arenaCheckTargetRange` を挟んで `arenaAttack` し、`WIN (50 -> 19)` を確認しました。さらに rank29 から保存候補 rank10（19位上、現在の最大13を超える out-of-band）へ攻撃し、`CheckTargetRange=true` で `WIN (29 -> 10)` も確認しています。最後の `findEnemies` 候補は、他の読み取りRPCでは失効しません。
+- **`arenaAttack` が現在の順位ウィンドウを再チェックするかは未検証** です。候補リストはスナップショットとして扱われ、生成後に自分/相手の順位が動くと、現在の順位差と一致しなくなる可能性があります（下記 TODO）。2026-11-26 の29→10は `CheckTargetRange=true` での受理であり、false時の挙動は未検証です。
 - `arenaCheckTargetRange` は **1リクエスト最大3件** です。4件以上は `ERROR TooMany`（`"Too many ids to process!"`）になります。
 - `arenaCheckTargetRange` のウィンドウは **順位/リーグに依存** します。22位/34位では ±21（22位 → 1〜43位、34位 → 13〜50位）でしたが、**Grand Arena 51位では 5〜50位まで `true`**（46位上まで）でした。±21 を固定ルールとして扱わず、実際の判定は `arenaCheckTargetRange` の結果を優先してください。
 - **候補の範囲に固定上限はありません**。トップ帯（Arena 16〜19位）では候補は1〜13位上が中心でしたが、**Grand Arena 51位では候補が18〜24位（27〜33位上）** に現れました（読み取り確認）。候補は `arenaCheckTargetRange` の `true` 範囲内に収まっていました。CLI は「-13位まで」のような固定制限を設けず、候補への登場と範囲チェックで判定します。候補リストを `arenaFindEnemies` で再取得すれば対象が現れる場合があるため、CLI は `--candidate-retries`（既定 10）回まで追加取得します。
@@ -484,9 +484,9 @@ Arena / Grand Arena / ToE の戦闘リプレイを取得します。`arenaAttack
 | 認証エラー | 既存の `HWAuthError` 共通ハンドラ |
 
 ## TODO / 未解明事項
-- **候補スナップショット + 順位ドリフト（一部検証済み）**: 2026-11-26、Arena 50位で `arenaFindEnemies` を1回だけ呼び、保存候補の19位（31位上）へ、以降 `arenaFindEnemies` を再取得せず `topGet` / `arenaGetAll` / `arenaCheckTargetRange` → `arenaAttack` を実行して **WIN (50 → 19)** を確認。50位の上位バンドは17〜23位なので、**この攻撃は現在の範囲内**であり、「現在の攻撃可能バンド外への攻撃」を証明したものではない。`target-watch --from-snapshot` は**現在の最大攻撃幅を超えた out-of-band 候補だけ**を送信する実装（`CheckTargetRange` false でも送信、上位のみ・防衛一致・除外は維持）だが、**バンド外の保存候補がサーバーに受理されるかは未検証**。また `--from-snapshot` は上位のみ検証のため対象がトップ50にいる必要があり、100位以上のワイドバンド（例: 150位の95〜145位）のうちトップ50外は現状扱えない。
+- **候補スナップショット + 順位ドリフト（out-of-band検証済み）**: 2026-11-26、Arena 50位で `arenaFindEnemies` を1回だけ呼び、保存候補の19位（31位上）へ `findEnemies` 非更新で攻撃して **WIN (50 → 19)** を確認（50位のバンド17〜23内）。さらに同日、検証アカウントが rank29 から保存候補 rank10（19位上、rank29のバンド最大13を超える out-of-band）へ `target-watch --from-snapshot` で攻撃し、`CheckTargetRange=true` で **WIN (29 → 10)** を確認。findEnemiesの候補バンド外でも、`CheckTargetRange=true` なら受理されます。`CheckTargetRange=false` で送る場合（`--force`相当）の受理は未検証です。`target-watch --from-snapshot` は out-of-band候補のみを送信（上位のみ・防衛一致・除外は維持）。ただし上位のみ検証のため対象がトップ50にいる必要があり、100位以上のワイドバンド（例: 150位の95〜145位）のうちトップ50外は現状扱えません。
 - **範囲チェックの動的ウィンドウ**: `arenaCheckTargetRange` の ±21 は22位/34位での実測。Grand Arena 51位では5〜50位まで `true`（46位上）で、候補も27〜33位上に現れた（読み取り確認済み）。順位/リーグ境界の正確な規則は未解明。Arena の21位以下では未計測のため、各順位帯でのマッピングを継続する。
-- **`arenaAttack` の範囲再チェック**: `arenaAttack` が候補 membership に加えて現在の順位ウィンドウも再チェックするかは未検証。「候補内だが `arenaCheckTargetRange` が `false`」の相手を1回攻撃して確認する。
+- **`arenaAttack` の範囲再チェック（未検証部分）**: 29→10 は `CheckTargetRange=true` で受理済み。「候補内だが `arenaCheckTargetRange` が `false`」の相手を1回攻撃して、false時も受理されるか確認する。
 - **候補ウィンドウの条件**: `arenaFindEnemies` が 13 位より上を含む条件は未解明。自分の順位変動・サーバー側の候補生成タイミング・防衛編成などが候補か。`--candidate-retries` を増やしても見つからない場合があるため、候補生成の規則を追加調査する。
 - **Grand Arena CLI**: `grandAttack` のペイロード/レスポンスは実機確認済み（上記）。CLI 対応時は3チーム・3ペット・3バナー、refillable id=20/21、最後の `battles[].result` からの順位読み取りが必要。
 

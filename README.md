@@ -188,7 +188,8 @@ uv run hw-genie arena target-watch -a Alice --team auto \
 
 - 既定モードは `--capture-retries`（既定10）まで `arenaFindEnemies` を再取得して、防衛一致候補を最大3人集めます。3人未満は警告、0人は停止します。
 - snapshotモードは `arena find-enemies` の保存候補を使い、`topGet` / `arenaGetAll` などで順位・防衛を監視します。共有スナップショットは上書きしません。out-of-bandなら現在の `arenaCheckTargetRange` が false でも送信します（上位のみ・防衛一致・除外は維持）。`topGet` の防衛が変わっていれば攻撃しません。
-- 実測の `arena attack --from-snapshot` 50位→19位は rank50 のバンド内（17〜23位）であり、**out-of-band受理の証明ではありません**。
+- **out-of-band受理は実証済み**: 2026-11-26、検証アカウントが rank29 から保存候補 rank10（19位上 > 現在のバンド最大13）へ findEnemies 非更新で攻撃し、`CheckTargetRange=true` で **WIN 29→10**。`CheckTargetRange=false` のまま受理されるかは別途未検証です。
+- 参考: `arena attack --from-snapshot` の50位→19位は rank50 のバンド内（17〜23位）でした。
 - 対象がトップ50外になると順位を検証できないため攻撃しません。100位以上のワイドバンドでも、トップ50外の相手は現状扱えません。
 - `--max-polls N` はポーリング回数の上限で、実時間はおよそ `(N-1) × --interval` に初回取得/API時間を加えたものです。
 - 詳細: [.agents/skills/arena/SKILL.md](.agents/skills/arena/SKILL.md)
