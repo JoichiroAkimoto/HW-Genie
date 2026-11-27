@@ -1656,7 +1656,9 @@ def _fetch_pr_metadata(repo: str, pr_number: str) -> str:
         return ""
 
 
-def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
+def _fetch_pr_comments(
+    repo: str, pr_number: str
+) -> tuple[str, dict | None, dict | None]:
     """PR のコメント・インラインコメント・レビュー本体を取得する。
 
     - Issue コメント（`issues/{n}/comments`）: PR のトップレベルコメント。
@@ -1666,10 +1668,11 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
     - レビュー本体（`pulls/{n}/reviews`）: レビュー全体のサマリコメント。
 
     ユーザーの返信を「作成者: 本文」形式で結合した文字列と、
-    bot のマーカーコメントのコメントオブジェクトを返す。
+    bot の正常レビュー／失敗レビューの更新対象をそれぞれ返す。
 
     Returns:
-        (user_comments_text, existing_comment): 失敗時は ("", None)。
+        (user_comments_text, existing_comment, failure_comment):
+        失敗時は ("", None, None)。
     """
     try:
         # 1) トップレベルコメント（bot の前回レビューもここから特定）
@@ -1684,12 +1687,17 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
         comments = json.loads(result)
         lines = []
         existing_comment = None
+        failure_comment = None
         for c in comments:
             body = (c.get("body") or "").strip()
-            if REVIEW_MARKER in body:
+            if FAILURE_MARKER in body:
                 # 失敗レビューは専用マーカーで別管理し、正常レビューの
                 # 更新対象にも previous_review にも混入させない。
-                if existing_comment is None and FAILURE_MARKER not in body:
+                if failure_comment is None:
+                    failure_comment = c
+                continue
+            if REVIEW_MARKER in body:
+                if existing_comment is None:
                     existing_comment = c
                 continue
             if not body:
@@ -1701,7 +1709,7 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
         # 取得失敗時に inline/reviews だけ取っても更新対象が不明になる。
         # 重複投稿を防ぐため、この場合は全体を失敗として扱う。
         print(f"Warning: Could not fetch PR comments: {e}")
-        return "", None
+        return "", None, None
 
     # 2) インラインコードレビューコメント（コード行単位の議論）
     inline_failed = False
@@ -1765,29 +1773,7 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
     if reviews_failed:
         lines.append("(注: レビュー本体の取得に失敗しました)")
 
-    return "\n\n".join(lines), existing_comment
-
-
-def _fetch_failure_comment(repo: str, pr_number: str) -> dict | None:
-    """以前の失敗レビューを探す（正常レビューとは別コメントとして更新する）。"""
-    try:
-        raw = subprocess.check_output(
-            [
-                "gh",
-                "api",
-                f"repos/{repo}/issues/{pr_number}/comments?per_page=100",
-                "--jq",
-                f'map(select(.body | contains("{FAILURE_MARKER}"))) | .[0] // empty',
-            ],
-            text=True,
-        ).strip()
-        if not raw:
-            return None
-        comment = json.loads(raw)
-        return comment if isinstance(comment, dict) else None
-    except Exception as e:
-        print(f"Warning: Could not fetch failure comment: {e}")
-        return None
+    return "\n\n".join(lines), existing_comment, failure_comment
 
 
 def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
@@ -1859,7 +1845,7 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
                         f"repos/{repo}/contents/{quote(path, safe='/')}"
                         f"?ref=refs/pull/{pr_number}/head",
                         "--jq",
-                        ".content",
+                        'select(.encoding == "base64") | .content // empty',
                     ],
                     text=True,
                 ).strip()
@@ -2246,10 +2232,9 @@ def main():
 
     # PR のタイトル・概要・ユーザーコメント・変更ファイル全文を取得してコンテキストを拡充
     # _fetch_pr_comments が「ユーザー返信（トップレベル＋インライン＋レビュー本体）」と
-    # 「前回の bot レビュー（更新対象）」をまとめて返す
+    # 「前回の正常／失敗 bot レビュー（それぞれ更新対象）」をまとめて返す
     pr_metadata = _fetch_pr_metadata(repo, pr_number)
-    user_comments, existing_comment = _fetch_pr_comments(repo, pr_number)
-    existing_failure = _fetch_failure_comment(repo, pr_number)
+    user_comments, existing_comment, existing_failure = _fetch_pr_comments(repo, pr_number)
     file_contents = _fetch_file_contents(pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET)
 
     previous_review = ""
@@ -2384,7 +2369,6 @@ def main():
                 }
                 thinking_config = None
                 used_openrouter = True
-                fallback_notes.append("OpenRouter フォールバックを使用")
                 print(f"OpenRouter succeeded with model {or_model}")
             else:
                 last_exc = or_exc

@@ -350,6 +350,7 @@ def test_workflow_verifies_cli_install():
     assert "set -o pipefail" in workflow
     assert "Verify OpenCode config schema" in workflow
     assert "'\"effect\": \"deny\"'" in workflow
+    assert "OpenCode CLI did not accept the tool-deny config" in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
@@ -733,7 +734,7 @@ def test_fetch_pr_comments_skips_bot_marker():
             issue_comments=json.loads(payload)
         )
     ) as mock_run:
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "bot" not in result
     assert "既存レビュー" not in result
     assert "alice" in result
@@ -755,7 +756,7 @@ def test_fetch_pr_comments_returns_existing_comment():
         "ai_review.subprocess.check_output",
         side_effect=_comment_api_responses(issue_comments=issue_comments),
     ):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "確認します" in result
     assert "前回レビュー" not in result
     assert existing == {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"}
@@ -782,8 +783,9 @@ def test_fetch_pr_comments_ignores_failure_marker():
         "ai_review.subprocess.check_output",
         side_effect=_comment_api_responses(issue_comments=issue_comments),
     ):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert existing["id"] == 2
+    assert failure["id"] == 3
     assert "失敗レビュー本文" not in result
 
 
@@ -809,7 +811,7 @@ def test_fetch_pr_comments_includes_inline_and_reviews():
             reviews=reviews,
         ),
     ):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "トップレベルコメント" in result
     assert "bob" in result
     assert "src/app.py:42" in result
@@ -840,7 +842,7 @@ def test_fetch_pr_comments_inline_line_fallback():
             reviews=reviews,
         ),
     ):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "src/app.py:10" in result
     assert "インライン" in result
     assert existing is None
@@ -850,7 +852,7 @@ def test_fetch_pr_comments_empty_on_error():
     with mock.patch(
         "ai_review.subprocess.check_output", side_effect=Exception("gh error")
     ):
-        assert ai_review._fetch_pr_comments("owner/repo", "42") == ("", None)
+        assert ai_review._fetch_pr_comments("owner/repo", "42") == ("", None, None)
 
 
 def test_fetch_pr_comments_partial_failure_still_returns_issue_comments():
@@ -866,7 +868,7 @@ def test_fetch_pr_comments_partial_failure_still_returns_issue_comments():
         raise Exception("inline fetch failed")
 
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "トップレベル" in result
     assert existing is None
     # 部分失敗の注記が含まれる
@@ -890,7 +892,7 @@ def test_fetch_pr_comments_partial_failure_notes_only_failed_endpoint():
         return json.dumps(reviews).encode()
 
     with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
-        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+        result, existing, failure = ai_review._fetch_pr_comments("owner/repo", "42")
     assert "インラインコードレビューコメントの取得に失敗" in result
     assert "レビュー本体の取得に失敗" not in result
     assert "サマリ" in result
@@ -1998,7 +2000,7 @@ def _patch_review_dependencies(generation_result):
         mock.patch.object(ai_review, "_collect_openrouter_keys", return_value=[]),
         mock.patch.object(ai_review.subprocess, "check_output", return_value=diff.encode()),
         mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""),
-        mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None)),
+        mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None, None)),
         mock.patch.object(ai_review, "_fetch_file_contents", return_value=""),
         mock.patch.object(ai_review, "_generate_with_model_chain", return_value=generation_result),
     )
@@ -2122,7 +2124,7 @@ def _run_main_gemini_to_openrouter(
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
         stack.enter_context(
-            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None, None))
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
         stack.enter_context(
@@ -2486,7 +2488,7 @@ def _run_main_opencode(
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
         stack.enter_context(
-            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None, None))
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
         oc = stack.enter_context(
@@ -2688,6 +2690,7 @@ def _run_main_default_priority(
     opencode_error=None,
     openrouter_failure=False,
     existing_comment=None,
+    existing_failure=None,
 ):
     """既定（Gemini -> Go DeepSeek -> 無料 DeepSeek -> OpenRouter）の連鎖を再現する。"""
     _set_review_env(monkeypatch, tmp_path)
@@ -2725,7 +2728,9 @@ def _run_main_default_priority(
         stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
         stack.enter_context(
             mock.patch.object(
-                ai_review, "_fetch_pr_comments", return_value=("", existing_comment)
+                ai_review,
+                "_fetch_pr_comments",
+                return_value=("", existing_comment, existing_failure),
             )
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
@@ -2886,7 +2891,6 @@ def test_failure_review_does_not_overwrite_existing_comment(
         (tmp_path / "review.md").write_text(text, encoding="utf-8")
 
     old_failure = {"id": 2, "body": "古い失敗レビュー"}
-    monkeypatch.setattr(ai_review, "_fetch_failure_comment", lambda repo, pr: old_failure)
     monkeypatch.setattr(ai_review, "_publish_review", fake_publish)
     with pytest.raises(SystemExit) as excinfo:
         _run_main_default_priority(
@@ -2896,6 +2900,7 @@ def test_failure_review_does_not_overwrite_existing_comment(
             opencode_error=[RuntimeError("Go failed"), RuntimeError("Free failed")],
             openrouter_failure=True,
             existing_comment={"id": 1, "body": "既存の正常レビュー"},
+            existing_failure=old_failure,
         )
     assert excinfo.value.code == 1
     assert published["existing"] == old_failure  # 失敗レビュー同士は PATCH で更新
@@ -3004,7 +3009,7 @@ def _run_main_openrouter_primary(tmp_path, monkeypatch):
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
         stack.enter_context(
-            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None, None))
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
         gc = stack.enter_context(

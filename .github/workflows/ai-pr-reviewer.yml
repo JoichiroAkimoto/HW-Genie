@@ -102,6 +102,7 @@ jobs:
         if: steps.cache_opencode.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
+          set -o pipefail
           args=(--no-modify-path)
           if [ -n "$OPENCODE_CLI_VERSION" ]; then
             args+=(--version "$OPENCODE_CLI_VERSION")
@@ -166,11 +167,17 @@ jobs:
             exit 0
           fi
           d=$(mktemp -d)
+          trap 'rm -rf "$d"' EXIT
+          reject() {
+            echo "::warning::$1"
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          }
           mkdir -p "$d/.opencode/agents"
           printf '%s\n' '{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}' > "$d/opencode.json"
           printf '%s\n' '---' 'description: Strict code reviewer' 'mode: primary' '' 'Review carefully.' > "$d/.opencode/agents/reviewer.md"
-          (cd "$d" && "$HOME/.opencode/bin/opencode" debug config | grep -F '"effect": "deny"')
-          rm -rf "$d"
+          (cd "$d" && "$HOME/.opencode/bin/opencode" debug config | grep -F '"effect": "deny"') \
+            || reject "OpenCode CLI did not accept the tool-deny config"
 
       - name: Add OpenCode CLI to PATH
         # キャッシュヒット時もインストール時も同じパスを通す。
