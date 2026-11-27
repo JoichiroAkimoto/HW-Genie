@@ -359,12 +359,11 @@ def test_workflow_verifies_cli_install():
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
-def test_manual_opencode_action_is_pinned():
+def test_manual_opencode_action_uses_latest():
     path = os.path.join(os.path.dirname(__file__), "..", "..", "workflows", "opencode.yml")
     with open(path, encoding="utf-8") as f:
         workflow = f.read()
-    assert "anomalyco/opencode/github@v2.4.2" in workflow
-    assert "@latest" not in workflow
+    assert "anomalyco/opencode/github@latest" in workflow
 
 
 def test_workflows_have_no_stale_model_ids():
