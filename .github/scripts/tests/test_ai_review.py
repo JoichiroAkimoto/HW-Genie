@@ -2955,6 +2955,12 @@ def test_opencode_budget_reserves_post_and_openrouter_margin():
     )
 
 
+def test_openrouter_attempts_handles_zero_timeout(monkeypatch):
+    """OPENROUTER_TIMEOUT=0 でもゼロ除算しない。"""
+    monkeypatch.setattr(ai_review, "OPENROUTER_TIMEOUT", 0.0)
+    assert ai_review._openrouter_attempts(300, 1, 2) >= 1
+
+
 def test_opencode_cli_missing_skips_remaining_fallback_models(
     tmp_path, monkeypatch
 ):

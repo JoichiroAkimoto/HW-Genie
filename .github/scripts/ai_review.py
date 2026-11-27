@@ -829,7 +829,7 @@ def _openrouter_attempts(budget: float, key_count: int, pass_count: int) -> int:
     1 試行は ``キー数 × OPENROUTER_TIMEOUT × パス数`` を消費し得るため、
     それを実コストとして見積もる（``MAX_ATTEMPTS`` が上限）。
     """
-    per_attempt = max(1, key_count) * OPENROUTER_TIMEOUT * max(1, pass_count)
+    per_attempt = max(1, key_count) * max(1.0, OPENROUTER_TIMEOUT) * max(1, pass_count)
     return max(1, min(MAX_ATTEMPTS, int(budget // per_attempt)))
 
 
