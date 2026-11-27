@@ -55,6 +55,8 @@ jobs:
     env:
       # 未指定ならインストーラが最新を解決する。固定したい場合のみ repo variable を設定する。
       OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}
+      # 任意: 固定バイナリの sha256 を指定するとインストール後に検証する。
+      OPENCODE_CLI_SHA256: ${{ vars.OPENCODE_CLI_SHA256 }}
       # ジョブ制限と Python 側の時間予算を同じ repo variable から導出する。
       REVIEW_TIMEOUT_MINUTES: ${{ vars.REVIEW_TIMEOUT_MINUTES || '15' }}
     # 大型 PR では OpenRouter のリトライが主因で長くなるため、既定 15 分。
@@ -112,6 +114,23 @@ jobs:
           if ! "$HOME/.opencode/bin/opencode" --version; then
             rm -rf "$HOME/.opencode/bin"
             exit 1
+          fi
+
+      - name: Verify OpenCode CLI
+        # 固定バージョン／チェックサムを指定した場合のみ、導入結果を検証する。
+        run: |
+          bin="$HOME/.opencode/bin/opencode"
+          if [ ! -x "$bin" ]; then
+            echo "::warning::OpenCode CLI is not installed; skipping verification."
+            exit 0
+          fi
+          installed=$("$bin" --version | awk '{print $NF}' | sed 's/^v//')
+          if [ -n "$OPENCODE_CLI_VERSION" ] && [ "$installed" != "$OPENCODE_CLI_VERSION" ]; then
+            echo "expected $OPENCODE_CLI_VERSION, got $installed" >&2
+            exit 1
+          fi
+          if [ -n "$OPENCODE_CLI_SHA256" ]; then
+            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c -
           fi
 
       - name: Add OpenCode CLI to PATH

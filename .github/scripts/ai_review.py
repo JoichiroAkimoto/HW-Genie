@@ -1444,7 +1444,7 @@ def _generate_with_opencode(
                 raise
             if proc.returncode != 0:
                 full_detail = (proc.stderr or proc.stdout or "").strip()
-                detail = full_detail[:1000]
+                detail = full_detail.replace(api_key, "[REDACTED]")[:1000]
                 err = RuntimeError(f"opencode run failed (exit {proc.returncode}): {detail}")
                 if attempt == 0 and _is_opencode_transient(full_detail):
                     print("::warning::OpenCode transient failure; retrying once.")
@@ -1980,6 +1980,40 @@ def _publish_review(
     return False
 
 
+def _build_review_prompt(
+    pr_metadata: str,
+    user_comments: str,
+    file_contents: str,
+    previous_review: str,
+    diff: str,
+    max_diff_chars: int,
+) -> tuple[str, bool]:
+    """モデル別の差分上限を適用したプロンプトを組み立てる。
+
+    Returns:
+        (prompt, truncated): truncated は差分が切り詰められたかどうか。
+    """
+    used_diff = diff[:max_diff_chars] if len(diff) > max_diff_chars else diff
+    prompt = f"""
+【PR情報】
+{pr_metadata if pr_metadata else "(取得できませんでした)"}
+
+【ユーザーコメント】
+{user_comments if user_comments else "(コメントはありません)"}
+
+【変更ファイルの全文】（差分では省略された文脈を確認するための参考情報）
+{file_contents if file_contents else "(取得できませんでした)"}
+
+【前回のレビュー結果】
+{previous_review if previous_review else "初回レビューです。"}
+
+---
+【差分 (diff)】
+{used_diff}
+"""
+    return prompt, len(diff) > max_diff_chars
+
+
 def main():
     gemini_keys = _collect_gemini_keys()
     openrouter_keys = _collect_openrouter_keys()
@@ -2149,37 +2183,33 @@ def main():
         raw_previous = existing_comment.get("body", "")
         previous_review, previous_exec_info = strip_review_metadata(raw_previous)
 
-    limit = model_info.get("max_diff_chars", 500000)
-    is_truncated = False
-    if len(diff) > limit:
-        diff = diff[:limit]
-        is_truncated = True
+    full_diff = diff
+    prompt, is_truncated = _build_review_prompt(
+        pr_metadata,
+        user_comments,
+        file_contents,
+        previous_review,
+        full_diff,
+        model_info.get("max_diff_chars", 500000),
+    )
 
     # システムインストラクション（役割・ガイドライン・信頼境界）と
     # ユーザーコンテンツ（PR 情報・差分など）を分離する。
-    # 参考情報（PR コメント・コード全文・前回レビュー本文）に悪意ある指示が
-    # 含まれても、システムインストラクションが上書きされないようにする
-    # （プロンプトインジェクション対策）。前回レビューはユーザーが編集可能な
-    # ため、システム側ではなくコンテンツ側に含める。
     system_instruction = build_system_instruction()
 
-    prompt = f"""
-【PR情報】
-{pr_metadata if pr_metadata else "(取得できませんでした)"}
-
-【ユーザーコメント】
-{user_comments if user_comments else "(コメントはありません)"}
-
-【変更ファイルの全文】（差分では省略された文脈を確認するための参考情報）
-{file_contents if file_contents else "(取得できませんでした)"}
-
-【前回のレビュー結果】
-{previous_review if previous_review else "初回レビューです。"}
-
----
-【差分 (diff)】
-{diff}
-"""
+    def rebuild_prompt_for(info: dict) -> None:
+        """フォールバック先の差分上限でプロンプトを作り直す。"""
+        nonlocal prompt, is_truncated
+        new_prompt, truncated = _build_review_prompt(
+            pr_metadata,
+            user_comments,
+            file_contents,
+            previous_review,
+            full_diff,
+            info.get("max_diff_chars", 500000),
+        )
+        prompt = new_prompt
+        is_truncated = is_truncated or truncated
 
     try:
         # workflow の先頭ステップで記録したジョブ開始時刻を使う（checkout/pip/CLI
@@ -2266,7 +2296,7 @@ def main():
                     "name": or_model,
                     "input_cost_per_1m": None,
                     "output_cost_per_1m": None,
-                    "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                    "max_diff_chars": 500000,
                 }
                 thinking_config = None
                 used_openrouter = True
@@ -2275,6 +2305,7 @@ def main():
                 last_exc = or_exc
 
         if use_gemini_chain and gemini_keys and gemini_chain:
+            rebuild_prompt_for(model_info)
             # 1) Gemini: Hydrogen -> Flash-Lite -> Flash の順に試す
             (
                 response,
@@ -2314,6 +2345,7 @@ def main():
             model_key = fallback_key
             model_info, model_name = resolve_model(model_key, model_config)
             resolved_model_name = model_name
+            rebuild_prompt_for(model_info)
             print(f"Using model (fallback): {model_key} ({model_name})")
             try:
                 response, opencode_effort_display = _generate_with_opencode(
@@ -2354,6 +2386,8 @@ def main():
                 f"All primary models exhausted, trying OpenRouter fallback "
                 f"({len(fallback_models)} models, {or_attempts} attempts, {or_budget:.0f}s)..."
             )
+            # OpenRouter は未定義モデルと同じ 500000 文字上限でプロンプトを組み直す。
+            rebuild_prompt_for({"max_diff_chars": 500000})
             or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
                 fallback_models,
                 prompt,
@@ -2371,7 +2405,7 @@ def main():
                     "name": or_model,
                     "input_cost_per_1m": None,
                     "output_cost_per_1m": None,
-                    "max_diff_chars": model_info.get("max_diff_chars", 500000),
+                    "max_diff_chars": 500000,
                 }
                 # 思考レベル表示は or_used_effort（実際に送った reasoning ペイロードから導出した表示値）で行う
                 thinking_config = None

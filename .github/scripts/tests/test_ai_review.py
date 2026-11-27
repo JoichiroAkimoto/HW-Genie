@@ -333,6 +333,17 @@ def test_workflow_timeout_and_python_budget_share_one_variable():
     assert ai_review.JOB_TIMEOUT_SECONDS == expected
 
 
+def test_workflow_verifies_cli_install():
+    """固定バージョン／チェックサムを指定した導入結果を検証する。"""
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "workflows", "ai-pr-reviewer.yml")
+    with open(path, encoding="utf-8") as f:
+        workflow = f.read()
+    assert "OPENCODE_CLI_SHA256: ${{ vars.OPENCODE_CLI_SHA256 }}" in workflow
+    assert '"$installed" != "$OPENCODE_CLI_VERSION"' in workflow
+    assert "sha256sum -c -" in workflow
+    assert "OpenCode CLI is not installed; skipping verification" in workflow
+
+
 def test_workflows_have_no_stale_model_ids():
     workflows_dir = os.path.join(os.path.dirname(__file__), "..", "..", "workflows")
     for name in sorted(os.listdir(workflows_dir)):
@@ -2763,6 +2774,16 @@ def test_openrouter_max_attempts_limits_retries(monkeypatch):
         assert post.call_count == ai_review.MAX_ATTEMPTS
 
 
+def test_build_review_prompt_respects_model_diff_limit():
+    """フォールバック先の上限で差分が切り詰められる。"""
+    prompt, truncated = ai_review._build_review_prompt(
+        "meta", "comments", "files", "previous", "x" * 600000, 500000
+    )
+    assert truncated
+    assert "x" * 500000 in prompt
+    assert "x" * 500001 not in prompt
+
+
 def test_opencode_timeout_budget_fits_job_limit():
     """2 試行＋リトライ待機が予算（ジョブ全体 - 予備時間）内に収まること。"""
     assert (
@@ -2780,15 +2801,22 @@ def test_opencode_transient_detection_uses_word_boundaries():
 
 
 def test_generate_with_opencode_does_not_retry_auth_error(monkeypatch):
-    monkeypatch.setenv("OPENCODE_API_KEY", "secret")
+    monkeypatch.setenv("OPENCODE_API_KEY", "oc_sk_test_123")
     run = mock.Mock(
-        return_value=mock.Mock(returncode=1, stderr="401 invalid api key", stdout="")
+        return_value=mock.Mock(
+            returncode=1,
+            stderr="401 " + "x" * 991 + "oc_sk_test_123" + "y" * 20,
+            stdout="",
+        )
     )
     monkeypatch.setattr(ai_review.subprocess, "run", run)
     monkeypatch.setattr(ai_review.time, "sleep", mock.Mock())
     info = _prod_model_config()["opencode-deepseek-free"]
-    with pytest.raises(RuntimeError, match="401"):
+    with pytest.raises(RuntimeError, match="401") as excinfo:
         _generate_with_opencode("opencode/deepseek-v4.1-flash-free", "p", "s", None, info)
+    assert "oc_sk_test_123" not in str(excinfo.value)
+    assert "oc_sk_test" not in str(excinfo.value)  # 境界をまたいで一部も残さない
+    assert "[RED" in str(excinfo.value)  # 境界でマーカー自体が切れてもキーは残らない
     assert run.call_count == 1
 
 
