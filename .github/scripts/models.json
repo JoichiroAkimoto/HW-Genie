@@ -109,5 +109,17 @@
     "provider": "opencode",
     "variants": ["none", "high"],
     "default_variant": "high"
+  },
+  "opencode-go-deepseek-flash": {
+    "name": "opencode-go/deepseek-v4.1-flash",
+    "aliases": [
+      "opencode-go/deepseek-v4.1-flash"
+    ],
+    "input_cost_per_1m": 0.15,
+    "output_cost_per_1m": 0.6,
+    "max_diff_chars": 2000000,
+    "provider": "opencode",
+    "variants": ["low", "high", "max"],
+    "default_variant": "high"
   }
 }

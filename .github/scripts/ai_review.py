@@ -1254,7 +1254,7 @@ def _opencode_variant(model_info: dict, effort: str | None) -> tuple[str | None,
 
     variant = requested or default
     if variant is None:
-        return None, f"未設定（モデル既定）{'（--effort 指定）' if requested else '（既定）'}{note}"
+        return None, f"未設定（モデル既定）（既定）{note}"
     annotation = "（--effort 指定）" if requested else "（既定）"
     return variant, f"{variant} {annotation}{note}"
 
@@ -2255,12 +2255,24 @@ def main():
                 model_info=model_info,
             )
 
-        usage_note = (
-            "トークン数は CLI が出力しないため取得不可 / 追加コスト: $0（無料モデル） / "
-            "CLI 出力の途中終了は検出不可"
-            if used_opencode
-            else None
-        )
+        if used_opencode:
+            in_rate = model_info.get("input_cost_per_1m")
+            out_rate = model_info.get("output_cost_per_1m")
+            if in_rate == 0 and out_rate == 0:
+                cost_note = "追加コスト: $0（無料モデル）"
+            elif in_rate is not None and out_rate is not None:
+                cost_note = (
+                    f"有料モデル（入力 ${in_rate:g} / 出力 ${out_rate:g} per 1M; "
+                    "トークン数は CLI が出力しないため実額は算出不可）"
+                )
+            else:
+                cost_note = "コスト: (不明)"
+            usage_note = (
+                f"トークン数は CLI が出力しないため取得不可 / {cost_note} / "
+                "CLI 出力の途中終了は検出不可"
+            )
+        else:
+            usage_note = None
 
         metadata = build_execution_metadata(
             model_name=model_name,

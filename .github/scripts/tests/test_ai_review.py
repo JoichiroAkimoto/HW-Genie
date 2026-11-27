@@ -2163,8 +2163,20 @@ def test_opencode_allowlist_contains_only_configured_models():
     assert "opencode/deepseek-v4.1-flash-free" in allowed
     assert "opencode/hy4-flash-free" in allowed
     assert "opencode-go/hy4-flash-free" in allowed
+    assert "opencode-go/deepseek-v4.1-flash" in allowed
     assert "gemini-4-hydrogen" not in allowed
     assert "openrouter/free" not in allowed
+
+
+def test_resolve_model_opencode_go_deepseek_flash():
+    """Go の有料 DeepSeek は正式名・コスト・variant を保持して解決される。"""
+    info, name = resolve_model("opencode-go/deepseek-v4.1-flash", _prod_model_config())
+    assert name == "opencode-go/deepseek-v4.1-flash"
+    assert info["provider"] == "opencode"
+    assert info["input_cost_per_1m"] == 0.15
+    assert info["output_cost_per_1m"] == 0.6
+    assert info["variants"] == ["low", "high", "max"]
+    assert info["default_variant"] == "high"
 
 
 def test_opencode_variant_default_and_effort():
@@ -2261,13 +2273,14 @@ def _run_main_opencode(
     monkeypatch,
     additional_context=None,
     *,
+    model_key="opencode/deepseek-v4.1-flash-free",
     opencode_key="secret",
     opencode_error=None,
     gemini_error=None,
 ):
-    """既定の OpenCode プライマリを main() レベルで再現する。"""
+    """OpenCode プライマリを main() レベルで再現する。"""
     _set_review_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MODEL_KEY", "opencode/deepseek-v4.1-flash-free")
+    monkeypatch.setenv("MODEL_KEY", model_key)
     if additional_context is None:
         monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
     else:
@@ -2353,6 +2366,18 @@ def test_main_opencode_success_does_not_call_other_providers(tmp_path, monkeypat
     assert "high （既定）" in review
     assert "追加コスト: $0" in review
     assert "取得できませんでした" not in review
+
+
+def test_main_paid_opencode_model_does_not_report_zero_cost(tmp_path, monkeypatch):
+    """有料モデルでは実行情報に $0（無料モデル）と表示しない。"""
+    oc, gc, orp, review = _run_main_opencode(
+        tmp_path, monkeypatch, model_key="opencode-go/deepseek-v4.1-flash"
+    )
+    assert oc.call_count == 1
+    assert gc.call_count == 0
+    assert "有料モデル" in review
+    assert "0.15" in review
+    assert "$0（無料モデル）" not in review
 
 
 def test_main_opencode_failure_falls_back_to_gemini(tmp_path, monkeypatch):

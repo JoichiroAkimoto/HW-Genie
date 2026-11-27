@@ -29,6 +29,7 @@ on:
           - opencode/deepseek-v4.1-flash-free
           - opencode/hy4-flash-free
           - opencode-go/hy4-flash-free
+          - opencode-go/deepseek-v4.1-flash
           - hydrogen
           - flash-lite
           - flash
@@ -62,6 +63,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          persist-credentials: false
           # Full history is not needed: ai_review.py fetches the PR head ref
           # itself (git fetch refs/pull/N/head) and uses `gh pr diff` via API.
           fetch-depth: 1
