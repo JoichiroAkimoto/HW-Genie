@@ -1366,7 +1366,7 @@ def _sanitize_review_output(text: str, api_key: str) -> str:
         stripped = lines[i].strip()
         if not stripped:  # 末尾の空行はスキップして走査を続ける
             continue
-        if re.match(r"^(Tools: |[╭╰│]──)", stripped):
+        if re.match(r"^(Tools: |[╭╰│]──|│ )", stripped):
             end = i
         else:
             break

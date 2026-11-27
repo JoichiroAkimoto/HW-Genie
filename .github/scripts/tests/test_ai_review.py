@@ -2437,6 +2437,12 @@ def test_review_output_contract_and_ansi_strip():
         "**判定**: 【✅ APPROVE】\n**要約**: ok\n\nTools: read, bash", ""
     )
     assert "Tools:" not in cleaned_with_blank
+    for log_line in ("╭────", "│ tool output", "╰────", "Tools: bash"):
+        trimmed = ai_review._sanitize_review_output(
+            f"**判定**: 【✅ APPROVE】\n**要約**: ok\n\n{log_line}", ""
+        )
+        assert log_line not in trimmed
+        assert "**要約**: ok" in trimmed
 
 
 def _run_main_opencode(
