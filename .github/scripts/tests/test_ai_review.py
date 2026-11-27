@@ -920,6 +920,33 @@ def _git_show_responses(contents):
     return fake_run
 
 
+def test_failed_publish_keeps_old_failure_comment(tmp_path, monkeypatch):
+    """成功レビューの投稿が失敗したら古い失敗レビューは残す。"""
+    deleted = mock.Mock()
+    monkeypatch.setattr(ai_review, "_delete_failure_comment", deleted)
+    def failed_publish(text, repo, pr, existing):
+        (tmp_path / "review.md").write_text(text, encoding="utf-8")
+        return False
+
+    monkeypatch.setattr(ai_review, "_publish_review", failed_publish)
+    _run_main_default_priority(
+        tmp_path, monkeypatch, existing_failure={"id": 2, "body": "古い失敗レビュー"}
+    )
+    deleted.assert_not_called()
+
+
+def test_delete_failure_comment_uses_delete_api():
+    with mock.patch("ai_review.subprocess.check_output") as check_output:
+        ai_review._delete_failure_comment("owner/repo", {"id": 7})
+    assert check_output.call_args.args[0] == [
+        "gh",
+        "api",
+        "-X",
+        "DELETE",
+        "repos/owner/repo/issues/comments/7",
+    ]
+
+
 def test_fetch_file_contents_includes_all_within_limit():
     paths = ["a.py", "b.py"]
     contents = {"a.py": "print('a')", "b.py": "print('b')"}

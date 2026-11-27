@@ -1776,6 +1776,25 @@ def _fetch_pr_comments(
     return "\n\n".join(lines), existing_comment, failure_comment
 
 
+def _delete_failure_comment(repo: str, comment: dict | None) -> None:
+    """レビューが成功したら、以前の失敗レビューを削除して PR を整理する。"""
+    if not comment or not comment.get("id"):
+        return
+    try:
+        subprocess.check_output(
+            [
+                "gh",
+                "api",
+                "-X",
+                "DELETE",
+                f"repos/{repo}/issues/comments/{comment['id']}",
+            ],
+            stderr=subprocess.PIPE,
+        )
+    except Exception as e:
+        print(f"Warning: Could not delete stale failure comment: {e}")
+
+
 def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
     """変更ファイルのヘッド時点の全文を、合計バッファ上限内で取得する。
 
@@ -2616,9 +2635,10 @@ def main():
 
         # 投稿失敗はレビュー生成の失敗ではないため check を落とさない。
         # _publish_review が review.md / GITHUB_STEP_SUMMARY に本文を残して警告する。
+        published = False
         try:
             # 失敗レビューは既存の正常レビューを上書きせず、別コメントとして残す。
-            _publish_review(
+            published = _publish_review(
                 review_text,
                 repo,
                 pr_number,
@@ -2626,6 +2646,8 @@ def main():
             )
         except Exception as e:
             print(f"::warning::Failed to publish AI review: {e}")
+        if published and not review_failed:
+            _delete_failure_comment(repo, existing_failure)
         if review_failed:
             # 障害を Actions のステータスにも反映する（投稿は完了している）。
             sys.exit(1)
