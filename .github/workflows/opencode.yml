@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Run opencode
-        uses: anomalyco/opencode/github@latest
+        uses: anomalyco/opencode/github@v2.4.2
         env:
           # 手動 /oc も追加コスト不要のモデルを使用する（ID は下の with.model が唯一の情報源）。
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}

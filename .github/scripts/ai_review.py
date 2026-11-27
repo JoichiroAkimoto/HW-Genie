@@ -20,6 +20,7 @@ from unidiff import PatchSet
 
 # Marker used to identify comments posted by this reviewer.
 REVIEW_MARKER = "<!-- ai-pr-reviewer-comment -->"
+FAILURE_MARKER = "<!-- ai-review-failure-comment -->"
 REVIEW_HEADER_RE = re.compile(r"^#{1,4}\s*🤖\s*AI\s*コードレビュー\s*\n*", re.MULTILINE)
 
 # 総試行回数 = 初回 + リトライ 5 回（要件: 「最大 5 回リトライ」）。
@@ -423,7 +424,13 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
         # 部分一致でも provider / 思考設定は一致したエントリから引き継ぎ、
         # OpenRouter ルーティングや thinking 設定が失われないようにする。
         # 存在しないフィールドは追加しない（"api_default" と "OFF" の表示差を保つ）。
-        for field in ("provider", "thinking_level", "reasoning_effort"):
+        for field in (
+            "provider",
+            "thinking_level",
+            "reasoning_effort",
+            "variants",
+            "default_variant",
+        ):
             if field in matched_info:
                 resolved[field] = matched_info[field]
         return resolved, model_key
@@ -1359,7 +1366,7 @@ def _sanitize_review_output(text: str, api_key: str) -> str:
         stripped = lines[i].strip()
         if not stripped:  # 末尾の空行はスキップして走査を続ける
             continue
-        if re.match(r"^(Tools\b|╭|│|╰|─|Running|Executing|\$|▸|•)", stripped):
+        if re.match(r"^(Tools: |[╭╰│]──)", stripped):
             end = i
         else:
             break
@@ -1524,6 +1531,7 @@ def build_execution_metadata(
     run_id: str | None = None,
     commit_sha: str = "",
     usage_note: str | None = None,
+    fallback_note: str | None = None,
 ) -> str:
     """今回の実行情報セクションの Markdown を組み立てる。"""
     if end_time is None:
@@ -1622,6 +1630,8 @@ def build_execution_metadata(
             "(finish_reason: length)。本文が途中までで終わっている可能性があります。\n"
         )
 
+    if fallback_note:
+        metadata += f"- **フォールバック**: {fallback_note}\n"
     metadata += "</details>\n\n<!-- ai-pr-reviewer-comment -->"
     return metadata
 
@@ -1677,7 +1687,9 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
         for c in comments:
             body = (c.get("body") or "").strip()
             if REVIEW_MARKER in body:
-                if existing_comment is None:
+                # 失敗レビューは専用マーカーで別管理し、正常レビューの
+                # 更新対象にも previous_review にも混入させない。
+                if existing_comment is None and FAILURE_MARKER not in body:
                     existing_comment = c
                 continue
             if not body:
@@ -1754,6 +1766,28 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
         lines.append("(注: レビュー本体の取得に失敗しました)")
 
     return "\n\n".join(lines), existing_comment
+
+
+def _fetch_failure_comment(repo: str, pr_number: str) -> dict | None:
+    """以前の失敗レビューを探す（正常レビューとは別コメントとして更新する）。"""
+    try:
+        raw = subprocess.check_output(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/issues/{pr_number}/comments?per_page=100",
+                "--jq",
+                f'map(select(.body | contains("{FAILURE_MARKER}"))) | .[0] // empty',
+            ],
+            text=True,
+        ).strip()
+        if not raw:
+            return None
+        comment = json.loads(raw)
+        return comment if isinstance(comment, dict) else None
+    except Exception as e:
+        print(f"Warning: Could not fetch failure comment: {e}")
+        return None
 
 
 def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
@@ -2215,6 +2249,7 @@ def main():
     # 「前回の bot レビュー（更新対象）」をまとめて返す
     pr_metadata = _fetch_pr_metadata(repo, pr_number)
     user_comments, existing_comment = _fetch_pr_comments(repo, pr_number)
+    existing_failure = _fetch_failure_comment(repo, pr_number)
     file_contents = _fetch_file_contents(pr_number, changed_paths, limit=FILE_CONTENTS_BUDGET)
 
     previous_review = ""
@@ -2273,6 +2308,7 @@ def main():
         opencode_failed = False
         gemini_failed = False
         review_failed = False
+        fallback_notes: list[str] = []
         opencode_effort_display: str | None = None
         # 表示帰属用の元 initial reasoning.effort を事先解決しておく。
         # 成功後に model_info が OpenRouter 結果用の dict へ差し替わるため、
@@ -2304,6 +2340,7 @@ def main():
             except Exception as oe:  # noqa: BLE001
                 last_exc = oe
                 opencode_failed = True
+                fallback_notes.append("OpenCode 失敗 → Gemini チェーン")
                 # OpenCode が使えない場合（CLI 未導入・認証切れ・レート制限・
                 # タイムアウト等）は既定の Gemini 連鎖へ落としてレビューを止めない。
                 print(
@@ -2347,11 +2384,17 @@ def main():
                 }
                 thinking_config = None
                 used_openrouter = True
+                fallback_notes.append("OpenRouter フォールバックを使用")
                 print(f"OpenRouter succeeded with model {or_model}")
             else:
                 last_exc = or_exc
 
-        if use_gemini_chain and gemini_keys and gemini_chain:
+        if (
+            use_gemini_chain
+            and gemini_keys
+            and gemini_chain
+            and _budget_allows(start_time, POST_FALLBACK_MARGIN_SECONDS + 60)
+        ):
             rebuild_prompt_for(model_info)
             # 1) Gemini: Hydrogen -> Flash-Lite -> Flash の順に試す
             (
@@ -2375,6 +2418,7 @@ def main():
             elif chain_exc is not None:
                 last_exc = chain_exc
                 gemini_failed = True
+                fallback_notes.append("Gemini チェーン全滅")
 
         # 2) Gemini チェーンが全滅した後、定義済みの OpenCode モデルを順に試す。
         use_opencode_fallback = (
@@ -2402,6 +2446,7 @@ def main():
                 print(f"OpenCode fallback succeeded with model {model_name}")
             except Exception as oe:  # noqa: BLE001
                 last_exc = oe
+                fallback_notes.append("OpenCode フォールバック失敗")
                 if isinstance(oe, FileNotFoundError):
                     # CLI 自体が無ければ次のモデルを試しても同じなので即座に OR へ。
                     print("::warning::OpenCode CLI is unavailable; skipping remaining models.")
@@ -2416,7 +2461,8 @@ def main():
             not openrouter_primary_requested
             and response is None
             and openrouter_keys
-            and _budget_allows(start_time, or_min_request)
+            # 最低 1 リクエスト分だけ要求し、2 パス目は budget_tight で削る。
+            and _budget_allows(start_time, or_min_request + POST_FALLBACK_MARGIN_SECONDS)
         ):
             fallback_models = _get_openrouter_fallback_models()
             # 残時間に応じてパス数・モデル数・リトライ回数を削る（15 分打ち切りで
@@ -2460,6 +2506,7 @@ def main():
                 # 思考レベル表示は or_used_effort（実際に送った reasoning ペイロードから導出した表示値）で行う
                 thinking_config = None
                 used_openrouter = True
+                fallback_notes.append("OpenRouter フォールバックを使用")
                 print(f"OpenRouter fallback succeeded with model {or_model}")
                 safe_model = str(or_model).replace("\r", "").replace("\n", " ")
                 print(f"::warning::All primary models failed; used OpenRouter fallback model {safe_model}")
@@ -2571,9 +2618,12 @@ def main():
             run_id=run_id,
             commit_sha=commit_sha,
             usage_note=usage_note,
+            fallback_note="; ".join(fallback_notes) or None,
         )
 
         review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"
+        if review_failed:
+            review_text += f"\n\n{FAILURE_MARKER}"
 
         # 投稿失敗はレビュー生成の失敗ではないため check を落とさない。
         # _publish_review が review.md / GITHUB_STEP_SUMMARY に本文を残して警告する。
@@ -2583,7 +2633,7 @@ def main():
                 review_text,
                 repo,
                 pr_number,
-                None if review_failed else existing_comment,
+                existing_failure if review_failed else existing_comment,
             )
         except Exception as e:
             print(f"::warning::Failed to publish AI review: {e}")

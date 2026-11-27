@@ -157,6 +157,21 @@ jobs:
             fi
           done
 
+      - name: Verify OpenCode config schema
+        # 実 CLI が opencode.json / エージェント定義を解釈できることを確認する。
+        continue-on-error: true
+        run: |
+          if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+            echo "::warning::OpenCode CLI unavailable; skipping config check."
+            exit 0
+          fi
+          d=$(mktemp -d)
+          mkdir -p "$d/.opencode/agents"
+          printf '%s\n' '{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}' > "$d/opencode.json"
+          printf '%s\n' '---' 'description: Strict code reviewer' 'mode: primary' '' 'Review carefully.' > "$d/.opencode/agents/reviewer.md"
+          (cd "$d" && "$HOME/.opencode/bin/opencode" debug config | grep -F '"effect": "deny"')
+          rm -rf "$d"
+
       - name: Add OpenCode CLI to PATH
         # キャッシュヒット時もインストール時も同じパスを通す。
         run: echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"

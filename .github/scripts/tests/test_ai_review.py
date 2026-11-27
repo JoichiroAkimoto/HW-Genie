@@ -348,7 +348,17 @@ def test_workflow_verifies_cli_install():
     assert 'rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない' in workflow
     assert '|| reject "OpenCode CLI --version failed"' in workflow
     assert "set -o pipefail" in workflow
+    assert "Verify OpenCode config schema" in workflow
+    assert "'\"effect\": \"deny\"'" in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
+
+
+def test_manual_opencode_action_is_pinned():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "workflows", "opencode.yml")
+    with open(path, encoding="utf-8") as f:
+        workflow = f.read()
+    assert "anomalyco/opencode/github@v2.4.2" in workflow
+    assert "@latest" not in workflow
 
 
 def test_workflows_have_no_stale_model_ids():
@@ -749,6 +759,32 @@ def test_fetch_pr_comments_returns_existing_comment():
     assert "確認します" in result
     assert "前回レビュー" not in result
     assert existing == {"id": 2, "user": {"login": "bot"}, "body": "<!-- ai-pr-reviewer-comment -->前回レビュー"}
+
+
+def test_fetch_pr_comments_ignores_failure_marker():
+    """失敗レビューは正常レビューの更新対象にも previous_review にも入れない。"""
+    issue_comments = [
+        {
+            "id": 3,
+            "user": {"login": "bot"},
+            "body": (
+                "<!-- ai-review-failure-comment -->\n"
+                "<!-- ai-pr-reviewer-comment -->失敗レビュー本文"
+            ),
+        },
+        {
+            "id": 2,
+            "user": {"login": "bot"},
+            "body": "<!-- ai-pr-reviewer-comment -->正常レビュー本文",
+        },
+    ]
+    with mock.patch(
+        "ai_review.subprocess.check_output",
+        side_effect=_comment_api_responses(issue_comments=issue_comments),
+    ):
+        result, existing = ai_review._fetch_pr_comments("owner/repo", "42")
+    assert existing["id"] == 2
+    assert "失敗レビュー本文" not in result
 
 
 def test_fetch_pr_comments_includes_inline_and_reviews():
@@ -2523,6 +2559,7 @@ def test_main_opencode_failure_falls_back_to_gemini(tmp_path, monkeypatch):
     assert gc.call_count == 1
     assert orp.call_count == 0
     assert "Gemini 本文" in review
+    assert "OpenCode 失敗 → Gemini チェーン" in review
 
 
 def test_main_opencode_failure_then_gemini_failure_falls_back_to_openrouter(
@@ -2542,14 +2579,13 @@ def test_main_opencode_failure_then_gemini_failure_falls_back_to_openrouter(
     assert "reasoning: high （既定）" in review
 
 
-def test_main_insufficient_budget_skips_opencode_and_falls_back(tmp_path, monkeypatch):
-    """残時間が足りなければ OpenCode を飛ばして Gemini レビューを残す。"""
+def test_main_insufficient_budget_skips_all_providers(tmp_path, monkeypatch):
+    """残時間が無ければ全 provider を飛ばし、失敗レビューを投稿して失敗終了する。"""
     monkeypatch.setattr(ai_review, "JOB_TIMEOUT_SECONDS", 1.0)
-    oc, gc, orp, review = _run_main_opencode(tmp_path, monkeypatch)
-    assert oc.call_count == 0
-    assert gc.call_count == 1
-    assert gc.call_args.args[0][0][0] == "hydrogen"
-    assert "Gemini 本文" in review
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_opencode(tmp_path, monkeypatch)
+    assert excinfo.value.code == 1
+    assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
 
 
 def test_main_opencode_without_key_falls_back_to_hydrogen(tmp_path, monkeypatch):
@@ -2843,6 +2879,8 @@ def test_failure_review_does_not_overwrite_existing_comment(
         published["existing"] = existing
         (tmp_path / "review.md").write_text(text, encoding="utf-8")
 
+    old_failure = {"id": 2, "body": "古い失敗レビュー"}
+    monkeypatch.setattr(ai_review, "_fetch_failure_comment", lambda repo, pr: old_failure)
     monkeypatch.setattr(ai_review, "_publish_review", fake_publish)
     with pytest.raises(SystemExit) as excinfo:
         _run_main_default_priority(
@@ -2854,8 +2892,10 @@ def test_failure_review_does_not_overwrite_existing_comment(
             existing_comment={"id": 1, "body": "既存の正常レビュー"},
         )
     assert excinfo.value.code == 1
-    assert published["existing"] is None
-    assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
+    assert published["existing"] == old_failure  # 失敗レビュー同士は PATCH で更新
+    failure_text = (tmp_path / "review.md").read_text(encoding="utf-8")
+    assert "生成に失敗しました" in failure_text
+    assert ai_review.FAILURE_MARKER in failure_text
 
 
 def test_opencode_budget_reserves_post_and_openrouter_margin():
