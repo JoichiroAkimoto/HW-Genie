@@ -33,7 +33,7 @@ on:
           - flash-lite
           - flash
           - openrouter/free
-        default: 'opencode/deepseek-v4.1-flash-free'
+        default: 'hydrogen'
 
 permissions:
   contents: read
@@ -76,6 +76,8 @@ jobs:
           pip install -r .github/scripts/requirements-ai.txt
 
       - name: Install OpenCode CLI
+        # インストール失敗でもレビューを止めない（スクリプト側のフォールバックに委ねる）。
+        continue-on-error: true
         env:
           # サプライチェーン対策としてバージョンを固定する（更新は repo variable で行う）。
           OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}
@@ -104,7 +106,7 @@ jobs:
           # workflow_dispatch: Actions UI から手動実行
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number || github.event.issue.number }}
           ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
-          MODEL_KEY: ${{ inputs.model || 'opencode/deepseek-v4.1-flash-free' }}
+          MODEL_KEY: ${{ inputs.model || 'hydrogen' }}
         run: |
           python .github/scripts/ai_review.py
 
