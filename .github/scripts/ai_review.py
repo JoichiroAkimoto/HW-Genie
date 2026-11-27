@@ -2331,7 +2331,10 @@ def main():
         if is_opencode_primary and not _budget_allows(start_time, opencode_budget):
             opencode_failed = True
             last_exc = RuntimeError("insufficient time budget for OpenCode")
-            fallback_notes.append("OpenCode 予算不足 → Gemini チェーン")
+            fallback_notes.append(
+                "OpenCode 予算不足 → "
+                + ("Gemini チェーン" if gemini_keys else "OpenRouter")
+            )
             reset_to_gemini_chain()
             print(f"Using model (fallback): {model_key} ({model_name})")
 
@@ -2345,7 +2348,10 @@ def main():
             except Exception as oe:  # noqa: BLE001
                 last_exc = oe
                 opencode_failed = True
-                fallback_notes.append("OpenCode 失敗 → Gemini チェーン")
+                fallback_notes.append(
+                    "OpenCode 失敗 → "
+                    + ("Gemini チェーン" if gemini_keys else "OpenRouter")
+                )
                 # OpenCode が使えない場合（CLI 未導入・認証切れ・レート制限・
                 # タイムアウト等）は既定の Gemini 連鎖へ落としてレビューを止めない。
                 print(
