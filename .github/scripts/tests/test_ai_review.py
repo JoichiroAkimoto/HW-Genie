@@ -352,6 +352,7 @@ def test_workflow_verifies_cli_install():
     assert "'\"effect\": \"deny\"'" in workflow
     assert "OpenCode CLI did not accept the tool-deny config" in workflow
     assert "sha256sum -c -; then" in workflow
+    assert "opencode-${{ env.OPENCODE_CLI_VERSION }}-${{ env.OPENCODE_CLI_SHA256 }}" in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
@@ -2804,9 +2805,9 @@ def test_default_priority_deepseek_failure_then_openrouter(tmp_path, monkeypatch
     assert oc.call_count == 2
     assert orp.call_count == 1
     assert "OR 本文" in review
-    assert "opencode/deepseek-v4.1-flash-free" not in review
     assert "openrouter/free" in review
-    assert review.count("OpenCode フォールバック失敗") == 1
+    assert "opencode-go/deepseek-v4.1-flash 失敗" in review
+    assert "opencode/deepseek-v4.1-flash-free 失敗" in review
 
 
 def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
@@ -2822,7 +2823,7 @@ def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
     assert excinfo.value.code == 1
     failure_review = (tmp_path / "review.md").read_text(encoding="utf-8")
     assert "生成に失敗しました" in failure_review
-    assert "opencode/deepseek-v4.1-flash-free" not in failure_review
+    assert "opencode/deepseek-v4.1-flash-free 失敗" in failure_review
 
 
 def test_openrouter_fallback_budget_trims_models_and_attempts(

@@ -96,7 +96,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.opencode/bin
-          key: ${{ runner.os }}-${{ runner.arch }}-opencode-${{ env.OPENCODE_CLI_VERSION }}
+          key: ${{ runner.os }}-${{ runner.arch }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-${{ env.OPENCODE_CLI_SHA256 }}
 
       - name: Install OpenCode CLI
         # インストール失敗でもレビューを止めない（スクリプト側のフォールバックに委ねる）。

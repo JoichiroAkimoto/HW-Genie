@@ -2432,7 +2432,7 @@ def main():
                 print(f"OpenCode fallback succeeded with model {model_name}")
             except Exception as oe:  # noqa: BLE001
                 last_exc = oe
-                fallback_notes.append("OpenCode フォールバック失敗")
+                fallback_notes.append(f"{model_name} 失敗")
                 if isinstance(oe, FileNotFoundError):
                     # CLI 自体が無ければ次のモデルを試しても同じなので即座に OR へ。
                     print("::warning::OpenCode CLI is unavailable; skipping remaining models.")
@@ -2453,7 +2453,10 @@ def main():
             fallback_models = _get_openrouter_fallback_models()
             # 残時間に応じてパス数・モデル数・リトライ回数を削る（15 分打ち切りで
             # コメント自体が失われないようにする）。安全網のルーターは必ず残す。
-            or_budget = min(OPENROUTER_FALLBACK_BUDGET, _time_left_seconds(start_time) - 30)
+            or_budget = min(
+                OPENROUTER_FALLBACK_BUDGET,
+                _time_left_seconds(start_time) - POST_FALLBACK_MARGIN_SECONDS,
+            )
             full_attempt_cost = or_min_request * (2 if fallback_reasoning_effort else 1)
             budget_tight = or_budget < full_attempt_cost
             or_effort = None if budget_tight else fallback_reasoning_effort
