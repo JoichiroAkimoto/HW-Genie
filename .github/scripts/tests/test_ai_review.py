@@ -15,6 +15,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ai_review  # noqa: E402
 from ai_review import (  # noqa: E402
     _extract_details_blocks,
+    _generate_with_opencode,
+    _opencode_allowed_models,
+    _opencode_variant,
     build_system_instruction,
     resolve_model,
     strip_review_metadata,
@@ -288,8 +291,8 @@ def _prod_model_config():
         return json.load(f)
 
 
-def test_default_model_key_is_hydrogen():
-    assert ai_review.DEFAULT_MODEL_KEY == "hydrogen"
+def test_default_model_key_is_free_deepseek():
+    assert ai_review.DEFAULT_MODEL_KEY == "opencode/deepseek-v4.1-flash-free"
 
 
 def test_gemini_model_chain_default_order():
@@ -2124,4 +2127,236 @@ def test_main_openrouter_fallback_reports_truncated_body(tmp_path, monkeypatch):
     _, _, review = _run_main_gemini_to_openrouter(tmp_path, monkeypatch, response=response)
     assert "途中本文" in review
     assert "途中終了" in review
+
+
+def test_opencode_allowlist_contains_only_configured_models():
+    """ホワイトリストは provider=opencode のモデルだけを許可する。"""
+    allowed = _opencode_allowed_models(_prod_model_config())
+    assert "opencode/deepseek-v4.1-flash-free" in allowed
+    assert "opencode/hy4-flash-free" in allowed
+    assert "opencode-go/hy4-flash-free" in allowed
+    assert "gemini-4-hydrogen" not in allowed
+    assert "openrouter/free" not in allowed
+
+
+def test_opencode_variant_default_and_effort():
+    """既定 variant と --effort の上書き、表示の出所を検証する。"""
+    info = _prod_model_config()["opencode-deepseek-free"]
+    assert _opencode_variant(info, None) == ("high", "high （既定）")
+    variant, display = _opencode_variant(info, "max")
+    assert variant == "max"
+    assert display.startswith("max ")
+    assert "（--effort 指定）" in display
+
+
+def test_opencode_variant_unsupported_effort_falls_back_to_default():
+    """非対応 effort はレビューを止めず、既定 variant とその旨を表示する。"""
+    info = _prod_model_config()["opencode-hy4-free"]
+    variant, display = _opencode_variant(info, "medium")
+    assert variant == "high"
+    assert "非対応のため既定" in display
+    assert _opencode_variant(info, "none")[0] == "none"
+
+
+def test_opencode_variant_off_without_none_variant():
+    """none variant が無いモデルでも --effort off はエラーにせず実送信を表示する。"""
+    info = _prod_model_config()["opencode-deepseek-free"]
+    variant, display = _opencode_variant(info, "off")
+    assert variant is None
+    assert "OFF 指定（variant 非対応のためモデル既定）" == display
+
+
+def test_generate_with_opencode_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    info = _prod_model_config()["opencode-hy4-free"]
+    with pytest.raises(RuntimeError, match="OPENCODE_API_KEY"):
+        _generate_with_opencode("opencode/hy4-flash-free", "prompt", "system", None, info)
+
+
+def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
+    """--model に #variant を付け、プロンプトは --file の一時ファイルで渡す。"""
+    monkeypatch.setenv("OPENCODE_API_KEY", "secret")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["key"] = kwargs["env"]["OPENCODE_API_KEY"]
+        attached = cmd[cmd.index("--file") + 1]
+        with open(attached, encoding="utf-8") as f:
+            captured["attached"] = f.read()
+        captured["attached_path"] = attached
+        return subprocess.CompletedProcess(cmd, 0, stdout="レビュー本文\n", stderr="")
+
+    monkeypatch.setattr(ai_review.subprocess, "run", fake_run)
+    info = _prod_model_config()["opencode-deepseek-free"]
+    resp, display = _generate_with_opencode(
+        "opencode/deepseek-v4.1-flash-free", "【差分】xyz", "system instruction", "max", info
+    )
+
+    assert resp.text == "レビュー本文"
+    assert resp.model_version == "opencode/deepseek-v4.1-flash-free#max"
+    assert display.startswith("max ")
+    assert captured["cmd"][:4] == ["opencode", "run", "--standalone", "--archived"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == (
+        "opencode/deepseek-v4.1-flash-free#max"
+    )
+    assert captured["attached"] == "【差分】xyz"
+    assert captured["key"] == "secret"
+    assert not os.path.exists(captured["attached_path"])  # 一時ファイルは後始末される
+
+
+def test_generate_with_opencode_empty_output_raises(monkeypatch):
+    monkeypatch.setenv("OPENCODE_API_KEY", "secret")
+    monkeypatch.setattr(
+        ai_review.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    info = _prod_model_config()["opencode-hy4-free"]
+    with pytest.raises(RuntimeError, match="empty output"):
+        _generate_with_opencode("opencode/hy4-flash-free", "p", "s", None, info)
+
+
+def _run_main_opencode(
+    tmp_path,
+    monkeypatch,
+    additional_context=None,
+    *,
+    opencode_key="secret",
+    opencode_error=None,
+    gemini_error=None,
+):
+    """既定の OpenCode プライマリを main() レベルで再現する。"""
+    _set_review_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MODEL_KEY", "opencode/deepseek-v4.1-flash-free")
+    if additional_context is None:
+        monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ADDITIONAL_CONTEXT", additional_context)
+    if opencode_key is None:
+        monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OPENCODE_API_KEY", opencode_key)
+
+    oc_response = ai_review.OpenCodeResponse(text="OpenCode 本文")
+
+    def fake_opencode(*args, **kwargs):
+        if opencode_error is not None:
+            raise opencode_error
+        return oc_response, "high （既定）"
+
+    gemini_response = _FakeResponse("Gemini 本文")
+    diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(ai_review, "_collect_gemini_keys", return_value=["key"]))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_collect_openrouter_keys", return_value=["or-key"])
+        )
+        stack.enter_context(
+            mock.patch.object(ai_review.subprocess, "check_output", return_value=diff.encode())
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
+        stack.enter_context(
+            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+        )
+        stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
+        oc = stack.enter_context(
+            mock.patch.object(ai_review, "_generate_with_opencode", side_effect=fake_opencode)
+        )
+        gc = stack.enter_context(
+            mock.patch.object(
+                ai_review,
+                "_generate_with_model_chain",
+                return_value=(
+                    (None, None, None, None, gemini_error)
+                    if gemini_error
+                    else (
+                        gemini_response,
+                        "gemini-4-hydrogen",
+                        {
+                            "name": "gemini-4-hydrogen",
+                            "input_cost_per_1m": 1.50,
+                            "output_cost_per_1m": 7.50,
+                            "max_diff_chars": 2000000,
+                            "thinking_level": "HIGH",
+                        },
+                        None,
+                        None,
+                    )
+                ),
+            )
+        )
+        orp = stack.enter_context(
+            mock.patch.object(
+                ai_review,
+                "_run_openrouter_pass",
+                return_value=(
+                    ai_review.OpenRouterResponse(text="OR 本文"),
+                    "openrouter/free",
+                    "high",
+                    None,
+                ),
+            )
+        )
+        stack.enter_context(
+            mock.patch("ai_review.subprocess.run", return_value=mock.Mock(returncode=0))
+        )
+        ai_review.main()
+    return oc, gc, orp, (tmp_path / "review.md").read_text(encoding="utf-8")
+
+
+def test_main_opencode_success_does_not_call_other_providers(tmp_path, monkeypatch):
+    oc, gc, orp, review = _run_main_opencode(tmp_path, monkeypatch)
+    assert oc.call_count == 1
+    assert gc.call_count == 0
+    assert orp.call_count == 0
+    assert "OpenCode 本文" in review
+    assert "high （既定）" in review
+    assert "追加コスト: $0" in review
+    assert "取得できませんでした" not in review
+
+
+def test_main_opencode_failure_falls_back_to_gemini(tmp_path, monkeypatch):
+    oc, gc, orp, review = _run_main_opencode(
+        tmp_path, monkeypatch, opencode_error=RuntimeError("CLI unavailable")
+    )
+    assert oc.call_count == 1
+    assert gc.call_count == 1
+    assert orp.call_count == 0
+    assert "Gemini 本文" in review
+
+
+def test_main_opencode_failure_then_gemini_failure_falls_back_to_openrouter(
+    tmp_path, monkeypatch
+):
+    """OpenCode 失敗 -> Gemini 全滅 -> OpenRouter の 3 段連鎖を担保する。"""
+    oc, gc, orp, review = _run_main_opencode(
+        tmp_path,
+        monkeypatch,
+        opencode_error=RuntimeError("CLI unavailable"),
+        gemini_error=Exception("Gemini exhausted"),
+    )
+    assert oc.call_count == 1
+    assert gc.call_count == 1
+    assert orp.call_count == 1
+    assert "OR 本文" in review
+    assert "reasoning: high （既定）" in review
+
+
+def test_main_opencode_without_key_falls_back_to_hydrogen(tmp_path, monkeypatch):
+    oc, gc, orp, review = _run_main_opencode(tmp_path, monkeypatch, opencode_key=None)
+    assert oc.call_count == 0
+    assert gc.call_count == 1
+    assert gc.call_args.args[0][0][0] == "hydrogen"
+    assert "Gemini 本文" in review
+
+
+def test_main_rejects_unknown_opencode_model_from_comment(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_opencode(
+            tmp_path,
+            monkeypatch,
+            "@gemini-cli /quick-review --model opencode/evil",
+        )
+    assert excinfo.value.code == 1
 
