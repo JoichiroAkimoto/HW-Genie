@@ -55,19 +55,19 @@ jobs:
     env:
       # 未指定ならインストーラが最新を解決する。固定したい場合のみ repo variable を設定する。
       OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}
-    # 176kトークン規模の大型PR差分では、長い待機の主因は OpenRouter 側のリトライである
-    # （Gemini は Hydrogen -> Flash-Lite -> Flash と待機せず即フォールバックする）。
-    # 10分だと成功しうる実行が切り捨てられるため 15分に緩和（タイムアウト時のみ失敗扱い）。
-    timeout-minutes: 15
+      # ジョブ制限と Python 側の時間予算を同じ repo variable から導出する。
+      REVIEW_JOB_TIMEOUT_SECONDS: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') * 60 }}
+    # 大型 PR では OpenRouter のリトライが主因で長くなるため、既定 15 分。
+    # 変更は repo variable REVIEW_TIMEOUT_MINUTES の一点から行う。
+    timeout-minutes: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          persist-credentials: false
           # Full history is not needed: ai_review.py fetches the PR head ref
           # itself (git fetch refs/pull/N/head) and uses `gh pr diff` via API.
           fetch-depth: 1
-          ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || github.sha }}
+          ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || (inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.sha) }}
 
       - name: Set up Python
         uses: actions/setup-python@v7

@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,10 +71,18 @@ OPENROUTER_REASONING_ENABLED_DISPLAY = "有効（effort 非対応モデル・既
 # 巨大な diff をコマンド引数に載せると E2BIG になるため、プロンプトは
 # 一時ファイルへ書き出して ``--file`` で渡す（引数は固定の短い指示のみ）。
 OPENCODE_CLI = os.environ.get("OPENCODE_CLI", "opencode")
-# job の timeout-minutes: 15 より短く設定し、タイムアウト時に
-# Gemini/OpenRouter フォールバックとコメント投稿の時間を残す。
+# workflow の timeout-minutes と同じ値を env で受け取る（既定 900 秒）。
+JOB_TIMEOUT_SECONDS = float(os.environ.get("REVIEW_JOB_TIMEOUT_SECONDS", "900") or 900)
+# コメント投稿とレビュー生成に残す予算。この残時間を切ったら次の provider へ進まない。
+FALLBACK_RESERVE_SECONDS = float(os.environ.get("REVIEW_FALLBACK_RESERVE_SECONDS", "180") or 180)
+# 1 試行の上限。2 試行＋リトライ待機でもジョブ残時間内に収まるようにする。
 OPENCODE_TIMEOUT = float(os.environ.get("OPENCODE_TIMEOUT", "240") or 240)
 OPENCODE_RETRY_DELAY = 2.0
+OPENCODE_ATTEMPT_BUDGET = 2 * OPENCODE_TIMEOUT + OPENCODE_RETRY_DELAY
+# 未定義の opencode モデルもコメントから指定できる（事前定義は不要）。
+# プロバイダ接頭辞と安全な文字だけを許可し、シェル／パス資産は通さない。
+OPENCODE_MODEL_ID_RE = re.compile(r"^opencode(?:-go)?/[A-Za-z0-9][A-Za-z0-9._/-]*$")
+OPENCODE_VARIANT_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")
 # サブプロセスへ渡す環境変数の許可リスト。GH_TOKEN や他プロバイダのキーを
 # エージェント型 CLI に継承させない（プロンプトインジェクション時の漏洩防止）。
 OPENCODE_SUBPROCESS_ENV_KEYS = (
@@ -336,11 +345,11 @@ def load_model_config():
         }
 
 
-# 既定は AI Studio の Gemini チェーン（Hydrogen -> Flash-Lite -> Flash）。
-# チェーンが全滅した後に追加コスト不要の OpenCode 無料 DeepSeek を試し、
-# 最後に OpenRouter の無料モデルへ落とす。
+# 既定は AI Studio の Gemini チェーン。以降のフォールバックは
+# OPENCODE_FALLBACK_MODEL_KEYS に定義された順に試す。
 DEFAULT_MODEL_KEY = "hydrogen"
-OPENCODE_FALLBACK_MODEL = "opencode/deepseek-v4.1-flash-free"
+# Gemini チェーン全滅後に試す OpenCode モデル（models.json のキーで順序を定義）。
+OPENCODE_FALLBACK_MODEL_KEYS = ("opencode-go-deepseek-flash", "opencode-deepseek-free")
 
 GEMINI_FALLBACK_CHAIN = ("hydrogen", "flash-lite", "flash")
 
@@ -368,6 +377,21 @@ def resolve_model(model_key: str, model_config: dict) -> tuple[dict, str]:
             # エイリアスは API v1 で解決されない（例: "-latest" は 404）ため、
             # 常に設定上の正式名へ正規化して返す。
             return info, info["name"]
+
+    # 1b. 未定義の opencode モデルも受け付ける（事前定義なしで実行可能）。
+    #     models.json に無い ID はコスト不明として扱い、安全な文字だけを通す。
+    if OPENCODE_MODEL_ID_RE.match(model_key) and ".." not in model_key:
+        return (
+            {
+                "name": model_key,
+                "input_cost_per_1m": None,
+                "output_cost_per_1m": None,
+                "max_diff_chars": 500000,
+                "provider": "opencode",
+                "variants": [],
+            },
+            model_key,
+        )
 
     # 2. 部分一致（一意に決まる場合のみ）。曖昧なら未知として扱う。
     matched_key = None
@@ -521,18 +545,26 @@ def _is_retryable_api_error(e: Exception) -> tuple[bool, int | None]:
     return False, None
 
 
-def _parse_comment_option(text: str, flag: str) -> str | None:
-    """リクエスト文言から ``--flag <value>`` の値を抽出する（行頭または空白必須）。
+SAFE_COMMENT_OPTION_RE = re.compile(r"^[A-Za-z0-9][\w./:\-]*$")
 
-    openrouter モデル名（``openrouter/free`` 等）に合わせ ``/`` ``:`` ``.`` ``-``
-    を許容し、末尾の読点・空白を除去する。該当がなければ None。
+
+def _parse_comment_option(text: str, flag: str) -> str | None:
+    """リクエスト文言から ``--flag <value>`` の値を完全に抽出する。
+
+    値を途中で切り詰めず、末尾の読点だけを除去する。安全でない文字を含む
+    値は None ではなくそのまま返し、呼び出し側で検証して拒否する。
     """
     match = re.search(
-        rf"(?m)(?:^|\s+)--{re.escape(flag)}\s+([\w./:\-]+)", text, re.IGNORECASE
+        rf"(?m)(?:^|\s+)--{re.escape(flag)}[ \t]+([^\s]+)", text, re.IGNORECASE
     )
     if not match:
         return None
-    return match.group(1).strip().strip(",").strip()
+    return match.group(1).rstrip(",")
+
+
+def _is_safe_comment_option(value: str) -> bool:
+    """コメント由来のオプション値が安全な文字だけで構成されるか。"""
+    return bool(SAFE_COMMENT_OPTION_RE.match(value))
 
 
 def _build_thinking_config(
@@ -1203,17 +1235,13 @@ class OpenCodeResponse(OpenRouterResponse):
     """``opencode run`` の stdout を Gemini レスポンス互換でラップする。"""
 
 
-def _opencode_allowed_models(model_config: dict) -> dict[str, dict]:
-    """models.json で ``provider: opencode`` が許可したモデル ID を返す。
+def _is_opencode_model_id(model_id: str) -> bool:
+    """opencode / opencode-go のモデル ID として安全な形式か判定する。
 
-    コメントから渡されたモデル名は必ずこのホワイトリストで検証し、
-    許可外のモデルを CLI へ渡さない（信用できない入力からの任意モデル実行を防ぐ）。
+    models.json への事前定義は不要。接頭辞と安全な文字だけを許可し、
+    パス資産（``..``）やシェル記号を含む入力は拒否する。
     """
-    return {
-        info["name"]: info
-        for info in model_config.values()
-        if info.get("provider") == "opencode" and info.get("name")
-    }
+    return bool(OPENCODE_MODEL_ID_RE.match(model_id)) and ".." not in model_id
 
 
 def _opencode_variant(model_info: dict, effort: str | None) -> tuple[str | None, str | None]:
@@ -1252,16 +1280,57 @@ def _opencode_variant(model_info: dict, effort: str | None) -> tuple[str | None,
             else:
                 requested = value
 
+    if not variants and requested:
+        # 未定義モデルの variant はカタログで検証できないため、
+        # 安全な形式に限定して --effort をそのまま #variant として渡す。
+        if OPENCODE_VARIANT_RE.match(requested):
+            return requested, f"{requested} （--effort 指定）"
+        print(
+            f"::warning::Unsafe --effort {_annotation_safe(requested)} was ignored; "
+            "using the model default."
+        )
+        requested = None
+
     variant = requested or default
     if variant is None:
-        return None, f"未設定（モデル既定）（既定）{note}"
-    annotation = "（--effort 指定）" if requested else "（既定）"
-    return variant, f"{variant} {annotation}{note}"
+        return None, f"未設定（モデル既定）{note}"
+    annotation = "" if note else ("（--effort 指定）" if requested else "（既定）")
+    return variant, f"{variant} {annotation}{note}".strip()
 
 
 def _annotation_safe(text: object) -> str:
     """GitHub Actions のアノテーション用に改行を無害化する。"""
     return str(text).replace("\r", " ").replace("\n", " ")[:1000]
+
+
+def _strip_ansi(text: str) -> str:
+    """CLI の進捗表示／色付けを本文から除去する。"""
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+
+def _is_review_output_valid(text: str) -> bool:
+    """レビュー本文としての契約（判定セクション）を満たすか。"""
+    return "**判定**" in text and (
+        "【✅ APPROVE】" in text or "【🔴 CHANGES_REQUESTED】" in text
+    )
+
+
+def _time_left_seconds(start_time: datetime.datetime) -> float:
+    """ジョブの残時間（秒）を返す。"""
+    elapsed = (datetime.datetime.now(start_time.tzinfo) - start_time).total_seconds()
+    return JOB_TIMEOUT_SECONDS - elapsed
+
+
+def _budget_allows(start_time: datetime.datetime, needed: float) -> bool:
+    """残時間が needed 以上なら True。不足なら警告を出して False。"""
+    left = _time_left_seconds(start_time)
+    if left < needed:
+        print(
+            f"::warning::Insufficient time budget ({left:.0f}s left, "
+            f"need {needed:.0f}s); skipping this provider."
+        )
+        return False
+    return True
 
 
 def _is_opencode_transient(detail: str) -> bool:
@@ -1296,9 +1365,10 @@ def _generate_with_opencode(
     selector = f"{model_name}#{variant}" if variant else model_name
     message = f"{system_instruction}\n\n---\n\n{OPENCODE_PROMPT}"
 
-    fd, path = tempfile.mkstemp(prefix="opencode-review-", suffix=".txt")
+    workdir = tempfile.mkdtemp(prefix="opencode-review-")
+    path = os.path.join(workdir, "prompt.txt")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(prompt)
         # 許可リスト方式: GH_TOKEN / GEMINI_API_KEY / OPENROUTER_API_KEY 等は渡さない。
         env = {k: os.environ[k] for k in OPENCODE_SUBPROCESS_ENV_KEYS if k in os.environ}
@@ -1323,6 +1393,10 @@ def _generate_with_opencode(
                     timeout=OPENCODE_TIMEOUT,
                     env=env,
                     check=False,
+                    # リポジトリを触らせないため一時ディレクトリを cwd にし、
+                    # stdin も閉じる（対話入力と補助チャネルを塞ぐ）。
+                    cwd=workdir,
+                    stdin=subprocess.DEVNULL,
                 )
             except subprocess.TimeoutExpired:
                 if attempt == 0:
@@ -1339,16 +1413,20 @@ def _generate_with_opencode(
                     time.sleep(OPENCODE_RETRY_DELAY)
                     continue
                 raise err
-            text = proc.stdout.strip()
-            if not text:
-                raise RuntimeError("opencode run returned empty output; check the Actions log")
+            text = _strip_ansi(proc.stdout).strip()
+            if not text or not _is_review_output_valid(text):
+                if attempt == 0:
+                    print("::warning::OpenCode output is empty or invalid; retrying once.")
+                    time.sleep(OPENCODE_RETRY_DELAY)
+                    continue
+                raise RuntimeError(
+                    "opencode run returned empty or invalid output "
+                    "(expected **判定** with APPROVE/CHANGES_REQUESTED)"
+                )
             return OpenCodeResponse(text=text, model_version=selector), effort_display
         # 到達不能: 各 attempt は return / raise / continue のいずれかで終了する。
     finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def build_execution_metadata(
@@ -1873,32 +1951,35 @@ def main():
     # --model gemini-flash-latest --effort high"). openrouter 名のため / : . - も許容。
     comment_model = _parse_comment_option(additional_context, "model")
     if comment_model:
+        if not _is_safe_comment_option(comment_model):
+            print(f"Error: unsafe --model value '{_annotation_safe(comment_model)}'.", file=sys.stderr)
+            sys.exit(1)
         model_key = comment_model
     thinking_effort = _parse_comment_option(additional_context, "effort")
     if thinking_effort:
+        if not _is_safe_comment_option(thinking_effort):
+            print(
+                f"Error: unsafe --effort value '{_annotation_safe(thinking_effort)}'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"Thinking effort from --effort: {thinking_effort}")
 
     # models.json のキー/name/aliases に基づいて model_info と model_name を解決
     model_info, model_name = resolve_model(model_key, model_config)
     gemini_chain = _gemini_model_chain(model_key, model_config)
 
-    # OpenCode 経由のモデルはホワイトリスト完全一致のみ許可する。
-    allowed_opencode = _opencode_allowed_models(model_config)
-    is_opencode_primary = model_info.get("provider") == "opencode"
-    # プレフィックス付きの入力は、部分一致で未知モデルに解決された場合も
-    # 「拒否」せず Gemini 側へ流れて誤表示されるのを防ぐ（明示的にエラーにする）。
+    # opencode 系は事前定義なしで受け付ける。接頭辞を持つ入力の形式だけ検証し、
+    # パス資産やシェル記号を含む ID は明示的に拒否する。
     opencode_prefixes = ("opencode/", "opencode-go/")
     looks_like_opencode = (
-        is_opencode_primary
-        or str(model_key).startswith(opencode_prefixes)
+        str(model_key).startswith(opencode_prefixes)
         or str(model_name).startswith(opencode_prefixes)
     )
-    if looks_like_opencode and model_name not in allowed_opencode:
-        print(
-            f"Error: OpenCode model '{model_key}' -> '{model_name}' is not in models.json allowlist.",
-            file=sys.stderr,
-        )
+    if looks_like_opencode and not _is_opencode_model_id(model_name):
+        print(f"Error: invalid OpenCode model ID '{model_key}'.", file=sys.stderr)
         sys.exit(1)
+    is_opencode_primary = model_info.get("provider") == "opencode"
     if is_opencode_primary and not opencode_key:
         # シークレット未登録でも既存の Gemini レビューを止めない（fork PR も同様）。
         print("::warning::OPENCODE_API_KEY is not set; falling back to the Gemini chain.")
@@ -2063,7 +2144,11 @@ def main():
             thinking_effort, model_config
         )
 
-        if is_opencode_primary:
+        if is_opencode_primary and not _budget_allows(start_time, OPENCODE_ATTEMPT_BUDGET):
+            opencode_failed = True
+            last_exc = RuntimeError("insufficient time budget for OpenCode")
+
+        if is_opencode_primary and not opencode_failed:
             try:
                 response, opencode_effort_display = _generate_with_opencode(
                     model_name, prompt, system_instruction, thinking_effort, model_info
@@ -2147,8 +2232,7 @@ def main():
                 last_exc = chain_exc
                 gemini_failed = True
 
-        # 2) Gemini チェーン（Hydrogen -> Flash-Lite -> Flash）が全滅した後、
-        #    追加コスト不要の OpenCode 無料 DeepSeek を試す。
+        # 2) Gemini チェーンが全滅した後、定義済みの OpenCode モデルを順に試す。
         use_opencode_fallback = (
             not opencode_requested
             and not openrouter_primary_requested
@@ -2156,8 +2240,12 @@ def main():
             and allow_opencode_fallback
             and (gemini_failed or not gemini_keys)
         )
-        if use_opencode_fallback:
-            model_key = OPENCODE_FALLBACK_MODEL
+        for fallback_key in OPENCODE_FALLBACK_MODEL_KEYS:
+            if not use_opencode_fallback or response is not None:
+                break
+            if not _budget_allows(start_time, OPENCODE_ATTEMPT_BUDGET):
+                break
+            model_key = fallback_key
             model_info, model_name = resolve_model(model_key, model_config)
             resolved_model_name = model_name
             print(f"Using model (fallback): {model_key} ({model_name})")
@@ -2168,15 +2256,19 @@ def main():
                 used_opencode = True
                 print(f"OpenCode fallback succeeded with model {model_name}")
             except Exception as oe:  # noqa: BLE001
-                opencode_failed = True
                 last_exc = oe
                 print(
                     "::warning::OpenCode fallback failed "
-                    f"({_annotation_safe(oe)}); trying OpenRouter."
+                    f"({_annotation_safe(oe)}); trying next model."
                 )
 
         # 3) 最後に OpenRouter の無料モデルへフォールバック
-        if not openrouter_primary_requested and response is None and openrouter_keys:
+        if (
+            not openrouter_primary_requested
+            and response is None
+            and openrouter_keys
+            and _budget_allows(start_time, FALLBACK_RESERVE_SECONDS)
+        ):
             fallback_models = _get_openrouter_fallback_models()
             print(f"All primary models exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
             or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
@@ -2207,9 +2299,25 @@ def main():
                 last_exc = or_exc
 
         if response is None:
+            # 全プロバイダが使えない場合もレビューを残す（投稿が失われないようにする）。
             if last_exc is not None:
-                raise last_exc
-            raise Exception("All providers (Gemini/OpenCode/OpenRouter) exhausted without response")
+                print(f"::warning::Last provider error: {_annotation_safe(last_exc)}")
+            print("::warning::All providers failed; publishing a failure review comment.")
+            response = OpenCodeResponse(
+                text=(
+                    "> [!CAUTION]\n> AI レビューの生成に失敗しました。\n> "
+                    "時間予算の不足または全プロバイダの失敗が原因です。Actions ログを確認してください。\n"
+                )
+            )
+            used_opencode = False
+            model_info = {
+                "name": "N/A",
+                "input_cost_per_1m": None,
+                "output_cost_per_1m": None,
+                "max_diff_chars": 500000,
+            }
+            model_name = "N/A"
+            resolved_model_name = "N/A"
 
         end_time = datetime.datetime.now(JST)
         duration = (end_time - start_time).total_seconds()
