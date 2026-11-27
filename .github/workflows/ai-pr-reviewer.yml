@@ -139,12 +139,12 @@ jobs:
             rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない
             exit 1
           }
+          if [ -n "$OPENCODE_CLI_SHA256" ]; then
+            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c - || reject "OpenCode CLI checksum mismatch"
+          fi
           installed=$("$bin" --version | awk '{print $NF}' | sed 's/^v//') || reject "OpenCode CLI --version failed"
           if [ -n "$OPENCODE_CLI_VERSION" ] && [ "$installed" != "$OPENCODE_CLI_VERSION" ]; then
             reject "expected $OPENCODE_CLI_VERSION, got $installed"
-          fi
-          if [ -n "$OPENCODE_CLI_SHA256" ]; then
-            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c - || reject "OpenCode CLI checksum mismatch"
           fi
 
       - name: Smoke test OpenCode CLI
