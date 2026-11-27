@@ -1484,7 +1484,10 @@ def _generate_with_opencode(
                     "opencode run returned empty or invalid output "
                     "(expected **判定** with APPROVE/CHANGES_REQUESTED)"
                 )
-            return OpenCodeResponse(text=text, model_version=selector), effort_display
+            return (
+                OpenCodeResponse(text=text, model_version=selector, retry_count=attempt),
+                effort_display,
+            )
         # 到達不能: 各 attempt は return / raise / continue のいずれかで終了する。
 
 

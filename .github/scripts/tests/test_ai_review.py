@@ -347,6 +347,7 @@ def test_workflow_verifies_cli_install():
     assert "for flag in --agent --model --file --standalone --archived; do" in workflow
     assert 'rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない' in workflow
     assert '|| reject "OpenCode CLI --version failed"' in workflow
+    assert "set -o pipefail" in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
@@ -2626,6 +2627,7 @@ def test_generate_with_opencode_retries_transient_failure(monkeypatch):
     info = _prod_model_config()["opencode-deepseek-free"]
     resp, _ = _generate_with_opencode("opencode/deepseek-v4.1-flash-free", "p", "s", None, info)
     assert "**判定**" in resp.text
+    assert resp._retry_count == 1
     assert run.call_count == 2
     sleep.assert_called_once_with(ai_review.OPENCODE_RETRY_DELAY)
 
