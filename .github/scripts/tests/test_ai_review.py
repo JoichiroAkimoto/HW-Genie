@@ -2842,6 +2842,7 @@ def test_openrouter_fallback_budget_trims_models_and_attempts(
         "openrouter/free",
     ]
     assert "OR 本文" in review
+    assert "OpenCode 予算不足 → OpenRouter" in review
 
 
 def test_effort_off_keeps_all_openrouter_models_with_full_budget(

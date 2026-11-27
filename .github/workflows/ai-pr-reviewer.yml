@@ -55,7 +55,8 @@ jobs:
     env:
       # repo variable で上書き可能。未設定時は固定バージョン 2.4.2 を使う。
       OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}
-      # 任意: 固定バイナリの sha256 を指定するとインストール後に検証する。
+      # 固定バイナリの sha256。設定するとインストール後・実行前に検証する。
+      # 運用で固定バージョンが安定したらリポジトリ変数へ設定してください。
       OPENCODE_CLI_SHA256: ${{ vars.OPENCODE_CLI_SHA256 }}
       # ジョブ制限と Python 側の時間予算を同じ repo variable から導出する。
       REVIEW_TIMEOUT_MINUTES: ${{ vars.REVIEW_TIMEOUT_MINUTES || '15' }}

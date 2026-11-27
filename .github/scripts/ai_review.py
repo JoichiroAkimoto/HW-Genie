@@ -2417,6 +2417,7 @@ def main():
             if not use_opencode_fallback or response is not None:
                 break
             if not _budget_allows(start_time, opencode_budget):
+                fallback_notes.append("OpenCode 予算不足 → OpenRouter")
                 break
             model_key = fallback_key
             model_info, model_name = resolve_model(model_key, model_config)
