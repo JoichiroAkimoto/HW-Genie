@@ -61,9 +61,15 @@ jobs:
     # 変更は repo variable REVIEW_TIMEOUT_MINUTES の一点から行う。
     timeout-minutes: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') }}
     steps:
+      - name: Record job start time
+        # 残時間の算出をジョブ開始基準にする（checkout / pip / CLI 導入を含む）。
+        run: echo "REVIEW_START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          # エージェント型 CLI にリポジトリの git 資格情報を渡さない。
+          persist-credentials: false
           # Full history is not needed: ai_review.py fetches the PR head ref
           # itself (git fetch refs/pull/N/head) and uses `gh pr diff` via API.
           fetch-depth: 1

@@ -1,5 +1,6 @@
 """ai_review.py のヘルパー関数（リトライ・PR コメント取得・ファイル全文取得・メタデータ抽出・モデル解決）のテスト。"""
 
+import base64
 import html
 import json
 import os
@@ -1039,6 +1040,25 @@ def test_fetch_file_contents_fetch_oserror_does_not_abort():
         result = ai_review._fetch_file_contents("42", paths, limit=1000)
     assert "### a.py" in result
     assert "content a" in result
+
+
+def test_fetch_file_contents_falls_back_to_gh_api(monkeypatch):
+    """git が使えない環境では Contents API からファイル全文を取得する。"""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    encoded = base64.b64encode(b"api content").decode()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            raise OSError("git binary not found")
+        if cmd[0] == "gh" and cmd[1] == "api":
+            assert "repos/owner/repo/contents/a.py?ref=refs/pull/42/head" in cmd[2]
+            return encoded
+        raise AssertionError(cmd)
+
+    with mock.patch("ai_review.subprocess.check_output", side_effect=fake_run):
+        result = ai_review._fetch_file_contents("42", ["a.py"], limit=1000)
+    assert "### a.py" in result
+    assert "api content" in result
 
 
 def test_fetch_file_contents_counts_header_in_budget():
@@ -2476,6 +2496,7 @@ def test_main_insufficient_budget_skips_opencode_and_falls_back(tmp_path, monkey
     oc, gc, orp, review = _run_main_opencode(tmp_path, monkeypatch)
     assert oc.call_count == 0
     assert gc.call_count == 1
+    assert gc.call_args.args[0][0][0] == "hydrogen"
     assert "Gemini 本文" in review
 
 
@@ -2523,6 +2544,22 @@ def test_main_rejects_unsafe_comment_options_without_truncation(tmp_path, monkey
             "@gemini-cli /quick-review --effort high;rm",
         )
     assert excinfo.value.code == 1
+
+
+def test_generate_with_opencode_redacts_api_key(monkeypatch):
+    """CLI stdout にキーが混入しても PR コメントへ出さない。"""
+    monkeypatch.setenv("OPENCODE_API_KEY", "oc_sk_test_123")
+    stdout = "Installing...\n**判定**: 【✅ APPROVE】 key=oc_sk_test_123\n"
+    monkeypatch.setattr(
+        ai_review.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=""),
+    )
+    info = _prod_model_config()["opencode-hy4-free"]
+    resp, _ = _generate_with_opencode("opencode/hy4-flash-free", "p", "s", None, info)
+    assert "oc_sk_test_123" not in resp.text
+    assert "[REDACTED]" in resp.text
+    assert "Installing..." not in resp.text
 
 
 def test_generate_with_opencode_retries_transient_failure(monkeypatch):
@@ -2678,7 +2715,7 @@ def test_opencode_timeout_budget_fits_job_limit():
     """2 試行＋リトライ待機が予算（ジョブ全体 - 予備時間）内に収まること。"""
     assert (
         ai_review.OPENCODE_ATTEMPT_BUDGET
-        < ai_review.JOB_TIMEOUT_SECONDS - ai_review.FALLBACK_RESERVE_SECONDS
+        < ai_review.JOB_TIMEOUT_SECONDS - ai_review.OPENROUTER_FALLBACK_BUDGET
     )
 
 

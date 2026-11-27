@@ -1,3 +1,4 @@
+import base64
 import datetime
 import html
 import io
@@ -12,6 +13,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
+from urllib.parse import quote
 
 from google import genai
 from google.genai import types
@@ -73,8 +75,11 @@ OPENROUTER_REASONING_ENABLED_DISPLAY = "有効（effort 非対応モデル・既
 OPENCODE_CLI = os.environ.get("OPENCODE_CLI", "opencode")
 # workflow の timeout-minutes と同じ値を env で受け取る（既定 900 秒）。
 JOB_TIMEOUT_SECONDS = float(os.environ.get("REVIEW_TIMEOUT_MINUTES", "15") or 15) * 60
-# コメント投稿とレビュー生成に残す予算。この残時間を切ったら次の provider へ進まない。
-FALLBACK_RESERVE_SECONDS = float(os.environ.get("REVIEW_FALLBACK_RESERVE_SECONDS", "180") or 180)
+# OpenRouter は 6 試行×モデル数×最大 2 パスのバックオフがあり得るため、
+# 短い予算ではなくこの見積もりを要求する。
+OPENROUTER_FALLBACK_BUDGET = float(
+    os.environ.get("REVIEW_OPENROUTER_BUDGET_SECONDS", "300") or 300
+)
 # 1 試行の上限。2 試行＋リトライ待機でもジョブ残時間内に収まるようにする。
 OPENCODE_TIMEOUT = float(os.environ.get("OPENCODE_TIMEOUT", "240") or 240)
 OPENCODE_RETRY_DELAY = 2.0
@@ -1315,6 +1320,14 @@ def _is_review_output_valid(text: str) -> bool:
     )
 
 
+def _sanitize_review_output(text: str, api_key: str) -> str:
+    """CLI の進捗ログを落とし、API キーが本文に混入した場合はマスクする。"""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if "**判定**" in line), 0)
+    body = "\n".join(lines[start:]).strip()
+    return body.replace(api_key, "[REDACTED]") if api_key else body
+
+
 def _time_left_seconds(start_time: datetime.datetime) -> float:
     """ジョブの残時間（秒）を返す。"""
     elapsed = (datetime.datetime.now(start_time.tzinfo) - start_time).total_seconds()
@@ -1413,7 +1426,7 @@ def _generate_with_opencode(
                     time.sleep(OPENCODE_RETRY_DELAY)
                     continue
                 raise err
-            text = _strip_ansi(proc.stdout).strip()
+            text = _sanitize_review_output(_strip_ansi(proc.stdout).strip(), api_key)
             if not text or not _is_review_output_valid(text):
                 if attempt == 0:
                     print("::warning::OpenCode output is empty or invalid; retrying once.")
@@ -1685,10 +1698,9 @@ def _fetch_pr_comments(repo: str, pr_number: str) -> tuple[str, dict | None]:
 def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
     """変更ファイルのヘッド時点の全文を、合計バッファ上限内で取得する。
 
-    GitHub Actions では `actions/checkout` でリポジトリがローカルに
-    チェックアウト済みのため、外部 API（GitHub Contents API）ではなく
-    `git show` でローカルから取得する。ネットワーク依存ゼロで、レート制限や
-    API エラーのリスクもない。
+    `git show` でローカルから取得し、読めない場合は `GH_TOKEN` 経由の
+    GitHub Contents API へフォールバックする（認証情報を持たない checkout
+    や非公開リポジトリでも全文を取得できるようにするため）。
 
     PR ヘッドの参照は、pull_request イベントの checkout では
     `refs/remotes/pull/{n}/head` として作られるが、workflow_dispatch（手動実行）
@@ -1738,8 +1750,28 @@ def _fetch_file_contents(pr_number: str, paths: list[str], limit: int) -> str:
                 ["git", "show", f"{pr_ref}:{path}"],
             ).decode("utf-8", errors="replace")
         except Exception as e:
-            print(f"Warning: Could not read {path} from local checkout: {e}")
-            return None
+            # persist-credentials: false の環境や公開されていないリポジトリでは
+            # git 経由で読めないため、GH_TOKEN を使う Contents API にフォールバックする。
+            repo = os.environ.get("GITHUB_REPOSITORY", "")
+            if not repo:
+                print(f"Warning: Could not read {path} from local checkout: {e}")
+                return None
+            try:
+                encoded = subprocess.check_output(
+                    [
+                        "gh",
+                        "api",
+                        f"repos/{repo}/contents/{quote(path, safe='/')}"
+                        f"?ref=refs/pull/{pr_number}/head",
+                        "--jq",
+                        ".content",
+                    ],
+                    text=True,
+                ).strip()
+                result = base64.b64decode(encoded).decode("utf-8", errors="replace")
+            except Exception as api_exc:
+                print(f"Warning: Could not read {path} via GitHub API: {api_exc}")
+                return None
         if not result.strip():
             return None
         return result
@@ -1969,6 +2001,14 @@ def main():
     model_info, model_name = resolve_model(model_key, model_config)
     gemini_chain = _gemini_model_chain(model_key, model_config)
 
+    def reset_to_gemini_chain() -> None:
+        """OpenCode を諦めた時に Gemini チェーンへ状態を戻す（全分岐で共通）。"""
+        nonlocal model_key, model_info, model_name, gemini_chain, resolved_model_name
+        model_key = GEMINI_FALLBACK_CHAIN[0]
+        model_info, model_name = resolve_model(model_key, model_config)
+        gemini_chain = _gemini_model_chain(model_key, model_config)
+        resolved_model_name = model_name
+
     # opencode 系は事前定義なしで受け付ける。接頭辞を持つ入力の形式だけ検証し、
     # パス資産やシェル記号を含む ID は明示的に拒否する。
     opencode_prefixes = ("opencode/", "opencode-go/")
@@ -1983,9 +2023,7 @@ def main():
     if is_opencode_primary and not opencode_key:
         # シークレット未登録でも既存の Gemini レビューを止めない（fork PR も同様）。
         print("::warning::OPENCODE_API_KEY is not set; falling back to the Gemini chain.")
-        model_key = GEMINI_FALLBACK_CHAIN[0]
-        model_info, model_name = resolve_model(model_key, model_config)
-        gemini_chain = _gemini_model_chain(model_key, model_config)
+        reset_to_gemini_chain()
         is_opencode_primary = False
 
     # 要求フラグ（キー未設定で Gemini に差し替えた場合は False）と、
@@ -2121,7 +2159,13 @@ def main():
 """
 
     try:
-        start_time = datetime.datetime.now(JST)
+        # workflow の先頭ステップで記録したジョブ開始時刻を使う（checkout/pip/CLI
+        # インストールで消費した時間も残時間に反映するため）。
+        started = os.environ.get("REVIEW_START_TIME", "").strip()
+        try:
+            start_time = datetime.datetime.fromtimestamp(float(started), JST)
+        except (TypeError, ValueError):
+            start_time = datetime.datetime.now(JST)
 
         thinking_config = None
 
@@ -2147,6 +2191,8 @@ def main():
         if is_opencode_primary and not _budget_allows(start_time, OPENCODE_ATTEMPT_BUDGET):
             opencode_failed = True
             last_exc = RuntimeError("insufficient time budget for OpenCode")
+            reset_to_gemini_chain()
+            print(f"Using model (fallback): {model_key} ({model_name})")
 
         if is_opencode_primary and not opencode_failed:
             try:
@@ -2164,10 +2210,7 @@ def main():
                     "::warning::OpenCode review failed "
                     f"({_annotation_safe(oe)}); falling back to Gemini/OpenRouter."
                 )
-                model_key = GEMINI_FALLBACK_CHAIN[0]
-                model_info, model_name = resolve_model(model_key, model_config)
-                gemini_chain = _gemini_model_chain(model_key, model_config)
-                resolved_model_name = model_name
+                reset_to_gemini_chain()
                 print(f"Using model (fallback): {model_key} ({model_name})")
 
         # OpenCode が成功した場合は他プロバイダへ落とさない。失敗時はフォールバックを許可する。
@@ -2267,7 +2310,7 @@ def main():
             not openrouter_primary_requested
             and response is None
             and openrouter_keys
-            and _budget_allows(start_time, FALLBACK_RESERVE_SECONDS)
+            and _budget_allows(start_time, OPENROUTER_FALLBACK_BUDGET)
         ):
             fallback_models = _get_openrouter_fallback_models()
             print(f"All primary models exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
