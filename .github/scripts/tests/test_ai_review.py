@@ -317,7 +317,7 @@ def test_workflow_default_model_matches_python_constant():
     assert f"inputs.model || '{key}'" in workflow
 
 
-# 旧モデル ID は workflow に残さない（deny-list の第1要素で前缀も検出できる）。
+# 旧モデル ID は workflow に残さない（deny-list の第1要素で接頭辞も検出できる）。
 # 変更履歴は PR 本文に書く。
 DEPRECATED_MODEL_IDS = ("gemini-3.1-flash-lite",)
 
