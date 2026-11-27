@@ -122,7 +122,7 @@ jobs:
         env:
           # stdout をリアルタイム化（打ち切り時にバッファ出力を失わないため）
           PYTHONUNBUFFERED: 1
-          # OpenCode provider（既定の無料 DeepSeek / --model opencode/* で使用）。
+          # OpenCode provider（--model opencode/* とフォールバックで使用）。
           # 未登録の場合はスクリプトが Gemini チェーンへフォールバックする。
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           # Backward compat: single key

@@ -813,6 +813,22 @@ def _get_openrouter_fallback_models() -> list[str]:
     return [m for m in OPENROUTER_FALLBACK_MODELS if "gemma" not in m.lower()]
 
 
+def _openrouter_attempts(budget: float, key_count: int, pass_count: int) -> int:
+    """残予算から OpenRouter のリトライ回数を算出する。
+
+    1 試行は ``キー数 × OPENROUTER_TIMEOUT × パス数`` を消費し得るため、
+    それを実コストとして見積もる（``MAX_ATTEMPTS`` が上限）。
+    """
+    per_attempt = max(1, key_count) * OPENROUTER_TIMEOUT * max(1, pass_count)
+    return max(1, min(MAX_ATTEMPTS, int(budget // per_attempt)))
+
+
+def _trim_openrouter_models(models: list[str]) -> list[str]:
+    """時間が足りない時も安全網の動的ルーターを残してモデルを絞る。"""
+    router = [m for m in models if m == "openrouter/free"]
+    return list(dict.fromkeys(models[:1] + router))
+
+
 class _OpenRouterUsage:
     """OpenRouter レスポンスの usage を Gemini 互換で保持する。"""
 
@@ -949,6 +965,7 @@ def _run_openrouter_pass(
     system_instruction: str,
     api_keys: list[str],
     reasoning_effort: str | None,
+    max_attempts: int | None = None,
 ) -> tuple[OpenRouterResponse | None, str | None, str | None, Exception | None]:
     """OpenRouter のモデル群を順に試行し (response, model, 表示値, last_exc) を返す。
 
@@ -958,6 +975,9 @@ def _run_openrouter_pass(
     effort 指定で全モデル失敗した場合は reasoning なしの 2 パス目を 1 回だけ
     再試行する。無料ルーターには ``reasoning`` パラメータを扱えないモデルが
     混在しており、全滅でレビュー全体を失敗させないための保険。
+
+    ``max_attempts`` を指定すると各モデルのリトライ上限を制限する（None で
+    ``MAX_ATTEMPTS``）。残時間が少ないフォールバック時に使用する。
     """
     last_exc: Exception | None = None
     passes: list[str | None] = [reasoning_effort]
@@ -974,6 +994,7 @@ def _run_openrouter_pass(
                     system_instruction,
                     api_keys,
                     reasoning_effort=effort,
+                    max_attempts=max_attempts,
                 )
                 return resp, fb_model, display_value, None
             except Exception as fe:  # noqa: BLE001
@@ -990,11 +1011,13 @@ def _generate_with_openrouter(
     system_instruction: str,
     api_keys: list[str],
     reasoning_effort: str | None = None,
+    max_attempts: int | None = None,
 ) -> OpenRouterResponse:
     """OpenRouter (OpenAI 互換) 経由で生成を実行する。
 
     ``httpx`` が利用可能ならそれを使用し、なければ stdlib の ``urllib.request`` に
-    フォールバックする。429 / 5xx は ``MAX_ATTEMPTS`` までリトライし、キー回転を行う。
+    フォールバックする。429 / 5xx は ``max_attempts``（既定 ``MAX_ATTEMPTS``）まで
+    リトライし、キー回転を行う。
 
     Args:
         model_name: OpenRouter 上のモデル名 (例: ``openrouter/free``)。
@@ -1004,6 +1027,8 @@ def _generate_with_openrouter(
         reasoning_effort: 解決済みの effort (minimal/low/medium/high)。実際に送る
             ``reasoning`` 辞書は ``_reasoning_payload`` がモデルごとに解決する。
             None の場合はパラメータ自体を送らない（2 パス目の再試行）。
+        max_attempts: キー回転を含む 1 モデルあたりのリトライ上限。None で
+            ``MAX_ATTEMPTS``、下限 1。
 
     Returns:
         ``OpenRouterResponse`` オブジェクト。
@@ -1024,8 +1049,9 @@ def _generate_with_openrouter(
         has_httpx = False
 
     last_exc: Exception | None = None
+    attempts = MAX_ATTEMPTS if max_attempts is None else max(1, max_attempts)
 
-    for attempt in range(MAX_ATTEMPTS):
+    for attempt in range(attempts):
         for key_idx, api_key in enumerate(api_keys):
             try:
                 payload = {
@@ -1184,7 +1210,7 @@ def _generate_with_openrouter(
                     print(f"OpenRouter key {key_idx + 1}/{len(api_keys)} failed ({e}); skipping remaining keys")
                     raise
                 is_last_key = key_idx == len(api_keys) - 1
-                is_last_attempt = attempt >= MAX_ATTEMPTS - 1
+                is_last_attempt = attempt >= attempts - 1
                 if not retryable:
                     if not is_last_key:
                         print(
@@ -1209,20 +1235,20 @@ def _generate_with_openrouter(
                 break
 
         # 全キー試行後のバックオフ（最後の試行以外）
-        if attempt < MAX_ATTEMPTS - 1 and last_exc is not None:
+        if attempt < attempts - 1 and last_exc is not None:
             retryable, code = _is_retryable_api_error(last_exc)
             if retryable:
                 if code == 429:
                     delay = min(RETRY_DELAY_429 * (2**attempt), RETRY_MAX_DELAY_429) + random.uniform(0, 5)
                     print(
                         f"OpenRouter API 429 (Rate limited). Retrying in {delay:.1f}s... "
-                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                        f"(Attempt {attempt + 1}/{attempts})"
                     )
                 else:
                     delay = RETRY_DELAY_5XX * (2**attempt)
                     print(
                         f"OpenRouter API Error ({last_exc}). Retrying in {delay}s... "
-                        f"(Attempt {attempt + 1}/{MAX_ATTEMPTS})"
+                        f"(Attempt {attempt + 1}/{attempts})"
                     )
                 time.sleep(delay)
             else:
@@ -2306,20 +2332,38 @@ def main():
                 )
 
         # 3) 最後に OpenRouter の無料モデルへフォールバック
+        or_min_request = max(1, len(openrouter_keys)) * OPENROUTER_TIMEOUT
         if (
             not openrouter_primary_requested
             and response is None
             and openrouter_keys
-            and _budget_allows(start_time, OPENROUTER_FALLBACK_BUDGET)
+            and _budget_allows(start_time, or_min_request)
         ):
             fallback_models = _get_openrouter_fallback_models()
-            print(f"All primary models exhausted, trying OpenRouter fallback ({len(fallback_models)} models)...")
+            # 残時間に応じてパス数・モデル数・リトライ回数を削る（15 分打ち切りで
+            # コメント自体が失われないようにする）。安全網のルーターは必ず残す。
+            or_budget = min(OPENROUTER_FALLBACK_BUDGET, _time_left_seconds(start_time) - 30)
+            full_attempt_cost = or_min_request * (2 if fallback_reasoning_effort else 1)
+            budget_tight = or_budget < full_attempt_cost
+            or_effort = None if budget_tight else fallback_reasoning_effort
+            if budget_tight:
+                fallback_models = _trim_openrouter_models(fallback_models)
+            or_attempts = _openrouter_attempts(
+                or_budget,
+                len(openrouter_keys),
+                2 if or_effort else 1,
+            )
+            print(
+                f"All primary models exhausted, trying OpenRouter fallback "
+                f"({len(fallback_models)} models, {or_attempts} attempts, {or_budget:.0f}s)..."
+            )
             or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
                 fallback_models,
                 prompt,
                 system_instruction,
                 openrouter_keys,
-                fallback_reasoning_effort,
+                or_effort,
+                max_attempts=or_attempts,
             )
             if or_resp is not None:
                 response = or_resp

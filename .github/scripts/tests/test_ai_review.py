@@ -329,7 +329,8 @@ def test_workflow_timeout_and_python_budget_share_one_variable():
         workflow = f.read()
     assert "timeout-minutes: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') }}" in workflow
     assert "REVIEW_TIMEOUT_MINUTES: ${{ vars.REVIEW_TIMEOUT_MINUTES || '15' }}" in workflow
-    assert ai_review.JOB_TIMEOUT_SECONDS == 15 * 60
+    expected = float(os.environ.get("REVIEW_TIMEOUT_MINUTES", "15") or 15) * 60
+    assert ai_review.JOB_TIMEOUT_SECONDS == expected
 
 
 def test_workflows_have_no_stale_model_ids():
@@ -1304,7 +1305,7 @@ def test_run_openrouter_pass_retries_without_reasoning():
     """effort 付きで全モデル失敗時は reasoning なしの 2 パス目が走る。"""
     calls: list[tuple[str, str | None]] = []
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         calls.append((model, reasoning_effort))
         if reasoning_effort is not None:
             raise Exception("400 reasoning unsupported")
@@ -1326,7 +1327,7 @@ def test_run_openrouter_pass_single_pass_without_effort():
     """effort 未指定なら 1 パスだけで完了する（既存挙動のまま）。"""
     calls: list[tuple[str, str | None]] = []
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         calls.append((model, reasoning_effort))
         raise Exception("boom")
 
@@ -1342,7 +1343,7 @@ def test_run_openrouter_pass_single_pass_without_effort():
 def test_run_openrouter_pass_reports_used_effort():
     """1 パス目で成功した場合は実際に送った effort が返る。"""
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         return ai_review.OpenRouterResponse(text="ok")
 
     with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
@@ -1479,7 +1480,7 @@ def test_run_openrouter_pass_non_effort_model_display_integration():
     """lightning が勝った場合、実行情報に high も「reasoning なし」も出ない。"""
     lightning = "nvidia/nemotron-3.5-lightning:free"
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         return ai_review.OpenRouterResponse(text="ok")
 
     with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
@@ -1591,7 +1592,7 @@ def test_run_openrouter_pass_empty_content_falls_back_to_next_model():
     """空本文の例外は次のモデルへフォールバックし、ルーターまで試す。"""
     calls = []
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         calls.append(model)
         if model == "nvidia/nemotron-3-ultra-550b-a55b:free":
             raise Exception("OpenRouter returned empty content")
@@ -1621,7 +1622,7 @@ def test_run_openrouter_pass_empty_content_falls_back_to_next_model():
 def test_run_openrouter_pass_all_empty_content_fails():
     """ルーターまで本文が空ならフォールバック全体を失敗させる。"""
 
-    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, sys_instr, keys, reasoning_effort=None, **kwargs):
         raise Exception("OpenRouter returned empty content")
 
     with mock.patch.object(ai_review, "_generate_with_openrouter", fake_generate):
@@ -2050,7 +2051,7 @@ def _run_main_gemini_to_openrouter(
         response = ai_review.OpenRouterResponse(text="OpenRouter 本文")
     seen_efforts = []
 
-    def fake_generate(model, prompt, system_instruction, keys, reasoning_effort=None):
+    def fake_generate(model, prompt, system_instruction, keys, reasoning_effort=None, **kwargs):
         seen_efforts.append(reasoning_effort)
         return response
 
@@ -2709,6 +2710,55 @@ def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
     assert orp.call_count == 1
     assert "生成に失敗しました" in review
     assert "opencode/deepseek-v4.1-flash-free" not in review
+
+
+def test_openrouter_fallback_budget_trims_models_and_attempts(
+    tmp_path, monkeypatch
+):
+    """既定予算 300 のまま残時間が少ない時だけパス・モデル・試行を削る。"""
+    monkeypatch.setattr(ai_review, "_time_left_seconds", lambda start: 100.0)
+    gc, oc, orp, review = _run_main_default_priority(
+        tmp_path, monkeypatch, gemini_error=Exception("Gemini exhausted")
+    )
+    assert orp.call_count == 1
+    assert orp.call_args.kwargs["max_attempts"] == 1
+    # reasoning パスを落とし、先頭モデル＋安全網ルーターだけを残す。
+    assert orp.call_args.args[4] is None
+    assert orp.call_args.args[0] == [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "openrouter/free",
+    ]
+    assert "OR 本文" in review
+
+
+def test_effort_off_keeps_all_openrouter_models_with_full_budget(
+    tmp_path, monkeypatch
+):
+    """--effort off は予算充足ならモデルを削らず reasoning も送らない。"""
+    run_pass, seen, review = _run_main_gemini_to_openrouter(
+        tmp_path, monkeypatch, "@gemini-cli /quick-review --effort off"
+    )
+    assert len(run_pass.call_args.args[0]) == 3
+    assert seen == [None]
+    assert "reasoning: " not in review
+
+
+def test_openrouter_max_attempts_limits_retries(monkeypatch):
+    """max_attempts=1 なら 429 でも 1 回で打ち切る。"""
+    resp = mock.MagicMock()
+    resp.status_code = 429
+    resp.text = "rate limit"
+    monkeypatch.setattr(ai_review.time, "sleep", mock.Mock())
+    with mock.patch("httpx.post", return_value=resp) as post:
+        with pytest.raises(Exception, match="OpenRouter API Error 429"):
+            ai_review._generate_with_openrouter(
+                "openrouter/free", "p", "s", ["key"], max_attempts=1
+            )
+        assert post.call_count == 1
+        post.reset_mock()
+        with pytest.raises(Exception, match="OpenRouter API Error 429"):
+            ai_review._generate_with_openrouter("openrouter/free", "p", "s", ["key"])
+        assert post.call_count == ai_review.MAX_ATTEMPTS
 
 
 def test_opencode_timeout_budget_fits_job_limit():
