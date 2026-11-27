@@ -1349,7 +1349,14 @@ def _sanitize_review_output(text: str, api_key: str) -> str:
     """CLI の進捗ログを落とし、API キーが本文に混入した場合はマスクする。"""
     lines = text.splitlines()
     start = next((i for i, line in enumerate(lines) if "**判定**" in line), 0)
-    body = "\n".join(lines[start:]).strip()
+    # 末尾の CLI ログ（ツール一覧・枠線・実行ログ）はレビュー本文ではないため落とす。
+    end = len(lines)
+    for i in range(len(lines) - 1, start, -1):
+        if re.match(r"^(Tools\b|╭|│|╰|─|Running|Executing|\$|▸|•)", lines[i].strip()):
+            end = i
+        else:
+            break
+    body = "\n".join(lines[start:end]).strip()
     return body.replace(api_key, "[REDACTED]") if api_key else body
 
 
@@ -1401,12 +1408,23 @@ def _generate_with_opencode(
 
     variant, effort_display = _opencode_variant(model_info, effort)
     selector = f"{model_name}#{variant}" if variant else model_name
-    message = f"{system_instruction}\n\n---\n\n{OPENCODE_PROMPT}"
 
     with tempfile.TemporaryDirectory(prefix="opencode-review-") as workdir:
         path = os.path.join(workdir, "prompt.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(prompt)
+        # システム指示はエージェント定義（system 側）に分離し、ユーザーメッセージ
+        # には添付ファイルを読む指示だけを渡す（信頼境界を他 provider と揃える）。
+        agent_dir = os.path.join(workdir, ".opencode", "agents")
+        os.makedirs(agent_dir, exist_ok=True)
+        with open(os.path.join(agent_dir, "reviewer.md"), "w", encoding="utf-8") as f:
+            f.write(
+                "---\ndescription: Strict code reviewer\nmode: primary\n---\n\n"
+                + system_instruction
+            )
+        # エージェントにツールを一切使わせない（プロンプトインジェクション対策）。
+        with open(os.path.join(workdir, "opencode.json"), "w", encoding="utf-8") as f:
+            json.dump({"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}, f)
         # 許可リスト方式: GH_TOKEN / GEMINI_API_KEY / OPENROUTER_API_KEY 等は渡さない。
         env = {k: os.environ[k] for k in OPENCODE_SUBPROCESS_ENV_KEYS if k in os.environ}
         env["OPENCODE_API_KEY"] = api_key
@@ -1415,11 +1433,13 @@ def _generate_with_opencode(
             "run",
             "--standalone",
             "--archived",
+            "--agent",
+            "reviewer",
             "--model",
             selector,
             "--file",
             path,
-            message,
+            OPENCODE_PROMPT,
         ]
         for attempt in range(2):
             try:
@@ -2032,6 +2052,8 @@ def main():
     JST = datetime.timezone(datetime.timedelta(hours=9), "JST")
 
     model_config = load_model_config()
+    # 未定義モデル／OpenRouter の差分上限は models.json を唯一の情報源とする。
+    fallback_limit = model_config.get("openrouter-free", {}).get("max_diff_chars", 500000)
     additional_context = os.environ.get("ADDITIONAL_CONTEXT", "")
     env_model_key = os.environ.get("MODEL_KEY", DEFAULT_MODEL_KEY)
 
@@ -2190,7 +2212,7 @@ def main():
         file_contents,
         previous_review,
         full_diff,
-        model_info.get("max_diff_chars", 500000),
+        model_info.get("max_diff_chars", fallback_limit),
     )
 
     # システムインストラクション（役割・ガイドライン・信頼境界）と
@@ -2206,7 +2228,7 @@ def main():
             file_contents,
             previous_review,
             full_diff,
-            info.get("max_diff_chars", 500000),
+            info.get("max_diff_chars", fallback_limit),
         )
         prompt = new_prompt
         is_truncated = is_truncated or truncated
@@ -2230,6 +2252,7 @@ def main():
         used_opencode = False
         opencode_failed = False
         gemini_failed = False
+        review_failed = False
         opencode_effort_display: str | None = None
         # 表示帰属用の元 initial reasoning.effort を事先解決しておく。
         # 成功後に model_info が OpenRouter 結果用の dict へ差し替わるため、
@@ -2296,7 +2319,7 @@ def main():
                     "name": or_model,
                     "input_cost_per_1m": None,
                     "output_cost_per_1m": None,
-                    "max_diff_chars": 500000,
+                    "max_diff_chars": fallback_limit,
                 }
                 thinking_config = None
                 used_openrouter = True
@@ -2386,8 +2409,8 @@ def main():
                 f"All primary models exhausted, trying OpenRouter fallback "
                 f"({len(fallback_models)} models, {or_attempts} attempts, {or_budget:.0f}s)..."
             )
-            # OpenRouter は未定義モデルと同じ 500000 文字上限でプロンプトを組み直す。
-            rebuild_prompt_for({"max_diff_chars": 500000})
+            # OpenRouter は未定義モデルと同じ上限でプロンプトを組み直す。
+            rebuild_prompt_for({"max_diff_chars": fallback_limit})
             or_resp, or_model, or_used_effort, or_exc = _run_openrouter_pass(
                 fallback_models,
                 prompt,
@@ -2405,7 +2428,7 @@ def main():
                     "name": or_model,
                     "input_cost_per_1m": None,
                     "output_cost_per_1m": None,
-                    "max_diff_chars": 500000,
+                    "max_diff_chars": fallback_limit,
                 }
                 # 思考レベル表示は or_used_effort（実際に送った reasoning ペイロードから導出した表示値）で行う
                 thinking_config = None
@@ -2428,11 +2451,12 @@ def main():
                 )
             )
             used_opencode = False
+            review_failed = True
             model_info = {
                 "name": "N/A",
                 "input_cost_per_1m": None,
                 "output_cost_per_1m": None,
-                "max_diff_chars": 500000,
+                "max_diff_chars": fallback_limit,
             }
             model_name = "N/A"
             resolved_model_name = "N/A"
@@ -2527,9 +2551,18 @@ def main():
         # 投稿失敗はレビュー生成の失敗ではないため check を落とさない。
         # _publish_review が review.md / GITHUB_STEP_SUMMARY に本文を残して警告する。
         try:
-            _publish_review(review_text, repo, pr_number, existing_comment)
+            # 失敗レビューは既存の正常レビューを上書きせず、別コメントとして残す。
+            _publish_review(
+                review_text,
+                repo,
+                pr_number,
+                None if review_failed else existing_comment,
+            )
         except Exception as e:
             print(f"::warning::Failed to publish AI review: {e}")
+        if review_failed:
+            # 障害を Actions のステータスにも反映する（投稿は完了している）。
+            sys.exit(1)
 
     except Exception as e:
         print(f"Gemini Review Error: {e}")

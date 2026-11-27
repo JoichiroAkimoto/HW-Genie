@@ -342,6 +342,10 @@ def test_workflow_verifies_cli_install():
     assert '"$installed" != "$OPENCODE_CLI_VERSION"' in workflow
     assert "sha256sum -c -" in workflow
     assert "OpenCode CLI is not installed; skipping verification" in workflow
+    assert "OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}" in workflow
+    assert "Smoke test OpenCode CLI" in workflow
+    assert '"$bin" run --help | grep -E -- \'--agent|--model|--file|--standalone|--archived\'' in workflow
+    assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
 def test_workflows_have_no_stale_model_ids():
@@ -1969,10 +1973,12 @@ def test_main_publishes_failure_review_when_generation_fails(tmp_path, monkeypat
         for patcher in patches:
             patcher.start()
         try:
-            ai_review.main()
+            with pytest.raises(SystemExit) as excinfo:
+                ai_review.main()
         finally:
             for patcher in reversed(patches):
                 patcher.stop()
+    assert excinfo.value.code == 1
     assert run.called
     assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
 
@@ -2299,6 +2305,14 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
         with open(attached, encoding="utf-8") as f:
             captured["attached"] = f.read()
         captured["attached_path"] = attached
+        agent_path = os.path.join(
+            os.path.dirname(attached), ".opencode", "agents", "reviewer.md"
+        )
+        with open(agent_path, encoding="utf-8") as f:
+            captured["agent"] = f.read()
+        config_path = os.path.join(os.path.dirname(attached), "opencode.json")
+        with open(config_path, encoding="utf-8") as f:
+            captured["config"] = json.load(f)
         return subprocess.CompletedProcess(
             cmd,
             0,
@@ -2316,6 +2330,12 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
     assert resp.model_version == "opencode/deepseek-v4.1-flash-free#max"
     assert display.startswith("max ")
     assert captured["cmd"][:4] == ["opencode", "run", "--standalone", "--archived"]
+    assert captured["cmd"][captured["cmd"].index("--agent") + 1] == "reviewer"
+    assert captured["cmd"][-1] == ai_review.OPENCODE_PROMPT
+    assert "system instruction" in captured["agent"]  # システム指示は agent 側に分離
+    assert captured["config"]["permissions"] == [
+        {"action": "*", "resource": "*", "effect": "deny"}
+    ]
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == (
         "opencode/deepseek-v4.1-flash-free#max"
     )
@@ -2336,6 +2356,7 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
 
 def test_generate_with_opencode_empty_output_raises(monkeypatch):
     monkeypatch.setenv("OPENCODE_API_KEY", "secret")
+    monkeypatch.setattr(ai_review.time, "sleep", mock.Mock())
     monkeypatch.setattr(
         ai_review.subprocess,
         "run",
@@ -2363,6 +2384,14 @@ def test_review_output_contract_and_ansi_strip():
     assert _is_review_output_valid("**判定**: 【✅ APPROVE】")
     assert not _is_review_output_valid(" Installing... done ")
     assert "\x1b" not in ai_review._strip_ansi("\x1b[2K**判定**: 【✅ APPROVE】")
+    cleaned = ai_review._sanitize_review_output(
+        "Installing...\n**判定**: 【✅ APPROVE】\n**要約**: ok\nTools: read, bash\n╰───",
+        "oc_sk_test_123",
+    )
+    assert "Installing" not in cleaned
+    assert "Tools:" not in cleaned
+    assert "╰" not in cleaned
+    assert "**要約**: ok" in cleaned
 
 
 def _run_main_opencode(
@@ -2600,7 +2629,13 @@ def test_annotation_safe_strips_newlines():
 
 
 def _run_main_default_priority(
-    tmp_path, monkeypatch, *, gemini_error=None, opencode_error=None, openrouter_failure=False
+    tmp_path,
+    monkeypatch,
+    *,
+    gemini_error=None,
+    opencode_error=None,
+    openrouter_failure=False,
+    existing_comment=None,
 ):
     """既定（Gemini -> Go DeepSeek -> 無料 DeepSeek -> OpenRouter）の連鎖を再現する。"""
     _set_review_env(monkeypatch, tmp_path)
@@ -2637,7 +2672,9 @@ def _run_main_default_priority(
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_pr_metadata", return_value=""))
         stack.enter_context(
-            mock.patch.object(ai_review, "_fetch_pr_comments", return_value=("", None))
+            mock.patch.object(
+                ai_review, "_fetch_pr_comments", return_value=("", existing_comment)
+            )
         )
         stack.enter_context(mock.patch.object(ai_review, "_fetch_file_contents", return_value=""))
         gc = stack.enter_context(
@@ -2711,18 +2748,18 @@ def test_default_priority_deepseek_failure_then_openrouter(tmp_path, monkeypatch
 
 def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
     """全プロバイダ失敗でも review.md に失敗レビューを残す。"""
-    gc, oc, orp, review = _run_main_default_priority(
-        tmp_path,
-        monkeypatch,
-        gemini_error=Exception("Gemini exhausted"),
-        opencode_error=[RuntimeError("Go failed"), RuntimeError("Free failed")],
-        openrouter_failure=True,
-    )
-    assert gc.call_count == 1
-    assert oc.call_count == 2
-    assert orp.call_count == 1
-    assert "生成に失敗しました" in review
-    assert "opencode/deepseek-v4.1-flash-free" not in review
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_default_priority(
+            tmp_path,
+            monkeypatch,
+            gemini_error=Exception("Gemini exhausted"),
+            opencode_error=[RuntimeError("Go failed"), RuntimeError("Free failed")],
+            openrouter_failure=True,
+        )
+    assert excinfo.value.code == 1
+    failure_review = (tmp_path / "review.md").read_text(encoding="utf-8")
+    assert "生成に失敗しました" in failure_review
+    assert "opencode/deepseek-v4.1-flash-free" not in failure_review
 
 
 def test_openrouter_fallback_budget_trims_models_and_attempts(
@@ -2782,6 +2819,31 @@ def test_build_review_prompt_respects_model_diff_limit():
     assert truncated
     assert "x" * 500000 in prompt
     assert "x" * 500001 not in prompt
+
+
+def test_failure_review_does_not_overwrite_existing_comment(
+    tmp_path, monkeypatch
+):
+    """生成全滅時は既存レビューを上書きせず、失敗レビューを別投稿し exit 1 する。"""
+    published = {}
+
+    def fake_publish(text, repo, pr, existing):
+        published["existing"] = existing
+        (tmp_path / "review.md").write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(ai_review, "_publish_review", fake_publish)
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_default_priority(
+            tmp_path,
+            monkeypatch,
+            gemini_error=Exception("Gemini exhausted"),
+            opencode_error=[RuntimeError("Go failed"), RuntimeError("Free failed")],
+            openrouter_failure=True,
+            existing_comment={"id": 1, "body": "既存の正常レビュー"},
+        )
+    assert excinfo.value.code == 1
+    assert published["existing"] is None
+    assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
 
 
 def test_opencode_timeout_budget_fits_job_limit():
