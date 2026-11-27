@@ -351,6 +351,7 @@ def test_workflow_verifies_cli_install():
     assert "Verify OpenCode config schema" in workflow
     assert "'\"effect\": \"deny\"'" in workflow
     assert "OpenCode CLI did not accept the tool-deny config" in workflow
+    assert "sha256sum -c -; then" in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
@@ -2593,7 +2594,9 @@ def test_main_insufficient_budget_skips_all_providers(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         _run_main_opencode(tmp_path, monkeypatch)
     assert excinfo.value.code == 1
-    assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
+    failure_text = (tmp_path / "review.md").read_text(encoding="utf-8")
+    assert "生成に失敗しました" in failure_text
+    assert "OpenCode 予算不足" in failure_text
 
 
 def test_main_opencode_without_key_falls_back_to_hydrogen(tmp_path, monkeypatch):

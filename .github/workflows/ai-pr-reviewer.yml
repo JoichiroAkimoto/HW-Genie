@@ -112,6 +112,12 @@ jobs:
             rm -rf "$HOME/.opencode/bin"
             exit 1
           fi
+          if [ -n "$OPENCODE_CLI_SHA256" ]; then
+            if ! echo "$OPENCODE_CLI_SHA256  $HOME/.opencode/bin/opencode" | sha256sum -c -; then
+              rm -rf "$HOME/.opencode/bin"
+              exit 1
+            fi
+          fi
           if ! "$HOME/.opencode/bin/opencode" --version; then
             rm -rf "$HOME/.opencode/bin"
             exit 1
@@ -163,6 +169,7 @@ jobs:
         # 実 CLI が opencode.json / エージェント定義を解釈できることを確認する。
         continue-on-error: true
         run: |
+          set -o pipefail
           if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
             echo "::warning::OpenCode CLI unavailable; skipping config check."
             exit 0

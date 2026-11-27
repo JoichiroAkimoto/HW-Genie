@@ -2312,6 +2312,7 @@ def main():
         if is_opencode_primary and not _budget_allows(start_time, opencode_budget):
             opencode_failed = True
             last_exc = RuntimeError("insufficient time budget for OpenCode")
+            fallback_notes.append("OpenCode 予算不足 → Gemini チェーン")
             reset_to_gemini_chain()
             print(f"Using model (fallback): {model_key} ({model_name})")
 
