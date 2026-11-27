@@ -145,6 +145,7 @@ jobs:
         # 使用するフラグが実 CLI に存在することを確認する（モックだけに依存しない）。
         continue-on-error: true
         run: |
+          set -o pipefail
           bin="$HOME/.opencode/bin/opencode"
           if [ ! -x "$bin" ]; then
             echo "::warning::OpenCode CLI unavailable; skipping smoke test."

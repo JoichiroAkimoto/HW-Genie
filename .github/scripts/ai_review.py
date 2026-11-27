@@ -2602,7 +2602,7 @@ def main():
             run_id=run_id,
             commit_sha=commit_sha,
             usage_note=usage_note,
-            fallback_note="; ".join(fallback_notes) or None,
+            fallback_note="; ".join(dict.fromkeys(fallback_notes)) or None,
         )
 
         review_text = f"### 🤖 AI コードレビュー\n\n{body}{metadata}"

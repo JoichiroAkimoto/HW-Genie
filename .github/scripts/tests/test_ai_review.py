@@ -2803,6 +2803,7 @@ def test_default_priority_deepseek_failure_then_openrouter(tmp_path, monkeypatch
     assert "OR 本文" in review
     assert "opencode/deepseek-v4.1-flash-free" not in review
     assert "openrouter/free" in review
+    assert review.count("OpenCode フォールバック失敗") == 1
 
 
 def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
