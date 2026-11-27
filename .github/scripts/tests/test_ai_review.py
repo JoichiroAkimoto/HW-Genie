@@ -342,7 +342,7 @@ def test_workflow_verifies_cli_install():
     assert '"$installed" != "$OPENCODE_CLI_VERSION"' in workflow
     assert "sha256sum -c -" in workflow
     assert "OpenCode CLI is not installed; skipping verification" in workflow
-    assert "OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}" in workflow
+    assert "OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}" in workflow
     assert "Smoke test OpenCode CLI" in workflow
     assert "for flag in --agent --model --file --standalone --archived; do" in workflow
     assert 'rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない' in workflow

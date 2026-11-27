@@ -53,8 +53,8 @@ jobs:
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
     env:
-      # repo variable で上書き可能。未設定時は固定バージョン 2.4.2 を使う。
-      OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}
+      # 未指定ならインストーラが最新を解決する。固定したい場合のみ repo variable を設定する。
+      OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}
       # 固定バイナリの sha256。設定するとインストール後・実行前に検証する。
       # 運用で固定バージョンが安定したらリポジトリ変数へ設定してください。
       OPENCODE_CLI_SHA256: ${{ vars.OPENCODE_CLI_SHA256 }}
@@ -127,7 +127,7 @@ jobs:
       - name: Verify OpenCode CLI
         # 検証失敗もレビューを止めない（スクリプト側のフォールバックへ委ねる）。
         continue-on-error: true
-        # バージョン（既定 2.4.2）と、指定された場合はチェックサムを検証する。
+        # 指定されたバージョン／チェックサムを検証する（未指定なら最新）。
         run: |
           set -o pipefail
           bin="$HOME/.opencode/bin/opencode"
