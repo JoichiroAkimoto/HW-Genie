@@ -119,6 +119,7 @@ OPENCODE_TRANSIENT_PATTERNS = (
     "timed out",
     "timeout",
     "econnreset",
+    "connection reset",
     "etimedout",
     "temporarily",
     "rate limit",

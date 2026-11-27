@@ -2997,6 +2997,7 @@ def test_opencode_timeout_budget_fits_job_limit():
 def test_opencode_transient_detection_uses_word_boundaries():
     assert ai_review._is_opencode_transient("HTTP 429 too many requests")
     assert ai_review._is_opencode_transient("HTTP 503 service unavailable")
+    assert ai_review._is_opencode_transient("connection reset by peer")
     assert not ai_review._is_opencode_transient("context 50000 tokens")
     assert not ai_review._is_opencode_transient("HTTP-1500 error")
     assert not ai_review._is_opencode_transient("401 unauthorized")
