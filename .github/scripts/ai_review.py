@@ -6,7 +6,6 @@ import json
 import os
 import random
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -1404,9 +1403,8 @@ def _generate_with_opencode(
     selector = f"{model_name}#{variant}" if variant else model_name
     message = f"{system_instruction}\n\n---\n\n{OPENCODE_PROMPT}"
 
-    workdir = tempfile.mkdtemp(prefix="opencode-review-")
-    path = os.path.join(workdir, "prompt.txt")
-    try:
+    with tempfile.TemporaryDirectory(prefix="opencode-review-") as workdir:
+        path = os.path.join(workdir, "prompt.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(prompt)
         # 許可リスト方式: GH_TOKEN / GEMINI_API_KEY / OPENROUTER_API_KEY 等は渡さない。
@@ -1429,6 +1427,7 @@ def _generate_with_opencode(
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     timeout=OPENCODE_TIMEOUT,
                     env=env,
                     check=False,
@@ -1464,8 +1463,6 @@ def _generate_with_opencode(
                 )
             return OpenCodeResponse(text=text, model_version=selector), effort_display
         # 到達不能: 各 attempt は return / raise / continue のいずれかで終了する。
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def build_execution_metadata(

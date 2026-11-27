@@ -2282,6 +2282,7 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
         captured["env"] = dict(kwargs["env"])
         captured["cwd"] = kwargs.get("cwd")
         captured["stdin"] = kwargs.get("stdin")
+        captured["encoding"] = kwargs.get("encoding")
         captured["key"] = kwargs["env"]["OPENCODE_API_KEY"]
         attached = cmd[cmd.index("--file") + 1]
         with open(attached, encoding="utf-8") as f:
@@ -2318,7 +2319,8 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
     # 一時ディレクトリを cwd にし、stdin を閉じる（リポジトリ／対話チャネルを触らせない）。
     assert captured["cwd"] == os.path.dirname(captured["attached_path"])
     assert captured["stdin"] is subprocess.DEVNULL
-    assert not os.path.exists(captured["attached_path"])  # 一時ファイルは後始末される
+    assert captured["encoding"] == "utf-8"
+    assert not os.path.exists(captured["attached_path"])  # 一時ディレクトリは後始末される
 
 
 def test_generate_with_opencode_empty_output_raises(monkeypatch):
