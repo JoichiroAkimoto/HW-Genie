@@ -823,19 +823,27 @@ def _get_openrouter_fallback_models() -> list[str]:
     return [m for m in OPENROUTER_FALLBACK_MODELS if "gemma" not in m.lower()]
 
 
-def _openrouter_attempts(budget: float, key_count: int, pass_count: int) -> int:
+def _openrouter_attempts(
+    budget: float, key_count: int, pass_count: int, model_count: int = 1
+) -> int:
     """残予算から OpenRouter のリトライ回数を算出する。
 
-    1 試行は ``キー数 × OPENROUTER_TIMEOUT × パス数`` を消費し得るため、
-    それを実コストとして見積もる（``MAX_ATTEMPTS`` が上限）。
+    1 試行は ``キー数 × OPENROUTER_TIMEOUT × パス数 × モデル数`` を消費し得る。
     """
-    per_attempt = max(1, key_count) * max(1.0, OPENROUTER_TIMEOUT) * max(1, pass_count)
-    return max(1, min(MAX_ATTEMPTS, int(budget // per_attempt)))
+    per_round = (
+        max(1, key_count)
+        * max(1.0, OPENROUTER_TIMEOUT)
+        * max(1, pass_count)
+        * max(1, model_count)
+    )
+    return max(1, min(MAX_ATTEMPTS, int(budget // per_round)))
 
 
-def _trim_openrouter_models(models: list[str]) -> list[str]:
+def _trim_openrouter_models(models: list[str], keep_first: bool = True) -> list[str]:
     """時間が足りない時も安全網の動的ルーターを残してモデルを絞る。"""
     router = [m for m in models if m == "openrouter/free"]
+    if not keep_first:
+        return router or models[:1]
     return list(dict.fromkeys(models[:1] + router))
 
 
@@ -1351,7 +1359,7 @@ def _strip_ansi(text: str) -> str:
 
 def _is_review_output_valid(text: str) -> bool:
     """レビュー本文としての契約（判定セクション）を満たすか。"""
-    return "**判定**" in text and (
+    return "**判定**" in text and "**要約**" in text and (
         "【✅ APPROVE】" in text or "【🔴 CHANGES_REQUESTED】" in text
     )
 
@@ -2483,14 +2491,15 @@ def main():
                 _time_left_seconds(start_time) - POST_FALLBACK_MARGIN_SECONDS,
             )
             full_attempt_cost = or_min_request * (2 if fallback_reasoning_effort else 1)
-            budget_tight = or_budget < full_attempt_cost
+            budget_tight = or_budget < full_attempt_cost * len(fallback_models)
             or_effort = None if budget_tight else fallback_reasoning_effort
             if budget_tight:
-                fallback_models = _trim_openrouter_models(fallback_models)
+                fallback_models = _trim_openrouter_models(fallback_models, keep_first=False)
             or_attempts = _openrouter_attempts(
                 or_budget,
                 len(openrouter_keys),
                 2 if or_effort else 1,
+                len(fallback_models),
             )
             print(
                 f"All primary models exhausted, trying OpenRouter fallback "

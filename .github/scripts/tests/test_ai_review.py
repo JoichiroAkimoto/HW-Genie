@@ -2129,6 +2129,8 @@ def _run_main_gemini_to_openrouter(
     """hydrogen プライマリ + Gemini 全滅 -> OpenRouter 成功を main() で再現する。"""
     _set_review_env(monkeypatch, tmp_path)
     monkeypatch.setenv("MODEL_KEY", "hydrogen")
+    # effort 伝播を検証するため、モデルは 1 件に絞って予算を確保する。
+    monkeypatch.setenv("OPENROUTER_FALLBACK_MODELS", "openrouter/free")
     if additional_context is None:
         monkeypatch.delenv("ADDITIONAL_CONTEXT", raising=False)
     else:
@@ -2453,7 +2455,8 @@ def test_generate_with_opencode_retries_invalid_output(monkeypatch):
 
 
 def test_review_output_contract_and_ansi_strip():
-    assert _is_review_output_valid("**判定**: 【✅ APPROVE】")
+    assert _is_review_output_valid("**判定**: 【✅ APPROVE】\n**要約**: ok")
+    assert not _is_review_output_valid("**判定**: 【✅ APPROVE】")  # 要約が無いのは不正
     assert not _is_review_output_valid(" Installing... done ")
     assert "\x1b" not in ai_review._strip_ansi("\x1b[2K**判定**: 【✅ APPROVE】")
     cleaned = ai_review._sanitize_review_output(
@@ -2676,7 +2679,7 @@ def test_main_rejects_unsafe_comment_options_without_truncation(tmp_path, monkey
 def test_generate_with_opencode_redacts_api_key(monkeypatch):
     """CLI stdout にキーが混入しても PR コメントへ出さない。"""
     monkeypatch.setenv("OPENCODE_API_KEY", "oc_sk_test_123")
-    stdout = "Installing...\n**判定**: 【✅ APPROVE】 key=oc_sk_test_123\n"
+    stdout = "Installing...\n**判定**: 【✅ APPROVE】\n**要約**: key=oc_sk_test_123\n"
     monkeypatch.setattr(
         ai_review.subprocess,
         "run",
@@ -2722,6 +2725,7 @@ def _run_main_default_priority(
     openrouter_failure=False,
     existing_comment=None,
     existing_failure=None,
+    openrouter_keys=None,
 ):
     """既定（Gemini -> Go DeepSeek -> 無料 DeepSeek -> OpenRouter）の連鎖を再現する。"""
     _set_review_env(monkeypatch, tmp_path)
@@ -2865,22 +2869,19 @@ def test_openrouter_fallback_budget_trims_models_and_attempts(
     assert orp.call_args.kwargs["max_attempts"] == 1
     # reasoning パスを落とし、先頭モデル＋安全網ルーターだけを残す。
     assert orp.call_args.args[4] is None
-    assert orp.call_args.args[0] == [
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "openrouter/free",
-    ]
+    assert orp.call_args.args[0] == ["openrouter/free"]
     assert "OR 本文" in review
     assert "OpenCode 予算不足 → OpenRouter" in review
 
 
-def test_effort_off_keeps_all_openrouter_models_with_full_budget(
+def test_effort_off_keeps_model_and_skips_reasoning_with_full_budget(
     tmp_path, monkeypatch
 ):
-    """--effort off は予算充足ならモデルを削らず reasoning も送らない。"""
+    """モデル 1 件固定・予算充足なら reasoning を送らず削減もしない。"""
     run_pass, seen, review = _run_main_gemini_to_openrouter(
         tmp_path, monkeypatch, "@gemini-cli /quick-review --effort off"
     )
-    assert len(run_pass.call_args.args[0]) == 3
+    assert len(run_pass.call_args.args[0]) == 1  # テスト用に 1 モデルへ絞っている
     assert seen == [None]
     assert "reasoning: " not in review
 
@@ -2953,6 +2954,17 @@ def test_opencode_budget_reserves_post_and_openrouter_margin():
     assert ai_review._opencode_budget([]) == (
         ai_review.OPENCODE_ATTEMPT_BUDGET + ai_review.POST_FALLBACK_MARGIN_SECONDS
     )
+
+
+def test_openrouter_budget_counts_all_models(tmp_path, monkeypatch):
+    """3 モデル分の予算が無い場合は安全網ルーター 1 件に削る。"""
+    monkeypatch.setattr(ai_review, "_time_left_seconds", lambda start: 330.0)
+    gc, oc, orp, review = _run_main_default_priority(
+        tmp_path, monkeypatch, gemini_error=Exception("Gemini exhausted")
+    )
+    assert orp.call_count == 1
+    assert orp.call_args.args[0] == ["openrouter/free"]
+    assert "OR 本文" in review
 
 
 def test_openrouter_attempts_handles_zero_timeout(monkeypatch):
