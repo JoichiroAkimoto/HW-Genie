@@ -30,8 +30,7 @@ jobs:
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
         env:
-          # 手動 /oc も古い google/gemini-3.1-flash-lite をやめ、
-          # 追加コスト不要の OpenCode 無料 DeepSeek を使用する。
+          # 手動 /oc も追加コスト不要のモデルを使用する（ID は下の with.model が唯一の情報源）。
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

@@ -98,7 +98,7 @@ def test_extract_details_nested_is_not_truncated():
         "<details><summary>さらに深い説明</summary>ネスト内容</details>\n"
         "外側内容</details>\n\n"
         "<details open><summary>⚡ 今回の実行情報</summary>\n"
-        "- **モデル**: `gemini-3.1-flash-lite`\n"
+        "- **モデル**: `gemini-3.8-flash`\n"
         "</details>\n\n<!-- ai-pr-reviewer-comment -->"
     )
     kept, blocks = _extract_details_blocks(html, "実行情報")
@@ -112,7 +112,7 @@ def test_extract_details_nested_is_not_truncated():
 def test_strip_review_metadata_separates_exec_info():
     review = (
         "<details open><summary>⚡ 今回の実行情報</summary>\n"
-        "- **モデル**: `gemini-3.1-flash-lite`\n"
+        "- **モデル**: `gemini-3.8-flash`\n"
         "</details>\n\n"
         "### 🤖 AI コードレビュー\n\n"
         "本文です。\n\n<!-- ai-pr-reviewer-comment -->"
@@ -305,6 +305,22 @@ def test_workflow_default_model_matches_python_constant():
     key = ai_review.DEFAULT_MODEL_KEY
     assert f"default: '{key}'" in workflow
     assert f"inputs.model || '{key}'" in workflow
+
+
+# 旧モデル ID は workflow に残さない（deny-list の第1要素で前缀も検出できる）。
+# 変更履歴は PR 本文に書く。
+DEPRECATED_MODEL_IDS = ("gemini-3.1-flash-lite",)
+
+
+def test_workflows_have_no_stale_model_ids():
+    workflows_dir = os.path.join(os.path.dirname(__file__), "..", "..", "workflows")
+    for name in sorted(os.listdir(workflows_dir)):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        with open(os.path.join(workflows_dir, name), encoding="utf-8") as f:
+            text = f.read()
+        for stale in DEPRECATED_MODEL_IDS:
+            assert stale not in text, f"{name} still contains stale model ID: {stale}"
 
 
 def test_gemini_model_chain_default_order():

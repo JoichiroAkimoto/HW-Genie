@@ -51,6 +51,9 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) &&
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
+    env:
+      # 未指定ならインストーラが最新を解決する。固定したい場合のみ repo variable を設定する。
+      OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}
     # 176kトークン規模の大型PR差分では、長い待機の主因は OpenRouter 側のリトライである
     # （Gemini は Hydrogen -> Flash-Lite -> Flash と待機せず即フォールバックする）。
     # 10分だと成功しうる実行が切り捨てられるため 15分に緩和（タイムアウト時のみ失敗扱い）。
@@ -75,17 +78,37 @@ jobs:
         run: |
           pip install -r .github/scripts/requirements-ai.txt
 
+      - name: Cache OpenCode CLI
+        id: cache_opencode
+        # バージョン固定時のみキャッシュする（未指定=最新なのでキャッシュすると古くなる）。
+        if: env.OPENCODE_CLI_VERSION != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.opencode/bin
+          key: ${{ runner.os }}-${{ runner.arch }}-opencode-${{ env.OPENCODE_CLI_VERSION }}
+
       - name: Install OpenCode CLI
         # インストール失敗でもレビューを止めない（スクリプト側のフォールバックに委ねる）。
+        if: steps.cache_opencode.outputs.cache-hit != 'true'
         continue-on-error: true
-        env:
-          # サプライチェーン対策としてバージョンを固定する（更新は repo variable で行う）。
-          OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}
         run: |
-          # V1 インストーラ (https://opencode.ai/install) は V2 を拒否するため /v2/ を使う。
-          curl -fsSL https://opencode.ai/v2/install | \
-            bash -s -- --version "$OPENCODE_CLI_VERSION" --no-modify-path
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+          args=(--no-modify-path)
+          if [ -n "$OPENCODE_CLI_VERSION" ]; then
+            args+=(--version "$OPENCODE_CLI_VERSION")
+          fi
+          # 失敗時に空ディレクトリがキャッシュへ保存されるのを防ぐ。
+          if ! curl -fsSL https://opencode.ai/v2/install | bash -s -- "${args[@]}"; then
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          fi
+          if ! "$HOME/.opencode/bin/opencode" --version; then
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          fi
+
+      - name: Add OpenCode CLI to PATH
+        # キャッシュヒット時もインストール時も同じパスを通す。
+        run: echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Run AI Review
         env:
