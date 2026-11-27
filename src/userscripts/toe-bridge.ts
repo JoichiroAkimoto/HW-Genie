@@ -28,6 +28,13 @@ const REQUEST_TIMEOUT_MS = 5000;
  */
 export const AUTH_USER_ID_STORAGE_KEY = "hwgenie-x-auth-user-id";
 
+/**
+ * localStorage key the live-job failure path writes a one-shot diagnostic to
+ * (rival ids wanted vs. present, minified-method presence). Read it from the
+ * game tab console when a live job reports ``rival not found``.
+ */
+export const TOE_DIAG_KEY = "hwgenie-toe-diag";
+
 // Build variant sentinel. Normal builds ship with the NORMAL value and never
 // execute any ToE code (Goodwin separation, see #134); `build.sh --dev`
 // rewrites it to the DEV value so DEV builds run the full ToE bridge.
@@ -867,6 +874,22 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 // --- live ToE jobs ---------------------------------------------------------
 
 type AnyRecord = Record<string, any>;
+type AnyFn = (...args: any[]) => any;
+/**
+ * First function-valued member among ``names`` (new minified name first, old
+ * fallback second), or undefined. The game renames methods between builds;
+ * centralizing the lookup keeps every call site on the same rule.
+ */
+function pickFn<T extends AnyFn>(obj: AnyRecord | undefined | null, ...names: string[]): T | undefined {
+  if (!obj) return undefined;
+  for (const name of names) {
+    try {
+      const value = obj[name];
+      if (typeof value === "function") return value as T;
+    } catch {}
+  }
+  return undefined;
+}
 type LiveJobResult = Record<string, unknown>;
 let liveJobRunner: ((job: ToeJob) => Promise<LiveJobResult>) | null = null;
 // Set while a live battle is being driven so the BattleController patch only
@@ -903,7 +926,7 @@ export function formatLiveDiag(d: LiveDiagInput): string {
     `patch=${d.autoPatchInstalled ? 1 : 0}`,
     `auto=${d.autoApplied ? 1 : 0}`,
     `forced=${d.autoForced ? 1 : 0}`,
-    `bmc=${d.battleStarted ? 1 : 0}`,
+    `start=${d.battleStarted ? 1 : 0}`,
   ].join(" ");
 }
 
@@ -1007,14 +1030,38 @@ function installLiveAutoPatch(): boolean {
   }
 }
 
+/**
+ * Resolved in-page ToE data + command model.
+ *
+ * ``commands`` is the Haxe command list (``Ka.y7`` in the v302-late bundle,
+ * ``Ka.x7`` in older bundles); ``commandKey`` records which property it came
+ * from so diagnostics/tests can tell the builds apart.
+ */
+export type ToeModel = {
+  toe: AnyRecord;
+  commands: AnyRecord;
+  commandKey: "y7" | "x7";
+  commandRoot: AnyRecord;
+};
+
 /** Resolve the in-page ToE data + command model, or null before the game loads. */
-export function resolveToeModel(): { toe: AnyRecord; x7: AnyRecord } | null {
+export function resolveToeModel(): ToeModel | null {
   const gameModelClass = capturedClasses["GameModel"] as unknown as { F?: () => AnyRecord } | undefined;
   const model = gameModelClass?.F?.();
   const player = model?.["player"] as AnyRecord | undefined;
   const toe = player?.["cl"] as AnyRecord | undefined;
-  const x7 = (model?.["Ka"] as AnyRecord | undefined)?.["x7"] as AnyRecord | undefined;
-  return toe && x7 ? { toe, x7 } : null;
+  const commandRoot = model?.["Ka"] as AnyRecord | undefined;
+  // v302-late build renamed the ToE command list x7 -> y7; keep both.
+  let commandKey: "y7" | "x7" = "x7";
+  let commands: AnyRecord | undefined;
+  if (commandRoot?.["y7"]) {
+    commandKey = "y7";
+    commands = commandRoot["y7"] as AnyRecord;
+  } else if (commandRoot?.["x7"]) {
+    commandKey = "x7";
+    commands = commandRoot["x7"] as AnyRecord;
+  }
+  return toe && commands && commandRoot ? { toe, commands, commandKey, commandRoot } : null;
 }
 
 /**
@@ -1026,7 +1073,7 @@ export function resolveToeModel(): { toe: AnyRecord; x7: AnyRecord } | null {
  * Failing instantly there made the CLI skip a perfectly good team as "ToE model
  * unavailable", so poll instead.
  */
-export async function waitForToeModel(timeoutMs: number): Promise<{ toe: AnyRecord; x7: AnyRecord } | null> {
+export async function waitForToeModel(timeoutMs: number): Promise<ToeModel | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const resolved = resolveToeModel();
@@ -1040,8 +1087,9 @@ export async function waitForToeModel(timeoutMs: number): Promise<{ toe: AnyReco
  * Wait for the ToE rival list to include ``rivalId``.
  *
  * Right after a reload the model exists but its status fetch may still be in
- * flight, so ``V5b()`` is empty. Refresh with ``WJl()`` and retry instead of
- * failing with "rival not found" (which aborts the wall in the CLI).
+ * flight, so the rivals getter (``W5b()`` on the v302-late bundle, ``V5b()``
+ * on older ones) is empty. Refresh with ``mKl()`` / older ``WJl()`` and retry
+ * instead of failing with "rival not found" (which aborts the wall in the CLI).
  */
 export async function waitForRival(
   toe: AnyRecord,
@@ -1051,28 +1099,69 @@ export async function waitForRival(
   const want = String(rivalId);
   const deadline = Date.now() + timeoutMs;
   let lastRefresh = 0;
+  // Single one-time-clear flag: drives both the first-refresh clear and the
+  // timeout restore (``lastRefresh === 0`` is not a reliable "first" signal).
+  let cleared = false;
+  let prevVge: unknown;
+  let prevDtd: unknown;
   for (;;) {
     try {
-      const rivals = (toe["V5b"]?.() as AnyRecord[] | undefined) || [];
+      // v302-late build renamed V5b -> W5b; keep both for older bundles.
+      // Bind `this` to the model: these are Haxe instance methods and calling
+      // the extracted function unbound loses `this.Dtd`.
+      const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(toe, "W5b", "V5b");
+      const rivals = getRivals?.call(toe) || [];
       const found = rivals.find((r) => String(r?.["G"]?.()) === want);
       if (found) return found;
     } catch {}
     const now = Date.now();
     if (now - lastRefresh >= 3000) {
-      try {
-        if (typeof toe["WJl"] === "function") toe["WJl"]();
-      } catch {}
+      // Resolve the status refresh BEFORE clearing anything: a bundle with
+      // neither name must never have its usable rival list destroyed.
+      const refresh = pickFn<(this: AnyRecord) => unknown>(toe, "mKl", "WJl");
+      if (typeof refresh === "function") {
+        if (!cleared) {
+          cleared = true;
+          // The new bundle's update() rebuilds the rivals list (Dtd) only when
+          // nextDayTs/tier change. After a daily reset that keeps the same tier,
+          // the wall ids change but update() matches the old list by id, so the
+          // new walls never appear. Clear once so update() rebuilds.
+          try {
+            prevVge = toe["Vge"];
+            prevDtd = toe["Dtd"];
+            toe["Vge"] = null;
+            toe["Dtd"] = null;
+          } catch {}
+        }
+        try {
+          refresh.call(toe);
+        } catch {}
+      }
       lastRefresh = now;
     }
-    if (now >= deadline) return null;
+    if (now >= deadline) {
+      // Give up. Restore only when the rebuild never happened: a successful
+      // refresh may legitimately produce a different wall list (daily reset)
+      // and must be kept for later jobs.
+      const rebuilt = Array.isArray(toe["Dtd"]);
+      if (cleared && !rebuilt) {
+        try {
+          toe["Vge"] = prevVge;
+        } catch {}
+        try {
+          toe["Dtd"] = prevDtd;
+        } catch {}
+      }
+      return null;
+    }
     await sleep(500);
   }
 }
 
 // Survives the post-battle reload: after a fresh page boots, the userscript must
 // not claim the next live job until the ToE rival data is actually loaded, or
-// ``bmc`` cannot find the rival ("rival not found"). sessionStorage is cleared
-// as soon as the data is ready.
+// ``cmc`` (older builds ``bmc``) cannot find the rival ("rival not found").
+// sessionStorage is cleared as soon as the data is ready.
 export const RELOAD_PENDING_KEY = "hwgenie-toe-reload-pending";
 // Give up gating after this long so a tab that never loads ToE data (tier
 // complete screen, city screen) cannot wedge the job queue forever.
@@ -1147,7 +1236,8 @@ export function toeDataReady(): boolean {
   const model = resolveToeModel();
   if (!model) return false;
   try {
-    const rivals = model.toe["V5b"]?.() as AnyRecord[] | undefined;
+    const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(model.toe, "W5b", "V5b");
+    const rivals = getRivals?.call(model.toe);
     return Array.isArray(rivals) && rivals.length > 0;
   } catch {
     return false;
@@ -1159,9 +1249,10 @@ export function toeDataReady(): boolean {
  *
  * The live path is required after the 2026-11-26 update: offline instant
  * simulations cannot produce the ``battleSeed_next`` proof the server now
- * validates. ``PlayerTitanArenaData.bmc`` runs the real battle thread and the
- * client submits ``titanArenaEndBattle`` with a valid proof by itself.
- * Tier transitions are a separate ``reload`` job handled by ``tick``.
+ * validates. ``PlayerTitanArenaData.cmc`` (older bundles ``bmc``) runs the real
+ * battle thread and the client submits ``titanArenaEndBattle`` with a valid
+ * proof by itself. Tier transitions are a separate ``reload`` job handled by
+ * ``tick``.
  */
 async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<LiveJobResult> {
   if (!hasLocalEngine()) return { ok: false, error: "no engine" };
@@ -1176,35 +1267,98 @@ async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<Li
   liveAutoApplied = false;
   const resolvedModel = await waitForToeModel(25000);
   if (!resolvedModel) return { ok: false, error: "ToE model unavailable" };
-  const { toe, x7 } = resolvedModel;
+  const { toe, commands, commandKey, commandRoot } = resolvedModel;
   const titans = Array.isArray(job.titans) ? job.titans.map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
   if (titans.length !== 5) return { ok: false, error: "bad titans" };
 
   // Python may have advanced the tier with CompleteTier between jobs; refresh
-  // the in-page ToE model before looking up the rival. Right after a reload the
-  // status fetch can still be in flight, so retry instead of failing.
-  try { if (typeof toe["WJl"] === "function") toe["WJl"](); } catch {}
-  const rival = await waitForRival(toe, String(job.rivalId ?? ""), 20000);
-  if (!rival) return { ok: false, error: "rival not found in ToE model" };
+  // the in-page ToE model before looking up the rival. waitForRival does the
+  // status refresh (and a one-time rivals rebuild) itself.
+  const want = String(job.rivalId ?? "");
+  const rival = await waitForRival(toe, want, 20000);
+  if (!rival) {
+    let have: string[] = [];
+    try {
+      // Read the current list after waitForRival. Its timeout restore only
+      // puts the old list back when no rebuild happened, so a successful
+      // rebuild is reported here instead of the pre-clear walls.
+      const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(toe, "W5b", "V5b");
+      have = ((getRivals?.call(toe) || []) as AnyRecord[])
+        .slice(0, 12)
+        .map((r) => String(r?.["G"]?.()));
+    } catch {}
+    try {
+      const vge = toe["Vge"];
+      // Never serialize a raw game object: it may be circular. typeof/String
+      // keeps the diagnostic JSON-safe.
+      const vgeDiag = vge === null || vge === undefined ? String(vge) : typeof vge === "object" ? "object" : String(vge);
+      const href =
+        typeof location !== "undefined" ? `${location.origin}${location.pathname}` : null;
+      localStorage.setItem(
+        TOE_DIAG_KEY,
+        JSON.stringify({
+          want,
+          have,
+          hidden: typeof document !== "undefined" ? document.hidden : null,
+          vis: typeof document !== "undefined" ? document.visibilityState : null,
+          href,
+          y7: typeof commandRoot["y7"],
+          x7: typeof commandRoot["x7"],
+          commandKey,
+          cmc: typeof toe["cmc"],
+          dbo: typeof commands["DBo"],
+          kbo: typeof commands["kBo"],
+          w5b: typeof toe["W5b"],
+          v5b: typeof toe["V5b"],
+          dtd: Array.isArray(toe["Dtd"]) ? toe["Dtd"].length : typeof toe["Dtd"],
+          vge: vgeDiag,
+          mkl: typeof toe["mKl"],
+          wjl: typeof toe["WJl"],
+        }),
+      );
+      log(`wrote ${TOE_DIAG_KEY} (want=${want} have=${have.join(",")})`);
+    } catch {}
+    return {
+      ok: false,
+      error: `rival not found in ToE model (want=${want} have=${have.join(",")})`,
+    };
+  }
 
   return await new Promise<LiveJobResult>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const visibilityAtStart = typeof document !== "undefined" ? document.visibilityState : "n/a";
     let battleStarted = false;
-    const prevKbo = x7["kBo"];
+    // EndBattle command: new build DBo, old build kBo. Resolve the callable
+    // first so an unavailable method fails with a diagnostic instead of
+    // wrapping undefined.
+    const prevEnd = pickFn<(this: unknown, ...args: unknown[]) => AnyRecord>(commands, "DBo", "kBo");
+    const endKey = prevEnd && commands["DBo"] === prevEnd ? "DBo" : "kBo";
     const finish = (value: LiveJobResult) => {
       if (settled) return;
       settled = true;
       liveAutoForced = false;
       liveAutoApplied = false;
       if (timer) clearTimeout(timer);
-      try { x7["kBo"] = prevKbo; } catch {}
+      // Only restore when there was something to wrap; assigning undefined
+      // would create an own ``kBo`` property on the game object.
+      if (typeof prevEnd === "function") {
+        try {
+          commands[endKey] = prevEnd;
+        } catch {}
+      }
       resolve(value);
     };
+    if (typeof prevEnd !== "function") {
+      finish({
+        ok: false,
+        error: `endbattle method unavailable (${liveDiag(visibilityAtStart, battleStarted)})`,
+      });
+      return;
+    }
     try {
-      x7["kBo"] = function (this: unknown, ...args: unknown[]) {
-        const cmd = prevKbo.apply(this, args) as AnyRecord;
+      commands[endKey] = function (this: unknown, ...args: unknown[]) {
+        const cmd = prevEnd.apply(this, args) as AnyRecord;
         try {
           const originalCc = cmd["cc"];
           cmd["cc"] = function (this: unknown, cb: (r: unknown) => unknown) {
@@ -1252,7 +1406,18 @@ async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<Li
       log("live battle starts in a hidden tab; the game loop may not advance (bring the game tab to the foreground)");
     }
     try {
-      toe["bmc"](rival, { f3b: () => titans });
+      // StartBattle: new build cmc (AD battle thread), old build bmc. The team
+      // config property is still f3b (confirmed in the v302-late bundle).
+      const startBattle = pickFn<(this: AnyRecord, r: AnyRecord, cfg: AnyRecord) => unknown>(
+        toe,
+        "cmc",
+        "bmc",
+      );
+      if (typeof startBattle !== "function") {
+        finish({ ok: false, error: `start method unavailable (${liveDiag(visibilityAtStart, battleStarted)})` });
+        return;
+      }
+      startBattle.call(toe, rival, { f3b: () => titans });
       battleStarted = true;
     } catch (e) {
       finish({ ok: false, error: `start failed (${liveDiag(visibilityAtStart, battleStarted)}): ${String(e)}` });
@@ -1287,8 +1452,9 @@ export async function tick(
       return;
     }
     // After that reload, wait until the fresh page has the ToE rival data before
-    // claiming, otherwise bmc cannot resolve the rival ("rival not found").
-    // Only clear the flag from a tick that is not scheduling a reload.
+    // claiming, otherwise cmc (older builds bmc) cannot resolve the rival
+    // ("rival not found"). Only clear the flag from a tick that is not
+    // scheduling a reload.
     if (!liveReloadPending && reloadPending()) {
       if (!toeDataReady()) {
         return;
@@ -1487,6 +1653,7 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   }
 
   let lastNoEngineLog = 0;
+  let lastHiddenLog = 0;
   let engineLogged = false;
   async function loop(): Promise<void> {
     if (stopped || running) {
@@ -1509,6 +1676,19 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
       if (!engineLogged) {
         engineLogged = true;
         log("battle engine detected, polling active");
+      }
+      // This gate is broad: every claim (sim jobs included) stops while the
+      // tab is hidden. A hidden tab's requestAnimationFrame loop is throttled
+      // or stopped, so claiming there would consume jobs it cannot finish and
+      // starve the visible tab. It only covers the claim boundary — a battle
+      // already claimed when the tab hides still stalls until its timeout.
+      if (typeof document !== "undefined" && document.hidden) {
+        const now = Date.now();
+        if (now - lastHiddenLog > 60000) {
+          lastHiddenLog = now;
+          log("tab hidden; not claiming");
+        }
+        return;
       }
       // Re-read on every poll: the auth-capture key may appear after login
       // (this tab is then picked up without an install/reload cycle).

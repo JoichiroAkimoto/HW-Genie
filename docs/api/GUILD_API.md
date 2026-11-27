@@ -371,7 +371,7 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 > が入る（2026-11-26 実測）。オフライン計算ではクライアント実戦の
 > `battleSeed_next`（reseed の seeds / `progress[0].proof`）を生成できないため、
 > 個別戦・壁は **`--engine live`** でゲームタブ内の実戦を駆動する
-> （`PlayerTitanArenaData.bmc(rival, {f3b: () => titans})` →
+> （`PlayerTitanArenaData.cmc(rival, {f3b: () => titans})`（旧 `bmc`） →
 > `TitanArenaBattleThread` → `battleSeed_next` → `titanArenaEndBattle`。
 > userscript の live ジョブが結果を CLI に返し、Tier 完了は
 > `titanArenaCompleteTier`）。レイドは `effects: []` のため従来のオフライン
@@ -381,6 +381,18 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 > Auto は `BattleController` の `BattleSettingsModel`（`Qya`）を ON にする。
 > canvas 座標の盲クリックはしない（右下の x5 は Valkyrie's Favor の購入
 > ポップアップ）。
+
+**userscript ブリッジが解決する minified 名（v302-late / 旧ビルド）**:
+
+| 用途 | 新ビルド | 旧ビルド | 備考 |
+|------|----------|----------|------|
+| ToE データ | `GameModel.F().player.cl` | 同左 | `cl` は `PlayerTitanArenaData` |
+| rival 一覧 | `cl.W5b()` | `cl.V5b()` | `this` 束縛必須（`this.Dtd` を読む） |
+| status refresh | `cl.mKl()` | `cl.WJl()` | 初回のみ `Vge` / `Dtd` を null にして再構築 |
+| StartBattle | `cl.cmc(rival, {f3b})` | `cl.bmc(...)` | team は `f3b: () => titans` |
+| EndBattle コマンド | `Ka.y7.DBo()` | `Ka.x7.kBo()` | `cc` をラップして結果を捕捉 |
+| コマンドリスト | `Ka.y7` | `Ka.x7` | `y7` が優先 |
+| 再構築用フィールド | `cl.Vge` / `cl.Dtd` | 同左 | 日次リセットで壁 ID が変わったとき 1 回だけ null |
 
 `hw-genie toe attack --engine estimate` は power ベースの `progress` を
 送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定
@@ -544,7 +556,7 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
     `hw-genie-auth-capture.user.js` がゲーム画面に入った状態で動作。
     v302 以降はレイド専用
   - `--engine live`: 対象アカウントのゲームタブ内で実戦を駆動する
-    （v302 以降の個別戦・壁用。Dev userscript 1.0.33+、タブを前面に保持。
+    （v302 以降の個別戦・壁用。Dev userscript 1.0.38+、タブを前面に保持。
     Tier 完了後だけ 1 回再読込）
 
 ---
