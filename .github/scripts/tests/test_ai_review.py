@@ -2752,6 +2752,8 @@ def test_default_priority_deepseek_failure_then_openrouter(tmp_path, monkeypatch
     assert oc.call_count == 2
     assert orp.call_count == 1
     assert "OR 本文" in review
+    assert "opencode/deepseek-v4.1-flash-free" not in review
+    assert "openrouter/free" in review
 
 
 def test_all_providers_fail_still_publishes_review(tmp_path, monkeypatch):
@@ -2854,12 +2856,38 @@ def test_failure_review_does_not_overwrite_existing_comment(
     assert "生成に失敗しました" in (tmp_path / "review.md").read_text(encoding="utf-8")
 
 
-def test_opencode_timeout_budget_fits_job_limit():
-    """2 試行＋リトライ待機が予算（ジョブ全体 - 予備時間）内に収まること。"""
-    assert (
+def test_opencode_budget_reserves_post_and_openrouter_margin():
+    """OpenCode 予算に投稿用と OpenRouter 最低試行分が含まれることを直接検証。"""
+    expected_with_keys = (
         ai_review.OPENCODE_ATTEMPT_BUDGET
-        < ai_review.JOB_TIMEOUT_SECONDS - ai_review.OPENROUTER_FALLBACK_BUDGET
+        + 2 * ai_review.OPENROUTER_TIMEOUT
+        + ai_review.POST_FALLBACK_MARGIN_SECONDS
     )
+    assert ai_review._opencode_budget(["k1", "k2"]) == expected_with_keys
+    assert ai_review._opencode_budget([]) == (
+        ai_review.OPENCODE_ATTEMPT_BUDGET + ai_review.POST_FALLBACK_MARGIN_SECONDS
+    )
+
+
+def test_opencode_cli_missing_skips_remaining_fallback_models(
+    tmp_path, monkeypatch
+):
+    """CLI 不在なら 2 本目を試さず OpenRouter へ進む。"""
+    gc, oc, orp, review = _run_main_default_priority(
+        tmp_path,
+        monkeypatch,
+        gemini_error=Exception("Gemini exhausted"),
+        opencode_error=[FileNotFoundError("opencode")],
+    )
+    assert oc.call_count == 1
+    assert orp.call_count == 1
+    assert "OR 本文" in review
+
+
+def test_opencode_timeout_budget_fits_job_limit():
+    """最大構成の OpenCode 予算がジョブ制限未満であること。"""
+    max_budget = ai_review._opencode_budget(["k1", "k2", "k3"])
+    assert max_budget < ai_review.JOB_TIMEOUT_SECONDS
 
 
 def test_opencode_transient_detection_uses_word_boundaries():

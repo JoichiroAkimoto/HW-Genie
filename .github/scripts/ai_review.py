@@ -83,6 +83,10 @@ OPENROUTER_FALLBACK_BUDGET = float(
 OPENCODE_TIMEOUT = float(os.environ.get("OPENCODE_TIMEOUT", "240") or 240)
 OPENCODE_RETRY_DELAY = 2.0
 OPENCODE_ATTEMPT_BUDGET = 2 * OPENCODE_TIMEOUT + OPENCODE_RETRY_DELAY
+# コメント投稿と OpenRouter 最低試行のための予備時間。
+POST_FALLBACK_MARGIN_SECONDS = float(
+    os.environ.get("REVIEW_POST_MARGIN_SECONDS", "30") or 30
+)
 # 未定義の opencode モデルもコメントから指定できる（事前定義は不要）。
 # プロバイダ接頭辞と安全な文字だけを許可し、シェル／パス資産は通さない。
 OPENCODE_MODEL_ID_RE = re.compile(r"^opencode(?:-go)?/[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -1369,6 +1373,14 @@ def _time_left_seconds(start_time: datetime.datetime) -> float:
     return JOB_TIMEOUT_SECONDS - elapsed
 
 
+def _opencode_budget(openrouter_keys: list[str]) -> float:
+    """OpenCode の 2 試行＋OpenRouter 最低試行＋コメント投稿の予備時間。"""
+    reserve = POST_FALLBACK_MARGIN_SECONDS
+    if openrouter_keys:
+        reserve += max(1, len(openrouter_keys)) * OPENROUTER_TIMEOUT
+    return OPENCODE_ATTEMPT_BUDGET + reserve
+
+
 def _budget_allows(start_time: datetime.datetime, needed: float) -> bool:
     """残時間が needed 以上なら True。不足なら警告を出して False。"""
     left = _time_left_seconds(start_time)
@@ -2271,8 +2283,12 @@ def main():
         fallback_reasoning_effort = _openrouter_fallback_reasoning(
             thinking_effort, model_config
         )
+        # OpenCode の 2 試行に加え、後続の OpenRouter 最低試行とコメント投稿の
+        # 予備時間も残しておく（ジョブ打ち切りでレビューを失わないため）。
+        or_min_request = max(1, len(openrouter_keys)) * OPENROUTER_TIMEOUT
+        opencode_budget = _opencode_budget(openrouter_keys)
 
-        if is_opencode_primary and not _budget_allows(start_time, OPENCODE_ATTEMPT_BUDGET):
+        if is_opencode_primary and not _budget_allows(start_time, opencode_budget):
             opencode_failed = True
             last_exc = RuntimeError("insufficient time budget for OpenCode")
             reset_to_gemini_chain()
@@ -2371,7 +2387,7 @@ def main():
         for fallback_key in OPENCODE_FALLBACK_MODEL_KEYS:
             if not use_opencode_fallback or response is not None:
                 break
-            if not _budget_allows(start_time, OPENCODE_ATTEMPT_BUDGET):
+            if not _budget_allows(start_time, opencode_budget):
                 break
             model_key = fallback_key
             model_info, model_name = resolve_model(model_key, model_config)
@@ -2386,13 +2402,16 @@ def main():
                 print(f"OpenCode fallback succeeded with model {model_name}")
             except Exception as oe:  # noqa: BLE001
                 last_exc = oe
+                if isinstance(oe, FileNotFoundError):
+                    # CLI 自体が無ければ次のモデルを試しても同じなので即座に OR へ。
+                    print("::warning::OpenCode CLI is unavailable; skipping remaining models.")
+                    break
                 print(
                     "::warning::OpenCode fallback failed "
                     f"({_annotation_safe(oe)}); trying next model."
                 )
 
         # 3) 最後に OpenRouter の無料モデルへフォールバック
-        or_min_request = max(1, len(openrouter_keys)) * OPENROUTER_TIMEOUT
         if (
             not openrouter_primary_requested
             and response is None
