@@ -327,7 +327,7 @@ def test_workflow_timeout_and_python_budget_share_one_variable():
     with open(path, encoding="utf-8") as f:
         workflow = f.read()
     assert "timeout-minutes: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') }}" in workflow
-    assert "REVIEW_JOB_TIMEOUT_SECONDS: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') * 60 }}" in workflow
+    assert "REVIEW_TIMEOUT_MINUTES: ${{ vars.REVIEW_TIMEOUT_MINUTES || '15' }}" in workflow
     assert ai_review.JOB_TIMEOUT_SECONDS == 15 * 60
 
 

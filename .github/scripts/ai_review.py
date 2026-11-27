@@ -72,7 +72,7 @@ OPENROUTER_REASONING_ENABLED_DISPLAY = "有効（effort 非対応モデル・既
 # 一時ファイルへ書き出して ``--file`` で渡す（引数は固定の短い指示のみ）。
 OPENCODE_CLI = os.environ.get("OPENCODE_CLI", "opencode")
 # workflow の timeout-minutes と同じ値を env で受け取る（既定 900 秒）。
-JOB_TIMEOUT_SECONDS = float(os.environ.get("REVIEW_JOB_TIMEOUT_SECONDS", "900") or 900)
+JOB_TIMEOUT_SECONDS = float(os.environ.get("REVIEW_TIMEOUT_MINUTES", "15") or 15) * 60
 # コメント投稿とレビュー生成に残す予算。この残時間を切ったら次の provider へ進まない。
 FALLBACK_RESERVE_SECONDS = float(os.environ.get("REVIEW_FALLBACK_RESERVE_SECONDS", "180") or 180)
 # 1 試行の上限。2 試行＋リトライ待機でもジョブ残時間内に収まるようにする。
