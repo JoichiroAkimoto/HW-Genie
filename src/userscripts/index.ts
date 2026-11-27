@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.23
+// @version      1.0.33
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -67,7 +67,7 @@ import {
 // Python CLI から依頼される。
 // document-start ですぐトラップだけ仕掛け、XHR フック等は従来通り idle 相当
 // まで遅延させる（HW Goodwin 共存のため）。
-import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
+import { AUTH_USER_ID_STORAGE_KEY, ensureEngineBridge, installToeBridge } from "./toe-bridge";
 
 (() => {
   "use strict";
@@ -106,9 +106,6 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
   // Bounded timeout for the (local) auth server calls so a stalled fetch can
   // never wedge `sending` and block re-captures after a re-login.
   const FETCH_TIMEOUT_MS = 5000;
-  // ToE live ジョブの account 照合に使う認証ユーザー ID。ゲーム内 player id とは
-  // 別物（Python 側は x-auth-user-id でジョブを作る）。秘密値ではない。
-  const AUTH_USER_ID_STORAGE_KEY = "hwgenie-x-auth-user-id";
 
   // セッション状態は単一の SessionState オブジェクトで管理する。
   // pollAndMaybeSend / markSendSuccess / markSendFailure はこのオブジェクトを
@@ -143,6 +140,7 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     state.lastCaptureAt = Date.now();
     if (lowerName === "x-auth-user-id") {
       try {
+        // Shared with the ToE bridge's live own-tab guard (toe-bridge.ts).
         localStorage.setItem(AUTH_USER_ID_STORAGE_KEY, value);
       } catch {}
     }

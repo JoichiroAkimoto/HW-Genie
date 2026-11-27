@@ -358,9 +358,10 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 
 `progress` と `result`（win / stars）が必要。**これらはクライアント側で
 バトルをシミュレーションした正確な値**でないとサーバーが `Invalid battle`
-（`serverVersion: 302`, 2026-11-26 実測）で弾く。HW-Genie 単体では簡易な
-power ベース見積のみ可能なため、**完全勝利には userscript 側の
-`Game.BattlePresets` / `BattleInstantPlay` を使うハイブリッドフローが必要**。
+（`serverVersion: 302`, 2026-11-26 実測）で弾く。レイドは userscript の
+オフライン計算（`Game.BattlePresets` / `BattleInstantPlay`、`--engine hybrid`）
+でよいが、個別戦・壁は reseed proof のため **ゲームタブ内の実戦
+（`--engine live`）が必要**。
 
 > **2026-11-26 の変更**: 回帰の原因は battle config getter で、`get_titanPvpManual`
 > から `get_titanClanPvp` に変わった（ゲーム本体の `TitanArenaBattleThread` /
@@ -370,15 +371,22 @@ power ベース見積のみ可能なため、**完全勝利には userscript 側
 > が入る（2026-11-26 実測）。オフライン計算ではクライアント実戦の
 > `battleSeed_next`（reseed の seeds / `progress[0].proof`）を生成できないため、
 > 個別戦・壁は **`--engine live`** でゲームタブ内の実戦を駆動する
-> （`PlayerTitanArenaData.bmc(rival, team)` → `TitanArenaBattleThread` →
-> `battleSeed_next` → `titanArenaEndBattle`。userscript の live ジョブが
-> 結果を CLI に返し、Tier 完了は `titanArenaCompleteTier`）。
-> レイドは `effects: []` のため従来のオフライン計算（`--engine hybrid`）でよい。
+> （`PlayerTitanArenaData.bmc(rival, {f3b: () => titans})` →
+> `TitanArenaBattleThread` → `battleSeed_next` → `titanArenaEndBattle`。
+> userscript の live ジョブが結果を CLI に返し、Tier 完了は
+> `titanArenaCompleteTier`）。レイドは `effects: []` のため従来のオフライン
+> 計算（`--engine hybrid`）でよい。live は `canRaid=true` の Tier を扱わない
+> （先に hybrid でレイドを消化してから live を再実行する）。
+> 結果ポップアップ回避の再読込は Tier 移行時の 1 回だけで、毎戦はしない。
+> Auto は `BattleController` の `BattleSettingsModel`（`Qya`）を ON にする。
+> canvas 座標の盲クリックはしない（右下の x5 は Valkyrie's Favor の購入
+> ポップアップ）。
 
 `hw-genie toe attack --engine estimate` は power ベースの `progress` を
 送るため、サーバ検証で `Invalid battle` になる。`--engine hybrid` を指定
-すると、auth server の `/toe/job` キュー経由で userscript が本物の
-`BattleCalc` を呼び出し、その結果を `EndBattle` に利用する。
+すると、auth server の `/toe/job` キュー経由で userscript のオフライン
+`BattleCalc` 結果を `EndBattle` に利用する（v302 以降の個別戦・壁では
+reseed proof が無いため通らない。`toe run --engine live` を使う）。
 
 EndBattle が失敗した場合（`Invalid battle` に限らず `NotFound` /
 `NotAvailable` を含む）は、ローカルの estimate が win でも勝利扱いに
@@ -530,10 +538,14 @@ tier 内ライバルを全滅させた直後に呼ぶ。翌ティアへ進むか
     `[4003, 4004, 4014, 4001, 4010]` を含む（Tier8 の光壁 `-480913`
     に 15 seeds で WIN の実績）。
   - `--engine estimate`（既定）: アプリ単体。勝敗は power ベースで
-    簡易判定。完全勝利には `--engine hybrid` を指定
-  - `--engine hybrid`: auth server 経由で userscript のバトルエンジン
-    に依頼。ブラウザで `auth-server` が稼働 + `hw-genie-auth-capture.user.js`
-    が Titan Arena 画面に入った状態で動作
+    簡易判定。v302 以降の EndBattle は通らない（レイド計画用）
+  - `--engine hybrid`: auth server 経由で userscript の**オフライン**
+    バトルエンジンに依頼。ブラウザで `auth-server` が稼働 +
+    `hw-genie-auth-capture.user.js` がゲーム画面に入った状態で動作。
+    v302 以降はレイド専用
+  - `--engine live`: 対象アカウントのゲームタブ内で実戦を駆動する
+    （v302 以降の個別戦・壁用。Dev userscript 1.0.33+、タブを前面に保持。
+    Tier 完了後だけ 1 回再読込）
 
 ---
 

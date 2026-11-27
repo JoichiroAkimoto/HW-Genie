@@ -214,12 +214,56 @@ def test_toe_live_in_flight_timeout_is_longer():
     import time
 
     store = ToeJobStore(ttl_seconds=600, in_flight_timeout_seconds=60)
-    job_id = store.add("A", {"kind": "live", "action": "complete_tier"})
+    job_id = store.add("A", {"kind": "live", "action": "reload"})
     assert store.claim("A") is not None
     store._jobs[job_id]["claimed_at"] = time.time() - 70
     assert store.claim("A") is None  # still inside the 300s live window
     store._jobs[job_id]["claimed_at"] = time.time() - 301
     assert store.claim("A") is not None
+
+
+def test_toe_live_reload_job_is_accepted_and_claimable(client):
+    """The tier-transition reload is an allowlisted live action."""
+    push = client.post(
+        "/toe/job",
+        json={"account": "Alice", "kind": "live", "action": "reload"},
+    )
+    assert push.status_code == 200, push.text
+    job_id = push.json()["id"]
+    claim = client.get("/toe/next", params={"account": "Alice"})
+    assert claim.status_code == 200
+    job = claim.json()
+    assert job["id"] == job_id
+    assert job["kind"] == "live" and job["action"] == "reload"
+
+
+def test_toe_job_add_ignores_control_fields():
+    """A caller cannot set status/result/id/claimed_by through the body."""
+    store = ToeJobStore()
+    job_id = store.add(
+        "Alice",
+        {
+            "kind": "live",
+            "action": "reload",
+            "status": "done",
+            "result": {"ok": True},
+            "id": "forged",
+            "claimed_by": "Alice",
+            "finished_at": 1,
+        },
+    )
+    job = store.get(job_id, "Alice")
+    assert job is not None
+    assert job["id"] == job_id != "forged"
+    assert job["status"] == "pending"
+    assert job["result"] is None
+    assert job["claimed_by"] is None
+    assert "finished_at" not in job
+    # The allowlisted live fields still arrive.
+    assert job["action"] == "reload"
+
+    claimed = store.claim("Alice")
+    assert claimed is not None and claimed["id"] == job_id
 
 
 def test_toe_live_http_roundtrip(client):

@@ -2901,3 +2901,46 @@ def test_cmd_multi_toe_threads_no_end_on_loss(monkeypatch):
     assert captured == {"seeds": 10, "bank": False}
     main.cmd_multi(make_args(end=True))
     assert captured == {"seeds": 10, "bank": True}
+
+
+def test_load_session_headers_fresh_syncs_replica(monkeypatch):
+    """fresh=True asks for a replica sync so long runs see rotated tokens."""
+    from hw_genie.core import client as client_mod
+    import hw_genie.core.database as db
+
+    calls = {"n": 0}
+    monkeypatch.setattr(db, "sync_replica", lambda: calls.__setitem__("n", calls["n"] + 1))
+    monkeypatch.setattr(client_mod, "resolve_account", lambda alias: "Alice")
+    monkeypatch.setattr(
+        client_mod.SessionManager,
+        "load",
+        staticmethod(lambda account: {"headers": {"x-auth-token": "t"}}),
+    )
+
+    headers = client_mod.load_session_headers("Alice", fresh=True)
+
+    assert headers == {"x-auth-token": "t"}
+    assert calls["n"] == 1
+
+
+def test_sync_replica_is_rate_limited(monkeypatch):
+    """A second call inside the window must not dispose the pool again."""
+    import hw_genie.core.database as db
+
+    disposes: list[int] = []
+
+    class _Engine:
+        def dispose(self) -> None:
+            disposes.append(1)
+
+    monkeypatch.setattr(db, "_engine", _Engine())
+    monkeypatch.setattr(db, "_last_replica_sync", 0.0)
+    monkeypatch.setattr(db.time, "monotonic", lambda: 1000.0)
+
+    db.sync_replica()
+    db.sync_replica()
+    assert len(disposes) == 1, "second call inside 30s must be a no-op"
+
+    monkeypatch.setattr(db.time, "monotonic", lambda: 1000.0 + db._REPLICA_SYNC_INTERVAL + 1)
+    db.sync_replica()
+    assert len(disposes) == 2

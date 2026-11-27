@@ -31,7 +31,7 @@ from hw_genie.battle.engine import (
     PlaywrightBattleEngine,
     PythonBattleEngine,
 )
-from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
+from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus, get_header
 
 logger = logging.getLogger(__name__)
 
@@ -1810,7 +1810,7 @@ def _run_raid(
     user_id = (
         response.get("userId")
         or status.get("userId")
-        or client.headers.get("x-auth-user-id")
+        or get_header(client.headers, "x-auth-user-id")
         or ""
     )
     results: dict[str, dict[str, Any]] = {}

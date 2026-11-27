@@ -108,10 +108,12 @@ class ToeJobStore:
                 "claimed_at": None,
                 "claimed_by": None,
             }
-            # Flatten the request payload so the userscript receives the same
-            # top-level fields it always did (``battle`` for sim jobs) plus the
-            # live fields (``action`` / ``rivalId`` / ``titans``).
-            job.update({k: v for k, v in payload.items() if k != "account"})
+            # Copy only the request fields the userscript needs. Never merge
+            # the whole body: callers must not be able to set status/result/id/
+            # claimed_by (which would let a POST fake a completed job).
+            for key in ("battle", "action", "rivalId", "titans"):
+                if key in payload:
+                    job[key] = payload[key]
             job["kind"] = kind
             self._jobs[job_id] = job
         return job_id
@@ -185,12 +187,12 @@ class ToeJobStore:
             # can never clobber the reclaimer's result (no last-writer-wins).
             if job.get("status") == "done":
                 return False
-            # Strict account check: exact match always accepted. A mismatch is
-            # accepted only when the job was claimed via the account-less
-            # fallback (claimed_by == "" — userscript couldn't read Game yet,
-            # or alias vs numeric-id mismatch forced the fallback path). Live
-            # jobs always require the exact account: they act on the page's
-            # logged-in game state and must never be computed by a foreign tab.
+            # Account check, exactly as enforced here: live jobs require an
+            # exact account match (they act on the page's logged-in game
+            # state). Sim jobs accept any submit only when they were claimed
+            # through the account-less fallback (``claimed_by == ""``, e.g.
+            # the tab could not read its account yet); a sim job claimed for
+            # a specific account rejects a foreign submit.
             if job.get("kind") == "live":
                 if job.get("account") != account:
                     return False
@@ -318,8 +320,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="battle is required for sim jobs")
         elif kind == "live":
             action = str(job_request.get("action") or "")
-            if action not in ("battle", "complete_tier"):
-                raise HTTPException(status_code=400, detail="live action must be battle or complete_tier")
+            if action not in ("battle", "reload"):
+                raise HTTPException(status_code=400, detail="live action must be battle or reload")
             if action == "battle":
                 rival_id = job_request.get("rivalId")
                 titans = job_request.get("titans")

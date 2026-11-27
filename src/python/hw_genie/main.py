@@ -9,6 +9,7 @@ from functools import partial
 from hw_genie.core.client import (
     HWClient,
     AccountResolutionError,
+    get_header,
     resolve_account,
 )
 from hw_genie.core.auth import load_session, update_session_with_headers, extract_headers_from_curl, extract_payload_from_curl
@@ -1112,7 +1113,7 @@ def cmd_toe_attack(args):
     if engine_mode == "playwright":
         engine = get_default_engine(mode=engine_mode, headers=headers)
     else:
-        user_id = headers.get("x-auth-user-id", "") if engine_mode != "estimate" else ""
+        user_id = get_header(headers, "x-auth-user-id") if engine_mode != "estimate" else ""
         if not user_id and engine_mode != "estimate":
             try:
                 from hw_genie.core.session_manager import SessionManager
@@ -1162,7 +1163,7 @@ def cmd_toe_run(args):
             account_label = resolve_account(args.account)
         except Exception:
             account_label = None
-        user_id = headers.get("x-auth-user-id", "")
+        user_id = get_header(headers, "x-auth-user-id")
         try:
             summary = run_live_tier(
                 client,
@@ -1171,7 +1172,8 @@ def cmd_toe_run(args):
                 titans=titans,
                 threshold=args.threshold,
                 max_team_attempts=getattr(args, "max_attempts", None),
-                progress=_resolve_toe_progress(args),
+                rounds=getattr(args, "rounds", 1),
+                account_alias=account_label,
             )
         except (KeyboardInterrupt, InterruptedError):
             return
@@ -1182,7 +1184,7 @@ def cmd_toe_run(args):
     if mode == "playwright":
         engine = get_default_engine(mode=mode, headers=headers)
     elif mode != "estimate":
-        user_id = headers.get("x-auth-user-id", "")
+        user_id = get_header(headers, "x-auth-user-id")
         if not user_id:
             try:
                 from hw_genie.core.session_manager import SessionManager
@@ -1876,6 +1878,7 @@ def cmd_multi(args):
             max_total_attempts=int(_max_attempts) if _max_attempts is not None else None,
             end_on_loss=_resolve_toe_end_on_loss(args),
             bank_best_loss=_resolve_toe_bank_best_loss(args),
+            live_rounds=int(getattr(args, "rounds", 1) or 1),
             progress=_resolve_toe_progress(args),
             probe_bridge=False,
         )
@@ -2980,7 +2983,7 @@ def main():
     p_toe_run.add_argument(
         "--auth-server-url",
         default="http://127.0.0.1:8765",
-        help="auth server base URL for the JS bridge (used with --engine hybrid)",
+        help="auth server base URL for the JS bridge (used with --engine hybrid or live)",
     )
     p_toe_run.add_argument(
         "--threshold",
@@ -3019,13 +3022,19 @@ def main():
         "--max-attempts",
         type=int,
         default=None,
-        help="Cap total StartBattle attempts per rival (default: full pass = teams x seeds; estimate-engine runs should pass an explicit cap)",
+        help="Cap StartBattle attempts per rival per round (default: full pass = teams x seeds; estimate-engine runs should pass an explicit cap). With --engine live this is the number of teams tried per round; --seeds / --end-on-loss / --no-end-on-loss / --no-bank-best-loss / --stop-on-loss are ignored (each battle is a real client battle and attackScore is max-held)",
+    )
+    p_toe_run.add_argument(
+        "--rounds",
+        type=int,
+        default=1,
+        help="Live engine: repeat the full team rotation up to this many rounds while a rival is still below the threshold (default: 1). attackScore is max-held, so extra rounds are harmless and re-roll the seed.",
     )
     p_toe_run.add_argument(
         "--progress",
         choices=["quiet", "line", "verbose"],
         default="line",
-        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
+        help="Output compactness: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output). The live engine prints per-battle progress unconditionally and ignores this flag",
     )
     p_toe_run.set_defaults(func=cmd_toe_run)
     p_toe_status = toe_sub.add_parser("status", parents=[parent_parser], help="Show Titan Arena status (tier, rivals)")
@@ -3157,7 +3166,13 @@ def main():
         "--max-attempts",
         type=int,
         default=None,
-        help="Cap total StartBattle attempts per rival for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap)",
+        help="Cap StartBattle attempts per rival per round for the 'toe' mode (default: full pass; estimate-engine runs should pass an explicit cap). With --engine live this is the number of teams tried per round; --seeds / --end-on-loss / --no-end-on-loss / --no-bank-best-loss are ignored (each battle is real and attackScore is max-held)",
+    )
+    p_multi.add_argument(
+        "--rounds",
+        type=int,
+        default=1,
+        help="Live engine for the 'toe' mode: repeat the full team rotation up to this many rounds while a rival is below the threshold (default: 1)",
     )
     p_multi.add_argument(
         "--no-bank-best-loss",
@@ -3283,7 +3298,7 @@ def main():
         "--progress",
         choices=["quiet", "line", "verbose"],
         default="line",
-        help="Output compactness for the 'toe' mode: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output)",
+        help="Output compactness for the 'toe' mode: 'quiet' (rival-decided + summary + errors), 'line' (one updating status line per account), or 'verbose' (full per-attempt output). The live engine prints per-battle progress unconditionally and ignores this flag",
     )
     p_multi.set_defaults(func=cmd_multi)
 
