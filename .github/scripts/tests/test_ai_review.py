@@ -344,6 +344,9 @@ def test_workflow_verifies_cli_install():
     assert "OpenCode CLI is not installed; skipping verification" in workflow
     assert "OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}" in workflow
     assert "Smoke test OpenCode CLI" in workflow
+    assert 'help_out=$("$bin" run --help) || {' in workflow
+    assert "OpenCode CLI --help failed; removing binary for fallback." in workflow
+    assert 'grep -Fq -- "$flag" <<<"$help_out"' in workflow
     assert "for flag in --agent --model --file --standalone --archived; do" in workflow
     assert 'rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない' in workflow
     assert '|| reject "OpenCode CLI --version failed"' in workflow

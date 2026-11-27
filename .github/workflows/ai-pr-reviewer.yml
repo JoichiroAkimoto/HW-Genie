@@ -158,8 +158,13 @@ jobs:
             echo "::warning::OpenCode CLI unavailable; skipping smoke test."
             exit 0
           fi
+          help_out=$("$bin" run --help) || {
+            echo "::warning::OpenCode CLI --help failed; removing binary for fallback."
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          }
           for flag in --agent --model --file --standalone --archived; do
-            if ! "$bin" run --help | grep -q -- "$flag"; then
+            if ! grep -Fq -- "$flag" <<<"$help_out"; then
               echo "::warning::OpenCode CLI is missing $flag; removing binary for fallback."
               rm -rf "$HOME/.opencode/bin"
               exit 1
