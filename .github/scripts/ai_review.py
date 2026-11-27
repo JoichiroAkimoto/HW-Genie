@@ -1453,7 +1453,7 @@ def _generate_with_opencode(
             "--model",
             selector,
             "--file",
-            path,
+            "prompt.txt",  # cwd からの相対パス
             OPENCODE_PROMPT,
         ]
         for attempt in range(2):

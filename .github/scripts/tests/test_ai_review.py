@@ -2305,15 +2305,17 @@ def test_generate_with_opencode_passes_variant_and_attached_prompt(monkeypatch):
         captured["encoding"] = kwargs.get("encoding")
         captured["key"] = kwargs["env"]["OPENCODE_API_KEY"]
         attached = cmd[cmd.index("--file") + 1]
-        with open(attached, encoding="utf-8") as f:
+        assert attached == "prompt.txt"
+        attached_abs = os.path.join(kwargs["cwd"], attached)
+        with open(attached_abs, encoding="utf-8") as f:
             captured["attached"] = f.read()
-        captured["attached_path"] = attached
+        captured["attached_path"] = attached_abs
         agent_path = os.path.join(
-            os.path.dirname(attached), ".opencode", "agents", "reviewer.md"
+            kwargs["cwd"], ".opencode", "agents", "reviewer.md"
         )
         with open(agent_path, encoding="utf-8") as f:
             captured["agent"] = f.read()
-        config_path = os.path.join(os.path.dirname(attached), "opencode.json")
+        config_path = os.path.join(kwargs["cwd"], "opencode.json")
         with open(config_path, encoding="utf-8") as f:
             captured["config"] = json.load(f)
         return subprocess.CompletedProcess(
