@@ -344,7 +344,9 @@ def test_workflow_verifies_cli_install():
     assert "OpenCode CLI is not installed; skipping verification" in workflow
     assert "OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION || '2.4.2' }}" in workflow
     assert "Smoke test OpenCode CLI" in workflow
-    assert '"$bin" run --help | grep -E -- \'--agent|--model|--file|--standalone|--archived\'' in workflow
+    assert "for flag in --agent --model --file --standalone --archived; do" in workflow
+    assert 'rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない' in workflow
+    assert '|| reject "OpenCode CLI --version failed"' in workflow
     assert 'if [ ! -x "$bin" ]; then' in workflow
 
 
@@ -2392,6 +2394,10 @@ def test_review_output_contract_and_ansi_strip():
     assert "Tools:" not in cleaned
     assert "╰" not in cleaned
     assert "**要約**: ok" in cleaned
+    cleaned_with_blank = ai_review._sanitize_review_output(
+        "**判定**: 【✅ APPROVE】\n**要約**: ok\n\nTools: read, bash", ""
+    )
+    assert "Tools:" not in cleaned_with_blank
 
 
 def _run_main_opencode(

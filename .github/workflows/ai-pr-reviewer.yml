@@ -126,13 +126,17 @@ jobs:
             echo "::warning::OpenCode CLI is not installed; skipping verification."
             exit 0
           fi
-          installed=$("$bin" --version | awk '{print $NF}' | sed 's/^v//')
-          if [ -n "$OPENCODE_CLI_VERSION" ] && [ "$installed" != "$OPENCODE_CLI_VERSION" ]; then
-            echo "expected $OPENCODE_CLI_VERSION, got $installed" >&2
+          reject() {
+            echo "::warning::$1"
+            rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない
             exit 1
+          }
+          installed=$("$bin" --version | awk '{print $NF}' | sed 's/^v//') || reject "OpenCode CLI --version failed"
+          if [ -n "$OPENCODE_CLI_VERSION" ] && [ "$installed" != "$OPENCODE_CLI_VERSION" ]; then
+            reject "expected $OPENCODE_CLI_VERSION, got $installed"
           fi
           if [ -n "$OPENCODE_CLI_SHA256" ]; then
-            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c -
+            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c - || reject "OpenCode CLI checksum mismatch"
           fi
 
       - name: Smoke test OpenCode CLI
@@ -144,7 +148,13 @@ jobs:
             echo "::warning::OpenCode CLI unavailable; skipping smoke test."
             exit 0
           fi
-          "$bin" run --help | grep -E -- '--agent|--model|--file|--standalone|--archived'
+          for flag in --agent --model --file --standalone --archived; do
+            if ! "$bin" run --help | grep -q -- "$flag"; then
+              echo "::warning::OpenCode CLI is missing $flag; removing binary for fallback."
+              rm -rf "$HOME/.opencode/bin"
+              exit 1
+            fi
+          done
 
       - name: Add OpenCode CLI to PATH
         # キャッシュヒット時もインストール時も同じパスを通す。

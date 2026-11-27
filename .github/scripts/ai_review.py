@@ -1352,7 +1352,10 @@ def _sanitize_review_output(text: str, api_key: str) -> str:
     # 末尾の CLI ログ（ツール一覧・枠線・実行ログ）はレビュー本文ではないため落とす。
     end = len(lines)
     for i in range(len(lines) - 1, start, -1):
-        if re.match(r"^(Tools\b|╭|│|╰|─|Running|Executing|\$|▸|•)", lines[i].strip()):
+        stripped = lines[i].strip()
+        if not stripped:  # 末尾の空行はスキップして走査を続ける
+            continue
+        if re.match(r"^(Tools\b|╭|│|╰|─|Running|Executing|\$|▸|•)", stripped):
             end = i
         else:
             break
@@ -2231,7 +2234,9 @@ def main():
             info.get("max_diff_chars", fallback_limit),
         )
         prompt = new_prompt
-        is_truncated = is_truncated or truncated
+        # 採用されたプロンプトの状態を反映する（前のモデルで切れていても、
+        # フォールバック先で全文が入れば警告は出さない）。
+        is_truncated = truncated
 
     try:
         # workflow の先頭ステップで記録したジョブ開始時刻を使う（checkout/pip/CLI
