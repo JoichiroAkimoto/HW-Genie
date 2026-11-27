@@ -1021,7 +1021,10 @@ def test_fetch_file_contents_greedy_reallocates_to_large_files():
     assert len(result) <= 200
 
 
-def test_fetch_file_contents_skips_missing_and_empty():
+def test_fetch_file_contents_skips_missing_and_empty(monkeypatch):
+    # CI では GITHUB_REPOSITORY が設定され API フォールバックが走るため、
+    # このテストでは git のみの挙動に固定する。
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     paths = ["missing.py", "empty.py"]
     contents = {"empty.py": "   "}
 
