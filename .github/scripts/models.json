@@ -68,5 +68,58 @@
     "provider": "openrouter",
     "fallback": true,
     "reasoning_effort": "high"
+  },
+  "opencode-deepseek-free": {
+    "name": "opencode/deepseek-v4.1-flash-free",
+    "aliases": [
+      "opencode/deepseek-v4.1-flash-free",
+      "deepseek-v4.1-flash-free",
+      "deepseek-free"
+    ],
+    "input_cost_per_1m": 0.0,
+    "output_cost_per_1m": 0.0,
+    "max_diff_chars": 2000000,
+    "provider": "opencode",
+    "variants": ["low", "high", "max"],
+    "default_variant": "high"
+  },
+  "opencode-hy4-free": {
+    "name": "opencode/hy4-flash-free",
+    "aliases": [
+      "opencode/hy4-flash-free",
+      "hy4-flash-free",
+      "hy4-free"
+    ],
+    "input_cost_per_1m": 0.0,
+    "output_cost_per_1m": 0.0,
+    "max_diff_chars": 2000000,
+    "provider": "opencode",
+    "variants": ["none", "high"],
+    "default_variant": "high"
+  },
+  "opencode-go-hy4-free": {
+    "name": "opencode-go/hy4-flash-free",
+    "aliases": [
+      "opencode-go/hy4-flash-free",
+      "go-hy4-free"
+    ],
+    "input_cost_per_1m": 0.0,
+    "output_cost_per_1m": 0.0,
+    "max_diff_chars": 2000000,
+    "provider": "opencode",
+    "variants": ["none", "high"],
+    "default_variant": "high"
+  },
+  "opencode-go-deepseek-flash": {
+    "name": "opencode-go/deepseek-v4.1-flash",
+    "aliases": [
+      "opencode-go/deepseek-v4.1-flash"
+    ],
+    "input_cost_per_1m": 0.15,
+    "output_cost_per_1m": 0.6,
+    "max_diff_chars": 2000000,
+    "provider": "opencode",
+    "variants": ["low", "high", "max"],
+    "default_variant": "high"
   }
 }

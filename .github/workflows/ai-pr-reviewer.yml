@@ -26,6 +26,10 @@ on:
         description: 'Select AI Model'
         type: choice
         options:
+          - opencode/deepseek-v4.1-flash-free
+          - opencode/hy4-flash-free
+          - opencode-go/hy4-flash-free
+          - opencode-go/deepseek-v4.1-flash
           - hydrogen
           - flash-lite
           - flash
@@ -48,18 +52,31 @@ jobs:
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) &&
       (github.event.sender.type || github.event.pull_request.user.type || github.event.issue.user.type || '') != 'Bot'
     runs-on: ubuntu-latest
-    # 176kトークン規模の大型PR差分では、長い待機の主因は OpenRouter 側のリトライである
-    # （Gemini は Hydrogen -> Flash-Lite -> Flash と待機せず即フォールバックする）。
-    # 10分だと成功しうる実行が切り捨てられるため 15分に緩和（タイムアウト時のみ失敗扱い）。
-    timeout-minutes: 15
+    env:
+      # 未指定ならインストーラが最新を解決する。固定したい場合のみ repo variable を設定する。
+      OPENCODE_CLI_VERSION: ${{ vars.OPENCODE_CLI_VERSION }}
+      # 固定バイナリの sha256。設定するとインストール後・実行前に検証する。
+      # 運用で固定バージョンが安定したらリポジトリ変数へ設定してください。
+      OPENCODE_CLI_SHA256: ${{ vars.OPENCODE_CLI_SHA256 }}
+      # ジョブ制限と Python 側の時間予算を同じ repo variable から導出する。
+      REVIEW_TIMEOUT_MINUTES: ${{ vars.REVIEW_TIMEOUT_MINUTES || '15' }}
+    # 大型 PR では OpenRouter のリトライが主因で長くなるため、既定 15 分。
+    # 変更は repo variable REVIEW_TIMEOUT_MINUTES の一点から行う。
+    timeout-minutes: ${{ fromJSON(vars.REVIEW_TIMEOUT_MINUTES || '15') }}
     steps:
+      - name: Record job start time
+        # 残時間の算出をジョブ開始基準にする（checkout / pip / CLI 導入を含む）。
+        run: echo "REVIEW_START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          # エージェント型 CLI にリポジトリの git 資格情報を渡さない。
+          persist-credentials: false
           # Full history is not needed: ai_review.py fetches the PR head ref
           # itself (git fetch refs/pull/N/head) and uses `gh pr diff` via API.
           fetch-depth: 1
-          ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || github.sha }}
+          ref: ${{ github.event.issue.pull_request && format('refs/pull/{0}/head', github.event.issue.number) || (inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.sha) }}
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -72,10 +89,121 @@ jobs:
         run: |
           pip install -r .github/scripts/requirements-ai.txt
 
+      - name: Cache OpenCode CLI
+        id: cache_opencode
+        # 固定バージョンごとにキャッシュする。
+        if: env.OPENCODE_CLI_VERSION != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.opencode/bin
+          key: ${{ runner.os }}-${{ runner.arch }}-opencode-${{ env.OPENCODE_CLI_VERSION }}-${{ env.OPENCODE_CLI_SHA256 }}
+
+      - name: Install OpenCode CLI
+        # インストール失敗でもレビューを止めない（スクリプト側のフォールバックに委ねる）。
+        if: steps.cache_opencode.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          args=(--no-modify-path)
+          if [ -n "$OPENCODE_CLI_VERSION" ]; then
+            args+=(--version "$OPENCODE_CLI_VERSION")
+          fi
+          # 失敗時に空ディレクトリがキャッシュへ保存されるのを防ぐ。
+          if ! curl -fsSL https://opencode.ai/v2/install | bash -s -- "${args[@]}"; then
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          fi
+          if [ -n "$OPENCODE_CLI_SHA256" ]; then
+            if ! echo "$OPENCODE_CLI_SHA256  $HOME/.opencode/bin/opencode" | sha256sum -c -; then
+              rm -rf "$HOME/.opencode/bin"
+              exit 1
+            fi
+          fi
+          if ! "$HOME/.opencode/bin/opencode" --version; then
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          fi
+
+      - name: Verify OpenCode CLI
+        # 検証失敗もレビューを止めない（スクリプト側のフォールバックへ委ねる）。
+        continue-on-error: true
+        # 指定されたバージョン／チェックサムを検証する（未指定なら最新）。
+        run: |
+          set -o pipefail
+          bin="$HOME/.opencode/bin/opencode"
+          if [ ! -x "$bin" ]; then
+            echo "::warning::OpenCode CLI is not installed; skipping verification."
+            exit 0
+          fi
+          reject() {
+            echo "::warning::$1"
+            rm -rf "$HOME/.opencode/bin"  # 検証失敗バイナリは実行もキャッシュもしない
+            exit 1
+          }
+          if [ -n "$OPENCODE_CLI_SHA256" ]; then
+            echo "$OPENCODE_CLI_SHA256  $bin" | sha256sum -c - || reject "OpenCode CLI checksum mismatch"
+          fi
+          installed=$("$bin" --version | awk '{print $NF}' | sed 's/^v//') || reject "OpenCode CLI --version failed"
+          if [ -n "$OPENCODE_CLI_VERSION" ] && [ "$installed" != "$OPENCODE_CLI_VERSION" ]; then
+            reject "expected $OPENCODE_CLI_VERSION, got $installed"
+          fi
+
+      - name: Smoke test OpenCode CLI
+        # 使用するフラグが実 CLI に存在することを確認する（モックだけに依存しない）。
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          bin="$HOME/.opencode/bin/opencode"
+          if [ ! -x "$bin" ]; then
+            echo "::warning::OpenCode CLI unavailable; skipping smoke test."
+            exit 0
+          fi
+          help_out=$("$bin" run --help) || {
+            echo "::warning::OpenCode CLI --help failed; removing binary for fallback."
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          }
+          for flag in --agent --model --file --standalone --archived; do
+            if ! grep -Fq -- "$flag" <<<"$help_out"; then
+              echo "::warning::OpenCode CLI is missing $flag; removing binary for fallback."
+              rm -rf "$HOME/.opencode/bin"
+              exit 1
+            fi
+          done
+
+      - name: Verify OpenCode config schema
+        # 実 CLI が opencode.json / エージェント定義を解釈できることを確認する。
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+            echo "::warning::OpenCode CLI unavailable; skipping config check."
+            exit 0
+          fi
+          d=$(mktemp -d)
+          trap 'rm -rf "$d"' EXIT
+          reject() {
+            echo "::warning::$1"
+            rm -rf "$HOME/.opencode/bin"
+            exit 1
+          }
+          mkdir -p "$d/.opencode/agents"
+          printf '%s\n' '{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}' > "$d/opencode.json"
+          printf '%s\n' '---' 'description: Strict code reviewer' 'mode: primary' '' 'Review carefully.' > "$d/.opencode/agents/reviewer.md"
+          (cd "$d" && "$HOME/.opencode/bin/opencode" debug config | grep -F '"effect": "deny"') \
+            || reject "OpenCode CLI did not accept the tool-deny config"
+
+      - name: Add OpenCode CLI to PATH
+        # キャッシュヒット時もインストール時も同じパスを通す。
+        run: echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
       - name: Run AI Review
         env:
           # stdout をリアルタイム化（打ち切り時にバッファ出力を失わないため）
           PYTHONUNBUFFERED: 1
+          # OpenCode provider（--model opencode/* とフォールバックで使用）。
+          # 未登録の場合はスクリプトが Gemini チェーンへフォールバックする。
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           # Backward compat: single key
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Key rotation: comma-separated (empty secrets become "" and are filtered in Python)

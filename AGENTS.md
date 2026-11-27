@@ -65,4 +65,5 @@ uv run hw-genie db-check
 - **必須検証**: `uv run --locked ruff check . --fix` と `uv run --locked pytest`。新機能・修正には `src/python/tests` のテスト追加/更新も行う。
 - **依存関係**: Source of Truth は実行依存が `src/python/pyproject.toml` の `dependencies`、開発依存がルート `pyproject.toml` の `dependency-groups`（`dev`）。追加は `uv add --project src/python <pkg>`。更新運用（Dependabot / auto-merge / `uv sync --locked`）は README の「開発環境 > 依存関係の更新」を参照。
 - **ドキュメント同期**: 仕様変更時は `.agents/skills/*/SKILL.md`、`README.md`、必要なら `AGENTS.md` / `docs/api` を同時更新する。DB 変更なら `docs/db/schema.md`、リリースなら `RELEASE_PROCESS.md`。
+- **コメントは現行仕様のみ**: 新規・更新するコード／ワークフロー／ドキュメントのコメントには変更履歴（「以前は…」「〜をやめた」）を書かない。履歴は PR 本文・コミットメッセージに書く。互換性の説明も「今どう扱うか」という現行の挙動として書く。設定値は情報源を一箇所に集約し、コメントに重複して書かない。既存コメントの一括書き換えはPRの目的範囲でのみ行う。
 - **実名禁止**: 上記の不変条件を参照。既存の混入を見つけたら同じ PR で置換する。
