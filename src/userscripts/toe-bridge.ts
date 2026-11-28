@@ -21,6 +21,20 @@ const POLL_INTERVAL_MS = 250;
 const JOBS_PER_TICK = 4;
 const REQUEST_TIMEOUT_MS = 5000;
 
+/**
+ * localStorage key the auth-capture side writes the live ``x-auth-user-id``
+ * to. Shared by ``index.ts`` and this bridge so both agree on the tab identity
+ * used for live job claims.
+ */
+export const AUTH_USER_ID_STORAGE_KEY = "hwgenie-x-auth-user-id";
+
+/**
+ * localStorage key the live-job failure path writes a one-shot diagnostic to
+ * (rival ids wanted vs. present, minified-method presence). Read it from the
+ * game tab console when a live job reports ``rival not found``.
+ */
+export const TOE_DIAG_KEY = "hwgenie-toe-diag";
+
 // Build variant sentinel. Normal builds ship with the NORMAL value and never
 // execute any ToE code (Goodwin separation, see #134); `build.sh --dev`
 // rewrites it to the DEV value so DEV builds run the full ToE bridge.
@@ -45,6 +59,12 @@ interface ToeJob {
   id: string;
   account: string;
   battle: unknown;
+  /** ``"sim"`` (offline instant calc, default) or ``"live"`` (drive the real game battle). */
+  kind?: string;
+  /** Live action: ``"battle"`` or ``"reload"`` (tier transition). */
+  action?: string;
+  rivalId?: string;
+  titans?: number[];
 }
 
 interface BattleProgressHero {
@@ -270,6 +290,15 @@ export function __resetBridgeForTests(): void {
   }
   bridgeDiag.owned = 0;
   bridgeDiag.captured = 0;
+  // Live state must not leak between tests (a pending reload flag would make
+  // every later tick return early).
+  liveJobRunner = null;
+  liveAutoForced = false;
+  liveAutoApplied = false;
+  liveAutoPatchInstalled = false;
+  liveAutoShape = "";
+  liveReloadPending = false;
+  clearReloadPending();
 }
 
 function capturedEngine(): Record<string, unknown> | null {
@@ -569,9 +598,11 @@ export function getProtoFn(classF: unknown, nF: number): string {
  * Haxe prototype key order (ordinals) shifts with game builds, so the pinned
  * ordinal is only a hint: try it first (the value HerowarsHelper currently
  * uses), then fall back to any field (prototype or own) whose instance value
- * exposes the Haxe signal shape (``add`` + ``dispatch``; a plain List also has
- * ``add``). A drifted build self-heals instead of failing every job. Exported
- * for unit tests.
+ * exposes the Haxe signal shape. A plain List also has ``add``, so the shape
+ * also needs ``dispatch`` (DOM-like) or ``subscribe`` (Haxe ``signals.Signal1``
+ * inherits ``add`` + ``subscribe``; its dispatch method is minified per build).
+ * A drifted build self-heals instead of failing every job. Exported for unit
+ * tests.
  */
 export function resolveSignalKey(
   instant: unknown,
@@ -583,7 +614,8 @@ export function resolveSignalKey(
   const isSignal = (v: unknown) =>
     !!v &&
     typeof (v as { add?: unknown }).add === "function" &&
-    typeof (v as { dispatch?: unknown }).dispatch === "function";
+    (typeof (v as { dispatch?: unknown }).dispatch === "function" ||
+      typeof (v as { subscribe?: unknown }).subscribe === "function");
   const preferred = getProtoFn(classF, preferredIndex);
   if (preferred && isSignal(instance[preferred])) {
     return { key: preferred, index: preferredIndex };
@@ -605,10 +637,18 @@ export function resolveSignalKey(
   return null;
 }
 
-/** Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE. */
+/**
+ * Battle ``type`` -> ``BattleConfigStorage`` getter. This bridge only runs ToE.
+ *
+ * The game's own ``TitanArenaBattleThread`` builds its presets with
+ * ``get_titanClanPvp`` (``BattleThreadFactory`` maps ``titan_arena`` to
+ * ``I.qj.f7a()``). The 2026-11-26 update (serverVersion 302) started
+ * rejecting ``get_titanPvpManual`` progress as ``Invalid battle``, so the
+ * offline sim must use the same config as the client.
+ */
 export function battleConfigFor(battleType: unknown): string {
   if (typeof battleType === "string" && battleType.includes("titan_arena")) {
-    return "get_titanPvpManual";
+    return "get_titanClanPvp";
   }
   return "get_titanPvpManual";
 }
@@ -664,7 +704,7 @@ async function pollNextJob(account: string, baseUrl: string): Promise<ToeJob | n
 export async function submitResult(
   jobId: string,
   account: string,
-  result: BattleResultPayload,
+  result: unknown,
   baseUrl: string,
 ): Promise<boolean> {
   const res = await fetchWithTimeout(
@@ -704,10 +744,11 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
   try {
     // Ported from HerowarsHelper's working BattleCalc (ordinals pinned, see
-    // getF/getFn/getProtoFn docs): presets take the battle's own progress
-    // plus the titan PvP config from BattleConfigStorage, the instant play
-    // reports via a Haxe signal (NOT DOM addEventListener), and results come
-    // from MultiBattleResult getters.
+    // getF/getFn/getProtoFn docs): presets take the ToE battle config
+    // (get_titanClanPvp, matching the game's TitanArenaBattleThread) and the
+    // client's isReplay flag; the instant play reports via a Haxe signal
+    // (NOT DOM addEventListener), and results come from MultiBattleResult
+    // getters.
     const b = battle as { progress?: unknown; type?: unknown };
     const dataStorage = game["DataStorage"] as Record<string, unknown>;
     log("computeBattle: resolving config");
@@ -734,15 +775,23 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
       return null;
     }
     log("computeBattle: presets next");
+    // BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
+    // isReplay=false matches the client's instant/skip paths (dungeon skip,
+    // TitanArenaRaid). isReplay=true would make BattleInstantPlay build the
+    // BattleReseedSession from effects.ultReseed; an offline sim has no
+    // battleSeed_next seeds/proof, so the server rejects that progress as
+    // ``Invalid battle`` (2026-11-26, serverVersion 302).
+    // showBothTeams only affects rendering, so the battle thread's true is
+    // irrelevant here; the instant path uses false.
     const presets = new (
       game["BattlePresets"] as new (
-        progress: unknown,
         isReplay: boolean,
+        autoToggleable: boolean,
         autoOnStart: boolean,
         config: unknown,
         showBothTeams: boolean,
       ) => unknown
-    )(b.progress ?? [], false, true, config, false);
+    )(false, false, true, config, false);
     log("computeBattle: presets ok, instant next");
     const BattleInstantPlay = game["BattleInstantPlay"] as new (
       data: unknown,
@@ -822,6 +871,565 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
   }
 }
 
+// --- live ToE jobs ---------------------------------------------------------
+// EXPERIMENTAL / 開発途中. Live solo/wall battles are the only v302 path (the
+// server enforces the ultReseed proof), but they rely on minified game names
+// (Ka.y7 / W5b / cmc / y7.DBo today; x7 / V5b / bmc / kBo before) that drift on
+// every game update. Re-pin them when the game bundle changes; raids stay
+// API/offline. This is not a finished ToE solution.
+
+type AnyRecord = Record<string, any>;
+type AnyFn = (...args: any[]) => any;
+/**
+ * First function-valued member among ``names`` (new minified name first, old
+ * fallback second), or undefined. The game renames methods between builds;
+ * centralizing the lookup keeps every call site on the same rule.
+ */
+function pickFn<T extends AnyFn>(obj: AnyRecord | undefined | null, ...names: string[]): T | undefined {
+  if (!obj) return undefined;
+  for (const name of names) {
+    try {
+      const value = obj[name];
+      if (typeof value === "function") return value as T;
+    } catch {}
+  }
+  return undefined;
+}
+type LiveJobResult = Record<string, unknown>;
+let liveJobRunner: ((job: ToeJob) => Promise<LiveJobResult>) | null = null;
+// Set while a live battle is being driven so the BattleController patch only
+// forces Auto for those battles, never for the user's manual fights.
+let liveAutoForced = false;
+// Set by the BattleController patch when it could actually toggle Auto.
+let liveAutoApplied = false;
+// Tracks whether the BattleController.start wrapper is actually installed;
+// included in live-battle timeouts so a shape drift is visible without eval.
+let liveAutoPatchInstalled = false;
+// Captured inside BattleController.start: the settings-model fields that are
+// BooleanProperty instances (Auto candidates). Empty until a live battle runs.
+let liveAutoShape = "";
+// Set while a tier-transition reload is scheduled (or after this page's
+// sessionStorage flag was written) until the page is torn down. Stops the
+// interval from claiming the next job, which would die with the old page.
+let liveReloadPending = false;
+
+export type LiveDiagInput = {
+  visibility: string;
+  visibilityAtStart: string;
+  controllerCaptured: boolean;
+  autoPatchInstalled: boolean;
+  autoApplied: boolean;
+  autoForced: boolean;
+  battleStarted: boolean;
+};
+
+/** Pure formatter so live-battle diagnostics can be unit-tested. */
+export function formatLiveDiag(d: LiveDiagInput): string {
+  return [
+    `vis=${d.visibility}(start=${d.visibilityAtStart})`,
+    `bc=${d.controllerCaptured ? 1 : 0}`,
+    `patch=${d.autoPatchInstalled ? 1 : 0}`,
+    `auto=${d.autoApplied ? 1 : 0}`,
+    `forced=${d.autoForced ? 1 : 0}`,
+    `start=${d.battleStarted ? 1 : 0}`,
+  ].join(" ");
+}
+
+/** Current live-battle state; attached to timeout errors and the Dev handle. */
+function liveDiag(visibilityAtStart = "n/a", battleStarted = false): string {
+  try {
+    const base = formatLiveDiag({
+      visibility: typeof document !== "undefined" ? document.visibilityState : "n/a",
+      visibilityAtStart,
+      controllerCaptured: !!capturedClasses["BattleController"],
+      autoPatchInstalled: liveAutoPatchInstalled,
+      autoApplied: liveAutoApplied,
+      autoForced: liveAutoForced,
+      battleStarted,
+    });
+    const extra: string[] = [];
+    if (liveAutoShape) extra.push(`shape=${liveAutoShape}`);
+    return extra.length ? `${base} ${extra.join(" ")}` : base;
+  } catch {
+    return "diag unavailable";
+  }
+}
+
+/**
+ * Record which settings fields are BooleanProperty instances so a drift in the
+ * minified Auto field name (``Qya``) is visible in the next timeout error.
+ */
+function captureAutoShape(settings: AnyRecord | undefined): void {
+  if (!settings) {
+    liveAutoShape = "no-settings";
+    return;
+  }
+  try {
+    const bp = capturedClasses["BooleanProperty"] as unknown as (new () => unknown) | undefined;
+    const keys = new Set<string>();
+    let obj: AnyRecord | null = settings;
+    while (obj && obj !== Object.prototype) {
+      for (const key of Object.getOwnPropertyNames(obj)) keys.add(key);
+      obj = Object.getPrototypeOf(obj) as AnyRecord | null;
+    }
+    const boolKeys = [...keys].filter((key) => {
+      try {
+        const value = settings[key];
+        return !!bp && value instanceof bp;
+      } catch {
+        return false;
+      }
+    });
+    const hasQya = Object.prototype.hasOwnProperty.call(settings, "Qya") || keys.has("Qya");
+    liveAutoShape = `n=${keys.size} qya=${hasQya ? 1 : 0} bool=${boolKeys.slice(0, 12).join(",")}`;
+  } catch {
+    liveAutoShape = "shape-error";
+  }
+}
+
+/**
+ * Force the game's Auto toggle on when a live battle controller starts.
+ *
+ * The client's Auto state is the ``BattleController`` settings model
+ * ``Rr.Qya`` BooleanProperty (the same one its Auto button toggles). The
+ * minified names are pinned to the current bundle; when they drift the patch
+ * is skipped and the live job returns a clear diagnostic instead of clicking
+ * blind canvas coordinates (the bottom-right x5 button is a real-money
+ * Valkyrie's Favor purchase popup).
+ */
+function installLiveAutoPatch(): boolean {
+  liveAutoPatchInstalled = false;
+  try {
+    const cls = capturedClasses["BattleController"] as unknown as { prototype?: AnyRecord } | undefined;
+    const proto = cls?.prototype;
+    if (!proto) return false;
+    if (proto["__hwAutoPatch"]) {
+      liveAutoPatchInstalled = true;
+      return true;
+    }
+    const originalStart = proto["start"];
+    if (typeof originalStart !== "function") return false;
+    proto["start"] = function (this: AnyRecord, ...args: unknown[]) {
+      const result = originalStart.apply(this, args);
+      if (liveAutoForced) {
+        try {
+          const settings = this["Rr"] as AnyRecord | undefined;
+          captureAutoShape(settings);
+          const auto = settings?.["Qya"] as { ba?: (value: boolean) => void } | undefined;
+          if (auto && typeof auto.ba === "function") {
+            auto.ba(true);
+            liveAutoApplied = true;
+          }
+          // Do NOT flip every BooleanProperty: some of the 18 toggles are not
+          // Auto/Ult and one of them stalls the battle (observed: all battles
+          // timed out when all were set). Only the known Auto toggle is forced.
+        } catch {}
+      }
+      return result;
+    };
+    proto["__hwAutoPatch"] = true;
+    liveAutoPatchInstalled = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolved in-page ToE data + command model.
+ *
+ * ``commands`` is the Haxe command list (``Ka.y7`` in the v302-late bundle,
+ * ``Ka.x7`` in older bundles); ``commandKey`` records which property it came
+ * from so diagnostics/tests can tell the builds apart.
+ */
+export type ToeModel = {
+  toe: AnyRecord;
+  commands: AnyRecord;
+  commandKey: "y7" | "x7";
+  commandRoot: AnyRecord;
+};
+
+/** Resolve the in-page ToE data + command model, or null before the game loads. */
+export function resolveToeModel(): ToeModel | null {
+  const gameModelClass = capturedClasses["GameModel"] as unknown as { F?: () => AnyRecord } | undefined;
+  const model = gameModelClass?.F?.();
+  const player = model?.["player"] as AnyRecord | undefined;
+  const toe = player?.["cl"] as AnyRecord | undefined;
+  const commandRoot = model?.["Ka"] as AnyRecord | undefined;
+  // v302-late build renamed the ToE command list x7 -> y7; keep both.
+  let commandKey: "y7" | "x7" = "x7";
+  let commands: AnyRecord | undefined;
+  if (commandRoot?.["y7"]) {
+    commandKey = "y7";
+    commands = commandRoot["y7"] as AnyRecord;
+  } else if (commandRoot?.["x7"]) {
+    commandKey = "x7";
+    commands = commandRoot["x7"] as AnyRecord;
+  }
+  return toe && commands && commandRoot ? { toe, commands, commandKey, commandRoot } : null;
+}
+
+/**
+ * Wait for the game model after a page reload.
+ *
+ * Battles keep the page, but a tier transition reloads it (see the reload
+ * action) and can queue a job while the fresh page is still booting — the
+ * captured classes exist but ``GameModel.F().player.cl`` does not yet.
+ * Failing instantly there made the CLI skip a perfectly good team as "ToE model
+ * unavailable", so poll instead.
+ */
+export async function waitForToeModel(timeoutMs: number): Promise<ToeModel | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const resolved = resolveToeModel();
+    if (resolved) return resolved;
+    if (Date.now() >= deadline) return null;
+    await sleep(500);
+  }
+}
+
+/**
+ * Wait for the ToE rival list to include ``rivalId``.
+ *
+ * Right after a reload the model exists but its status fetch may still be in
+ * flight, so the rivals getter (``W5b()`` on the v302-late bundle, ``V5b()``
+ * on older ones) is empty. Refresh with ``mKl()`` / older ``WJl()`` and retry
+ * instead of failing with "rival not found" (which aborts the wall in the CLI).
+ */
+export async function waitForRival(
+  toe: AnyRecord,
+  rivalId: string | number,
+  timeoutMs: number,
+): Promise<AnyRecord | null> {
+  const want = String(rivalId);
+  const deadline = Date.now() + timeoutMs;
+  let lastRefresh = 0;
+  // Single one-time-clear flag: drives both the first-refresh clear and the
+  // timeout restore (``lastRefresh === 0`` is not a reliable "first" signal).
+  let cleared = false;
+  let prevVge: unknown;
+  let prevDtd: unknown;
+  for (;;) {
+    try {
+      // v302-late build renamed V5b -> W5b; keep both for older bundles.
+      // Bind `this` to the model: these are Haxe instance methods and calling
+      // the extracted function unbound loses `this.Dtd`.
+      const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(toe, "W5b", "V5b");
+      const rivals = getRivals?.call(toe) || [];
+      const found = rivals.find((r) => String(r?.["G"]?.()) === want);
+      if (found) return found;
+    } catch {}
+    const now = Date.now();
+    if (now - lastRefresh >= 3000) {
+      // Resolve the status refresh BEFORE clearing anything: a bundle with
+      // neither name must never have its usable rival list destroyed.
+      const refresh = pickFn<(this: AnyRecord) => unknown>(toe, "mKl", "WJl");
+      if (typeof refresh === "function") {
+        if (!cleared) {
+          cleared = true;
+          // The new bundle's update() rebuilds the rivals list (Dtd) only when
+          // nextDayTs/tier change. After a daily reset that keeps the same tier,
+          // the wall ids change but update() matches the old list by id, so the
+          // new walls never appear. Clear once so update() rebuilds.
+          try {
+            prevVge = toe["Vge"];
+            prevDtd = toe["Dtd"];
+            toe["Vge"] = null;
+            toe["Dtd"] = null;
+          } catch {}
+        }
+        try {
+          refresh.call(toe);
+        } catch {}
+      }
+      lastRefresh = now;
+    }
+    if (now >= deadline) {
+      // Give up. Restore only when the rebuild never happened: a successful
+      // refresh may legitimately produce a different wall list (daily reset)
+      // and must be kept for later jobs.
+      const rebuilt = Array.isArray(toe["Dtd"]);
+      if (cleared && !rebuilt) {
+        try {
+          toe["Vge"] = prevVge;
+        } catch {}
+        try {
+          toe["Dtd"] = prevDtd;
+        } catch {}
+      }
+      return null;
+    }
+    await sleep(500);
+  }
+}
+
+// Survives the post-battle reload: after a fresh page boots, the userscript must
+// not claim the next live job until the ToE rival data is actually loaded, or
+// ``cmc`` (older builds ``bmc``) cannot find the rival ("rival not found").
+// sessionStorage is cleared as soon as the data is ready.
+export const RELOAD_PENDING_KEY = "hwgenie-toe-reload-pending";
+// Give up gating after this long so a tab that never loads ToE data (tier
+// complete screen, city screen) cannot wedge the job queue forever.
+const RELOAD_PENDING_MAX_MS = 180000;
+// Navigation is delayed so the reload job's result POST can complete first.
+const RELOAD_NAVIGATION_DELAY_MS = 1500;
+// If the navigation is blocked (e.g. a beforeunload dialog), stop wedging the
+// tab after this long.
+const RELOAD_NAVIGATION_WATCHDOG_MS = 10000;
+
+function markReloadPending(): void {
+  try {
+    sessionStorage.setItem(RELOAD_PENDING_KEY, String(Date.now()));
+  } catch {}
+}
+
+function reloadPending(): boolean {
+  try {
+    const raw = sessionStorage.getItem(RELOAD_PENDING_KEY);
+    if (!raw) return false;
+    const markedAt = Number(raw);
+    if (!Number.isFinite(markedAt) || Date.now() - markedAt > RELOAD_PENDING_MAX_MS) {
+      clearReloadPending();
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearReloadPending(): void {
+  try {
+    sessionStorage.removeItem(RELOAD_PENDING_KEY);
+  } catch {}
+}
+
+/**
+ * Stop this page from claiming more jobs and mark the reload as pending.
+ *
+ * Call this *before* acknowledging the reload job; the navigation itself is
+ * scheduled afterwards by {@link scheduleReloadNavigation} so a slow result
+ * POST is not aborted by the page unloading.
+ */
+export function blockReloadClaims(): void {
+  liveReloadPending = true;
+  markReloadPending();
+}
+
+/**
+ * Schedule the tier-transition navigation.
+ *
+ * ``liveReloadPending`` covers the delay window; the sessionStorage flag covers
+ * the fresh page's boot. A watchdog releases the gate if the navigation never
+ * happens (blocked dialog), so the tab does not stop claiming forever.
+ */
+export function scheduleReloadNavigation(): void {
+  setTimeout(() => {
+    try {
+      location.reload();
+    } catch {}
+  }, RELOAD_NAVIGATION_DELAY_MS);
+  setTimeout(() => {
+    if (!liveReloadPending) return;
+    liveReloadPending = false;
+    clearReloadPending();
+  }, RELOAD_NAVIGATION_WATCHDOG_MS);
+}
+
+/** True once the in-page ToE rival list is populated (post-reload readiness). */
+export function toeDataReady(): boolean {
+  const model = resolveToeModel();
+  if (!model) return false;
+  try {
+    const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(model.toe, "W5b", "V5b");
+    const rivals = getRivals?.call(model.toe);
+    return Array.isArray(rivals) && rivals.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drive a real ToE battle through the game's own client.
+ *
+ * The live path is required after the 2026-11-26 update: offline instant
+ * simulations cannot produce the ``battleSeed_next`` proof the server now
+ * validates. ``PlayerTitanArenaData.cmc`` (older bundles ``bmc``) runs the real
+ * battle thread and the client submits ``titanArenaEndBattle`` with a valid
+ * proof by itself. Tier transitions are a separate ``reload`` job handled by
+ * ``tick``.
+ */
+async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<LiveJobResult> {
+  if (!hasLocalEngine()) return { ok: false, error: "no engine" };
+  // Own-tab guard: live jobs act on the page's logged-in game state, so the
+  // account must be readable and match exactly. No jobAccount fallback.
+  const myAccount = resolveAccount();
+  if (!myAccount || String(job.account) !== String(myAccount)) {
+    return { ok: false, error: `account mismatch (job=${job.account} tab=${myAccount})` };
+  }
+  if (job.action !== "battle") return { ok: false, error: "unknown live action" };
+  liveAutoForced = false;
+  liveAutoApplied = false;
+  const resolvedModel = await waitForToeModel(25000);
+  if (!resolvedModel) return { ok: false, error: "ToE model unavailable" };
+  const { toe, commands, commandKey, commandRoot } = resolvedModel;
+  const titans = Array.isArray(job.titans) ? job.titans.map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
+  if (titans.length !== 5) return { ok: false, error: "bad titans" };
+
+  // Python may have advanced the tier with CompleteTier between jobs; refresh
+  // the in-page ToE model before looking up the rival. waitForRival does the
+  // status refresh (and a one-time rivals rebuild) itself.
+  const want = String(job.rivalId ?? "");
+  const rival = await waitForRival(toe, want, 20000);
+  if (!rival) {
+    let have: string[] = [];
+    try {
+      // Read the current list after waitForRival. Its timeout restore only
+      // puts the old list back when no rebuild happened, so a successful
+      // rebuild is reported here instead of the pre-clear walls.
+      const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(toe, "W5b", "V5b");
+      have = ((getRivals?.call(toe) || []) as AnyRecord[])
+        .slice(0, 12)
+        .map((r) => String(r?.["G"]?.()));
+    } catch {}
+    try {
+      const vge = toe["Vge"];
+      // Never serialize a raw game object: it may be circular. typeof/String
+      // keeps the diagnostic JSON-safe.
+      const vgeDiag = vge === null || vge === undefined ? String(vge) : typeof vge === "object" ? "object" : String(vge);
+      const href =
+        typeof location !== "undefined" ? `${location.origin}${location.pathname}` : null;
+      localStorage.setItem(
+        TOE_DIAG_KEY,
+        JSON.stringify({
+          want,
+          have,
+          hidden: typeof document !== "undefined" ? document.hidden : null,
+          vis: typeof document !== "undefined" ? document.visibilityState : null,
+          href,
+          y7: typeof commandRoot["y7"],
+          x7: typeof commandRoot["x7"],
+          commandKey,
+          cmc: typeof toe["cmc"],
+          dbo: typeof commands["DBo"],
+          kbo: typeof commands["kBo"],
+          w5b: typeof toe["W5b"],
+          v5b: typeof toe["V5b"],
+          dtd: Array.isArray(toe["Dtd"]) ? toe["Dtd"].length : typeof toe["Dtd"],
+          vge: vgeDiag,
+          mkl: typeof toe["mKl"],
+          wjl: typeof toe["WJl"],
+        }),
+      );
+      log(`wrote ${TOE_DIAG_KEY} (want=${want} have=${have.join(",")})`);
+    } catch {}
+    return {
+      ok: false,
+      error: `rival not found in ToE model (want=${want} have=${have.join(",")})`,
+    };
+  }
+
+  return await new Promise<LiveJobResult>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const visibilityAtStart = typeof document !== "undefined" ? document.visibilityState : "n/a";
+    let battleStarted = false;
+    // EndBattle command: new build DBo, old build kBo. Resolve the callable
+    // first so an unavailable method fails with a diagnostic instead of
+    // wrapping undefined.
+    const prevEnd = pickFn<(this: unknown, ...args: unknown[]) => AnyRecord>(commands, "DBo", "kBo");
+    const endKey = prevEnd && commands["DBo"] === prevEnd ? "DBo" : "kBo";
+    const finish = (value: LiveJobResult) => {
+      if (settled) return;
+      settled = true;
+      liveAutoForced = false;
+      liveAutoApplied = false;
+      if (timer) clearTimeout(timer);
+      // Only restore when there was something to wrap; assigning undefined
+      // would create an own ``kBo`` property on the game object.
+      if (typeof prevEnd === "function") {
+        try {
+          commands[endKey] = prevEnd;
+        } catch {}
+      }
+      resolve(value);
+    };
+    if (typeof prevEnd !== "function") {
+      finish({
+        ok: false,
+        error: `endbattle method unavailable (${liveDiag(visibilityAtStart, battleStarted)})`,
+      });
+      return;
+    }
+    try {
+      commands[endKey] = function (this: unknown, ...args: unknown[]) {
+        const cmd = prevEnd.apply(this, args) as AnyRecord;
+        try {
+          const originalCc = cmd["cc"];
+          cmd["cc"] = function (this: unknown, cb: (r: unknown) => unknown) {
+            return originalCc.call(this, (res: AnyRecord) => {
+              try {
+                const err = typeof res?.["c7a"] === "function" ? res["c7a"]() : null;
+                const ok = typeof res?.["MI"] === "function" ? !!res["MI"]() : !err;
+                let result: unknown = undefined;
+                try {
+                  const zk = typeof res?.["zk"] === "function" ? res["zk"]() : null;
+                  if (zk && typeof zk["ag"] === "function") result = zk["ag"]();
+                } catch {}
+                finish({ ok: !!ok && !err, error: err || undefined, result, rivalId: String(job.rivalId), action: "battle" });
+              } catch (e) {
+                finish({ ok: false, error: String(e) });
+              }
+              return cb(res);
+            });
+          };
+        } catch {}
+        return cmd;
+      };
+    } catch (e) {
+      finish({ ok: false, error: `wrap failed (${liveDiag(visibilityAtStart, battleStarted)}): ${String(e)}` });
+      return;
+    }
+    liveAutoForced = true;
+    liveAutoApplied = false;
+    liveAutoShape = "";
+    if (!installLiveAutoPatch()) {
+      // Never click blind canvas coordinates: the bottom-right x5 control is a
+      // real-money Valkyrie's Favor purchase popup. Without the settings-model
+      // Auto patch the battle would stall, so fail with a clear diagnostic.
+      finish({
+        ok: false,
+        error: `auto patch unavailable (${liveDiag(visibilityAtStart, battleStarted)}); update the Dev userscript / game bundle`,
+      });
+      return;
+    }
+    timer = setTimeout(
+      () => finish({ ok: false, error: `live battle timeout (${liveDiag(visibilityAtStart, battleStarted)})` }),
+      180000,
+    );
+    if (visibilityAtStart === "hidden") {
+      log("live battle starts in a hidden tab; the game loop may not advance (bring the game tab to the foreground)");
+    }
+    try {
+      // StartBattle: new build cmc (AD battle thread), old build bmc. The team
+      // config property is still f3b (confirmed in the v302-late bundle).
+      const startBattle = pickFn<(this: AnyRecord, r: AnyRecord, cfg: AnyRecord) => unknown>(
+        toe,
+        "cmc",
+        "bmc",
+      );
+      if (typeof startBattle !== "function") {
+        finish({ ok: false, error: `start method unavailable (${liveDiag(visibilityAtStart, battleStarted)})` });
+        return;
+      }
+      startBattle.call(toe, rival, { f3b: () => titans });
+      battleStarted = true;
+    } catch (e) {
+      finish({ ok: false, error: `start failed (${liveDiag(visibilityAtStart, battleStarted)}): ${String(e)}` });
+    }
+  });
+}
+
 export async function tick(
   account: string,
   baseUrl: string,
@@ -843,11 +1451,59 @@ export async function tick(
     if (shouldStop?.()) {
       return;
     }
+    // A live battle just finished and this page is about to reload; claim
+    // nothing else here or the new job dies with the page.
+    if (liveReloadPending) {
+      return;
+    }
+    // After that reload, wait until the fresh page has the ToE rival data before
+    // claiming, otherwise cmc (older builds bmc) cannot resolve the rival
+    // ("rival not found"). Only clear the flag from a tick that is not
+    // scheduling a reload.
+    if (!liveReloadPending && reloadPending()) {
+      if (!toeDataReady()) {
+        return;
+      }
+      clearReloadPending();
+    }
     const job = await pollNextJob(account, baseUrl);
     if (!job) {
       return;
     }
-    log(`claimed job ${job.id} (type=${(job.battle as { type?: unknown })?.type ?? "?"})`);
+    log(`claimed job ${job.id} (kind=${job.kind ?? "sim"}${job.action ? ` action=${job.action}` : ""})`);
+    if (job.kind === "live") {
+      if (job.action === "reload") {
+        // Tier-transition reload: block claims first, acknowledge the job, and
+        // only then schedule the navigation so a slow POST is not aborted.
+        blockReloadClaims();
+        await submitWithRetry(job.id, account, { ok: true, action: "reload" }, baseUrl);
+        scheduleReloadNavigation();
+        return;
+      }
+      let live: LiveJobResult;
+      try {
+        live = liveJobRunner
+          ? await liveJobRunner(job)
+          : { ok: false, error: "live engine not installed" };
+      } catch (e) {
+        // Never leave a live job in_flight: an unexpected throw (e.g. a shape
+        // drift in the game bundle) must still release the CLI's 240s wait.
+        live = { ok: false, error: `live runner threw (${liveDiag()}): ${String(e)}` };
+      }
+      await submitWithRetry(job.id, account, live, baseUrl);
+      // A reload scheduled by the runner (or a reload action above) must stop
+      // this drain before another /toe/next claim.
+      if (liveReloadPending) {
+        return;
+      }
+      if (job.action === "battle") {
+        // Keep the loaded page: give the battle thread a moment to settle so
+        // the next job reuses the already-loaded ToE model. The result popup
+        // is left to the game (no synthetic canvas clicks).
+        await sleep(2000);
+      }
+      continue;
+    }
     const computed = await computeBattle(job.battle);
     if (!computed) {
       // The engine exists but this battle failed to compute (calc error or
@@ -874,7 +1530,7 @@ function sleep(ms: number): Promise<void> {
 export async function submitWithRetry(
   jobId: string,
   account: string,
-  result: BattleResultPayload,
+  result: unknown,
   baseUrl: string,
 ): Promise<boolean> {
   let ok = await submitResult(jobId, account, result, baseUrl);
@@ -891,12 +1547,37 @@ export async function submitWithRetry(
   return ok;
 }
 
+/**
+ * DEV-only in-page debug handle for `eval`-driven development.
+ *
+ * Normal builds never install it. It exposes only refs the page already owns
+ * (captured game classes, the local engine gate, the offline sim) so an agent
+ * operating the real game tab can inspect the engine without guessing at
+ * minified globals. Do not put credentials or auth headers here.
+ */
+function exposeDebugHandle(): void {
+  if (!TOE_ENABLED) return;
+  try {
+    const w = window as unknown as Record<string, unknown>;
+    w.__hwGenieToe = {
+      captured: () => capturedClasses,
+      capturedNames: () => capturedClassNames(),
+      hasEngine: () => hasLocalEngine(),
+      engine: () => capturedEngine(),
+      diag: () => realmDiag(),
+      liveDiag: () => liveDiag(),
+      compute: (battle: unknown) => computeBattle(battle),
+    };
+  } catch {}
+}
+
 export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?: number; jobsPerTick?: number } = {}): () => void {
   // Normal builds never poll (Goodwin separation). Return the stop handle
   // shape so callers need no variant branching.
   if (!TOE_ENABLED) {
     return () => {};
   }
+  exposeDebugHandle();
   const baseUrl = (opts.authServerUrl ?? AUTH_SERVER_URL).replace(/\/+$/, "");
   const interval = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
   const jobsPerTick = opts.jobsPerTick ?? JOBS_PER_TICK;
@@ -913,6 +1594,13 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
   // The script needs to know which account to claim jobs for. We pull it
   // from the game's user object so the user doesn't have to configure it.
   function readAccount(): string {
+    // Live jobs are keyed by the auth x-auth-user-id (what the Python CLI
+    // sends), not by the in-game player id. The auth capture side records it
+    // on every API request; prefer it so live jobs match the right tab.
+    try {
+      const authId = localStorage.getItem(AUTH_USER_ID_STORAGE_KEY);
+      if (authId) return String(authId);
+    } catch {}
     // Try multiple Game locations and multiple player paths. The web version
     // may have moved from window.Game to iframe or wrappedJSObject.
     const tryGame = (g: unknown): string => {
@@ -947,20 +1635,30 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
       const r = tryGame(g);
       if (r) return r;
     }
-    // Last fallback: try to read x-auth-user-id from any captured headers in localStorage / cookie
+    // Captured Haxe GameModel (works without HWH's window.Game).
     try {
-      const ls = localStorage.getItem("x-auth-user-id") || localStorage.getItem("auth_user_id");
-      if (ls) return String(ls);
+      const gm = capturedClasses["GameModel"] as unknown as { F?: () => unknown } | undefined;
+      const model = gm?.F?.() as Record<string, unknown> | undefined;
+      const player = model?.["player"] as Record<string, unknown> | undefined;
+      if (player) {
+        const cls = (player as { __class__?: { prototype?: { __properties__?: Record<string, string> } } }).__class__;
+        const props = cls?.prototype?.__properties__ || {};
+        const key = Object.entries(props).find(([, v]) => v === "get_id")?.[0];
+        const raw = key && typeof player[key] === "function" ? (player[key] as () => unknown)() : player["id"];
+        if (raw !== undefined && raw !== null && String(raw)) return String(raw);
+      }
     } catch {}
     return "";
   }
 
-  let account = readAccount();
-  if (!account) {
-    log("installToeBridge: no player id on window.Game yet; will retry on first poll");
+  liveJobRunner = (job) => runLiveJob(job, readAccount);
+
+  if (!readAccount()) {
+    log("installToeBridge: no player id on window.Game yet; will retry on every poll");
   }
 
   let lastNoEngineLog = 0;
+  let lastHiddenLog = 0;
   let engineLogged = false;
   async function loop(): Promise<void> {
     if (stopped || running) {
@@ -984,13 +1682,22 @@ export function installToeBridge(opts: { authServerUrl?: string; pollIntervalMs?
         engineLogged = true;
         log("battle engine detected, polling active");
       }
-      if (!account) {
-        account = readAccount();
-        // Even if still empty, try polling without account (server will return any pending job).
-        // The tick gate above already guarantees this frame has an engine, so
-        // a claimed job can actually be computed.
+      // This gate is broad: every claim (sim jobs included) stops while the
+      // tab is hidden. A hidden tab's requestAnimationFrame loop is throttled
+      // or stopped, so claiming there would consume jobs it cannot finish and
+      // starve the visible tab. It only covers the claim boundary — a battle
+      // already claimed when the tab hides still stalls until its timeout.
+      if (typeof document !== "undefined" && document.hidden) {
+        const now = Date.now();
+        if (now - lastHiddenLog > 60000) {
+          lastHiddenLog = now;
+          log("tab hidden; not claiming");
+        }
+        return;
       }
-      await tick(account, baseUrl, jobsPerTick, () => stopped);
+      // Re-read on every poll: the auth-capture key may appear after login
+      // (this tab is then picked up without an install/reload cycle).
+      await tick(readAccount(), baseUrl, jobsPerTick, () => stopped);
     } finally {
       running = false;
     }

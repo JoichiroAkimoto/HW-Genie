@@ -28,9 +28,10 @@ from hw_genie.battle.engine import (
     BridgeDeadError,
     BridgeTimeoutError,
     JsBridgeBattleEngine,
+    PlaywrightBattleEngine,
     PythonBattleEngine,
 )
-from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus
+from hw_genie.core.client import ApiAction, Emojis, HWClient, ResponseStatus, get_header
 
 logger = logging.getLogger(__name__)
 
@@ -522,9 +523,12 @@ def _track_invalid_battle(
         print(
             f"{Emojis.WARNING}Invalid battle x{streak} with the hybrid engine: "
             "the bridge may be disconnected (progress falls back to "
-            "estimate-only and the server rejects it). Ensure "
-            "`hw-genie auth-server` is running with the userscript active, "
-            "then re-run.",
+            "estimate-only and the server rejects it) or the Dev userscript "
+            "may be stale after a game update (battle config / ordinal drift). "
+            "Reload the game tab after updating the Dev userscript "
+            "(`bash src/userscripts/build.sh --dev`). "
+            "Ensure `hw-genie auth-server` is running with the userscript "
+            "active and up to date, then re-run.",
             flush=True,
         )
         return
@@ -925,14 +929,42 @@ def run_titan_arena(
             f"{Emojis.INFO}Loss improved stars ({est.stars} > {bank_if_stars_above}) — banking the best loss.",
         )
 
-    outcome = _end_battle(client, rival_id_str, est, progress)
+    outcome = _end_battle(client, rival_id_str, est, progress, engine=engine)
     _track_invalid_battle(outcome, engine, account_label)
     if banking_best:
         outcome["banked_best"] = True
     return outcome
 
 
-def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: str = "verbose") -> dict[str, Any]:
+def _invalid_battle_hint(engine: Any | None) -> str:
+    """Explain an ``Invalid battle`` rejection for the engine that produced it."""
+    if isinstance(engine, JsBridgeBattleEngine):
+        return (
+            "The Dev userscript may be stale (game-update battle config / ordinal drift). "
+            "Rebuild it (`bash src/userscripts/build.sh --dev`), overwrite-install the Dev "
+            "userscript, then reload the game tab. "
+            "If it persists with an up-to-date userscript, the game's v302 ultReseed proof "
+            "requirement blocks offline simulation (see docs/api/GUILD_API.md). "
+            "(`--engine estimate` is always rejected; use `--engine hybrid` with an up-to-date Dev userscript)."
+        )
+    if isinstance(engine, PlaywrightBattleEngine):
+        return (
+            "The embedded Playwright battle JS is stale (game-update battle config / ordinal drift). "
+            "Update HW-Genie and re-run with an updated build."
+        )
+    return (
+        "(`--engine estimate` is always rejected; use `--engine hybrid` with an up-to-date Dev userscript, "
+        "or `--engine playwright` with an updated build)."
+    )
+
+
+def _end_battle(
+    client: HWClient,
+    rival_id: str,
+    est: BattleEstimate,
+    progress: str = "verbose",
+    engine: Any | None = None,
+) -> dict[str, Any]:
     progress = _normalize_progress(progress)
     _vprint(progress, f"{Emojis.STEP}Calling titanArenaEndBattle...")
     end_payload = {
@@ -954,7 +986,7 @@ def _end_battle(client: HWClient, rival_id: str, est: BattleEstimate, progress: 
     if isinstance(response, dict) and response.get("error") == "Invalid battle":
         print(
             f"{Emojis.WARNING}EndBattle: Invalid battle (serverVersion {response.get('serverVersion')}). "
-            "Server re-simulates progress/result. Use a JS bridge engine for exact progress.",
+            f"{_invalid_battle_hint(engine)}",
             flush=True,
         )
         return {"status": ResponseStatus.SUCCESS, "estimate": est, "end_error": "Invalid battle"}
@@ -1640,7 +1672,10 @@ def _build_raid_battle(
     """Build the battle object the in-page engine expects for one rival.
 
     The shape mirrors a live ``titanArenaStartBattle`` battle (captured via
-    ``toe attack --debug``): ``seed`` / ``startTime`` are numbers,
+    ``toe attack --debug``), **except ``effects``**: raids always carry
+    ``effects: []`` (see the inline comment and GUILD_API) because the
+    client's ``TitanArenaRaid`` builds per-rival battles without
+    ``ultReseed`` data. ``seed`` / ``startTime`` are numbers,
     ``defenders`` is a single-element list of team dicts, and the per-rival
     seed is the rival's own ``seed`` from ``titanArenaStartRaid`` /
     ``titanArenaGetStatus``. Raise-style payloads (``seed: 0``, guessed
@@ -1652,6 +1687,8 @@ def _build_raid_battle(
         "typeId": str(rival_id),
         "attackers": attackers,
         "defenders": [defenders],
+        # ``effects: []`` mirrors the client's ``TitanArenaRaid`` per-rival
+        # battle: raids carry no ultReseed, so do not propagate effects here.
         "effects": [],
         "reward": [],
         "startTime": start_time,
@@ -1773,7 +1810,7 @@ def _run_raid(
     user_id = (
         response.get("userId")
         or status.get("userId")
-        or client.headers.get("x-auth-user-id")
+        or get_header(client.headers, "x-auth-user-id")
         or ""
     )
     results: dict[str, dict[str, Any]] = {}

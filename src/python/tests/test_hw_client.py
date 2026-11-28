@@ -111,6 +111,15 @@ def test_auth_error_handling_invalid_session(default_headers, mock_sleep):
                 client.call({"calls": []})
 
 
+def test_update_headers_never_moves_request_id_backwards(default_headers, mock_sleep):
+    """A stale DB snapshot must not rewind the request id."""
+    client = HWClient(default_headers)
+    client.update_headers({**default_headers, "x-request-id": "150"})
+    assert client.request_id == 150
+    client.update_headers({**default_headers, "x-request-id": "120"})
+    assert client.request_id == 150
+
+
 def test_player_status_is_valid():
     from hw_genie.core.client import PlayerStatus
 

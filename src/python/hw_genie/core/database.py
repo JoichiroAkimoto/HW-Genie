@@ -1006,3 +1006,37 @@ def init_db():
                 _apply_light_migrations(eng)
 
         retry_on_wal_contention(_locked_create_all, logger=logger)
+
+
+# At most one replica sync per window per process. Without this, parallel
+# workers calling ``sync_replica`` before every status read serialize on a
+# network round-trip (and hammer Turso) even when the local snapshot is fresh.
+_REPLICA_SYNC_INTERVAL = 30.0
+_last_replica_sync = 0.0
+
+
+def sync_replica() -> None:
+    """Force the embedded Turso replica to re-sync before the next read.
+
+    ``TURSO_SYNC_ON_CONNECT`` only syncs when a *new* DBAPI connection is
+    created. Long-lived processes (multi-account workers, live ToE sweeps) reuse
+    pooled connections and therefore keep reading the snapshot from process
+    start. Disposing the pool makes the next checkout open a fresh connection,
+    which triggers the on-connect ``sync()`` in :class:`TursoReplicaDialect`.
+
+    Rate-limited to at most one dispose/sync per
+    :data:`_REPLICA_SYNC_INTERVAL` seconds (30s) per process, so parallel
+    workers do not serialize on every call.
+    """
+    global _last_replica_sync
+    if _engine is None:
+        return
+    now = time.monotonic()
+    if now - _last_replica_sync < _REPLICA_SYNC_INTERVAL:
+        return
+    try:
+        with _init_lock:
+            _last_replica_sync = now
+            _engine.dispose()
+    except Exception:  # pragma: no cover - best-effort
+        logger.warning("Turso replica sync_replica() dispose failed", exc_info=True)

@@ -254,6 +254,28 @@ def test_playwright_battle_js_resolves_signal_with_drift_fallback():
     assert "getProtoFn(game.BattleInstantPlay, 10)" in PLAYWRIGHT_BATTLE_JS
     assert "getProtoFn(game.BattleInstantPlay, 9)" not in PLAYWRIGHT_BATTLE_JS
     assert "signal not found" in PLAYWRIGHT_BATTLE_JS
+    # Real game signals (signals.Signal1) expose add+subscribe; ``dispatch``
+    # is minified per build, so the shape check must accept either.
+    assert "typeof v.subscribe === 'function'" in PLAYWRIGHT_BATTLE_JS
+
+
+def test_playwright_battle_js_uses_titan_clan_pvp_and_instant_presets():
+    """ToE must simulate with the client's battle config.
+
+    Regression: the 2026-11-26 update (serverVersion 302) rejects
+    ``get_titanPvpManual`` progress as ``Invalid battle``. The game's
+    TitanArenaBattleThread uses ``get_titanClanPvp``; the offline instant sim
+    uses ``isReplay=false`` (the client's instant/skip path) because
+    ``isReplay=true`` enables the ``effects.ultReseed`` session, whose
+    battleSeed_next proof cannot be produced offline.
+    """
+    from hw_genie.battle.engine import PLAYWRIGHT_BATTLE_JS
+
+    # Scope the getter check to the config lookup so unrelated mentions of
+    # ``get_titanPvpManual`` elsewhere in the script cannot make it brittle.
+    assert "game.BattleConfigStorage, 'get_titanClanPvp'" in PLAYWRIGHT_BATTLE_JS
+    assert "game.BattleConfigStorage, 'get_titanPvpManual'" not in PLAYWRIGHT_BATTLE_JS
+    assert "new game.BattlePresets(false, false, true, config, false)" in PLAYWRIGHT_BATTLE_JS
 
 
 def test_playwright_browser_headers_keep_only_auth_headers():

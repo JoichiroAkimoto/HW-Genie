@@ -99,8 +99,23 @@ class AccountAmbiguityError(AccountResolutionError):
         )
 
 
-def load_session_headers(account_alias: str | None = None) -> dict[str, str] | None:
-    """SessionManager を使用して DB からヘッダー情報を読み込む"""
+def load_session_headers(
+    account_alias: str | None = None, *, fresh: bool = False
+) -> dict[str, str] | None:
+    """SessionManager を使用して DB からヘッダー情報を読み込む
+
+    ``fresh=True`` asks the embedded Turso replica to re-sync first (the sync is
+    rate-limited to at most once per ~30s), so a long-running process follows
+    the game's ``x-auth-token`` rotation instead of reading the process-start
+    snapshot.
+    """
+    if fresh:
+        try:
+            from hw_genie.core.database import sync_replica
+
+            sync_replica()
+        except Exception:  # pragma: no cover - best-effort
+            pass
     account = resolve_account(account_alias)
     data = SessionManager.load(account)
     return data.get("headers") if data else None
@@ -321,6 +336,19 @@ class HWClient:
         # 保存済みヘッダーのキーは ``X-Request-Id`` のように大小が混ざり得るため、
         # 大小文字を無視して読み、数値でない値（空文字・"abc" 等）は既定値で補う。
         self.request_id = _safe_int(get_header(headers, "x-request-id"), 100)
+
+    def update_headers(self, headers: dict[str, str]) -> None:
+        """Replace the stored session headers (e.g. after the userscript re-syncs).
+
+        The game rotates ``x-auth-token`` frequently; long runs must pick up the
+        freshest token from the DB before each API call instead of holding the
+        one loaded at process start.
+        """
+        self.headers = dict(headers)
+        # Never move the request id backwards: a stale DB snapshot can carry an
+        # older ``x-request-id`` than the one this process already sent.
+        parsed = _safe_int(get_header(headers, "x-request-id"), self.request_id)
+        self.request_id = max(self.request_id, parsed)
 
     def get_headers(self) -> dict[str, str]:
         """現在の request-id を反映したヘッダーを取得

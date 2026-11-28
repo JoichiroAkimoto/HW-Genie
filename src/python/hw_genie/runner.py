@@ -15,6 +15,7 @@ for good concurrency and keeps each account's work isolated behind its own
 import logging
 import re
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -22,9 +23,15 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Iterable, Sequence
 
-from hw_genie.core.client import HWAuthError, HWClient, load_session_headers
+from hw_genie.core.client import HWAuthError, HWClient, get_header, load_session_headers
 from hw_genie.core.session_manager import SessionManager
 from hw_genie.core.utils import display_width, pad, rank_color, style
+
+# Auth-expiry recovery for opt-in long-running routines (ToE live): wait for
+# the auth-capture userscript to re-sync the stored session, then retry.
+_AUTH_RETRY_ATTEMPTS = 3
+_AUTH_REFRESH_POLLS = 30
+_AUTH_REFRESH_WAIT = 2.0
 
 logger = logging.getLogger(__name__)
 
@@ -233,39 +240,79 @@ def run_for_account(
         logger.error("%s: %s", account, err)
         return account, None, err
 
-    try:
-        client = HWClient(headers)
-        result = routine(client, account)
-        return account, result, None
-    except HWAuthError as exc:
-        # Auth expiry surfaces only at the first API call (a stored session
-        # may look present but carry a dead signature). Reshape to one line
-        # (first line only; multi-line server detail is truncated deliberately
-        # so summaries/run-logs stay single-line) so the account, the cause
-        # and the remediation are visible at a glance; the type stays
-        # HWAuthError so handlers keep routing it.
-        first_line = str(exc).strip().splitlines()
-        detail = first_line[0].strip() if first_line and first_line[0].strip() else type(exc).__name__
-        reshaped = (
-            f"Session expired for '{account}': {detail}. "
-            "Re-sync via auth-server/curl, then retry"
-        )
-        logger.error("%s: %s", account, reshaped)
-        new_err = HWAuthError(reshaped)
-        # Preserve the original chain (handlers/logging can inspect cause).
+    # Long ToE sweeps can outlive a session token. The auth-capture userscript
+    # re-syncs the stored session on its next API call, so routines that opt in
+    # (idempotent, score-max-held) reload headers and retry instead of failing
+    # the whole account.
+    retry_on_auth = bool(getattr(routine, "retry_on_auth", False))
+    attempts = _AUTH_RETRY_ATTEMPTS if retry_on_auth else 1
+    auth_exc: HWAuthError | None = None
+    for attempt in range(attempts):
         try:
-            new_err.__cause__ = exc
-        except Exception:  # pragma: no cover - defensive
-            pass
-        return account, None, new_err
-    except Exception as exc:  # noqa: BLE001 - isolate per-account failures
-        logger.error(
-            "Account '%s' failed: %s\n%s",
-            account,
-            exc,
-            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-        )
-        return account, None, exc
+            client = HWClient(headers)
+            result = routine(client, account)
+            return account, result, None
+        except HWAuthError as exc:
+            auth_exc = exc
+            if attempt + 1 >= attempts:
+                break
+            prev_token = get_header(headers or {}, "x-auth-token")
+            refreshed = None
+            try:
+                for _ in range(_AUTH_REFRESH_POLLS):
+                    time.sleep(_AUTH_REFRESH_WAIT)
+                    refreshed = load_session_headers(account, fresh=True)
+                    if refreshed and get_header(refreshed, "x-auth-token") != prev_token:
+                        break
+            except Exception:  # never let a refresh failure escape the account
+                logger.warning("%s: session refresh failed", account, exc_info=True)
+                refreshed = None
+            # Fail fast when the userscript has not written a new token: sleeping
+            # through the full poll budget and re-running with the same headers
+            # would just burn another expiry.
+            if (
+                not refreshed
+                or not multi_headers_ready(refreshed)
+                or get_header(refreshed, "x-auth-token") == prev_token
+            ):
+                logger.warning(
+                    "%s: session expired and no refreshed token is available yet; not retrying",
+                    account,
+                )
+                break
+            headers = refreshed
+            logger.warning(
+                "%s: session expired; reloading the userscript-refreshed session and retrying (%d/%d)",
+                account,
+                attempt + 2,
+                attempts,
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 - isolate per-account failures
+            logger.error(
+                "Account '%s' failed: %s\n%s",
+                account,
+                exc,
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+            return account, None, exc
+
+    # Auth retries exhausted (or retries disabled). Reshape to one line so the
+    # account, cause and remediation stay visible in summaries/run-logs.
+    assert auth_exc is not None
+    first_line = str(auth_exc).strip().splitlines()
+    detail = first_line[0].strip() if first_line and first_line[0].strip() else type(auth_exc).__name__
+    reshaped = (
+        f"Session expired for '{account}': {detail}. "
+        "Re-sync via auth-server/curl, then retry"
+    )
+    logger.error("%s: %s", account, reshaped)
+    new_err = HWAuthError(reshaped)
+    try:
+        new_err.__cause__ = auth_exc
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return account, None, new_err
 
 
 def _record_future_result(
@@ -730,6 +777,7 @@ def toe_routine(
     max_total_attempts: int | None = None,
     end_on_loss: bool | None = None,
     bank_best_loss: bool = True,
+    live_rounds: int = 1,
     progress: str = "verbose",
     probe_bridge: bool = True,
 ) -> Callable[[HWClient, str], object]:
@@ -737,12 +785,17 @@ def toe_routine(
 
     Runs :func:`hw_genie.commands.titan_arena.run_titan_arena_tier` with the
     saved-team-first rotation (``--titans`` omitted). ``engine`` selects the
-    battle engine (``hybrid`` delegates to the userscript via the auth
-    server, ``playwright`` drives headless Chromium, ``estimate`` only
-    plans). Per-account ``x-auth-user-id`` headers select the bridge job
-    queue entry (the server enforces the account match with a claimed_by
-    guard), so parallel runs behave like the other modes: ``--parallel``
-    wins, otherwise the ``HW_MAX_PARALLEL`` environment variable applies.
+    battle engine (``hybrid`` delegates offline sims to the userscript via the
+    auth server for raid tiers, ``live`` drives real solo/wall battles in each
+    account's game tab, ``playwright`` drives headless Chromium, ``estimate``
+    only plans). Live requires the matching game tab to stay visible/rendered;
+    it returns early on ``canRaid`` tiers with an instruction to clear the raid
+    with ``--engine hybrid`` first. Per-account ``x-auth-user-id`` headers
+    select the bridge job queue entry (the server enforces exact account
+    matches for live jobs), so parallel runs behave like the other modes:
+    ``--parallel`` wins, otherwise the ``HW_MAX_PARALLEL`` environment
+    variable applies. Live runs also reload the userscript-refreshed session
+    and retry once the game rotates ``x-auth-token``.
     Loss banking follows ``end_on_loss``: ``None`` (CLI default) banks every
     verified loss, ``False`` (``--no-end-on-loss``) abandons every
     non-improving loss (faster sweeps, ``--no-bank-best-loss`` also disables
@@ -754,7 +807,8 @@ def toe_routine(
     only, ``quiet`` suppresses).
 
     ``progress`` selects output compactness (``quiet``/``line``/``verbose``;
-    unknown values fall back to ``verbose``). In ``line`` mode all workers
+    unknown values fall back to ``verbose``). The live engine prints its
+    per-battle progress unconditionally and ignores ``progress``. In ``line`` mode all workers
     share one :class:`ToeProgressDashboard` so per-account status lines
     stay lock-guarded without affecting API parallelism or result order.
 
@@ -772,15 +826,28 @@ def toe_routine(
 
     _mode = progress if isinstance(progress, str) and progress in ("quiet", "line", "verbose") else "verbose"
     _dashboard = ToeProgressDashboard() if _mode == "line" else None
-    if engine == "hybrid" and probe_bridge:
+    if engine in ("hybrid", "live") and probe_bridge:
         _warn_if_bridge_unreachable(auth_server_url)
 
     def run(client: HWClient, account: str) -> object:
         headers = getattr(client, "headers", {}) or {}
+        if engine == "live":
+            from hw_genie.commands.toe_live import run_live_tier
+
+            user_id = str(get_header(headers, "x-auth-user-id"))
+            return run_live_tier(
+                client,
+                auth_server_url=auth_server_url,
+                user_id=user_id,
+                threshold=threshold,
+                max_team_attempts=max_total_attempts,
+                rounds=live_rounds,
+                account_alias=account,
+            )
         if engine == "playwright":
             eng = get_default_engine(mode=engine, headers=dict(headers))
         elif engine != "estimate":
-            user_id = str(headers.get("x-auth-user-id", ""))
+            user_id = str(get_header(headers, "x-auth-user-id"))
             eng = get_default_engine(
                 mode=engine,
                 auth_server_url=auth_server_url,
@@ -822,6 +889,9 @@ def toe_routine(
             report_bridge_timing(eng, account, _mode)
 
     run.dashboard = _dashboard  # type: ignore[attr-defined]
+    # Live sweeps are long and idempotent (GetStatus + max-held scores), so a
+    # mid-run token refresh can safely resume the tier instead of aborting.
+    run.retry_on_auth = engine == "live"  # type: ignore[attr-defined]
     return run
 
 

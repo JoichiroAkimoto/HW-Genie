@@ -79,7 +79,7 @@ def test_preflight_excludes_missing_without_workers(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.runner.load_session_headers",
-        lambda acc: {"x-auth-token": "t"} if acc == "Alice" else None,
+        lambda acc, **kwargs: {"x-auth-token": "t"} if acc == "Alice" else None,
     )
     captured = {}
 
@@ -105,7 +105,7 @@ def test_preflight_all_missing_skips_workers_and_logs_failed(monkeypatch):
     """全件欠落ならワーカー投入せず failed 記録＋exit 1。"""
     from hw_genie import main
 
-    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: None)
+    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc, **kwargs: None)
     called = []
 
     def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
@@ -144,7 +144,7 @@ def test_run_for_account_rewrites_auth_error(monkeypatch):
     from hw_genie.runner import run_for_account
 
     monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+        "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
     )
     monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
 
@@ -198,7 +198,7 @@ def test_cancel_error_summary_excludes_interrupt(monkeypatch):
     try:
         records = {}
         monkeypatch.setattr(
-            "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+            "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
         )
 
         def fake_run(routine, accounts=None, max_parallel=None, cooperative_wait=False):
@@ -306,7 +306,7 @@ def test_run_for_account_key_insufficient_is_missing(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.runner.load_session_headers",
-        lambda acc: {"content-type": "application/json"},
+        lambda acc, **kwargs: {"content-type": "application/json"},
     )
     called = []
 
@@ -339,7 +339,7 @@ def test_preflight_key_insufficient_headers(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.runner.load_session_headers",
-        lambda acc: {"content-type": "application/json"} if acc == "Alice" else None,
+        lambda acc, **kwargs: {"content-type": "application/json"} if acc == "Alice" else None,
     )
     ready, prefailed = _preflight_multi_accounts(["Alice", "Bob"])
     assert ready == []
@@ -383,7 +383,7 @@ def test_cmd_multi_duplicate_accounts_deduped(monkeypatch):
     from hw_genie import main
 
     monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+        "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
     )
     captured = {}
 
@@ -449,7 +449,7 @@ def test_cmd_multi_quests_dry_run_with_missing(monkeypatch):
 
     monkeypatch.setattr(
         "hw_genie.runner.load_session_headers",
-        lambda acc: {"x-auth-token": "t"} if acc == "Alice" else None,
+        lambda acc, **kwargs: {"x-auth-token": "t"} if acc == "Alice" else None,
     )
     captured = {}
 
@@ -618,7 +618,7 @@ def test_cmd_multi_toe_all_missing_makes_no_probe(monkeypatch):
 
     from hw_genie import main
 
-    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc: None)
+    monkeypatch.setattr("hw_genie.runner.load_session_headers", lambda acc, **kwargs: None)
     calls = []
 
     def _must_not_probe(req, timeout=None):
@@ -645,7 +645,7 @@ def test_cmd_multi_toe_ready_probes_exactly_once(monkeypatch):
     from hw_genie import main
 
     monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+        "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
     )
     calls = []
 
@@ -691,7 +691,7 @@ def test_cmd_multi_toe_passes_cooperative_wait(monkeypatch):
     from hw_genie import main
 
     monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+        "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
     )
     captured = {}
 
@@ -710,7 +710,7 @@ def test_cmd_multi_non_toe_omits_cooperative_wait(monkeypatch):
     from hw_genie import main
 
     monkeypatch.setattr(
-        "hw_genie.runner.load_session_headers", lambda acc: {"x-auth-token": "t"}
+        "hw_genie.runner.load_session_headers", lambda acc, **kwargs: {"x-auth-token": "t"}
     )
     captured = {}
 
@@ -727,3 +727,138 @@ def test_cmd_multi_non_toe_omits_cooperative_wait(monkeypatch):
     )()
     main.cmd_multi(args)
     assert captured["cooperative_wait"] is False
+
+
+def test_run_for_account_retries_live_toe_after_auth_refresh(monkeypatch):
+    """retry_on_auth routines reload the userscript-refreshed session and resume."""
+    from unittest.mock import MagicMock
+
+    tokens = iter(["old", "new"] + ["new"] * 10)
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers",
+        lambda acc, **kwargs: {"x-auth-token": next(tokens, "new")},
+    )
+    monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+    monkeypatch.setattr("hw_genie.runner.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def routine(client, account):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HWAuthError("Session expired or invalid signature.")
+        return "ok"
+
+    routine.retry_on_auth = True
+
+    acc, res, err = runner.run_for_account("Alice", routine)
+    assert acc == "Alice" and res == "ok" and err is None
+    assert calls["n"] == 2
+
+
+def test_run_for_account_gives_up_after_auth_retries(monkeypatch):
+    """A routine that keeps failing auth is reported after the retry budget."""
+    from unittest.mock import MagicMock
+
+    # Each refresh writes a new token, so the retry budget is actually spent.
+    tokens = iter(["t0"] + [f"t{i}" for i in range(1, 40)])
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers",
+        lambda acc, **kwargs: {"x-auth-token": next(tokens, "t-end")},
+    )
+    monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+    monkeypatch.setattr("hw_genie.runner.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def routine(client, account):
+        calls["n"] += 1
+        raise HWAuthError("Session expired or invalid signature.")
+
+    routine.retry_on_auth = True
+
+    acc, res, err = runner.run_for_account("Alice", routine)
+    assert acc == "Alice" and res is None
+    assert isinstance(err, HWAuthError)
+    assert "Re-sync via auth-server/curl" in str(err)
+    assert calls["n"] == runner._AUTH_RETRY_ATTEMPTS
+
+
+def test_run_for_account_handles_mixed_case_token_headers(monkeypatch):
+    """Legacy sessions may store ``X-Auth-Token``; the refresh check is case-insensitive."""
+    from unittest.mock import MagicMock
+
+    tokens = iter(["old", "new"] + ["new"] * 10)
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers",
+        lambda acc, **kwargs: {"X-Auth-Token": next(tokens, "new"), "X-Auth-User-Id": "123"},
+    )
+    monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+    monkeypatch.setattr("hw_genie.runner.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def routine(client, account):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HWAuthError("Session expired or invalid signature.")
+        return "ok"
+
+    routine.retry_on_auth = True
+
+    acc, res, err = runner.run_for_account("Alice", routine)
+    assert acc == "Alice" and res == "ok" and err is None
+    assert calls["n"] == 2
+
+
+def test_run_for_account_fails_fast_when_token_did_not_change(monkeypatch):
+    """No refreshed token means no retry: don't re-run with the same headers."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers",
+        lambda acc, **kwargs: {"x-auth-token": "t"},
+    )
+    monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+    monkeypatch.setattr("hw_genie.runner.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def routine(client, account):
+        calls["n"] += 1
+        raise HWAuthError("Session expired or invalid signature.")
+
+    routine.retry_on_auth = True
+
+    acc, res, err = runner.run_for_account("Alice", routine)
+    assert acc == "Alice" and res is None
+    assert isinstance(err, HWAuthError)
+    assert calls["n"] == 1
+
+
+def test_run_for_account_waits_for_late_token_refresh(monkeypatch):
+    """The retry keeps polling until the auth capture writes a new token."""
+    from unittest.mock import MagicMock
+
+    # First load is the stale token; the refresh only lands after several polls.
+    tokens = iter(["old"] + ["old"] * 4 + ["new"] + ["new"] * 40)
+    monkeypatch.setattr(
+        "hw_genie.runner.load_session_headers",
+        lambda acc, **kwargs: {"x-auth-token": next(tokens, "new")},
+    )
+    monkeypatch.setattr("hw_genie.runner.HWClient", lambda h: MagicMock())
+    monkeypatch.setattr("hw_genie.runner.time.sleep", lambda *_: None)
+
+    calls = {"n": 0}
+
+    def routine(client, account):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HWAuthError("Session expired or invalid signature.")
+        return "ok"
+
+    routine.retry_on_auth = True
+
+    acc, res, err = runner.run_for_account("Alice", routine)
+    assert acc == "Alice" and res == "ok" and err is None
+    assert calls["n"] == 2

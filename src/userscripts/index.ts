@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HW-Genie Auth Capture
 // @namespace    https://github.com/JoichiroAkimoto/HW-Genie
-// @version      1.0.17
+// @version      1.0.38
 // @description  Automatically capture auth headers and send to HW-Genie auth server
 // @author       JoichiroAkimoto
 // @license      MIT
@@ -67,7 +67,7 @@ import {
 // Python CLI から依頼される。
 // document-start ですぐトラップだけ仕掛け、XHR フック等は従来通り idle 相当
 // まで遅延させる（HW Goodwin 共存のため）。
-import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
+import { AUTH_USER_ID_STORAGE_KEY, ensureEngineBridge, installToeBridge } from "./toe-bridge";
 
 (() => {
   "use strict";
@@ -138,6 +138,12 @@ import { ensureEngineBridge, installToeBridge } from "./toe-bridge";
     state.headersCaptured[lowerName] = value;
     state.lastSeenAt[lowerName] = Date.now();
     state.lastCaptureAt = Date.now();
+    if (lowerName === "x-auth-user-id") {
+      try {
+        // Shared with the ToE bridge's live own-tab guard (toe-bridge.ts).
+        localStorage.setItem(AUTH_USER_ID_STORAGE_KEY, value);
+      } catch {}
+    }
   }
 
   async function sendHeaders(headers: Record<string, string>): Promise<boolean> {

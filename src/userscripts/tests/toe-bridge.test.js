@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { TOE_ENABLED, __resetBridgeForTests, __setToeEnabledForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, resolveSignalKey, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick } from "../toe-bridge.ts";
+import { RELOAD_PENDING_KEY, TOE_DIAG_KEY, TOE_ENABLED, __resetBridgeForTests, __setToeEnabledForTests, battleConfigFor, capturedClassNames, ensureEngineBridge, formatLiveDiag, getF, getFn, getProtoFn, hasBattleEngine, hasLocalEngine, installToeBridge, observeRegistration, realmDiag, resolveSignalKey, resolveToeModel, safeGameOf, storeCapturedClass, submitResult, submitWithRetry, tick, toeDataReady, waitForRival, waitForToeModel } from "../toe-bridge.ts";
 
 const FULL_ENGINE = {
   BattlePresets: function () {},
@@ -139,6 +139,10 @@ test("getFn/getProtoFn resolve by ordinal", () => {
 });
 
 const signalLike = () => ({ add: () => {}, dispatch: () => {} });
+// Real game shape (signals.Signal1): ``add`` inherited from signals.Base and a
+// ``subscribe`` method; its dispatch method is minified per build (no literal
+// ``dispatch``), which used to make every job a dummy.
+const haxeSignalLike = () => ({ add: () => {}, subscribe: () => {}, S: () => {} });
 
 test("resolveSignalKey prefers the pinned ordinal", () => {
   const keys = Array.from({ length: 11 }, (_, i) => `k${i}`);
@@ -146,6 +150,22 @@ test("resolveSignalKey prefers the pinned ordinal", () => {
   const instance = Object.fromEntries(keys.map((k) => [k, signalLike()]));
   const spec = resolveSignalKey(instance, { prototype: proto }, 10);
   assert.deepStrictEqual(spec, { key: "k10", index: 10 });
+});
+
+test("resolveSignalKey accepts the Haxe signals.Signal1 shape", () => {
+  const keys = Array.from({ length: 11 }, (_, i) => `k${i}`);
+  const proto = Object.fromEntries(keys.map((k) => [k, k]));
+  const instance = Object.fromEntries(keys.map((k) => [k, haxeSignalLike()]));
+  assert.deepStrictEqual(resolveSignalKey(instance, { prototype: proto }, 10), {
+    key: "k10",
+    index: 10,
+  });
+  // Drift fallback must also recognize the shape (no literal ``dispatch``).
+  const drifted = { a: 0, sig: haxeSignalLike() };
+  assert.deepStrictEqual(resolveSignalKey(drifted, { prototype: { a: 1, sig: 2 } }, 10), {
+    key: "sig",
+    index: 1,
+  });
 });
 
 test("resolveSignalKey falls back when the ordinal drifted", () => {
@@ -190,9 +210,12 @@ test("resolveSignalKey finds a signal that is an own instance field", () => {
   });
 });
 
-test("battleConfigFor maps titan_arena to manual PvP", () => {
-  assert.strictEqual(battleConfigFor("titan_arena"), "get_titanPvpManual");
-  assert.strictEqual(battleConfigFor("titan_arena_wall"), "get_titanPvpManual");
+test("battleConfigFor maps titan_arena to clan PvP (client TitanArenaBattleThread)", () => {
+  // 2026-11-26 (serverVersion 302): get_titanPvpManual progress is rejected
+  // as Invalid battle; the game's own thread uses get_titanClanPvp.
+  assert.strictEqual(battleConfigFor("titan_arena"), "get_titanClanPvp");
+  assert.strictEqual(battleConfigFor("titan_arena_wall"), "get_titanClanPvp");
+  assert.strictEqual(battleConfigFor("mission"), "get_titanPvpManual");
 });
 
 test("safeGameOf swallows cross-origin access throws", () => {
@@ -449,6 +472,171 @@ test("tick retries submit once on 404 (injected failing fetch)", async () => {
     assert.strictEqual(submits, 2);
   } finally {
     globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+});
+
+test("tick computes a titan_arena battle with get_titanClanPvp and replay presets", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const origFetch = globalThis.fetch;
+  const origSetTimeout = globalThis.setTimeout;
+  // Capture (and clear) real timers so the 10s compute safety timeout does not
+  // keep the test process alive after the promise resolved.
+  const timers = [];
+
+  // --- Fake Haxe engine (the exact client shapes the bridge resolves) ---
+  // BattleConfigStorage: minified -> original getter name map.
+  function BattleConfigStorage() {}
+  BattleConfigStorage.prototype.__properties__ = {
+    X: "get_titanClanPvp",
+    Y: "get_titanPvpManual",
+  };
+
+  // DataStorage: ordinal 25 (``Object.keys(ds)[25]``) resolves to the store.
+  const resolvedGetters = [];
+  const config = { configId: "titan_clan_pvp" };
+  const store = {
+    X: () => {
+      resolvedGetters.push("get_titanClanPvp");
+      return config;
+    },
+    Y: () => {
+      resolvedGetters.push("get_titanPvpManual");
+      return config;
+    },
+  };
+  const dataStorage = {};
+  for (let i = 0; i < 25; i += 1) dataStorage[`k${i}`] = {};
+  dataStorage.store = store;
+
+  // BattlePresets: ordinary function capturing the constructor arguments.
+  const presetsArgs = [];
+  function BattlePresets(...args) {
+    presetsArgs.push(args);
+  }
+
+  // BattleInstantPlay: completion signal as an own instance field (the scan
+  // path, so the pinned ordinal 10 stays absent), ``get_result`` via
+  // __properties__.
+  function BattleInstantPlay() {
+    this.sigCallbacks = [];
+    this.sig = {
+      add: (cb) => {
+        this.sigCallbacks.push(cb);
+      },
+      dispatch: () => {},
+    };
+  }
+  BattleInstantPlay.prototype.__properties__ = { a: "get_result" };
+  BattleInstantPlay.prototype.start = function () {
+    const progress = [
+      { attackers: { heroes: { "1": { hp: 100 } } }, defenders: { heroes: {} } },
+    ];
+    const result = { win: true, stars: 3 };
+    const battleInstant = {
+      a: () => ({
+        p: () => progress,
+        r: () => result,
+      }),
+    };
+    for (const cb of this.sigCallbacks) cb(battleInstant);
+  };
+
+  function MultiBattleResult() {}
+  MultiBattleResult.prototype.__properties__ = {
+    p: "get_progress",
+    r: "get_result",
+  };
+
+  globalThis.window = {
+    Game: {
+      BattlePresets,
+      BattleInstantPlay,
+      DataStorage: dataStorage,
+      BattleConfigStorage,
+      MultiBattleResult,
+    },
+  };
+
+  let submittedBody = null;
+  const submittedUrls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "job1", account: "", battle: { type: "titan_arena" } }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedUrls.push(u);
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    const id = origSetTimeout(fn, ms, ...rest);
+    timers.push(id);
+    return id;
+  };
+  try {
+    await tick("", "http://127.0.0.1:1");
+  } finally {
+    for (const id of timers) clearTimeout(id);
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.fetch = origFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    __resetBridgeForTests();
+  }
+
+  // The config getter resolved to the clan-PvP getter, never PvP-manual.
+  assert.deepStrictEqual(resolvedGetters, ["get_titanClanPvp"]);
+  // Exact BattlePresets(isReplay, autoToggleable, autoOnStart, config, showBothTeams).
+  // isReplay=false: offline sims cannot produce the effects.ultReseed
+  // battleSeed_next proof, so the instant/skip path (no reseed session) is used.
+  assert.strictEqual(presetsArgs.length, 1);
+  assert.deepStrictEqual(presetsArgs[0], [false, false, true, config, false]);
+  // The computed {progress, result} reached /toe/job/<id>/result.
+  assert.strictEqual(submittedUrls.length, 1);
+  assert.ok(submittedUrls[0].endsWith("/toe/job/job1/result"));
+  assert.deepStrictEqual(submittedBody.result.progress, [
+    { attackers: { heroes: { "1": { hp: 100 } } }, defenders: { heroes: {} } },
+  ]);
+  assert.deepStrictEqual(submittedBody.result.result, { win: true, stars: 3 });
+});
+
+test("installToeBridge exposes the DEV debug handle only in dev builds", () => {
+  const prevWindow = globalThis.window;
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => 1;
+  try {
+    __resetBridgeForTests();
+    globalThis.window = { Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} } };
+    // Normal build: TOE_ENABLED is false, so no handle is installed.
+    __setToeEnabledForTests(false);
+    let stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    assert.strictEqual(globalThis.window.__hwGenieToe, undefined);
+    stop();
+
+    // Dev build: the eval-driven debug handle is installed.
+    __setToeEnabledForTests(true);
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    const handle = globalThis.window.__hwGenieToe;
+    assert.ok(handle);
+    assert.strictEqual(typeof handle.captured, "function");
+    assert.strictEqual(typeof handle.capturedNames, "function");
+    assert.strictEqual(typeof handle.compute, "function");
+    assert.deepStrictEqual(handle.captured(), {});
+    stop();
+  } finally {
+    globalThis.setInterval = origSetInterval;
     if (prevWindow === undefined) delete globalThis.window;
     else globalThis.window = prevWindow;
     __resetBridgeForTests();
@@ -789,4 +977,912 @@ test("installToeBridge serializes overlapping interval ticks", async () => {
     else globalThis.window = prevWindow;
     __resetBridgeForTests();
   }
+});
+
+test("formatLiveDiag reports visibility, controller capture and Auto state", () => {
+  const diag = formatLiveDiag({
+    visibility: "hidden",
+    visibilityAtStart: "visible",
+    controllerCaptured: true,
+    autoPatchInstalled: true,
+    autoApplied: false,
+    autoForced: true,
+    battleStarted: true,
+  });
+  assert.match(diag, /vis=hidden\(start=visible\)/);
+  assert.match(diag, /bc=1/);
+  assert.match(diag, /patch=1/);
+  assert.match(diag, /auto=0/);
+  assert.match(diag, /forced=1/);
+  assert.match(diag, /start=1/);
+
+  const drifted = formatLiveDiag({
+    visibility: "visible",
+    visibilityAtStart: "visible",
+    controllerCaptured: false,
+    autoPatchInstalled: false,
+    autoApplied: false,
+    autoForced: false,
+    battleStarted: false,
+  });
+  assert.match(drifted, /bc=0 patch=0 auto=0 forced=0 start=0/);
+});
+
+test("resolveToeModel reads GameModel.F().player.cl and the x7 command list", async () => {
+  __resetBridgeForTests();
+  const toe = { WJl() {} };
+  const x7 = { kBo() {} };
+  const model = { player: { cl: toe }, Ka: { x7 } };
+  function GameModel() {}
+  GameModel.F = () => model;
+  storeCapturedClass("GameModel", GameModel);
+
+  assert.deepStrictEqual(resolveToeModel(), { toe, commands: x7, commandKey: "x7", commandRoot: model.Ka });
+  assert.deepStrictEqual(await waitForToeModel(100), {
+    toe,
+    commands: x7,
+    commandKey: "x7",
+    commandRoot: model.Ka,
+  });
+  __resetBridgeForTests();
+
+  // v302-late build: y7 wins over a lingering x7.
+  const y7 = { DBo() {} };
+  function NewGameModel() {}
+  NewGameModel.F = () => ({ player: { cl: toe }, Ka: { y7, x7 } });
+  storeCapturedClass("GameModel", NewGameModel);
+  assert.deepStrictEqual(resolveToeModel(), {
+    toe,
+    commands: y7,
+    commandKey: "y7",
+    commandRoot: { y7, x7 },
+  });
+  __resetBridgeForTests();
+
+  // Fresh page still booting: classes captured but the ToE model is not ready.
+  function LoadingGameModel() {}
+  LoadingGameModel.F = () => ({ player: {}, Ka: {} });
+  storeCapturedClass("GameModel", LoadingGameModel);
+  assert.strictEqual(resolveToeModel(), null);
+  assert.strictEqual(await waitForToeModel(0), null);
+  __resetBridgeForTests();
+});
+
+test("waitForRival clears the rival list exactly once on the first refresh, then rebuilds", async () => {
+  __resetBridgeForTests();
+  const stale = { G: () => "stale" };
+  const rival = { G: () => "-42" };
+  const nulled = [];
+  let refreshes = 0;
+  const toe = new Proxy(
+    {
+      Vge: { day: 1 },
+      Dtd: [stale],
+      W5b() {
+        return this.Dtd || [];
+      },
+      mKl() {
+        refreshes += 1;
+        // The rebuild after the one-time clear.
+        this.Dtd = [rival];
+      },
+    },
+    {
+      set(target, prop, value) {
+        if ((prop === "Vge" || prop === "Dtd") && value === null) nulled.push(prop);
+        target[prop] = value;
+        return true;
+      },
+    },
+  );
+
+  assert.strictEqual(await waitForRival(toe, "-42", 2000), rival);
+  assert.deepStrictEqual(nulled, ["Vge", "Dtd"], "Vge/Dtd are nulled exactly once");
+  assert.strictEqual(refreshes, 1, "the rebuild refresh runs once");
+  assert.deepStrictEqual(toe.Dtd, [rival], "the rebuilt list is kept");
+  __resetBridgeForTests();
+});
+
+test("waitForRival keeps a successful rebuild at timeout even without the wanted rival", async () => {
+  __resetBridgeForTests();
+  const oldWalls = [{ G: () => "old" }];
+  const newWalls = [{ G: () => "-901" }];
+  const toe = {
+    Vge: { day: 1 },
+    Dtd: oldWalls,
+    W5b() {
+      return this.Dtd;
+    },
+    mKl() {
+      this.Dtd = newWalls;
+    },
+  };
+  const prevNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => (now += 1000);
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => {
+    fn();
+    return 0;
+  };
+  try {
+    assert.strictEqual(await waitForRival(toe, "missing", 3000), null);
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    Date.now = prevNow;
+    __resetBridgeForTests();
+  }
+  // The rebuilt wall list is newer than the pre-clear one: keep it.
+  assert.strictEqual(toe.Dtd, newWalls);
+});
+
+test("waitForRival keeps the rival list when the refresh method is unavailable", async () => {
+  __resetBridgeForTests();
+  const stale = { G: () => "stale" };
+  const nulled = [];
+  const toe = new Proxy(
+    { Vge: { day: 1 }, Dtd: [stale], W5b() { return this.Dtd; } },
+    {
+      set(target, prop, value) {
+        if ((prop === "Vge" || prop === "Dtd") && value === null) nulled.push(prop);
+        target[prop] = value;
+        return true;
+      },
+    },
+  );
+  const prevNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => (now += 1000);
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => {
+    fn();
+    return 0;
+  };
+  try {
+    assert.strictEqual(await waitForRival(toe, "missing", 3000), null);
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    Date.now = prevNow;
+    __resetBridgeForTests();
+  }
+  // Resolve-before-clear: with no refresh method, the clear must never run.
+  assert.deepStrictEqual(nulled, [], "Vge/Dtd must not be nulled without a refresh");
+  assert.deepStrictEqual(toe.Dtd, [stale]);
+  assert.deepStrictEqual(toe.Vge, { day: 1 });
+});
+
+test("waitForRival retries/refreshes until the rival list is ready", async () => {
+  const rival = { G: () => "-900002" };
+  let refreshes = 0;
+  let calls = 0;
+  const toe = {
+    V5b: () => {
+      calls += 1;
+      return calls >= 2 ? [rival] : [];
+    },
+    WJl: () => {
+      refreshes += 1;
+    },
+  };
+  assert.strictEqual(await waitForRival(toe, "-900002", 2000), rival);
+  assert.ok(refreshes >= 1, "an empty list must trigger a status refresh");
+  assert.strictEqual(await waitForRival(toe, "-999", 30), null);
+});
+
+test("toeDataReady requires a populated in-page rival list (post-reload gate)", () => {
+  __resetBridgeForTests();
+  const toe = { WJl() {}, V5b: () => [] };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { x7: {} } });
+  storeCapturedClass("GameModel", GameModel);
+
+  assert.strictEqual(toeDataReady(), false);
+  toe.V5b = () => [{ G: () => "1" }];
+  assert.strictEqual(toeDataReady(), true);
+  __resetBridgeForTests();
+});
+
+function installFakeWebStorage(initial = {}) {
+  const store = new Map(Object.entries(initial));
+  const api = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+  };
+  globalThis.localStorage = api;
+  globalThis.sessionStorage = api;
+  return store;
+}
+
+test("tick schedules the tier-transition reload and claims no further job", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevLocation = globalThis.location;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const reloads = [];
+  const timeouts = [];
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  installFakeWebStorage();
+  globalThis.location = { reload: () => reloads.push(Date.now()) };
+  let claims = 0;
+  let submitted = false;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      claims += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: `j${claims}`, account: "Alice", kind: "live", action: "reload" }),
+      };
+    }
+    if (u.includes("/result")) {
+      submitted = true;
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms) => {
+    timeouts.push({ fn, ms });
+    return timeouts.length;
+  };
+  try {
+    await tick("Alice", "http://127.0.0.1:1", 4);
+    assert.strictEqual(claims, 1, "exactly one reload job is claimed");
+    assert.strictEqual(reloads.length, 0, "reload is delayed, not immediate");
+    assert.ok(submitted, "the reload result must be acknowledged before navigating");
+    const reloadTimer = timeouts.find((t) => t.ms === 1500);
+    assert.ok(reloadTimer, "a 1.5s reload timer must be scheduled");
+    reloadTimer.fn();
+    assert.strictEqual(reloads.length, 1);
+
+    // The still-live pre-reload page must not claim the next job.
+    await tick("Alice", "http://127.0.0.1:1", 4);
+    assert.strictEqual(claims, 1, "no job is claimed while the reload is pending");
+
+    // If the navigation never happens, the watchdog releases the gate.
+    const watchdog = timeouts.find((t) => t.ms === 10000);
+    assert.ok(watchdog, "a reload watchdog must be scheduled");
+    watchdog.fn();
+    await tick("Alice", "http://127.0.0.1:1", 4);
+    assert.strictEqual(claims, 2, "the watchdog lets polling resume");
+  } finally {
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocation === undefined) delete globalThis.location;
+    else globalThis.location = prevLocation;
+    __resetBridgeForTests();
+  }
+});
+
+test("tick gates claims on ToE data after a reload and then clears the flag", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  installFakeWebStorage();
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  const toe = { WJl() {}, V5b: () => [] };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { x7: {} } });
+  storeCapturedClass("GameModel", GameModel);
+  // A fresh page right after the reload: the sessionStorage flag survives.
+  globalThis.sessionStorage.setItem(RELOAD_PENDING_KEY, String(Date.now()));
+
+  let claims = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      claims += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "jg", account: "Alice", battle: { type: "titan_arena" } }),
+      };
+    }
+    if (u.includes("/result")) {
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  try {
+    // ToE data not loaded yet: no claim and the gate flag stays set.
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.strictEqual(claims, 0);
+    assert.ok(globalThis.sessionStorage.getItem(RELOAD_PENDING_KEY));
+
+    // Data ready: the gate clears and the next poll claims a job.
+    toe.V5b = () => [{ G: () => "1" }];
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.strictEqual(claims, 1);
+    assert.strictEqual(globalThis.sessionStorage.getItem(RELOAD_PENDING_KEY), null);
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("live battle wraps the old-name kBo command and returns the EndBattle result", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const origSetTimeout = globalThis.setTimeout;
+
+  installFakeWebStorage({ "hwgenie-x-auth-user-id": "Alice" });
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+
+  const response = {
+    c7a: () => null,
+    MI: () => true,
+    zk: () => ({ ag: () => ({ win: true, stars: 2 }) }),
+  };
+  const prevKbo = () => ({ cc: (cb) => cb(response) });
+  const x7 = { kBo: prevKbo };
+  const toe = {
+    WJl() {},
+    V5b: () => [{ G: () => "7" }],
+    bmc() {
+      const cmd = x7.kBo();
+      cmd.cc((res) => res);
+    },
+  };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { x7 } });
+  storeCapturedClass("GameModel", GameModel);
+  function BattleController() {}
+  BattleController.prototype.start = function () {};
+  storeCapturedClass("BattleController", BattleController);
+
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jb",
+          account: "Alice",
+          kind: "live",
+          action: "battle",
+          rivalId: "7",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  // Short timers (the 2s post-battle settle) run immediately; the 180s battle
+  // timeout and the 15s realm diag are captured but never fired.
+  globalThis.setTimeout = (fn, ms, ...rest) => (ms <= 2000 ? origSetTimeout(fn, 0, ...rest) : 1);
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody, "the live result must be submitted");
+    assert.strictEqual(submittedBody.result.ok, true);
+    assert.deepStrictEqual(submittedBody.result.result, { win: true, stars: 2 });
+    assert.strictEqual(x7.kBo, prevKbo, "kBo must be restored after the battle");
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("live job rejects an empty or mismatched own-tab account", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const origSetTimeout = globalThis.setTimeout;
+
+  // No stored auth id: readAccount() is empty, so the job account cannot be
+  // used as a fallback.
+  installFakeWebStorage({});
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jm",
+          account: "Bob",
+          kind: "live",
+          action: "battle",
+          rivalId: "7",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => (ms <= 2000 ? origSetTimeout(fn, 0, ...rest) : 1);
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody);
+    assert.strictEqual(submittedBody.result.ok, false);
+    assert.match(submittedBody.result.error, /account mismatch/);
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("installToeBridge claims nothing while the tab is hidden (all job kinds)", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevDocument = globalThis.document;
+  const prevFetch = globalThis.fetch;
+  const prevSetInterval = globalThis.setInterval;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevLog = console.log;
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  globalThis.document = { hidden: true, visibilityState: "hidden" };
+  let nextCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/toe/next")) nextCalls += 1;
+    return { ok: false, status: 204 };
+  };
+  let tickCallback = null;
+  globalThis.setInterval = (cb) => {
+    tickCallback = cb;
+    return 1;
+  };
+  globalThis.setTimeout = () => 1;
+  const logs = [];
+  console.log = (...a) => logs.push(a.join(" "));
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    tickCallback();
+    tickCallback();
+    assert.strictEqual(nextCalls, 0, "a hidden tab must not claim any job");
+    const hiddenLogs = logs.filter((l) => l.includes("tab hidden; not claiming"));
+    assert.strictEqual(hiddenLogs.length, 1, "the hidden log is throttled, not per-poll");
+  } finally {
+    if (stop) stop();
+    console.log = prevLog;
+    globalThis.fetch = prevFetch;
+    globalThis.setInterval = prevSetInterval;
+    globalThis.setTimeout = prevSetTimeout;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevDocument === undefined) delete globalThis.document;
+    else globalThis.document = prevDocument;
+    __resetBridgeForTests();
+  }
+});
+
+test("live battle wraps y7.DBo (new name) and restores it", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const origSetTimeout = globalThis.setTimeout;
+
+  installFakeWebStorage({ "hwgenie-x-auth-user-id": "Alice" });
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+
+  const response = {
+    c7a: () => null,
+    MI: () => true,
+    zk: () => ({ ag: () => ({ win: true, stars: 2 }) }),
+  };
+  let dboCalls = 0;
+  const prevDbo = () => {
+    dboCalls += 1;
+    return { cc: (cb) => cb(response) };
+  };
+  const y7 = { DBo: prevDbo };
+  const toe = {
+    mKl() {},
+    W5b: () => [{ G: () => "7" }],
+    cmc() {
+      const cmd = y7.DBo();
+      cmd.cc((res) => res);
+    },
+  };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { y7 } });
+  storeCapturedClass("GameModel", GameModel);
+  function BattleController() {}
+  BattleController.prototype.start = function () {};
+  storeCapturedClass("BattleController", BattleController);
+
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jbnew",
+          account: "Alice",
+          kind: "live",
+          action: "battle",
+          rivalId: "7",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => (ms <= 2000 ? origSetTimeout(fn, 0, ...rest) : 1);
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody, "the live result must be submitted");
+    assert.strictEqual(submittedBody.result.ok, true);
+    assert.deepStrictEqual(submittedBody.result.result, { win: true, stars: 2 });
+    assert.strictEqual(dboCalls, 1, "the new-name DBo command must drive the battle");
+    assert.strictEqual(y7.DBo, prevDbo, "DBo must be restored after the battle");
+    assert.strictEqual("kBo" in y7, false, "no old-name command is touched");
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("live job reports start method unavailable when neither cmc nor bmc exists", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const origSetTimeout = globalThis.setTimeout;
+
+  installFakeWebStorage({ "hwgenie-x-auth-user-id": "Alice" });
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  const prevDbo = () => ({ cc: () => {} });
+  const y7 = { DBo: prevDbo };
+  const toe = { mKl() {}, W5b: () => [{ G: () => "7" }] };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { y7 } });
+  storeCapturedClass("GameModel", GameModel);
+  function BattleController() {}
+  BattleController.prototype.start = function () {};
+  storeCapturedClass("BattleController", BattleController);
+
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jbstart",
+          account: "Alice",
+          kind: "live",
+          action: "battle",
+          rivalId: "7",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => (ms <= 2000 ? origSetTimeout(fn, 0, ...rest) : 1);
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody);
+    assert.strictEqual(submittedBody.result.ok, false);
+    assert.match(submittedBody.result.error, /start method unavailable/);
+    assert.strictEqual(y7.DBo, prevDbo, "DBo must be restored even on the failure path");
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("live job reports endbattle unavailable and leaves y7 untouched when no DBo/kBo exists", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const origSetTimeout = globalThis.setTimeout;
+
+  installFakeWebStorage({ "hwgenie-x-auth-user-id": "Alice" });
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  const y7 = {};
+  const toe = { mKl() {}, W5b: () => [{ G: () => "7" }], cmc() {} };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { y7 } });
+  storeCapturedClass("GameModel", GameModel);
+
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jbend",
+          account: "Alice",
+          kind: "live",
+          action: "battle",
+          rivalId: "7",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  globalThis.setTimeout = (fn, ms, ...rest) => (ms <= 2000 ? origSetTimeout(fn, 0, ...rest) : 1);
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody);
+    assert.strictEqual(submittedBody.result.ok, false);
+    assert.match(submittedBody.result.error, /endbattle method unavailable/);
+    assert.strictEqual("kBo" in y7, false, "the failure path must not create an own kBo");
+    assert.strictEqual("DBo" in y7, false, "the failure path must not create an own DBo");
+    assert.deepStrictEqual(Object.keys(y7), [], "no wrapper is added to the command list");
+  } finally {
+    if (stop) stop();
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("live rival-not-found writes the safe diagnostic and restores the rival list", async () => {
+  __resetBridgeForTests();
+  __setToeEnabledForTests(true);
+  const prevWindow = globalThis.window;
+  const prevDocument = globalThis.document;
+  const prevLocation = globalThis.location;
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const prevSetInterval = globalThis.setInterval;
+  const prevLocalStorage = globalThis.localStorage;
+  const prevSessionStorage = globalThis.sessionStorage;
+  const prevNow = Date.now;
+
+  const storage = installFakeWebStorage({ "hwgenie-x-auth-user-id": "Alice" });
+  globalThis.window = {
+    Game: { BattlePresets: function () {}, BattleInstantPlay: function () {}, DataStorage: {} },
+  };
+  globalThis.document = { hidden: false, visibilityState: "visible" };
+  globalThis.location = {
+    origin: "https://game.example",
+    pathname: "/game",
+    href: "https://game.example/game?token=secret",
+    reload: () => {},
+  };
+  const rivals = Array.from({ length: 15 }, (_, i) => ({ G: () => `-${i}` }));
+  const toe = {
+    Dtd: rivals,
+    Vge: { day: 3 },
+    W5b() {
+      return this.Dtd;
+    },
+    mKl() {},
+    cmc() {},
+  };
+  const y7 = { DBo() {} };
+  function GameModel() {}
+  GameModel.F = () => ({ player: { cl: toe }, Ka: { y7 } });
+  storeCapturedClass("GameModel", GameModel);
+
+  let submittedBody = null;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/toe/next")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "jbdiag",
+          account: "Alice",
+          kind: "live",
+          action: "battle",
+          rivalId: "wanted",
+          titans: [1, 2, 3, 4, 5],
+        }),
+      };
+    }
+    if (u.includes("/result")) {
+      submittedBody = JSON.parse(String(opts.body ?? "{}"));
+      return { ok: true, status: 200 };
+    }
+    return { ok: false, status: 404 };
+  };
+  let now = 0;
+  Date.now = () => (now += 1000);
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    if (ms >= 10000) return 1;
+    fn(...rest);
+    return 1;
+  };
+  globalThis.setInterval = () => 1;
+  let stop = null;
+  try {
+    stop = installToeBridge({ authServerUrl: "http://127.0.0.1:1" });
+    await tick("Alice", "http://127.0.0.1:1", 1);
+    assert.ok(submittedBody);
+    assert.strictEqual(submittedBody.result.ok, false);
+    assert.match(submittedBody.result.error, /rival not found.*want=wanted/);
+
+    const raw = storage.get(TOE_DIAG_KEY);
+    assert.ok(raw, "the diagnostic must be written under the exported key");
+    const diag = JSON.parse(raw);
+    assert.strictEqual(diag.want, "wanted");
+    assert.strictEqual(diag.have.length, 12, "have is bounded to 12 entries");
+    assert.strictEqual(diag.have[0], "-0");
+    assert.strictEqual(diag.commandKey, "y7");
+    assert.strictEqual(diag.y7, "object");
+    assert.strictEqual(diag.x7, "undefined");
+    assert.strictEqual(diag.cmc, "function");
+    assert.strictEqual(diag.dtd, 15);
+    assert.strictEqual(diag.vge, "object", "vge is serialized as a type, never a raw object");
+    assert.strictEqual(diag.href, "https://game.example/game", "href drops the query string");
+    assert.ok(!raw.includes("token=secret"));
+    // The one-time clear is undone on timeout so later jobs still see walls.
+    assert.strictEqual(toe.Dtd, rivals);
+  } finally {
+    if (stop) stop();
+    Date.now = prevNow;
+    globalThis.fetch = prevFetch;
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.setInterval = prevSetInterval;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevDocument === undefined) delete globalThis.document;
+    else globalThis.document = prevDocument;
+    if (prevLocation === undefined) delete globalThis.location;
+    else globalThis.location = prevLocation;
+    if (prevLocalStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevLocalStorage;
+    if (prevSessionStorage === undefined) delete globalThis.sessionStorage;
+    else globalThis.sessionStorage = prevSessionStorage;
+    __resetBridgeForTests();
+  }
+});
+
+test("waitForRival binds this when calling the rivals getter", async () => {
+  __resetBridgeForTests();
+  // Regression: extracting W5b into a local and calling it unbound loses
+  // `this.Dtd`, so the rival list looked empty even though it was populated.
+  const rival = { G: () => "-1" };
+  const toe = {
+    Dtd: [rival],
+    W5b() {
+      return this.Dtd;
+    },
+  };
+  assert.strictEqual(await waitForRival(toe, "-1", 200), rival);
+  __resetBridgeForTests();
 });

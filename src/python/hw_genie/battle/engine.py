@@ -463,10 +463,10 @@ PLAYWRIGHT_BATTLE_JS = """(battleJson) => {
                         const game = window.Game;
                         if (!game || !game.BattlePresets || !game.BattleInstantPlay || !game.DataStorage) return null;
                         const ds = game.DataStorage;
-                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanPvpManual')]();
-                        const presets = new game.BattlePresets(battle.progress || [], false, true, config, false);
+                        const config = ds[getFn(ds, 25)][getF(game.BattleConfigStorage, 'get_titanClanPvp')]();
+                        const presets = new game.BattlePresets(false, false, true, config, false);
                         const instant = new game.BattleInstantPlay(battle, presets);
-                        const isSignal = (v) => !!v && typeof v.add === 'function' && typeof v.dispatch === 'function';
+                        const isSignal = (v) => !!v && typeof v.add === 'function' && (typeof v.dispatch === 'function' || typeof v.subscribe === 'function');
                         return new Promise((resolve, reject) => {
                             let done = null;
                             // Haxe prototype ordinals drift between game builds; the
@@ -585,6 +585,12 @@ class PlaywrightBattleEngine:
                     # The signal moved from 9 to 10 with the 2026-11-20 game update
                     # (HerowarsHelper 2.476+ uses 10); the snippet also falls back to
                     # scanning for the signal shape when the pinned ordinal drifts.
+                    # The battle config is get_titanClanPvp, matching the game's
+                    # TitanArenaBattleThread: the 2026-11-26 update (serverVersion
+                    # 302) rejects get_titanPvpManual progress as ``Invalid battle``.
+                    # Presets use isReplay=false (the client's instant/skip path):
+                    # isReplay=true enables the effects.ultReseed session, whose
+                    # battleSeed_next proof an offline sim cannot produce.
                     # They were ported from HerowarsHelper's working BattleCalc;
                     # re-validate against that source when resolution throws
                     # (the page.evaluate error below carries the failing key).
