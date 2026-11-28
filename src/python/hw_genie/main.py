@@ -2978,7 +2978,7 @@ def main():
         "--engine",
         choices=["estimate", "hybrid", "playwright", "live"],
         default="estimate",
-        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (offline instant sim via userscript; RAID tiers), 'live' (real battles in the game tab for v302 solo/wall proof), or 'playwright' (headless Chromium)",
+        help="Battle engine: 'estimate' (tier planning only), 'hybrid' (offline instant sim via userscript; RAID tiers), 'live' (EXPERIMENTAL: real battles in the game tab for v302 solo/wall proof; needs a visible tab and re-pinning after game updates), or 'playwright' (headless Chromium)",
     )
     p_toe_run.add_argument(
         "--auth-server-url",
@@ -3143,7 +3143,7 @@ def main():
         "--engine",
         choices=["estimate", "hybrid", "playwright", "live"],
         default="hybrid",
-        help="Battle engine for the 'toe' mode (default: hybrid; use 'live' for v302 solo/wall real battles in each game tab)",
+        help="Battle engine for the 'toe' mode (default: hybrid; 'live' is EXPERIMENTAL: v302 solo/wall real battles in each visible game tab; re-pin after game updates)",
     )
     p_multi.add_argument(
         "--seeds",

@@ -872,6 +872,11 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 }
 
 // --- live ToE jobs ---------------------------------------------------------
+// EXPERIMENTAL / 開発途中. Live solo/wall battles are the only v302 path (the
+// server enforces the ultReseed proof), but they rely on minified game names
+// (Ka.y7 / W5b / cmc / y7.DBo today; x7 / V5b / bmc / kBo before) that drift on
+// every game update. Re-pin them when the game bundle changes; raids stay
+// API/offline. This is not a finished ToE solution.
 
 type AnyRecord = Record<string, any>;
 type AnyFn = (...args: any[]) => any;

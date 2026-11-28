@@ -323,6 +323,13 @@ PvP コンテンツとして同じく Hero Wars 対戦機能を共有する。�
 HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 自動
 進行を行う。
 
+> **実験的機能・開発途中（重要な制約）**: v302 以降の個別戦/壁は
+> `effects.ultReseed` の reseed proof が必須で、**API 単独では攻略できない**
+> （レイドは `effects: []` のため API/オフラインで可）。攻略には
+> `--engine live` でゲームクライアントの実戦を駆動する必要があり、その
+> minified 名はゲーム更新ごとに変わるため再ピンが要る。ToE はまだ完成した
+> ソリューションではなく、安定しているのはレイド経路のみ。
+
 ### titanArenaGetStatus - 現在の Tier / 壁 / rival 一覧を取得
 
 | フィールド | 型 | 説明 |

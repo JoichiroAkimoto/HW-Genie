@@ -1,5 +1,12 @@
 """Live Titan Arena (ToE) driver.
 
+STATUS: EXPERIMENTAL / 開発途中. This path depends on the game client's
+minified ToE entry points (``Ka.y7`` / ``cmc`` / ``y7.DBo`` in the current
+build), which drift on every game update and must be re-pinned. There is no
+API-only solution for v302 solo/wall battles (the server enforces the
+``ultReseed`` proof), so this is the only way to clear them today; raids
+remain API/offline. Do not present ToE as a finished feature.
+
 The 2026-11-26 game update (serverVersion 302) rejects offline instant
 simulations for solo ToE battles because the server now validates the
 ``battleSeed_next`` reseed proof. Raids are unaffected (their battle payload

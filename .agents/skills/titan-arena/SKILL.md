@@ -32,6 +32,8 @@ description: HW-Genie を使用して Titan Arena (ToE) の状態確認・個別
    ```
 
 ## 挙動と注意
+
+- **実験的機能・開発途中**: v302 以降の個別戦/壁（`--engine live`）はゲームクライアントの実戦に依存し、ゲーム更新ごとに minify 名の再ピンが必要です。**API 単独では個別戦/壁を攻略できない恒久的な制約**があり、ToE はまだ完成したソリューションではありません（レイド `--engine hybrid` は API で安定）。運用時はこの前提を忘れないでください。
 - `--rival` / `--titans` 省略時は `titanArenaGetStatus` / `teamGetAll.titan_arena` から自動解決します。閾値は既定 250。
 - 新 Tier は Raid を最初に試し、レイドが検証可能な結果を返せない場合は個別バトルへフォールバックします。
 - 負けは既定で毎回バンクします（`attackScore` はバトルスコアの max 保持なので劣る負けは無害）。`--no-end-on-loss` でベスト更新時のみバンク、`--no-bank-best-loss` で改善バンクを無効化できます。
