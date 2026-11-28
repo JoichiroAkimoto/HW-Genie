@@ -370,29 +370,29 @@ HW-Genie CLI / userscript 連携はこれらを使って壁Rival 攻略や Tier 
 でよいが、個別戦・壁は reseed proof のため **ゲームタブ内の実戦
 （`--engine live`）が必要**。
 
-> **2026-11-26 の変更**: 回帰の原因は battle config getter で、`get_titanPvpManual`
-> から `get_titanClanPvp` に変わった（ゲーム本体の `TitanArenaBattleThread` /
-> `BattleThreadFactory` が `titan_arena` を `I.qj.f7a()` に割り当てる）。以前の
-> `get_titanPvpManual` でシミュレーションした `progress` は serverVersion 302 で
-> `Invalid battle` になる。live の StartBattle battle には `effects.ultReseed`
-> が入る（2026-11-26 実測）。オフライン計算ではクライアント実戦の
-> `battleSeed_next`（reseed の seeds / `progress[0].proof`）を生成できないため、
-> 個別戦・壁は **`--engine live`** でゲームタブ内の実戦を駆動する
-> （`PlayerTitanArenaData.cmc(rival, {f3b: () => titans})`（旧 `bmc`） →
+> **battle config と proof**: ToE の battle config は `get_titanClanPvp`
+> （ゲーム本体の `TitanArenaBattleThread` / `BattleThreadFactory` が
+> `titan_arena` を `I.qj.f7a()` に割り当てる）。`get_titanPvpManual` で
+> シミュレーションした `progress` は serverVersion 302 で `Invalid battle`
+> になる。live の StartBattle battle には `effects.ultReseed` が入り、
+> オフライン計算ではクライアント実戦の `battleSeed_next`（reseed の seeds /
+> `progress[0].proof`）を生成できないため、個別戦・壁は **`--engine live`**
+> でゲームタブ内の実戦を駆動する
+> （`PlayerTitanArenaData.cmc(rival, {f3b: () => titans})` →
 > `TitanArenaBattleThread` → `battleSeed_next` → `titanArenaEndBattle`。
 > userscript の live ジョブが結果を CLI に返し、Tier 完了は
-> `titanArenaCompleteTier`）。レイドは `effects: []` のため従来のオフライン
-> 計算（`--engine hybrid`）でよい。live は `canRaid=true` の Tier を扱わない
+> `titanArenaCompleteTier`）。レイドは `effects: []` のためオフライン計算
+> （`--engine hybrid`）でよい。live は `canRaid=true` の Tier を扱わない
 > （先に hybrid でレイドを消化してから live を再実行する）。
-> 結果ポップアップ回避の再読込は Tier 移行時の 1 回だけで、毎戦はしない。
+> 再読込は Tier 移行時の 1 回だけで、毎戦はしない。
 > Auto は `BattleController` の `BattleSettingsModel`（`Qya`）を ON にする。
 > canvas 座標の盲クリックはしない（右下の x5 は Valkyrie's Favor の購入
 > ポップアップ）。
 
-**userscript ブリッジが解決する minified 名（v302-late / 旧ビルド）**:
+**userscript ブリッジが解決する minified 名（現行キー / 代替キー）**:
 
-| 用途 | 新ビルド | 旧ビルド | 備考 |
-|------|----------|----------|------|
+| 用途 | キー | 代替キー | 備考 |
+|------|------|----------|------|
 | ToE データ | `GameModel.F().player.cl` | 同左 | `cl` は `PlayerTitanArenaData` |
 | rival 一覧 | `cl.W5b()` | `cl.V5b()` | `this` 束縛必須（`this.Dtd` を読む） |
 | status refresh | `cl.mKl()` | `cl.WJl()` | 初回のみ `Vge` / `Dtd` を null にして再構築 |

@@ -874,9 +874,9 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 // --- live ToE jobs ---------------------------------------------------------
 // EXPERIMENTAL / 開発途中. Live solo/wall battles are the only v302 path (the
 // server enforces the ultReseed proof), but they rely on minified game names
-// (Ka.y7 / W5b / cmc / y7.DBo today; x7 / V5b / bmc / kBo before) that drift on
-// every game update. Re-pin them when the game bundle changes; raids stay
-// API/offline. This is not a finished ToE solution.
+// (Ka.y7 / W5b / cmc / y7.DBo, with x7 / V5b / bmc / kBo accepted as fallbacks)
+// that drift on every game update. Re-pin them when the game bundle changes;
+// raids stay API/offline. This is not a finished ToE solution.
 
 type AnyRecord = Record<string, any>;
 type AnyFn = (...args: any[]) => any;
@@ -1038,9 +1038,9 @@ function installLiveAutoPatch(): boolean {
 /**
  * Resolved in-page ToE data + command model.
  *
- * ``commands`` is the Haxe command list (``Ka.y7`` in the v302-late bundle,
- * ``Ka.x7`` in older bundles); ``commandKey`` records which property it came
- * from so diagnostics/tests can tell the builds apart.
+ * ``commands`` is the Haxe command list. It is resolved from ``Ka.y7`` when
+ * present, falling back to ``Ka.x7``; ``commandKey`` records the property that
+ * supplied it.
  */
 export type ToeModel = {
   toe: AnyRecord;
@@ -1056,7 +1056,7 @@ export function resolveToeModel(): ToeModel | null {
   const player = model?.["player"] as AnyRecord | undefined;
   const toe = player?.["cl"] as AnyRecord | undefined;
   const commandRoot = model?.["Ka"] as AnyRecord | undefined;
-  // v302-late build renamed the ToE command list x7 -> y7; keep both.
+  // Resolve the ToE command list among the known keys (y7, then x7).
   let commandKey: "y7" | "x7" = "x7";
   let commands: AnyRecord | undefined;
   if (commandRoot?.["y7"]) {
@@ -1092,9 +1092,9 @@ export async function waitForToeModel(timeoutMs: number): Promise<ToeModel | nul
  * Wait for the ToE rival list to include ``rivalId``.
  *
  * Right after a reload the model exists but its status fetch may still be in
- * flight, so the rivals getter (``W5b()`` on the v302-late bundle, ``V5b()``
- * on older ones) is empty. Refresh with ``mKl()`` / older ``WJl()`` and retry
- * instead of failing with "rival not found" (which aborts the wall in the CLI).
+ * flight, so the rivals getter (``W5b``, or ``V5b`` when present) is empty.
+ * Refresh with ``mKl`` (or ``WJl`` when present) and retry instead of failing
+ * with "rival not found" (which aborts the wall in the CLI).
  */
 export async function waitForRival(
   toe: AnyRecord,
@@ -1111,7 +1111,7 @@ export async function waitForRival(
   let prevDtd: unknown;
   for (;;) {
     try {
-      // v302-late build renamed V5b -> W5b; keep both for older bundles.
+      // Resolve the rivals getter among the known keys (W5b, then V5b).
       // Bind `this` to the model: these are Haxe instance methods and calling
       // the extracted function unbound loses `this.Dtd`.
       const getRivals = pickFn<(this: AnyRecord) => AnyRecord[]>(toe, "W5b", "V5b");
@@ -1165,7 +1165,7 @@ export async function waitForRival(
 
 // Survives the post-battle reload: after a fresh page boots, the userscript must
 // not claim the next live job until the ToE rival data is actually loaded, or
-// ``cmc`` (older builds ``bmc``) cannot find the rival ("rival not found").
+// ``cmc`` (``bmc`` as fallback) cannot find the rival ("rival not found").
 // sessionStorage is cleared as soon as the data is ready.
 export const RELOAD_PENDING_KEY = "hwgenie-toe-reload-pending";
 // Give up gating after this long so a tab that never loads ToE data (tier
@@ -1254,7 +1254,7 @@ export function toeDataReady(): boolean {
  *
  * The live path is required after the 2026-11-26 update: offline instant
  * simulations cannot produce the ``battleSeed_next`` proof the server now
- * validates. ``PlayerTitanArenaData.cmc`` (older bundles ``bmc``) runs the real
+ * validates. ``PlayerTitanArenaData.cmc`` (``bmc`` as fallback) runs the real
  * battle thread and the client submits ``titanArenaEndBattle`` with a valid
  * proof by itself. Tier transitions are a separate ``reload`` job handled by
  * ``tick``.
@@ -1334,9 +1334,9 @@ async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<Li
     let timer: ReturnType<typeof setTimeout> | null = null;
     const visibilityAtStart = typeof document !== "undefined" ? document.visibilityState : "n/a";
     let battleStarted = false;
-    // EndBattle command: new build DBo, old build kBo. Resolve the callable
-    // first so an unavailable method fails with a diagnostic instead of
-    // wrapping undefined.
+    // Resolve the EndBattle command among the known keys (DBo, then kBo) first
+    // so an unavailable method fails with a diagnostic instead of wrapping
+    // undefined.
     const prevEnd = pickFn<(this: unknown, ...args: unknown[]) => AnyRecord>(commands, "DBo", "kBo");
     const endKey = prevEnd && commands["DBo"] === prevEnd ? "DBo" : "kBo";
     const finish = (value: LiveJobResult) => {
@@ -1411,8 +1411,7 @@ async function runLiveJob(job: ToeJob, resolveAccount: () => string): Promise<Li
       log("live battle starts in a hidden tab; the game loop may not advance (bring the game tab to the foreground)");
     }
     try {
-      // StartBattle: new build cmc (AD battle thread), old build bmc. The team
-      // config property is still f3b (confirmed in the v302-late bundle).
+      // StartBattle: cmc (bmc as fallback), using the f3b team config.
       const startBattle = pickFn<(this: AnyRecord, r: AnyRecord, cfg: AnyRecord) => unknown>(
         toe,
         "cmc",
@@ -1457,7 +1456,7 @@ export async function tick(
       return;
     }
     // After that reload, wait until the fresh page has the ToE rival data before
-    // claiming, otherwise cmc (older builds bmc) cannot resolve the rival
+    // claiming, otherwise cmc (bmc as fallback) cannot resolve the rival
     // ("rival not found"). Only clear the flag from a tick that is not
     // scheduling a reload.
     if (!liveReloadPending && reloadPending()) {
