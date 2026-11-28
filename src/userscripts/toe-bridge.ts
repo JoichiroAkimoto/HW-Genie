@@ -881,9 +881,9 @@ async function computeBattle(battle: unknown): Promise<BattleResultPayload | nul
 type AnyRecord = Record<string, any>;
 type AnyFn = (...args: any[]) => any;
 /**
- * First function-valued member among ``names`` (new minified name first, old
- * fallback second), or undefined. The game renames methods between builds;
- * centralizing the lookup keeps every call site on the same rule.
+ * First function-valued member among ``names`` (primary key first, fallback
+ * keys after), or undefined. Minified game names vary; centralizing the lookup
+ * keeps every call site on the same rule.
  */
 function pickFn<T extends AnyFn>(obj: AnyRecord | undefined | null, ...names: string[]): T | undefined {
   if (!obj) return undefined;
@@ -1092,7 +1092,7 @@ export async function waitForToeModel(timeoutMs: number): Promise<ToeModel | nul
  * Wait for the ToE rival list to include ``rivalId``.
  *
  * Right after a reload the model exists but its status fetch may still be in
- * flight, so the rivals getter (``W5b``, or ``V5b`` when present) is empty.
+ * flight, so the rivals getter (``W5b``, with ``V5b`` as fallback) is empty.
  * Refresh with ``mKl`` (or ``WJl`` when present) and retry instead of failing
  * with "rival not found" (which aborts the wall in the CLI).
  */
@@ -1127,10 +1127,10 @@ export async function waitForRival(
       if (typeof refresh === "function") {
         if (!cleared) {
           cleared = true;
-          // The new bundle's update() rebuilds the rivals list (Dtd) only when
-          // nextDayTs/tier change. After a daily reset that keeps the same tier,
-          // the wall ids change but update() matches the old list by id, so the
-          // new walls never appear. Clear once so update() rebuilds.
+          // update() rebuilds the rivals list (Dtd) only when nextDayTs/tier
+          // change. After a daily reset that keeps the same tier, the wall ids
+          // change but update() matches the existing list by id, so the new
+          // walls never appear. Clear once so update() rebuilds.
           try {
             prevVge = toe["Vge"];
             prevDtd = toe["Dtd"];
